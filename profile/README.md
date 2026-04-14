@@ -11,5 +11,3 @@ Some key features and benefits of [Durable Workflow](https://github.com/durable-
 - Built-in support for handling errors and retries, ensuring that workflows are executed reliably and consistently.
 - Integration with Laravel's queue and event systems, allowing workflows to be executed asynchronously on worker servers.
 - Extensive documentation and a growing community of developers who use and contribute to Durable Workflow.
-
-<sub><sup>"Laravel" is a registered trademark of Taylor Otwell. This project is not affiliated, associated, endorsed, or sponsored by Taylor Otwell, nor has it been reviewed, tested, or certified by Taylor Otwell. The use of the trademark "Laravel" is for informational and descriptive purposes only. Durable Workflow is not officially related to the Laravel trademark or Taylor Otwell.</sup></sub>
