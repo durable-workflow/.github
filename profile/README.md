@@ -13,7 +13,7 @@ Key capabilities include:
 - Support for queues, workers, retries, timers, signals, updates, and parallel execution.
 - Tools for starting, monitoring, querying, managing, and repairing workflows.
 - Integration with scalable worker infrastructure for asynchronous and distributed execution.
-- Support for both [application-embedded](https://github.com/durable-workflow/workflow) workflows and [server-backed](https://github.com/durable-workflow/server) orchestration across languages.
+- Support for both [application-embedded](https://github.com/durable-workflow/workflow) workflows (Laravel only) and [server-backed](https://github.com/durable-workflow/server) orchestration across languages.
 - Operational visibility for workflow history, task queues, worker health, failures, and runtime state.
 - Documentation and ecosystem tooling for building reliable workflow-driven applications.
 
