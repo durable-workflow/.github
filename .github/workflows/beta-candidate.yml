@@ -1,0 +1,120 @@
+name: Beta candidate
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      candidate_manifest:
+        description: Exact beta candidate JSON matching candidates/schema.json
+        required: true
+        type: string
+
+permissions:
+  attestations: read
+  contents: write
+
+concurrency:
+  group: beta-candidate-registry
+  cancel-in-progress: false
+
+jobs:
+  qualify-and-record:
+    name: Qualify and record immutable candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the public control plane
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install changed-file quality tooling
+        run: python -m pip install ruff==0.12.3 yamllint==1.37.1
+
+      - name: Qualify the control-plane source
+        run: |
+          python -m ruff check scripts tests
+          python -m yamllint .github/workflows
+          python -m compileall -q scripts tests
+          python -m unittest discover -v
+          python -m json.tool candidates/schema.json >/dev/null
+          python -m json.tool candidates/verification-schema.json >/dev/null
+
+      - name: Select requested candidate
+        env:
+          DISPATCH_MANIFEST: ${{ inputs.candidate_manifest }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            python - <<'PYTHON'
+          import os
+          from pathlib import Path
+
+          Path("requested-candidate.json").write_text(os.environ["DISPATCH_MANIFEST"], encoding="utf-8")
+          PYTHON
+          else
+            cp candidates/main.json requested-candidate.json
+          fi
+          python scripts/beta_candidate.py validate requested-candidate.json candidate.json
+
+      - name: Reject mutation of an existing candidate identity
+        run: python scripts/beta_candidate.py check candidate.json
+
+      - name: Verify public artifacts and immutable source releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/beta_candidate.py verify candidate.json verification.json
+
+      - name: Create or compare the immutable Git record
+        id: record
+        run: |
+          python scripts/beta_candidate.py record candidate.json verification.json \
+            --authoritative-verification authoritative-verification.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Create or repair the durable GitHub Release mirror
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE: ${{ steps.record.outputs.candidate }}
+          CANDIDATE_TAG: ${{ steps.record.outputs.tag }}
+          RECORD_COMMIT: ${{ steps.record.outputs.commit }}
+        run: |
+          set -euo pipefail
+          mirror_dir="$(mktemp -d)"
+          trap 'rm -rf "$mirror_dir"' EXIT
+
+          if ! gh release view "$CANDIDATE_TAG" >/dev/null 2>&1; then
+            notes="$(mktemp)"
+            {
+              printf 'Immutable beta candidate `%s`.\n\n' "$CANDIDATE"
+              printf 'The authoritative Git record is commit `%s` at tag `%s`. ' "$RECORD_COMMIT" "$CANDIDATE_TAG"
+              printf 'The attached JSON files mirror that record for durable API queries and recovery.\n'
+            } > "$notes"
+            gh release create "$CANDIDATE_TAG" --verify-tag \
+              --title "Beta candidate ${CANDIDATE}" --notes-file "$notes"
+          fi
+
+          repair_asset() {
+            source_path="$1"
+            asset_name="$2"
+            if gh release download "$CANDIDATE_TAG" --pattern "$asset_name" --dir "$mirror_dir" >/dev/null 2>&1; then
+              cmp --silent "$source_path" "$mirror_dir/$asset_name" || {
+                printf 'release asset %s differs from immutable Git authority\n' "$asset_name" >&2
+                exit 1
+              }
+            else
+              upload_dir="$(mktemp -d)"
+              cp "$source_path" "$upload_dir/$asset_name"
+              gh release upload "$CANDIDATE_TAG" "$upload_dir/$asset_name"
+            fi
+          }
+
+          repair_asset candidate.json candidate.json
+          repair_asset authoritative-verification.json verification.json

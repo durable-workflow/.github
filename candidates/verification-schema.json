@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/durable-workflow/.github/blob/main/candidates/verification-schema.json",
+  "title": "Durable Workflow beta candidate verification",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "candidate",
+    "manifest_sha256",
+    "verified_at",
+    "outcome",
+    "components"
+  ],
+  "properties": {
+    "schema": {
+      "const": "durable-workflow.beta-candidate-verification/v1"
+    },
+    "candidate": {
+      "type": "string"
+    },
+    "manifest_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "verified_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "outcome": {
+      "const": "verified"
+    },
+    "components": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workflow",
+        "waterline",
+        "server",
+        "cli",
+        "sdk-php",
+        "sdk-python",
+        "sdk-rust"
+      ],
+      "properties": {
+        "workflow": { "$ref": "#/$defs/result" },
+        "waterline": { "$ref": "#/$defs/result" },
+        "server": { "$ref": "#/$defs/result" },
+        "cli": { "$ref": "#/$defs/result" },
+        "sdk-php": { "$ref": "#/$defs/result" },
+        "sdk-python": { "$ref": "#/$defs/result" },
+        "sdk-rust": { "$ref": "#/$defs/result" }
+      }
+    }
+  },
+  "$defs": {
+    "result": {
+      "type": "object",
+      "required": [
+        "version",
+        "commit",
+        "source",
+        "distribution",
+        "outcome"
+      ],
+      "properties": {
+        "version": { "type": "string" },
+        "commit": { "type": "string" },
+        "source": { "type": "object" },
+        "distribution": { "type": "object" },
+        "outcome": { "const": "verified" }
+      }
+    }
+  }
+}
