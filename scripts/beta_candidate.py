@@ -598,11 +598,14 @@ def verify_candidate(manifest: dict[str, Any], client: PublicClient) -> dict[str
         directory = Path(temporary)
         for name, component in COMPONENTS.items():
             identity = manifest["components"][name]
-            source = resolve_github_tag(client, component.repository, identity["version"])
-            require_tag_commit(source, identity["commit"])
-            distribution = VERIFIERS[component.distribution](
-                client, component, identity["version"], identity["commit"], directory
-            )
+            try:
+                source = resolve_github_tag(client, component.repository, identity["version"])
+                require_tag_commit(source, identity["commit"])
+                distribution = VERIFIERS[component.distribution](
+                    client, component, identity["version"], identity["commit"], directory
+                )
+            except CandidateError as error:
+                raise CandidateError(f"{name}: {error}") from error
             components[name] = {
                 "version": identity["version"],
                 "commit": identity["commit"],

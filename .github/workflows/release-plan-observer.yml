@@ -1,0 +1,133 @@
+name: Release plan observer
+
+run-name: Observe ${{ inputs.plan_tag || 'latest public release plan' }}
+
+on:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+    inputs:
+      plan_tag:
+        description: Immutable release-plan tag; empty selects the newest public plan
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  attestations: read
+  contents: write
+
+concurrency:
+  group: release-plan-observer-${{ inputs.plan_tag || 'latest' }}
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    name: Observe real public release surfaces
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Discover immutable plan
+        id: plan
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REQUESTED_PLAN_TAG: ${{ inputs.plan_tag }}
+        run: |
+          arguments=(release-plan.json --github-output "$GITHUB_OUTPUT")
+          if [ -n "$REQUESTED_PLAN_TAG" ]; then
+            arguments+=(--tag "$REQUESTED_PLAN_TAG")
+          fi
+          python scripts/release_plan.py discover "${arguments[@]}"
+
+      - name: Verify all declared source and distribution identities
+        id: verification
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/release_plan.py observe release-plan.json \
+            candidate-verifier-input.json verification.json release-state.json
+
+      - name: Retain aggregate state on the plan release
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLAN_TAG: ${{ steps.plan.outputs.tag }}
+        run: |
+          if [ -n "$PLAN_TAG" ] && [ -f release-state.json ]; then
+            gh release upload "$PLAN_TAG" release-state.json --clobber
+          fi
+
+      - name: Upload observation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-plan-observation-${{ steps.plan.outputs.plan || github.run_id }}
+          path: |
+            release-plan.json
+            release-state.json
+            verification.json
+          if-no-files-found: warn
+
+      - name: Stop with an actionable recovery classification
+        if: steps.verification.outcome != 'success'
+        run: |
+          python - <<'PYTHON'
+          import json
+          from pathlib import Path
+
+          state = json.loads(Path("release-state.json").read_text(encoding="utf-8"))
+          print(f"::error::{state['reason']}")
+          PYTHON
+          exit 1
+
+      - name: Record channel-bound completed candidate
+        id: record
+        run: |
+          python scripts/release_plan.py complete release-plan.json verification.json \
+            --authoritative-completion authoritative-release-candidate.json \
+            --authoritative-verification authoritative-verification.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Create or repair completed candidate mirror
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE: ${{ steps.record.outputs.candidate }}
+          CHANNEL: ${{ steps.record.outputs.channel }}
+          CANDIDATE_TAG: ${{ steps.record.outputs.tag }}
+          RECORD_COMMIT: ${{ steps.record.outputs.commit }}
+        run: |
+          set -euo pipefail
+          mirror_dir="$(mktemp -d)"
+          trap 'rm -rf "$mirror_dir"' EXIT
+          if ! gh release view "$CANDIDATE_TAG" >/dev/null 2>&1; then
+            gh release create "$CANDIDATE_TAG" --verify-tag --prerelease \
+              --title "Completed ${CHANNEL} release candidate ${CANDIDATE}" \
+              --notes "All declared public artifacts were verified. The authoritative Git record is ${RECORD_COMMIT}."
+          fi
+          repair_asset() {
+            source_path="$1"
+            asset_name="$2"
+            rm -f "$mirror_dir/$asset_name"
+            if gh release download "$CANDIDATE_TAG" --pattern "$asset_name" --dir "$mirror_dir" >/dev/null 2>&1; then
+              cmp --silent "$source_path" "$mirror_dir/$asset_name" || {
+                printf 'release asset %s differs from immutable Git authority\n' "$asset_name" >&2
+                exit 1
+              }
+            else
+              upload_dir="$(mktemp -d)"
+              cp "$source_path" "$upload_dir/$asset_name"
+              gh release upload "$CANDIDATE_TAG" "$upload_dir/$asset_name"
+            fi
+          }
+          repair_asset authoritative-release-candidate.json release-candidate.json
+          repair_asset authoritative-verification.json verification.json

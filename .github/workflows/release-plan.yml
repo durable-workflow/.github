@@ -1,0 +1,108 @@
+name: Release plan
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_plan:
+        description: Exact channel-aware release plan JSON matching release-plans/schema.json
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-plan-registry
+  cancel-in-progress: false
+
+jobs:
+  validate-and-record:
+    name: Validate and record immutable release plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the public control plane
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install changed-file quality tooling
+        run: python -m pip install ruff==0.12.3 yamllint==1.37.1
+
+      - name: Qualify release-plan tooling
+        run: |
+          python -m ruff check scripts tests
+          python -m yamllint .github/workflows
+          python -m compileall -q scripts tests
+          python -m unittest discover -v
+          python -m json.tool release-plans/schema.json >/dev/null
+          python -m json.tool release-plans/candidate-schema.json >/dev/null
+
+      - name: Canonicalize requested plan
+        env:
+          DISPATCH_PLAN: ${{ inputs.release_plan }}
+        run: |
+          python - <<'PYTHON'
+          import os
+          from pathlib import Path
+
+          Path("requested-release-plan.json").write_text(os.environ["DISPATCH_PLAN"], encoding="utf-8")
+          PYTHON
+          python scripts/release_plan.py validate requested-release-plan.json release-plan.json
+
+      - name: Reject mutation of an existing plan identity
+        run: python scripts/release_plan.py check release-plan.json
+
+      - name: Verify public branch, source, tag, and channel preconditions
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/release_plan.py preflight release-plan.json release-plan-preflight.json
+
+      - name: Create or compare the immutable Git record
+        id: record
+        run: |
+          python scripts/release_plan.py record release-plan.json \
+            --authoritative-plan authoritative-release-plan.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Create or repair the durable GitHub Release mirror
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLAN: ${{ steps.record.outputs.plan }}
+          PLAN_TAG: ${{ steps.record.outputs.tag }}
+          RECORD_COMMIT: ${{ steps.record.outputs.commit }}
+        run: |
+          set -euo pipefail
+          mirror_dir="$(mktemp -d)"
+          trap 'rm -rf "$mirror_dir"' EXIT
+          if ! gh release view "$PLAN_TAG" >/dev/null 2>&1; then
+            notes="$(mktemp)"
+            {
+              printf 'Immutable pre-publication plan at Git record `%s`.\n\n' "$RECORD_COMMIT"
+              printf 'Component repositories discover and recover this plan independently.\n'
+            } > "$notes"
+            gh release create "$PLAN_TAG" --verify-tag --prerelease \
+              --title "Release plan ${PLAN}" --notes-file "$notes"
+          fi
+          if gh release download "$PLAN_TAG" --pattern release-plan.json --dir "$mirror_dir" >/dev/null 2>&1; then
+            cmp --silent authoritative-release-plan.json "$mirror_dir/release-plan.json" || {
+              printf 'release-plan.json differs from immutable Git authority\n' >&2
+              exit 1
+            }
+          else
+            upload_dir="$(mktemp -d)"
+            cp authoritative-release-plan.json "$upload_dir/release-plan.json"
+            gh release upload "$PLAN_TAG" "$upload_dir/release-plan.json"
+          fi
+
+      - name: Upload preflight evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-plan-preflight
+          path: release-plan-preflight.json
+          if-no-files-found: error
