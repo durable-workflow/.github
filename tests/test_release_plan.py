@@ -17,6 +17,7 @@ from scripts.release_plan import (
     OCCUPIED_SOURCE_MANIFEST_REASON,
     PLAN_TAG_PREFIX,
     SCHEMA,
+    SOURCE_MANIFEST_REASON,
     candidate_manifest,
     check_plan_compatibility,
     completion_manifest,
@@ -1545,6 +1546,103 @@ class ReleasePlanRecordTest(unittest.TestCase):
                     capture_output=True,
                 )
                 self.assertEqual(b"", published.stdout)
+
+    def test_terminal_record_rejects_manifest_tag_appearing_after_prepare(self) -> None:
+        failed = release_plan()
+        failed["components"]["sdk-rust"] = {
+            "version": "0.1.16",
+            "commit": "dde751dc45366beaf8a829ed42c7ab92d0aad775",
+        }
+        successor = successor_plan(failed, component="sdk-rust")
+        failed_identity = failed["components"]["sdk-rust"]
+        successor_identity = successor["components"]["sdk-rust"]
+        source_tag_commit = None
+
+        class FixtureClient:
+            def bytes(self, url: str, **_kwargs: object) -> bytes:
+                if "/sdk-python/" in url:
+                    return planned_source_manifest(url, failed)
+                if failed_identity["commit"] in url:
+                    return cargo_manifest("0.1.15")
+                if successor_identity["commit"] in url:
+                    return cargo_manifest(successor_identity["version"])
+                raise AssertionError(f"unexpected source manifest request: {url}")
+
+            def json(self, url: str, **_kwargs: object) -> object:
+                if url.endswith("deployment-branch-policies?per_page=100"):
+                    return {
+                        "total_count": 1,
+                        "branch_policies": [{"id": 23, "name": "main", "type": "branch"}],
+                    }
+                if "/environments/" in url:
+                    return github_environment()
+                if url.endswith("/approvals"):
+                    return approval_history()
+                if "/actions/runs/" in url:
+                    return workflow_run()
+                raise AssertionError(f"unexpected public evidence request: {url}")
+
+        client = FixtureClient()
+
+        def resolve(_client: object, repository: str, tag: str) -> str | None:
+            if repository == "durable-workflow/.github" and tag == f"{PLAN_TAG_PREFIX}{failed['plan']}":
+                return "a" * 40
+            if repository == "durable-workflow/sdk-rust" and tag == failed_identity["version"]:
+                return source_tag_commit
+            return None
+
+        with (
+            mock.patch("scripts.release_plan.resolve_tag", side_effect=resolve),
+            mock.patch("scripts.release_plan.read_public_record", return_value=failed),
+        ):
+            record, durable_successor = prepare_supersession(
+                f"{PLAN_TAG_PREFIX}{failed['plan']}",
+                ["sdk-rust"],
+                successor,
+                client,
+                actor="release-operator",
+                run_id="456",
+                run_attempt="1",
+                workflow_ref=(
+                    "durable-workflow/.github/.github/workflows/"
+                    "release-plan-supersession.yml@refs/heads/main"
+                ),
+                workflow_commit="f" * 40,
+            )
+            self.assertEqual(SOURCE_MANIFEST_REASON, record["conflicts"][0]["reason"])
+            self.failure_path.write_bytes(canonical_json(record))
+            self.successor_path.write_bytes(canonical_json(durable_successor))
+
+            for appeared_commit in (failed_identity["commit"], successor_identity["commit"]):
+                with self.subTest(appeared_commit=appeared_commit):
+                    source_tag_commit = appeared_commit
+                    with self.assertRaisesRegex(
+                        CandidateError,
+                        "terminal conflict source tag .* appeared",
+                    ):
+                        record_supersession(
+                            self.repository,
+                            self.failure_path,
+                            self.successor_path,
+                            remote=str(self.remote),
+                            authoritative_record=self.authoritative_failure_path,
+                            authoritative_successor=self.authoritative_successor_path,
+                            client=client,
+                        )
+
+                    published = subprocess.run(
+                        [
+                            "git",
+                            "--git-dir",
+                            str(self.remote),
+                            "for-each-ref",
+                            "--format=%(refname)",
+                            "refs/tags/release-plan-failure/recovery-proof-1",
+                        ],
+                        check=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(b"", published.stdout)
 
     def test_terminal_record_revalidates_occupied_manifest_publication_evidence(self) -> None:
         failed = release_plan()

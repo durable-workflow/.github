@@ -853,7 +853,18 @@ def revalidate_conflict_public_evidence(
         return
     failed_identity = failed_plan["components"][component_name]
     successor_identity = successor_plan["components"][component_name]
-    if conflict["reason"] == OCCUPIED_SOURCE_MANIFEST_REASON:
+    if conflict["reason"] == SOURCE_MANIFEST_REASON:
+        source_tag_commit = resolve_tag(
+            client,
+            component.repository,
+            failed_identity["version"],
+        )
+        if source_tag_commit is not None:
+            raise CandidateError(
+                f"terminal conflict source tag {component.repository}@{failed_identity['version']} "
+                f"appeared at {source_tag_commit}"
+            )
+    elif conflict["reason"] == OCCUPIED_SOURCE_MANIFEST_REASON:
         source_tag = resolve_github_tag(client, component.repository, failed_identity["version"])
         if source_tag != conflict["source_tag"]:
             raise CandidateError(
