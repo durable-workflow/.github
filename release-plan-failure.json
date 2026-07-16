@@ -1,0 +1,104 @@
+{
+  "authorization": {
+    "actor": "rmcdaniel",
+    "environment": "release-plan-supersession",
+    "environment_approval": {
+      "comment": "Approve exact Plan B terminal record and Plan C successor after public source and manifest verification.",
+      "environments": [
+        {
+          "html_url": "https://github.com/durable-workflow/.github/deployments/activity_log?environments_filter=release-plan-supersession",
+          "id": 18260304603,
+          "name": "release-plan-supersession",
+          "node_id": "EN_kwDOIklQaM8AAAAEQGYi2w",
+          "url": "https://api.github.com/repos/durable-workflow/.github/environments/release-plan-supersession"
+        }
+      ],
+      "run_attempt": 1,
+      "run_id": 29526307241,
+      "state": "approved",
+      "user": {
+        "html_url": "https://github.com/rmcdaniel",
+        "id": 1130888,
+        "login": "rmcdaniel",
+        "node_id": "MDQ6VXNlcjExMzA4ODg=",
+        "url": "https://api.github.com/users/rmcdaniel"
+      }
+    },
+    "environment_protection": {
+      "custom_branch_policies": [
+        {
+          "id": 54814175,
+          "name": "main"
+        }
+      ],
+      "deployment_branch_policy": {
+        "custom_branch_policies": true,
+        "protected_branches": false
+      },
+      "environment_id": 18260304603,
+      "environment_url": "https://github.com/durable-workflow/.github/deployments/activity_log?environments_filter=release-plan-supersession",
+      "required_reviewer_rule_ids": [
+        60129316
+      ]
+    },
+    "repository": "durable-workflow/.github",
+    "run_attempt": 1,
+    "run_id": 29526307241,
+    "run_url": "https://github.com/durable-workflow/.github/actions/runs/29526307241",
+    "workflow_commit": "5b1d219d02943d165d233b6f29c78ead7cffc342",
+    "workflow_ref": "durable-workflow/.github/.github/workflows/release-plan-supersession.yml@refs/heads/main"
+  },
+  "conflicts": [
+    {
+      "component": "sdk-python",
+      "distribution": {
+        "api_url": "https://pypi.org/pypi/durable-workflow/0.4.100/json",
+        "kind": "pypi",
+        "status": "absent",
+        "url": "https://pypi.org/project/durable-workflow/0.4.100/"
+      },
+      "github_release": {
+        "api_url": "https://api.github.com/repos/durable-workflow/sdk-python/releases/tags/0.4.100",
+        "status": "absent",
+        "url": "https://github.com/durable-workflow/sdk-python/releases/tag/0.4.100"
+      },
+      "planned_commit": "2018400368cf4251c58b24b3d53a99f0ca3512e3",
+      "reason": "occupied-source-manifest-version-conflict",
+      "source_manifest": {
+        "declared_version": "0.4.99",
+        "package": "durable-workflow",
+        "path": "pyproject.toml",
+        "sha256": "cbfc27e82a8c5154e07a8d5795b0d4ecd238682a8ccc4c1b36ef2d8d70102a50",
+        "source_commit": "2018400368cf4251c58b24b3d53a99f0ca3512e3",
+        "url": "https://github.com/durable-workflow/sdk-python/blob/2018400368cf4251c58b24b3d53a99f0ca3512e3/pyproject.toml"
+      },
+      "source_tag": {
+        "commit": "2018400368cf4251c58b24b3d53a99f0ca3512e3",
+        "repository": "durable-workflow/sdk-python",
+        "tag": "0.4.100",
+        "tag_object": "2018400368cf4251c58b24b3d53a99f0ca3512e3",
+        "url": "https://github.com/durable-workflow/sdk-python/tree/0.4.100"
+      },
+      "successor_source_manifest": {
+        "declared_version": "0.4.101",
+        "package": "durable-workflow",
+        "path": "pyproject.toml",
+        "sha256": "910272f2e90e569e404f319849efac355440f6d9d7b44ad9e1bb23ffecfc2787",
+        "source_commit": "8aa0e86fe51edc1e7aba3d97ddf3dfda8009ee23",
+        "url": "https://github.com/durable-workflow/sdk-python/blob/8aa0e86fe51edc1e7aba3d97ddf3dfda8009ee23/pyproject.toml"
+      },
+      "version": "0.4.100"
+    }
+  ],
+  "failed_plan": {
+    "commit": "37c05d8ca2594a1693cb2bb123bf7e4f9fa909ad",
+    "sha256": "db90616c98f305c61d7eb2fb9ed03cc28f06963e9ca020c8ef6d7c6a8557f7bc",
+    "tag": "release-plan/alpha-continuity-drill-20260716b"
+  },
+  "outcome": "terminal-failure",
+  "schema": "durable-workflow.release-plan-failure/v1",
+  "successor_plan": {
+    "sha256": "486d9ef7c5a7f4443a89566cab33d7f2bccc518254ab6698d918a431d6a1c9ce",
+    "tag": "release-plan/alpha-continuity-drill-20260716c"
+  }
+}
