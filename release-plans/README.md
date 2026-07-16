@@ -47,7 +47,10 @@ release and distribution identities for existing-version conflicts and
 immutable source manifest identities for manifest conflicts. It also verifies
 the dispatched workflow run and its approved environment review through GitHub,
 retaining both the dispatching actor and approving user identities in the
-terminal record.
+terminal record. All mutable conflict, successor-version, environment-policy,
+and approval evidence is rechecked immediately before the immutable record is
+published. Once published, the Git record is the durable authority, so later
+policy or reviewer changes cannot invalidate the bound successor.
 
 The immutable record retains every independently proven conflict and the exact
 successor document as `successor-release-plan.json`. The successor must keep

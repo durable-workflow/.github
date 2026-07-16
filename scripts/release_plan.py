@@ -717,6 +717,30 @@ def require_distribution_identity(distribution: dict[str, Any], component_name: 
         raise CandidateError("public distribution evidence does not bind the observed source commit")
 
 
+def github_release_conflict_evidence(
+    client: PublicClient,
+    component_name: str,
+    version: str,
+) -> dict[str, Any]:
+    component = COMPONENTS[component_name]
+    encoded_version = urllib.parse.quote(version, safe="")
+    release = client.json(
+        f"https://api.github.com/repos/{component.repository}/releases/tags/{encoded_version}"
+    )
+    if (
+        not isinstance(release, dict)
+        or release.get("draft")
+        or release.get("tag_name") != version
+    ):
+        raise CandidateError(
+            f"{component_name} version {version} has no public GitHub Release conflict"
+        )
+    return {
+        "id": release.get("id"),
+        "url": release.get("html_url"),
+    }
+
+
 def source_manifest_evidence(
     client: PublicClient,
     component_name: str,
@@ -788,6 +812,44 @@ def revalidate_conflict_public_evidence(
                 f"terminal conflict source tag {component.repository}@{conflict['version']} moved from "
                 f"{conflict['observed_commit']} to {observed_commit or 'no commit'}"
             )
+        try:
+            live_release = github_release_conflict_evidence(
+                client,
+                component_name,
+                conflict["version"],
+            )
+        except CandidateError as error:
+            raise CandidateError(
+                f"terminal conflict GitHub Release evidence for {component_name} no longer matches GitHub: "
+                f"{error}"
+            ) from error
+        if live_release != conflict["github_release"]:
+            raise CandidateError(
+                f"terminal conflict GitHub Release evidence for {component_name} no longer matches GitHub"
+            )
+        try:
+            with tempfile.TemporaryDirectory(prefix="release-plan-failure-revalidation-") as temporary:
+                live_distribution = VERIFIERS[component.distribution](
+                    client,
+                    component,
+                    conflict["version"],
+                    conflict["observed_commit"],
+                    Path(temporary),
+                )
+            require_distribution_identity(
+                live_distribution,
+                component_name,
+                conflict["observed_commit"],
+            )
+        except CandidateError as error:
+            raise CandidateError(
+                f"terminal conflict distribution evidence for {component_name} no longer matches its registry: "
+                f"{error}"
+            ) from error
+        if live_distribution != conflict["distribution"]:
+            raise CandidateError(
+                f"terminal conflict distribution evidence for {component_name} no longer matches its registry"
+            )
         return
     failed_identity = failed_plan["components"][component_name]
     successor_identity = successor_plan["components"][component_name]
@@ -796,6 +858,25 @@ def revalidate_conflict_public_evidence(
         if source_tag != conflict["source_tag"]:
             raise CandidateError(
                 f"terminal conflict source tag {component.repository}@{failed_identity['version']} moved"
+            )
+        try:
+            live_release, live_distribution = prove_publication_absence(
+                client,
+                component_name,
+                failed_identity["version"],
+            )
+        except CandidateError as error:
+            raise CandidateError(
+                f"terminal conflict publication absence evidence for {component_name} no longer matches "
+                f"GitHub and its registry: {error}"
+            ) from error
+        if (
+            live_release != conflict["github_release"]
+            or live_distribution != conflict["distribution"]
+        ):
+            raise CandidateError(
+                f"terminal conflict publication absence evidence for {component_name} no longer matches "
+                "GitHub and its registry"
             )
     if source_manifest_evidence(client, component_name, failed_identity) != conflict["source_manifest"]:
         raise CandidateError(f"terminal conflict source manifest for {component_name} no longer matches GitHub")
@@ -806,19 +887,28 @@ def revalidate_conflict_public_evidence(
         raise CandidateError(f"terminal successor source manifest for {component_name} no longer matches GitHub")
 
 
-def load_public_supersession(
-    failed_plan: dict[str, Any], failed_plan_commit: str, client: PublicClient
-) -> tuple[str, str, dict[str, Any], dict[str, Any]] | None:
-    tag = f"{FAILURE_TAG_PREFIX}{failed_plan['plan']}"
-    commit = resolve_tag(client, CONTROL_REPOSITORY, tag)
-    if commit is None:
-        return None
-    record = read_public_record(client, tag, commit, "release-plan-failure.json")
-    successor = read_public_record(client, tag, commit, "successor-release-plan.json")
-    validate_plan(successor)
-    validate_supersession_record(record, failed_plan, failed_plan_commit, successor)
+def revalidate_supersession_public_evidence(
+    record: dict[str, Any],
+    failed_plan: dict[str, Any],
+    successor_plan: dict[str, Any],
+    client: PublicClient,
+) -> None:
     for conflict in record["conflicts"]:
-        revalidate_conflict_public_evidence(conflict, failed_plan, successor, client)
+        revalidate_conflict_public_evidence(conflict, failed_plan, successor_plan, client)
+        component_name = conflict["component"]
+        component = COMPONENTS[component_name]
+        successor_identity = successor_plan["components"][component_name]
+        existing_successor_version = resolve_tag(
+            client,
+            component.repository,
+            successor_identity["version"],
+        )
+        if existing_successor_version not in {None, successor_identity["commit"]}:
+            raise CandidateError(
+                f"successor version {component.repository}@{successor_identity['version']} already points to "
+                f"{existing_successor_version}"
+            )
+
     authorization = record["authorization"]
     live_protection = protected_environment_evidence(client)
     if live_protection != authorization["environment_protection"]:
@@ -833,6 +923,19 @@ def load_public_supersession(
     )
     if live_approval != authorization["environment_approval"]:
         raise CandidateError("release plan failure approved deployment evidence no longer matches GitHub")
+
+
+def load_public_supersession(
+    failed_plan: dict[str, Any], failed_plan_commit: str, client: PublicClient
+) -> tuple[str, str, dict[str, Any], dict[str, Any]] | None:
+    tag = f"{FAILURE_TAG_PREFIX}{failed_plan['plan']}"
+    commit = resolve_tag(client, CONTROL_REPOSITORY, tag)
+    if commit is None:
+        return None
+    record = read_public_record(client, tag, commit, "release-plan-failure.json")
+    successor = read_public_record(client, tag, commit, "successor-release-plan.json")
+    validate_plan(successor)
+    validate_supersession_record(record, failed_plan, failed_plan_commit, successor)
     return tag, commit, record, successor
 
 
@@ -1353,18 +1456,11 @@ def prepare_conflict_evidence(
             raise CandidateError(
                 f"{conflict_component} version {identity['version']} still resolves to the planned source commit"
             )
-        encoded_version = urllib.parse.quote(identity["version"], safe="")
-        release = client.json(
-            f"https://api.github.com/repos/{component.repository}/releases/tags/{encoded_version}"
+        release = github_release_conflict_evidence(
+            client,
+            conflict_component,
+            identity["version"],
         )
-        if (
-            not isinstance(release, dict)
-            or release.get("draft")
-            or release.get("tag_name") != identity["version"]
-        ):
-            raise CandidateError(
-                f"{conflict_component} version {identity['version']} has no public GitHub Release conflict"
-            )
         with tempfile.TemporaryDirectory(prefix="release-plan-failure-") as temporary:
             distribution = VERIFIERS[component.distribution](
                 client,
@@ -1380,10 +1476,7 @@ def prepare_conflict_evidence(
             "planned_commit": identity["commit"],
             "observed_commit": observed_commit,
             "reason": SUPERSESSION_REASON,
-            "github_release": {
-                "id": release.get("id"),
-                "url": release.get("html_url"),
-            },
+            "github_release": release,
             "distribution": distribution,
         }
     existing_successor_version = resolve_tag(
@@ -1541,9 +1634,6 @@ def record_supersession(
     )
     validate_plan(failed_plan)
     validate_supersession_record(record, failed_plan, failed_plan_commit, successor)
-    completion_tag = f"{COMPLETION_TAG_PREFIX}{failed_plan['channel']}/{failed_plan['plan']}"
-    if resolve_tag(client, CONTROL_REPOSITORY, completion_tag) is not None:
-        raise CandidateError(f"completed release plan {failed['tag']} cannot be terminally failed")
     canonical_record = canonical_json(record)
     canonical_successor = canonical_json(successor)
     tag = f"{FAILURE_TAG_PREFIX}{failed_plan_name}"
@@ -1561,6 +1651,11 @@ def record_supersession(
             "tag": tag,
             "commit": run_git(["rev-parse", f"{existing_ref}^{{commit}}"], cwd=repository),
         }
+
+    completion_tag = f"{COMPLETION_TAG_PREFIX}{failed_plan['channel']}/{failed_plan['plan']}"
+    if resolve_tag(client, CONTROL_REPOSITORY, completion_tag) is not None:
+        raise CandidateError(f"completed release plan {failed['tag']} cannot be terminally failed")
+    revalidate_supersession_public_evidence(record, failed_plan, successor, client)
 
     with tempfile.NamedTemporaryFile(prefix="release-plan-failure-index-", delete=False) as index:
         index_path = Path(index.name)

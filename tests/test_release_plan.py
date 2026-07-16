@@ -482,14 +482,23 @@ class ReleasePlanValidationTest(unittest.TestCase):
             def json(self, _url: str) -> list[dict[str, str]]:
                 return [{"ref": "refs/tags/release-plan/plan-a"}]
 
-        terminal = ("release-plan-failure/plan-a", "b" * 40, failure, successor)
         with (
             mock.patch(
                 "scripts.release_plan.resolve_tag",
-                side_effect=[record_commit, None, None],
+                side_effect=[record_commit, None, "b" * 40, None],
             ),
-            mock.patch("scripts.release_plan.read_public_record", return_value=failed),
-            mock.patch("scripts.release_plan.load_public_supersession", return_value=terminal),
+            mock.patch(
+                "scripts.release_plan.read_public_record",
+                side_effect=[failed, failure, successor],
+            ),
+            mock.patch(
+                "scripts.release_plan.protected_environment_evidence",
+                side_effect=AssertionError("historical records must not reload environment policy"),
+            ),
+            mock.patch(
+                "scripts.release_plan.protected_run_approval_evidence",
+                side_effect=AssertionError("historical records must not reload approval history"),
+            ),
         ):
             evidence = require_prior_plans_completed(successor, FixtureClient())
         self.assertEqual("terminal-failure", evidence["release-plan/plan-a"]["outcome"])
@@ -499,13 +508,38 @@ class ReleasePlanValidationTest(unittest.TestCase):
         with (
             mock.patch(
                 "scripts.release_plan.resolve_tag",
-                side_effect=[record_commit, None, None],
+                side_effect=[record_commit, None, "b" * 40, None],
             ),
-            mock.patch("scripts.release_plan.read_public_record", return_value=failed),
-            mock.patch("scripts.release_plan.load_public_supersession", return_value=terminal),
+            mock.patch(
+                "scripts.release_plan.read_public_record",
+                side_effect=[failed, failure, successor],
+            ),
             self.assertRaisesRegex(CandidateError, "admits only exact successor"),
         ):
             require_prior_plans_completed(different, FixtureClient())
+
+        later = copy.deepcopy(successor)
+        later["plan"] = "plan-c"
+        with (
+            mock.patch(
+                "scripts.release_plan.resolve_tag",
+                side_effect=[record_commit, None, "b" * 40, "c" * 40],
+            ),
+            mock.patch(
+                "scripts.release_plan.read_public_record",
+                side_effect=[failed, failure, successor, successor],
+            ),
+            mock.patch(
+                "scripts.release_plan.protected_environment_evidence",
+                side_effect=AssertionError("historical records must not reload environment policy"),
+            ),
+            mock.patch(
+                "scripts.release_plan.protected_run_approval_evidence",
+                side_effect=AssertionError("historical records must not reload approval history"),
+            ),
+        ):
+            evidence = require_prior_plans_completed(later, FixtureClient())
+        self.assertEqual("terminal-failure", evidence["release-plan/plan-a"]["outcome"])
 
     def test_successor_rejects_skipped_versions_and_unaffected_changes(self) -> None:
         failed = release_plan()
@@ -581,85 +615,60 @@ class ReleasePlanValidationTest(unittest.TestCase):
                 with self.assertRaisesRegex(CandidateError, error):
                     validate_supersession_record(record, failed, "a" * 40, successor)
 
-    def test_loading_terminal_record_revalidates_live_policy_and_approval(self) -> None:
+    def test_loading_terminal_record_uses_only_immutable_evidence(self) -> None:
         failed = release_plan()
         successor = successor_plan(failed)
         record = supersession_record(failed, successor)
-        resolved = ["b" * 40, "e" * 40]
-
-        changed_policy = environment_protection_evidence()
-        changed_policy["custom_branch_policies"] = [{"id": 24, "name": "main"}]
         with (
-            mock.patch("scripts.release_plan.resolve_tag", side_effect=resolved),
+            mock.patch("scripts.release_plan.resolve_tag", return_value="b" * 40),
             mock.patch("scripts.release_plan.read_public_record", side_effect=[record, successor]),
-            mock.patch("scripts.release_plan.protected_environment_evidence", return_value=changed_policy),
-            self.assertRaisesRegex(CandidateError, "policy no longer matches"),
-        ):
-            load_public_supersession(failed, "a" * 40, object())
-
-        changed_approval = environment_approval_evidence()
-        changed_approval["user"] = {
-            "html_url": "https://github.com/other-reviewer",
-            "id": 30,
-            "login": "other-reviewer",
-            "node_id": "U_kgDOOtherReviewer",
-            "url": "https://api.github.com/users/other-reviewer",
-        }
-        with (
-            mock.patch("scripts.release_plan.resolve_tag", side_effect=["b" * 40, "e" * 40]),
-            mock.patch("scripts.release_plan.read_public_record", side_effect=[record, successor]),
+            mock.patch(
+                "scripts.release_plan.revalidate_conflict_public_evidence",
+                side_effect=AssertionError("historical records must not revalidate conflict evidence"),
+            ),
             mock.patch(
                 "scripts.release_plan.protected_environment_evidence",
-                return_value=environment_protection_evidence(),
+                side_effect=CandidateError("environment policy changed"),
             ),
-            mock.patch("scripts.release_plan.protected_run_approval_evidence", return_value=changed_approval),
-            self.assertRaisesRegex(CandidateError, "approved deployment evidence no longer matches"),
+            mock.patch(
+                "scripts.release_plan.protected_run_approval_evidence",
+                side_effect=CandidateError("approval history unavailable"),
+            ),
         ):
-            load_public_supersession(failed, "a" * 40, object())
+            loaded = load_public_supersession(failed, "a" * 40, object())
+        self.assertEqual(record, loaded[2])
+        self.assertEqual(successor, loaded[3])
 
-    def test_terminal_record_rejects_a_moved_public_source_tag(self) -> None:
+    def test_terminal_record_remains_durable_after_public_source_tag_moves(self) -> None:
         failed = release_plan()
         successor = successor_plan(failed)
         record = supersession_record(failed, successor)
         with (
-            mock.patch("scripts.release_plan.resolve_tag", side_effect=["b" * 40, "d" * 40]),
+            mock.patch("scripts.release_plan.resolve_tag", return_value="b" * 40),
             mock.patch(
                 "scripts.release_plan.read_public_record",
                 side_effect=[record, successor],
             ),
-            self.assertRaisesRegex(CandidateError, "source tag .* moved"),
         ):
-            load_public_supersession(failed, "a" * 40, object())
+            loaded = load_public_supersession(failed, "a" * 40, object())
+        self.assertEqual("release-plan-failure/recovery-proof-1", loaded[0])
 
-    def test_terminal_record_rejects_fabricated_protected_run_evidence(self) -> None:
+    def test_terminal_record_rejects_fabricated_authorization_identity(self) -> None:
         failed = release_plan()
         successor = successor_plan(failed)
         record = supersession_record(failed, successor)
-
-        class FixtureClient:
-            def json(self, url: str, **_kwargs: object) -> object:
-                if url.endswith("deployment-branch-policies?per_page=100"):
-                    return {
-                        "total_count": 1,
-                        "branch_policies": [{"id": 23, "name": "main", "type": "branch"}],
-                    }
-                if "/environments/" in url:
-                    return github_environment()
-                if url.endswith("/approvals"):
-                    return approval_history()
-                run = workflow_run()
-                run["actor"] = {"login": "different-actor"}
-                return run
-
+        record["authorization"]["workflow_ref"] = (
+            "durable-workflow/.github/.github/workflows/release-plan.yml@refs/heads/main"
+        )
         with (
-            mock.patch("scripts.release_plan.resolve_tag", side_effect=["b" * 40, "e" * 40]),
+            mock.patch("scripts.release_plan.resolve_tag", return_value="b" * 40),
             mock.patch(
                 "scripts.release_plan.read_public_record",
                 side_effect=[record, successor],
             ),
-            self.assertRaisesRegex(CandidateError, "workflow run evidence does not match"),
+            self.assertRaisesRegex(CandidateError, "not authorized by the protected supersession workflow"),
         ):
-            load_public_supersession(failed, "a" * 40, FixtureClient())
+            load_public_supersession(failed, "a" * 40, object())
 
 
 class ReleasePlanSupersessionTest(unittest.TestCase):
@@ -1123,17 +1132,19 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
         with self.assertRaisesRegex(CandidateError, "does not match sdk-python version allocation"):
             validate_supersession_record(record, failed, failed_commit, successor)
 
-    def test_occupied_python_manifest_conflict_rejects_moved_source_tag(self) -> None:
+    def test_occupied_python_manifest_conflict_remains_durable_after_source_tag_moves(self) -> None:
         failed, successor, record, failed_commit = self.prepare_occupied_python_conflict()
-        moved_source_tag = copy.deepcopy(record["conflicts"][0]["source_tag"])
-        moved_source_tag["commit"] = "e" * 40
         with (
             mock.patch("scripts.release_plan.resolve_tag", return_value="b" * 40),
             mock.patch("scripts.release_plan.read_public_record", side_effect=[record, successor]),
-            mock.patch("scripts.release_plan.resolve_github_tag", return_value=moved_source_tag),
-            self.assertRaisesRegex(CandidateError, "source tag .* moved"),
+            mock.patch(
+                "scripts.release_plan.resolve_github_tag",
+                side_effect=AssertionError("historical records must not reload source tags"),
+            ),
         ):
-            load_public_supersession(failed, failed_commit, object())
+            loaded = load_public_supersession(failed, failed_commit, object())
+        self.assertEqual(record, loaded[2])
+        self.assertEqual(successor, loaded[3])
 
     def test_prepare_rejects_omitted_python_manifest_conflict(self) -> None:
         failed = release_plan()
@@ -1357,12 +1368,42 @@ class ReleasePlanRecordTest(unittest.TestCase):
         self.failure_path.write_bytes(canonical_json(record))
         self.successor_path.write_bytes(canonical_json(successor))
 
-        def resolve(_client: object, _repository: str, tag: str) -> str | None:
-            return "a" * 40 if tag == record["failed_plan"]["tag"] else None
+        def resolve(_client: object, repository: str, tag: str) -> str | None:
+            if repository == "durable-workflow/.github" and tag == record["failed_plan"]["tag"]:
+                return "a" * 40
+            if (
+                repository == "durable-workflow/waterline"
+                and tag == failed["components"]["waterline"]["version"]
+            ):
+                return "e" * 40
+            return None
 
+        client = mock.Mock()
+        client.json.return_value = {
+            "draft": False,
+            "html_url": record["conflicts"][0]["github_release"]["url"],
+            "id": record["conflicts"][0]["github_release"]["id"],
+            "tag_name": failed["components"]["waterline"]["version"],
+        }
         with (
             mock.patch("scripts.release_plan.resolve_tag", side_effect=resolve),
             mock.patch("scripts.release_plan.read_public_record", return_value=failed),
+            mock.patch.dict(
+                "scripts.release_plan.VERIFIERS",
+                {
+                    "composer": mock.Mock(
+                        return_value=record["conflicts"][0]["distribution"]
+                    )
+                },
+            ),
+            mock.patch(
+                "scripts.release_plan.protected_environment_evidence",
+                return_value=environment_protection_evidence(),
+            ) as protection,
+            mock.patch(
+                "scripts.release_plan.protected_run_approval_evidence",
+                return_value=environment_approval_evidence(),
+            ) as approval,
         ):
             created = record_supersession(
                 self.repository,
@@ -1371,8 +1412,10 @@ class ReleasePlanRecordTest(unittest.TestCase):
                 remote=str(self.remote),
                 authoritative_record=self.authoritative_failure_path,
                 authoritative_successor=self.authoritative_successor_path,
-                client=object(),
+                client=client,
             )
+            protection.side_effect = CandidateError("environment policy changed after publication")
+            approval.side_effect = CandidateError("approval history unavailable after publication")
             repeated = record_supersession(
                 self.repository,
                 self.failure_path,
@@ -1380,7 +1423,7 @@ class ReleasePlanRecordTest(unittest.TestCase):
                 remote=str(self.remote),
                 authoritative_record=self.authoritative_failure_path,
                 authoritative_successor=self.authoritative_successor_path,
-                client=object(),
+                client=client,
             )
 
         self.assertEqual("created", created["status"])
@@ -1393,6 +1436,234 @@ class ReleasePlanRecordTest(unittest.TestCase):
             capture_output=True,
         ).stdout.splitlines()
         self.assertEqual(["release-plan-failure.json", "successor-release-plan.json"], files)
+
+    def test_terminal_record_rechecks_mutable_evidence_before_publication(self) -> None:
+        failed = release_plan()
+        successor = successor_plan(failed)
+        record = supersession_record(failed, successor)
+        self.failure_path.write_bytes(canonical_json(record))
+        self.successor_path.write_bytes(canonical_json(successor))
+        failed_version = failed["components"]["waterline"]["version"]
+        successor_version = successor["components"]["waterline"]["version"]
+
+        errors = {
+            "conflict": "terminal conflict source tag .* moved",
+            "release": "GitHub Release evidence .* no longer matches GitHub",
+            "release-absent": "GitHub Release evidence .* no longer matches GitHub",
+            "distribution": "distribution evidence .* no longer matches its registry",
+            "successor": "successor version .* already points to",
+            "policy": "protected environment policy no longer matches",
+            "approval": "approval history unavailable",
+        }
+        for drift, error in errors.items():
+            with self.subTest(drift=drift):
+                def resolve(
+                    _client: object,
+                    repository: str,
+                    tag: str,
+                    drift: str = drift,
+                ) -> str | None:
+                    if repository == "durable-workflow/.github" and tag == record["failed_plan"]["tag"]:
+                        return "a" * 40
+                    if repository == "durable-workflow/waterline" and tag == failed_version:
+                        return "d" * 40 if drift == "conflict" else "e" * 40
+                    if repository == "durable-workflow/waterline" and tag == successor_version:
+                        return "d" * 40 if drift == "successor" else None
+                    return None
+
+                protection = environment_protection_evidence()
+                if drift == "policy":
+                    protection["custom_branch_policies"] = [{"id": 24, "name": "main"}]
+
+                def approval(
+                    _client: object,
+                    drift: str = drift,
+                    **_kwargs: object,
+                ) -> dict[str, object]:
+                    if drift == "approval":
+                        raise CandidateError("approval history unavailable")
+                    return environment_approval_evidence()
+
+                client = mock.Mock()
+                if drift == "release-absent":
+                    client.json.side_effect = CandidateError("GitHub Release was removed")
+                else:
+                    client.json.return_value = {
+                        "draft": False,
+                        "html_url": record["conflicts"][0]["github_release"]["url"],
+                        "id": (
+                            124
+                            if drift == "release"
+                            else record["conflicts"][0]["github_release"]["id"]
+                        ),
+                        "tag_name": failed_version,
+                    }
+                live_distribution = copy.deepcopy(record["conflicts"][0]["distribution"])
+                if drift == "distribution":
+                    live_distribution["dist"] = {
+                        "sha256": "f" * 64,
+                        "url": "https://example.com/repacked.zip",
+                    }
+
+                with (
+                    mock.patch("scripts.release_plan.resolve_tag", side_effect=resolve),
+                    mock.patch("scripts.release_plan.read_public_record", return_value=failed),
+                    mock.patch.dict(
+                        "scripts.release_plan.VERIFIERS",
+                        {"composer": mock.Mock(return_value=live_distribution)},
+                    ),
+                    mock.patch(
+                        "scripts.release_plan.protected_environment_evidence",
+                        return_value=protection,
+                    ),
+                    mock.patch(
+                        "scripts.release_plan.protected_run_approval_evidence",
+                        side_effect=approval,
+                    ),
+                    self.assertRaisesRegex(CandidateError, error),
+                ):
+                    record_supersession(
+                        self.repository,
+                        self.failure_path,
+                        self.successor_path,
+                        remote=str(self.remote),
+                        authoritative_record=self.authoritative_failure_path,
+                        authoritative_successor=self.authoritative_successor_path,
+                        client=client,
+                    )
+
+                published = subprocess.run(
+                    [
+                        "git",
+                        "--git-dir",
+                        str(self.remote),
+                        "for-each-ref",
+                        "--format=%(refname)",
+                        "refs/tags/release-plan-failure/recovery-proof-1",
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+                self.assertEqual(b"", published.stdout)
+
+    def test_terminal_record_revalidates_occupied_manifest_publication_evidence(self) -> None:
+        failed = release_plan()
+        failed["components"]["sdk-python"] = {
+            "version": "0.4.100",
+            "commit": "2018400368cf4251c58b24b3d53a99f0ca3512e3",
+        }
+        successor = copy.deepcopy(failed)
+        successor["plan"] = "recovery-proof-2"
+        successor["components"]["sdk-python"] = {
+            "version": "0.4.101",
+            "commit": "d" * 40,
+        }
+        record = supersession_record(failed, successor, component="sdk-python")
+        failed_identity = failed["components"]["sdk-python"]
+        successor_identity = successor["components"]["sdk-python"]
+        release_api = (
+            "https://api.github.com/repos/durable-workflow/sdk-python/releases/tags/0.4.100"
+        )
+        distribution_api = "https://pypi.org/pypi/durable-workflow/0.4.100/json"
+        record["conflicts"][0] = {
+            "component": "sdk-python",
+            "version": failed_identity["version"],
+            "planned_commit": failed_identity["commit"],
+            "reason": OCCUPIED_SOURCE_MANIFEST_REASON,
+            "source_manifest": python_source_manifest_record(
+                failed_identity["commit"],
+                "0.4.99",
+            ),
+            "source_tag": {
+                "commit": failed_identity["commit"],
+                "repository": "durable-workflow/sdk-python",
+                "tag": failed_identity["version"],
+                "tag_object": failed_identity["commit"],
+                "url": "https://github.com/durable-workflow/sdk-python/tree/0.4.100",
+            },
+            "github_release": {
+                "api_url": release_api,
+                "status": "absent",
+                "url": "https://github.com/durable-workflow/sdk-python/releases/tag/0.4.100",
+            },
+            "distribution": {
+                "api_url": distribution_api,
+                "kind": "pypi",
+                "status": "absent",
+                "url": "https://pypi.org/project/durable-workflow/0.4.100/",
+            },
+            "successor_source_manifest": python_source_manifest_record(
+                successor_identity["commit"],
+                successor_identity["version"],
+            ),
+        }
+        self.failure_path.write_bytes(canonical_json(record))
+        self.successor_path.write_bytes(canonical_json(successor))
+
+        def resolve(_client: object, repository: str, tag: str) -> str | None:
+            if repository == "durable-workflow/.github" and tag == record["failed_plan"]["tag"]:
+                return "a" * 40
+            return None
+
+        def source_manifest(url: str, **_kwargs: object) -> bytes:
+            if failed_identity["commit"] in url:
+                return python_manifest("0.4.99")
+            if successor_identity["commit"] in url:
+                return python_manifest(successor_identity["version"])
+            raise AssertionError(f"unexpected source manifest request: {url}")
+
+        for appeared_surface, error in (
+            ("source-tag", "source tag .* moved"),
+            ("github-release", "already has a GitHub Release"),
+            ("distribution", "already has a public distribution"),
+        ):
+            with self.subTest(appeared_surface=appeared_surface):
+                client = mock.Mock()
+                client.bytes.side_effect = source_manifest
+
+                def json(url: str, surface: str = appeared_surface) -> object:
+                    if url == release_api and surface == "github-release":
+                        return {"id": 123}
+                    if url == distribution_api and surface == "distribution":
+                        return {"info": {"version": failed_identity["version"]}}
+                    raise CandidateError(f"public request failed (404) for {url}")
+
+                client.json.side_effect = json
+                live_source_tag = copy.deepcopy(record["conflicts"][0]["source_tag"])
+                if appeared_surface == "source-tag":
+                    live_source_tag["commit"] = "e" * 40
+                with (
+                    mock.patch("scripts.release_plan.resolve_tag", side_effect=resolve),
+                    mock.patch("scripts.release_plan.read_public_record", return_value=failed),
+                    mock.patch(
+                        "scripts.release_plan.resolve_github_tag",
+                        return_value=live_source_tag,
+                    ),
+                    self.assertRaisesRegex(CandidateError, error),
+                ):
+                    record_supersession(
+                        self.repository,
+                        self.failure_path,
+                        self.successor_path,
+                        remote=str(self.remote),
+                        authoritative_record=self.authoritative_failure_path,
+                        authoritative_successor=self.authoritative_successor_path,
+                        client=client,
+                    )
+
+                published = subprocess.run(
+                    [
+                        "git",
+                        "--git-dir",
+                        str(self.remote),
+                        "for-each-ref",
+                        "--format=%(refname)",
+                        "refs/tags/release-plan-failure/recovery-proof-1",
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+                self.assertEqual(b"", published.stdout)
 
 
 if __name__ == "__main__":
