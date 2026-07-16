@@ -4,13 +4,20 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import email.utils
+import errno
+import http.client
 import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable, Mapping
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +37,10 @@ EXPECTED_TARGETS = {
     "waterline": ("waterline", "v2"),
     "workflow": ("workflow", "v2"),
 }
+GITHUB_API_MAX_ATTEMPTS = 5
+GITHUB_API_RETRY_BASE_SECONDS = 2.0
+GITHUB_API_RETRY_MAX_SECONDS = 120.0
+INFRASTRUCTURE_EXIT_CODE = 75
 
 
 class PolicyError(RuntimeError):
@@ -40,9 +51,45 @@ class ResourceNotFound(PolicyError):
     """A required GitHub resource does not exist."""
 
 
+class GitHubInfrastructureError(RuntimeError):
+    """A bounded set of transient GitHub API attempts was exhausted."""
+
+    def __init__(
+        self,
+        path: str,
+        attempts: int,
+        *,
+        status: int | None = None,
+        transport: str | None = None,
+    ) -> None:
+        evidence = ["classification=github-api-transient", f"endpoint=GET {path}", f"attempts={attempts}"]
+        if status is not None:
+            evidence.append(f"status={status}")
+        if transport is not None:
+            evidence.append(f"transport={transport}")
+        super().__init__(f"GitHub API transient failure exhausted ({', '.join(evidence)})")
+
+
 class GitHubClient:
-    def __init__(self, token: str | None = None, api_url: str = "https://api.github.com") -> None:
+    def __init__(
+        self,
+        token: str | None = None,
+        api_url: str = "https://api.github.com",
+        *,
+        max_attempts: int = GITHUB_API_MAX_ATTEMPTS,
+        retry_base_seconds: float = GITHUB_API_RETRY_BASE_SECONDS,
+        retry_max_seconds: float = GITHUB_API_RETRY_MAX_SECONDS,
+        sleep: Callable[[float], None] = time.sleep,
+        now: Callable[[], float] = time.time,
+    ) -> None:
+        if max_attempts < 1 or retry_base_seconds < 0 or retry_max_seconds < retry_base_seconds:
+            raise ValueError("invalid GitHub API retry configuration")
         self.api_url = api_url.rstrip("/")
+        self.max_attempts = max_attempts
+        self.retry_base_seconds = retry_base_seconds
+        self.retry_max_seconds = retry_max_seconds
+        self.sleep = sleep
+        self.now = now
         self.headers = {
             "Accept": "application/vnd.github+json",
             "User-Agent": "durable-workflow-target-qualification/1",
@@ -51,24 +98,115 @@ class GitHubClient:
         if token:
             self.headers["Authorization"] = f"Bearer {token}"
 
+    @staticmethod
+    def _error_detail(error: urllib.error.HTTPError) -> str:
+        try:
+            return error.read().decode("utf-8", errors="replace")[:500]
+        except OSError:
+            return "response body unavailable"
+
+    @staticmethod
+    def _is_rate_limited(
+        error: urllib.error.HTTPError,
+        detail: str,
+    ) -> bool:
+        headers = error.headers or {}
+        return error.code == 429 or (
+            error.code == 403
+            and (
+                headers.get("Retry-After") is not None
+                or headers.get("X-RateLimit-Remaining") == "0"
+                or "rate limit" in detail.lower()
+            )
+        )
+
+    @staticmethod
+    def _transport_name(error: BaseException) -> str | None:
+        reason = error.reason if isinstance(error, urllib.error.URLError) else error
+        if isinstance(
+            reason,
+            ConnectionError | TimeoutError | http.client.IncompleteRead | http.client.RemoteDisconnected,
+        ):
+            return type(reason).__name__
+        if isinstance(reason, OSError) and reason.errno in {
+            errno.ECONNABORTED,
+            errno.ECONNRESET,
+            errno.EPIPE,
+            errno.ETIMEDOUT,
+        }:
+            return type(reason).__name__
+        return None
+
+    def _server_retry_delay(self, headers: Mapping[str, str]) -> float | None:
+        delays: list[float] = []
+        retry_after = headers.get("Retry-After")
+        if retry_after:
+            try:
+                delays.append(float(retry_after))
+            except ValueError:
+                try:
+                    retry_at = email.utils.parsedate_to_datetime(retry_after)
+                except (TypeError, ValueError):
+                    pass
+                else:
+                    if retry_at.tzinfo is None:
+                        retry_at = retry_at.replace(tzinfo=UTC)
+                    delays.append(retry_at.timestamp() - self.now())
+        rate_limit_reset = headers.get("X-RateLimit-Reset")
+        if rate_limit_reset:
+            with contextlib.suppress(ValueError):
+                delays.append(float(rate_limit_reset) - self.now())
+        return max((delay for delay in delays if delay > 0), default=None)
+
+    def _retry_delay(self, attempt: int, headers: Mapping[str, str] | None = None) -> float:
+        backoff = self.retry_base_seconds * (2 ** (attempt - 1))
+        server_delay = self._server_retry_delay(headers or {})
+        delay = max(backoff, server_delay or 0)
+        return min(delay, self.retry_max_seconds)
+
+    def _retry(self, path: str, attempt: int, failure: str, headers: Mapping[str, str] | None = None) -> None:
+        delay = self._retry_delay(attempt, headers)
+        print(
+            f"qualification GitHub API retry: endpoint=GET {path} {failure} "
+            f"attempt={attempt}/{self.max_attempts} delay={delay:g}s",
+            file=sys.stderr,
+        )
+        self.sleep(delay)
+
     def _request(self, path: str, *, accept: str | None = None) -> bytes:
         headers = dict(self.headers)
         if accept:
             headers["Accept"] = accept
         request = urllib.request.Request(f"{self.api_url}{path}", headers=headers)
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                return response.read()
-        except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace")[:500]
-            if error.code == 404:
-                raise ResourceNotFound(f"GitHub API 404 for {path}: {detail}") from error
-            raise PolicyError(f"GitHub API {error.code} for {path}: {detail}") from error
-        except urllib.error.URLError as error:
-            raise PolicyError(f"GitHub API request failed for {path}: {error.reason}") from error
+        for attempt in range(1, self.max_attempts + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    return response.read()
+            except urllib.error.HTTPError as error:
+                detail = self._error_detail(error)
+                if error.code == 404:
+                    raise ResourceNotFound(f"GitHub API 404 for {path}: {detail}") from error
+                if 500 <= error.code <= 599 or self._is_rate_limited(error, detail):
+                    if attempt == self.max_attempts:
+                        raise GitHubInfrastructureError(path, attempt, status=error.code) from error
+                    self._retry(path, attempt, f"status={error.code}", error.headers)
+                    continue
+                raise PolicyError(f"GitHub API {error.code} for {path}: {detail}") from error
+            except (urllib.error.URLError, ConnectionError, TimeoutError, http.client.IncompleteRead) as error:
+                transport = self._transport_name(error)
+                if transport is None:
+                    reason = error.reason if isinstance(error, urllib.error.URLError) else error
+                    raise PolicyError(f"GitHub API request failed for {path}: {reason}") from error
+                if attempt == self.max_attempts:
+                    raise GitHubInfrastructureError(path, attempt, transport=transport) from error
+                self._retry(path, attempt, f"transport={transport}")
+        raise AssertionError("GitHub API retry loop ended unexpectedly")
 
     def json(self, path: str) -> Any:
-        return json.loads(self._request(path))
+        try:
+            return json.loads(self._request(path))
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            raise PolicyError(f"GitHub API response for {path} is not valid JSON") from error
 
     def bytes(self, path: str) -> bytes:
         return self._request(path, accept="application/vnd.github.raw+json")
@@ -124,8 +262,7 @@ def validate_policy(policy: dict[str, Any]) -> None:
         raise PolicyError("qualification policy must declare the complete action runtime contract")
     if action_runtime["supported_javascript_runtimes"] != SUPPORTED_JAVASCRIPT_ACTION_RUNTIMES:
         raise PolicyError(
-            "qualification policy supported JavaScript action runtimes must be "
-            f"{SUPPORTED_JAVASCRIPT_ACTION_RUNTIMES}"
+            f"qualification policy supported JavaScript action runtimes must be {SUPPORTED_JAVASCRIPT_ACTION_RUNTIMES}"
         )
     allowed_releases = action_runtime["allowed_releases"]
     if not isinstance(allowed_releases, dict) or not allowed_releases:
@@ -138,8 +275,7 @@ def validate_policy(policy: dict[str, Any]) -> None:
             or not references
             or len(references) != len(set(references))
             or not all(
-                isinstance(reference, str)
-                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", reference)
+                isinstance(reference, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", reference)
                 for reference in references
             )
         ):
@@ -349,9 +485,7 @@ def audit_action_releases(
 
 def validate_local_action_references(policy: dict[str, Any], directory: Path) -> list[str]:
     sources = {
-        path.as_posix(): path.read_text(encoding="utf-8")
-        for path in sorted(directory.glob("*.y*ml"))
-        if path.is_file()
+        path.as_posix(): path.read_text(encoding="utf-8") for path in sorted(directory.glob("*.y*ml")) if path.is_file()
     }
     allowed_releases = policy["action_runtime"]["allowed_releases"]
     specifications: set[str] = set()
@@ -445,8 +579,7 @@ def audit_policy(
                     raise PolicyError(f"{slug}@{head_sha} has no {check!r} check run")
                 if record.get("status") != "completed" or record.get("conclusion") != "success":
                     raise PolicyError(
-                        f"{slug}@{head_sha} check {check!r} is "
-                        f"{record.get('status')}/{record.get('conclusion')}"
+                        f"{slug}@{head_sha} check {check!r} is {record.get('status')}/{record.get('conclusion')}"
                     )
                 successful_checks[check] = int(record.get("id", 0))
 
@@ -511,6 +644,9 @@ def main(argv: list[str] | None = None) -> int:
             args.evidence.write_text(output, encoding="utf-8")
         print(output, end="")
         return 0
+    except GitHubInfrastructureError as error:
+        print(f"qualification infrastructure failed: {error}", file=sys.stderr)
+        return INFRASTRUCTURE_EXIT_CODE
     except PolicyError as error:
         print(f"qualification policy failed: {error}", file=sys.stderr)
         return 1

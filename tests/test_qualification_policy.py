@@ -1,23 +1,56 @@
 from __future__ import annotations
 
 import copy
+import io
 import json
 import re
 import unittest
+import urllib.error
 import urllib.parse
+import urllib.request
+from contextlib import redirect_stderr
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from scripts.qualification_policy import (
     EXPECTED_TARGETS,
+    INFRASTRUCTURE_EXIT_CODE,
+    GitHubClient,
+    GitHubInfrastructureError,
     PolicyError,
     _latest_check_runs,
     audit_policy,
+    main,
     validate_policy,
     verify_workflow_source,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class FakeResponse:
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+
+    def __enter__(self) -> FakeResponse:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self.payload
+
+
+def http_error(status: int, body: bytes = b"error", **headers: str) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        "https://api.github.com/repos/durable-workflow/cli",
+        status,
+        "request failed",
+        headers,
+        io.BytesIO(body),
+    )
 
 
 def policy_fixture() -> dict[str, Any]:
@@ -27,9 +60,7 @@ def policy_fixture() -> dict[str, Any]:
 class FakeGitHubClient:
     def __init__(self, policy: dict[str, Any]) -> None:
         self.policy = policy
-        self.targets_by_repository = {
-            target["repository"]: target for target in policy["targets"].values()
-        }
+        self.targets_by_repository = {target["repository"]: target for target in policy["targets"].values()}
 
     @staticmethod
     def _repository(path: str) -> str:
@@ -46,9 +77,7 @@ class FakeGitHubClient:
         if path == f"/repos/durable-workflow/{repository}":
             return {"default_branch": target["branch"]}
         if "/contents/.github/workflows?" in path:
-            paths = {
-                f".github/workflows/{workflow['path']}" for workflow in target["workflows"]
-            }
+            paths = {f".github/workflows/{workflow['path']}" for workflow in target["workflows"]}
             paths.add(".github/workflows/release.yml")
             return [{"path": workflow_path, "type": "file"} for workflow_path in sorted(paths)]
         if "/actions/workflows/" in path:
@@ -115,13 +144,99 @@ jobs:
 
 
 class QualificationPolicyTest(unittest.TestCase):
+    def test_github_client_recovers_from_service_and_connection_interruptions(self) -> None:
+        sleeps: list[float] = []
+        client = GitHubClient(max_attempts=3, retry_base_seconds=1, sleep=sleeps.append)
+        responses = [
+            http_error(503, b"service unavailable"),
+            urllib.error.URLError(ConnectionResetError("connection reset by peer")),
+            FakeResponse(b'{"default_branch":"main"}'),
+        ]
+
+        with patch.object(urllib.request, "urlopen", side_effect=responses) as urlopen:
+            result = client.json("/repos/durable-workflow/cli")
+
+        self.assertEqual({"default_branch": "main"}, result)
+        self.assertEqual([1, 2], sleeps)
+        self.assertEqual(3, urlopen.call_count)
+
+    def test_github_client_honors_rate_limit_retry_timing(self) -> None:
+        sleeps: list[float] = []
+        client = GitHubClient(
+            max_attempts=3,
+            retry_base_seconds=1,
+            retry_max_seconds=30,
+            sleep=sleeps.append,
+            now=lambda: 100,
+        )
+        responses = [
+            http_error(403, b"API rate limit exceeded", **{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "112"}),
+            http_error(429, **{"Retry-After": "7"}),
+            FakeResponse(b"[]"),
+        ]
+
+        with patch.object(urllib.request, "urlopen", side_effect=responses):
+            self.assertEqual([], client.json("/repos/durable-workflow/cli/rules/branches/main"))
+
+        self.assertEqual([12, 7], sleeps)
+
+    def test_github_client_bounds_transient_exhaustion_with_endpoint_evidence(self) -> None:
+        client = GitHubClient(max_attempts=3, retry_base_seconds=1, sleep=lambda _delay: None)
+
+        with (
+            patch.object(
+                urllib.request,
+                "urlopen",
+                side_effect=[http_error(503), http_error(503), http_error(503)],
+            ),
+            self.assertRaisesRegex(
+                GitHubInfrastructureError,
+                r"classification=github-api-transient, endpoint=GET /repos/durable-workflow/cli, "
+                r"attempts=3, status=503",
+            ),
+        ):
+            client.json("/repos/durable-workflow/cli")
+
+    def test_github_client_does_not_retry_authorization_failures(self) -> None:
+        client = GitHubClient(max_attempts=3, sleep=lambda _delay: self.fail("authorization failure was retried"))
+
+        with (
+            patch.object(urllib.request, "urlopen", side_effect=http_error(403, b"Resource not accessible")) as urlopen,
+            self.assertRaisesRegex(PolicyError, r"GitHub API 403"),
+        ):
+            client.json("/repos/durable-workflow/cli")
+
+        self.assertEqual(1, urlopen.call_count)
+
+    def test_exhaustion_uses_a_distinct_temporary_failure_exit(self) -> None:
+        error = GitHubInfrastructureError("/repos/durable-workflow/cli", 5, status=503)
+        stderr = io.StringIO()
+
+        with (
+            patch("scripts.qualification_policy.audit_policy", side_effect=error),
+            redirect_stderr(stderr),
+        ):
+            exit_code = main(["audit", "--policy", str(ROOT / "qualification" / "policy.json")])
+
+        self.assertEqual(INFRASTRUCTURE_EXIT_CODE, exit_code)
+        self.assertIn("qualification infrastructure failed", stderr.getvalue())
+        self.assertIn("endpoint=GET /repos/durable-workflow/cli", stderr.getvalue())
+
+    def test_github_client_rejects_malformed_json_without_retry(self) -> None:
+        client = GitHubClient(max_attempts=3, sleep=lambda _delay: self.fail("malformed data was retried"))
+
+        with (
+            patch.object(urllib.request, "urlopen", return_value=FakeResponse(b"<html>not JSON</html>")) as urlopen,
+            self.assertRaisesRegex(PolicyError, r"is not valid JSON"),
+        ):
+            client.json("/repos/durable-workflow/cli")
+
+        self.assertEqual(1, urlopen.call_count)
+
     def test_public_target_inventory_and_branches_are_complete(self) -> None:
         policy = policy_fixture()
         validate_policy(policy)
-        actual = {
-            name: (target["repository"], target["branch"])
-            for name, target in policy["targets"].items()
-        }
+        actual = {name: (target["repository"], target["branch"]) for name, target in policy["targets"].items()}
         self.assertEqual(EXPECTED_TARGETS, actual)
 
     def test_policy_rejects_a_missing_public_target(self) -> None:
