@@ -33,7 +33,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install changed-file quality tooling
-        run: python -m pip install ruff==0.12.3 yamllint==1.37.1
+        run: python -m pip install PyYAML==6.0.2 ruff==0.12.3 yamllint==1.37.1
 
       - name: Qualify release-plan tooling
         run: |
@@ -102,7 +102,7 @@ jobs:
           fi
 
       - name: Upload preflight evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-plan-preflight
           path: release-plan-preflight.json

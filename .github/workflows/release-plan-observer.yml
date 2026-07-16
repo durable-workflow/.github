@@ -70,7 +70,7 @@ jobs:
 
       - name: Upload observation evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-plan-observation-${{ steps.plan.outputs.plan || github.run_id }}
           path: |

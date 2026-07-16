@@ -44,7 +44,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install changed-file quality tooling
-        run: python -m pip install ruff==0.12.3 yamllint==1.37.1
+        run: python -m pip install PyYAML==6.0.2 ruff==0.12.3 yamllint==1.37.1
 
       - name: Qualify release-plan tooling
         run: |
@@ -125,7 +125,7 @@ jobs:
           repair_asset durable-successor-release-plan.json successor-release-plan.json
 
       - name: Upload protected supersession evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-plan-supersession-${{ steps.record.outputs.failed_plan }}
           path: |

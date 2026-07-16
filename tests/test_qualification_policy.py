@@ -39,10 +39,18 @@ class FakeGitHubClient:
         return urllib.parse.unquote(match.group(1))
 
     def json(self, path: str) -> Any:
+        if path.startswith("/repos/actions/checkout/commits/"):
+            return {"sha": "b" * 40}
         repository = self._repository(path)
         target = self.targets_by_repository[repository]
         if path == f"/repos/durable-workflow/{repository}":
             return {"default_branch": target["branch"]}
+        if "/contents/.github/workflows?" in path:
+            paths = {
+                f".github/workflows/{workflow['path']}" for workflow in target["workflows"]
+            }
+            paths.add(".github/workflows/release.yml")
+            return [{"path": workflow_path, "type": "file"} for workflow_path in sorted(paths)]
         if "/actions/workflows/" in path:
             workflow = urllib.parse.unquote(path.rsplit("/", 1)[1])
             return {"id": len(workflow), "path": f".github/workflows/{workflow}", "state": "active"}
@@ -63,6 +71,8 @@ class FakeGitHubClient:
         raise AssertionError(f"unexpected API path: {path}")
 
     def bytes(self, path: str) -> bytes:
+        if path.startswith("/repos/actions/checkout/contents/action.yml?"):
+            return b"name: checkout\nruns:\n  using: node24\n  main: dist/index.js\n"
         repository = self._repository(path)
         branch = self.targets_by_repository[repository]["branch"]
         return f"""name: qualification
@@ -78,6 +88,8 @@ jobs:
     timeout-minutes: 10
     strategy:
       fail-fast: false
+    steps:
+      - uses: actions/checkout@v6
 """.encode()
 
     def collection(self, path: str, key: str) -> list[dict[str, Any]]:
@@ -126,6 +138,12 @@ class QualificationPolicyTest(unittest.TestCase):
         with self.assertRaisesRegex(PolicyError, "duplicate workflow paths or check contexts"):
             validate_policy(policy)
 
+    def test_policy_rejects_retired_runtime_as_supported(self) -> None:
+        policy = policy_fixture()
+        policy["action_runtime"]["supported_javascript_runtimes"] = ["node20"]
+        with self.assertRaisesRegex(PolicyError, "supported JavaScript action runtimes"):
+            validate_policy(policy)
+
     def test_workflow_contract_requires_dispatch_timeout_and_independent_matrix(self) -> None:
         workflow = {
             "path": "ci.yml",
@@ -161,6 +179,49 @@ class QualificationPolicyTest(unittest.TestCase):
                 set(target["protected_checks"]),
                 set(target["successful_check_runs"]),
             )
+            self.assertEqual("node24", target["action_releases"][0]["runtime"])
+            self.assertIn(".github/workflows/release.yml", target["action_releases"][0]["workflows"])
+
+    def test_audit_rejects_an_unapproved_action_release(self) -> None:
+        policy = policy_fixture()
+
+        class RetiredReleaseClient(FakeGitHubClient):
+            def bytes(self, path: str) -> bytes:
+                source = super().bytes(path)
+                if "/repos/durable-workflow/" in path and "/contents/.github/workflows/" in path:
+                    return source.replace(b"actions/checkout@v6", b"actions/checkout@v4")
+                return source
+
+        with self.assertRaisesRegex(PolicyError, "actions/checkout@v4 is not centrally approved"):
+            audit_policy(policy, RetiredReleaseClient(policy))
+
+    def test_audit_rejects_a_flow_style_unapproved_action_release(self) -> None:
+        policy = policy_fixture()
+
+        class FlowStyleReleaseClient(FakeGitHubClient):
+            def bytes(self, path: str) -> bytes:
+                source = super().bytes(path)
+                if "/repos/durable-workflow/" in path and "/contents/.github/workflows/" in path:
+                    return source.replace(
+                        b"- uses: actions/checkout@v6",
+                        b"- { uses: actions/checkout@v4 }",
+                    )
+                return source
+
+        with self.assertRaisesRegex(PolicyError, "actions/checkout@v4 is not centrally approved"):
+            audit_policy(policy, FlowStyleReleaseClient(policy))
+
+    def test_audit_rejects_a_retired_action_javascript_runtime(self) -> None:
+        policy = policy_fixture()
+
+        class RetiredRuntimeClient(FakeGitHubClient):
+            def bytes(self, path: str) -> bytes:
+                if path.startswith("/repos/actions/checkout/contents/action.yml?"):
+                    return b"name: checkout\nruns:\n  using: node20\n  main: dist/index.js\n"
+                return super().bytes(path)
+
+        with self.assertRaisesRegex(PolicyError, "uses retired JavaScript runtime node20"):
+            audit_policy(policy, RetiredRuntimeClient(policy))
 
     def test_audit_rejects_a_failed_required_check(self) -> None:
         policy = policy_fixture()

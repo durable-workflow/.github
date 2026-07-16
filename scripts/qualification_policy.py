@@ -14,7 +14,10 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 SCHEMA = "durable-workflow.github-target-qualification/v1"
+SUPPORTED_JAVASCRIPT_ACTION_RUNTIMES = ["node24"]
 EXPECTED_TARGETS = {
     "cli": ("cli", "main"),
     "documentation": ("durable-workflow.github.io", "main"),
@@ -31,6 +34,10 @@ EXPECTED_TARGETS = {
 
 class PolicyError(RuntimeError):
     """A qualification or protection contract is not satisfied."""
+
+
+class ResourceNotFound(PolicyError):
+    """A required GitHub resource does not exist."""
 
 
 class GitHubClient:
@@ -54,6 +61,8 @@ class GitHubClient:
                 return response.read()
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace")[:500]
+            if error.code == 404:
+                raise ResourceNotFound(f"GitHub API 404 for {path}: {detail}") from error
             raise PolicyError(f"GitHub API {error.code} for {path}: {detail}") from error
         except urllib.error.URLError as error:
             raise PolicyError(f"GitHub API request failed for {path}: {error.reason}") from error
@@ -107,6 +116,35 @@ def validate_policy(policy: dict[str, Any]) -> None:
     if policy.get("required_status_checks_strict") is not True:
         raise PolicyError("qualification policy must require strict status checks")
 
+    action_runtime = policy.get("action_runtime")
+    if not isinstance(action_runtime, dict) or set(action_runtime) != {
+        "allowed_releases",
+        "supported_javascript_runtimes",
+    }:
+        raise PolicyError("qualification policy must declare the complete action runtime contract")
+    if action_runtime["supported_javascript_runtimes"] != SUPPORTED_JAVASCRIPT_ACTION_RUNTIMES:
+        raise PolicyError(
+            "qualification policy supported JavaScript action runtimes must be "
+            f"{SUPPORTED_JAVASCRIPT_ACTION_RUNTIMES}"
+        )
+    allowed_releases = action_runtime["allowed_releases"]
+    if not isinstance(allowed_releases, dict) or not allowed_releases:
+        raise PolicyError("qualification policy must declare allowed action releases")
+    for repository, references in allowed_releases.items():
+        if not isinstance(repository, str) or not re.fullmatch(r"[a-z0-9_.-]+/[a-z0-9_.-]+", repository):
+            raise PolicyError(f"invalid action repository {repository!r}")
+        if (
+            not isinstance(references, list)
+            or not references
+            or len(references) != len(set(references))
+            or not all(
+                isinstance(reference, str)
+                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", reference)
+                for reference in references
+            )
+        ):
+            raise PolicyError(f"{repository} must declare unique static action release references")
+
     targets = policy.get("targets")
     if not isinstance(targets, dict) or set(targets) != set(EXPECTED_TARGETS):
         missing = sorted(set(EXPECTED_TARGETS) - set(targets or {}))
@@ -156,6 +194,179 @@ def verify_workflow_source(name: str, branch: str, workflow: dict[str, Any], sou
         raise PolicyError(f"{label} does not keep matrix cells independent")
 
 
+def _parse_yaml(source: str, label: str) -> Any:
+    try:
+        return yaml.load(source, Loader=yaml.BaseLoader)
+    except yaml.YAMLError as error:
+        raise PolicyError(f"cannot parse {label} as YAML: {error}") from error
+
+
+def _workflow_action_references(source: str, label: str) -> list[str]:
+    document = _parse_yaml(source, label)
+    references: list[str] = []
+
+    def visit(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "uses":
+                    if not isinstance(value, str):
+                        raise PolicyError(f"{label} has a non-string action reference")
+                    references.append(value)
+                visit(value)
+        elif isinstance(node, list):
+            for value in node:
+                visit(value)
+
+    visit(document)
+    return references
+
+
+def _split_action_reference(specification: str) -> tuple[str, str, str] | None:
+    if specification.startswith(("./", "docker://")) or "/.github/workflows/" in specification:
+        return None
+    action, separator, reference = specification.rpartition("@")
+    if not separator or not reference or "${{" in specification:
+        raise PolicyError(f"action reference must be static and versioned: {specification!r}")
+    parts = action.split("/")
+    if len(parts) < 2 or not all(parts[:2]):
+        raise PolicyError(f"invalid action reference {specification!r}")
+    repository = "/".join(parts[:2]).lower()
+    manifest_directory = "/".join(parts[2:])
+    return repository, manifest_directory, reference
+
+
+def _action_runtime(source: str, specification: str) -> str:
+    manifest = _parse_yaml(source, f"action manifest for {specification}")
+    if isinstance(manifest, dict):
+        runs = manifest.get("runs")
+        if isinstance(runs, dict):
+            runtime = runs.get("using")
+            if isinstance(runtime, str) and re.fullmatch(r"[A-Za-z0-9._-]+", runtime):
+                return runtime.lower()
+    raise PolicyError(f"action {specification} has no runs.using declaration")
+
+
+def _load_workflow_sources(client: GitHubClient, slug: str, commit: str) -> dict[str, str]:
+    directory = ".github/workflows"
+    encoded_directory = urllib.parse.quote(directory, safe="/")
+    records = client.json(f"/repos/{slug}/contents/{encoded_directory}?ref={commit}")
+    if not isinstance(records, list):
+        raise PolicyError(f"{slug}@{commit} has no workflow directory listing")
+
+    sources: dict[str, str] = {}
+    for record in records:
+        path = record.get("path")
+        if record.get("type") != "file" or not isinstance(path, str) or not path.endswith((".yml", ".yaml")):
+            continue
+        if not path.startswith(f"{directory}/"):
+            raise PolicyError(f"{slug}@{commit} returned workflow outside {directory}: {path!r}")
+        encoded_path = urllib.parse.quote(path, safe="/")
+        sources[path] = client.bytes(f"/repos/{slug}/contents/{encoded_path}?ref={commit}").decode("utf-8")
+    if not sources:
+        raise PolicyError(f"{slug}@{commit} has no public workflow sources")
+    return sources
+
+
+def _inspect_action_release(
+    client: GitHubClient,
+    specification: str,
+    repository: str,
+    manifest_directory: str,
+    reference: str,
+) -> dict[str, Any]:
+    encoded_reference = urllib.parse.quote(reference, safe="")
+    commit_data = client.json(f"/repos/{repository}/commits/{encoded_reference}")
+    commit = commit_data.get("sha")
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise PolicyError(f"action {specification} did not resolve to an exact commit")
+
+    prefix = f"{manifest_directory}/" if manifest_directory else ""
+    source = None
+    for filename in ("action.yml", "action.yaml"):
+        path = urllib.parse.quote(f"{prefix}{filename}", safe="/")
+        try:
+            source = client.bytes(f"/repos/{repository}/contents/{path}?ref={commit}").decode("utf-8")
+            break
+        except ResourceNotFound:
+            continue
+    if source is None:
+        raise PolicyError(f"action {specification}@{commit} has no action manifest")
+    return {
+        "action": f"{repository}/{manifest_directory}".rstrip("/"),
+        "commit": commit,
+        "reference": reference,
+        "repository": repository,
+        "runtime": _action_runtime(source, specification),
+    }
+
+
+def audit_action_releases(
+    policy: dict[str, Any],
+    client: GitHubClient,
+    workflow_sources: dict[str, str],
+    cache: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    usages: dict[str, set[str]] = {}
+    for path, source in workflow_sources.items():
+        for specification in _workflow_action_references(source, path):
+            if _split_action_reference(specification) is not None:
+                usages.setdefault(specification, set()).add(path)
+
+    runtime_policy = policy["action_runtime"]
+    allowed_releases = runtime_policy["allowed_releases"]
+    supported_runtimes = set(runtime_policy["supported_javascript_runtimes"])
+    evidence: list[dict[str, Any]] = []
+    for specification, workflows in sorted(usages.items()):
+        parsed = _split_action_reference(specification)
+        if parsed is None:
+            continue
+        repository, manifest_directory, reference = parsed
+        if repository not in allowed_releases:
+            raise PolicyError(f"action {repository} has no centrally approved release")
+        if reference not in allowed_releases[repository]:
+            raise PolicyError(
+                f"action {specification} is not centrally approved; allowed references are "
+                f"{allowed_releases[repository]}"
+            )
+        if specification not in cache:
+            cache[specification] = _inspect_action_release(
+                client,
+                specification,
+                repository,
+                manifest_directory,
+                reference,
+            )
+        release = cache[specification]
+        runtime = release["runtime"]
+        if runtime.startswith("node") and runtime not in supported_runtimes:
+            raise PolicyError(
+                f"action {specification}@{release['commit']} uses retired JavaScript runtime {runtime}; "
+                f"supported runtimes are {sorted(supported_runtimes)}"
+            )
+        evidence.append({**release, "workflows": sorted(workflows)})
+    return evidence
+
+
+def validate_local_action_references(policy: dict[str, Any], directory: Path) -> list[str]:
+    sources = {
+        path.as_posix(): path.read_text(encoding="utf-8")
+        for path in sorted(directory.glob("*.y*ml"))
+        if path.is_file()
+    }
+    allowed_releases = policy["action_runtime"]["allowed_releases"]
+    specifications: set[str] = set()
+    for path, source in sources.items():
+        for specification in _workflow_action_references(source, path):
+            parsed = _split_action_reference(specification)
+            if parsed is None:
+                continue
+            repository, _manifest_directory, reference = parsed
+            if repository not in allowed_releases or reference not in allowed_releases[repository]:
+                raise PolicyError(f"local workflow action {specification} is not centrally approved")
+            specifications.add(specification)
+    return sorted(specifications)
+
+
 def _latest_check_runs(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     latest: dict[str, dict[str, Any]] = {}
     for record in records:
@@ -181,6 +392,7 @@ def audit_policy(
         raise PolicyError(f"unknown skipped qualification targets: {sorted(unknown_skips)}")
 
     evidence: dict[str, Any] = {"schema": SCHEMA, "targets": {}}
+    action_cache: dict[str, dict[str, Any]] = {}
     for name, target in policy["targets"].items():
         repository = target["repository"]
         branch = target["branch"]
@@ -197,6 +409,8 @@ def audit_policy(
         if not isinstance(head_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", head_sha):
             raise PolicyError(f"{slug}@{branch} did not resolve to an exact commit")
 
+        workflow_sources = _load_workflow_sources(client, slug, head_sha)
+        action_releases = audit_action_releases(policy, client, workflow_sources, action_cache)
         workflow_evidence = []
         for workflow in target["workflows"]:
             workflow_path = workflow["path"]
@@ -205,8 +419,9 @@ def audit_policy(
             expected_path = f".github/workflows/{workflow_path}"
             if metadata.get("state") != "active" or metadata.get("path") != expected_path:
                 raise PolicyError(f"{slug} does not expose active workflow {expected_path}")
-            contents_path = urllib.parse.quote(expected_path, safe="/")
-            source = client.bytes(f"/repos/{slug}/contents/{contents_path}?ref={head_sha}").decode("utf-8")
+            source = workflow_sources.get(expected_path)
+            if source is None:
+                raise PolicyError(f"{slug}@{head_sha} does not contain {expected_path}")
             verify_workflow_source(name, branch, workflow, source)
             workflow_evidence.append(
                 {
@@ -254,6 +469,7 @@ def audit_policy(
             raise PolicyError(f"{slug}@{branch} does not enforce strict required status checks")
 
         evidence["targets"][name] = {
+            "action_releases": action_releases,
             "branch": branch,
             "commit": head_sha,
             "protected_checks": sorted(required_checks),
@@ -278,7 +494,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         policy = load_policy(args.policy)
         if args.command == "validate":
-            result: dict[str, Any] = {"schema": policy["schema"], "targets": sorted(policy["targets"])}
+            actions = validate_local_action_references(policy, Path(".github/workflows"))
+            result: dict[str, Any] = {
+                "actions": actions,
+                "schema": policy["schema"],
+                "targets": sorted(policy["targets"]),
+            }
         else:
             result = audit_policy(
                 policy,

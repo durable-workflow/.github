@@ -6,6 +6,9 @@
     "$schema": {
       "type": "string"
     },
+    "action_runtime": {
+      "$ref": "#/$defs/actionRuntime"
+    },
     "organization": {
       "const": "durable-workflow"
     },
@@ -25,12 +28,44 @@
   },
   "required": [
     "schema",
+    "action_runtime",
     "organization",
     "required_status_checks_strict",
     "targets"
   ],
   "type": "object",
   "$defs": {
+    "actionRuntime": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_releases": {
+          "additionalProperties": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "minProperties": 1,
+          "propertyNames": {
+            "pattern": "^[a-z0-9_.-]+/[a-z0-9_.-]+$"
+          },
+          "type": "object"
+        },
+        "supported_javascript_runtimes": {
+          "const": [
+            "node24"
+          ]
+        }
+      },
+      "required": [
+        "allowed_releases",
+        "supported_javascript_runtimes"
+      ],
+      "type": "object"
+    },
     "target": {
       "additionalProperties": false,
       "properties": {

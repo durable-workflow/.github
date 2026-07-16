@@ -27,6 +27,9 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Install qualification dependencies
+        run: python -m pip install PyYAML==6.0.2
+
       - name: Audit GitHub qualification authority
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -35,7 +38,7 @@ jobs:
           --evidence target-qualification-evidence.json
 
       - name: Retain exact-commit audit evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: target-qualification-${{ github.run_id }}-${{ github.run_attempt }}
           path: target-qualification-evidence.json
