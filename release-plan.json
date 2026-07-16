@@ -1,0 +1,40 @@
+{
+  "beta_authorization": null,
+  "channel": "alpha",
+  "components": {
+    "cli": {
+      "commit": "9aafb87f2432cba0be9ed21e4e509cb9b6acda5d",
+      "version": "0.1.92"
+    },
+    "sdk-php": {
+      "commit": "05fe99b44062b939e4c43acc00dae457eef87af2",
+      "version": "0.1.9"
+    },
+    "sdk-python": {
+      "commit": "8aa0e86fe51edc1e7aba3d97ddf3dfda8009ee23",
+      "version": "0.4.101"
+    },
+    "sdk-rust": {
+      "commit": "31e87f4aa13a7fd255fd277a62c43c96ee1532ab",
+      "version": "0.1.16"
+    },
+    "server": {
+      "commit": "305f29b3b123bb8c805a9ce7b13dd6d8485f7bfa",
+      "version": "0.2.667"
+    },
+    "waterline": {
+      "commit": "60b2de727e27cc17fcb611b3650e0c100968547b",
+      "version": "2.0.0-alpha.136"
+    },
+    "workflow": {
+      "commit": "54320e6687d7028dfb625152a864ba218e125afe",
+      "version": "2.0.0-alpha.289"
+    }
+  },
+  "foundation": {
+    "commit": "4995052410bd4301c5796ffba54e0b6d2f490ed1",
+    "tag": "beta-candidate/beta-continuity-foundation"
+  },
+  "plan": "alpha-continuity-drill-20260716d",
+  "schema": "durable-workflow.release-plan/v1"
+}
