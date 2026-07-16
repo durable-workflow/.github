@@ -38,13 +38,16 @@ plans remain blocking and continue through their repository recovery actions.
 The `Release plan supersession` action is the narrow exception for allocations
 that cannot be published without mutating public history. This includes a
 version already public from a different source commit and an intended source
-whose package manifest declares a different version. The action runs through
-the `release-plan-supersession` environment and requires that the live
-environment allow only a custom `main` branch policy. It verifies public release
-and distribution identities for existing-version conflicts and immutable source
-manifest identities for manifest conflicts. It also verifies the dispatched
-workflow run and its approved environment review through GitHub, retaining both
-the dispatching actor and approving user identities in the terminal record.
+whose authoritative package manifest declares a different version. Python
+`pyproject.toml` project metadata and Rust `Cargo.toml` package metadata are
+verified before a plan is recorded and again during supersession. The action
+runs through the `release-plan-supersession` environment and requires that the
+live environment allow only a custom `main` branch policy. It verifies public
+release and distribution identities for existing-version conflicts and
+immutable source manifest identities for manifest conflicts. It also verifies
+the dispatched workflow run and its approved environment review through GitHub,
+retaining both the dispatching actor and approving user identities in the
+terminal record.
 
 The immutable record retains every independently proven conflict and the exact
 successor document as `successor-release-plan.json`. The successor must keep
@@ -52,8 +55,12 @@ every unaffected component unchanged and resolve every affected allocation. An
 existing-version conflict retains the intended source commit and allocates the
 immediate next version. A source-manifest conflict retains the intended version,
 replaces the incompatible source commit, and proves the successor manifest
-declares that version. Repeating the action compares the existing record; it
-cannot replace its conflicts, approval evidence, or successor.
+declares that version. When the incompatible planned source already occupies its
+immutable version tag but has no GitHub Release or public distribution, the
+successor allocates the immediate next version, replaces the incompatible
+commit, and proves its manifest declares the new version. Repeating the action
+compares the existing record; it cannot replace its conflicts, approval
+evidence, or successor.
 
 The `Release plan observer` workflow derives progress from the real public
 surfaces and retains `release-state.json` on the plan's GitHub Release. Once all

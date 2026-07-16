@@ -29,7 +29,8 @@
       "items": {
         "oneOf": [
           {"$ref": "#/$defs/publishedConflict"},
-          {"$ref": "#/$defs/sourceManifestConflict"}
+          {"$ref": "#/$defs/sourceManifestConflict"},
+          {"$ref": "#/$defs/occupiedSourceManifestConflict"}
         ]
       }
     },
@@ -239,6 +240,65 @@
         "planned_commit": {"$ref": "#/$defs/commit"},
         "reason": {"const": "source-manifest-version-conflict"},
         "source_manifest": {"$ref": "#/$defs/sourceManifest"},
+        "successor_source_manifest": {"$ref": "#/$defs/sourceManifest"}
+      }
+    },
+    "sourceTag": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "repository", "tag", "tag_object", "url"],
+      "properties": {
+        "commit": {"$ref": "#/$defs/commit"},
+        "repository": {"type": "string", "minLength": 1},
+        "tag": {"$ref": "#/$defs/version"},
+        "tag_object": {"$ref": "#/$defs/commit"},
+        "url": {"type": "string", "format": "uri"}
+      }
+    },
+    "absentGitHubRelease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["api_url", "status", "url"],
+      "properties": {
+        "api_url": {"type": "string", "format": "uri"},
+        "status": {"const": "absent"},
+        "url": {"type": "string", "format": "uri"}
+      }
+    },
+    "absentDistribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["api_url", "kind", "status", "url"],
+      "properties": {
+        "api_url": {"type": "string", "format": "uri"},
+        "kind": {"enum": ["pypi", "crates.io"]},
+        "status": {"const": "absent"},
+        "url": {"type": "string", "format": "uri"}
+      }
+    },
+    "occupiedSourceManifestConflict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "component",
+        "version",
+        "planned_commit",
+        "reason",
+        "source_manifest",
+        "source_tag",
+        "github_release",
+        "distribution",
+        "successor_source_manifest"
+      ],
+      "properties": {
+        "component": {"$ref": "#/$defs/component"},
+        "version": {"$ref": "#/$defs/version"},
+        "planned_commit": {"$ref": "#/$defs/commit"},
+        "reason": {"const": "occupied-source-manifest-version-conflict"},
+        "source_manifest": {"$ref": "#/$defs/sourceManifest"},
+        "source_tag": {"$ref": "#/$defs/sourceTag"},
+        "github_release": {"$ref": "#/$defs/absentGitHubRelease"},
+        "distribution": {"$ref": "#/$defs/absentDistribution"},
         "successor_source_manifest": {"$ref": "#/$defs/sourceManifest"}
       }
     },

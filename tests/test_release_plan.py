@@ -14,6 +14,7 @@ from scripts.release_plan import (
     COMPONENTS,
     FOUNDATION_COMMIT,
     FOUNDATION_TAG,
+    OCCUPIED_SOURCE_MANIFEST_REASON,
     PLAN_TAG_PREFIX,
     SCHEMA,
     candidate_manifest,
@@ -23,6 +24,7 @@ from scripts.release_plan import (
     load_public_supersession,
     manifest_digest,
     parse_conflict_components,
+    preflight_plan,
     prepare_supersession,
     protected_environment_evidence,
     protected_run_approval_evidence,
@@ -42,6 +44,18 @@ def cargo_manifest(version: str) -> bytes:
     return f'[package]\nname = "durable-workflow"\nversion = "{version}"\n'.encode()
 
 
+def python_manifest(version: str) -> bytes:
+    return f'[project]\nname = "durable-workflow"\nversion = "{version}"\n'.encode()
+
+
+def planned_source_manifest(url: str, plan: dict[str, object]) -> bytes:
+    if url.endswith("/pyproject.toml?ref=" + plan["components"]["sdk-python"]["commit"]):
+        return python_manifest(plan["components"]["sdk-python"]["version"])
+    if url.endswith("/Cargo.toml?ref=" + plan["components"]["sdk-rust"]["commit"]):
+        return cargo_manifest(plan["components"]["sdk-rust"]["version"])
+    raise AssertionError(f"unexpected source manifest request: {url}")
+
+
 def source_manifest_record(commit: str, version: str) -> dict[str, object]:
     raw = cargo_manifest(version)
     return {
@@ -51,6 +65,18 @@ def source_manifest_record(commit: str, version: str) -> dict[str, object]:
         "sha256": hashlib.sha256(raw).hexdigest(),
         "source_commit": commit,
         "url": f"https://github.com/durable-workflow/sdk-rust/blob/{commit}/Cargo.toml",
+    }
+
+
+def python_source_manifest_record(commit: str, version: str) -> dict[str, object]:
+    raw = python_manifest(version)
+    return {
+        "declared_version": version,
+        "package": "durable-workflow",
+        "path": "pyproject.toml",
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "source_commit": commit,
+        "url": f"https://github.com/durable-workflow/sdk-python/blob/{commit}/pyproject.toml",
     }
 
 
@@ -310,6 +336,46 @@ class ReleasePlanValidationTest(unittest.TestCase):
         plan["foundation"]["commit"] = "0" * 40
         with self.assertRaisesRegex(CandidateError, "proven immutable candidate foundation"):
             validate_plan(plan)
+
+    def test_preflight_rejects_python_source_manifest_version_mismatch(self) -> None:
+        plan = release_plan()
+        plan["components"]["sdk-python"]["version"] = "0.4.100"
+
+        class FixtureClient:
+            def bytes(self, url: str, **_kwargs: object) -> bytes:
+                if url.endswith("pyproject.toml?ref=" + plan["components"]["sdk-python"]["commit"]):
+                    return python_manifest("0.4.99")
+                if url.endswith("Cargo.toml?ref=" + plan["components"]["sdk-rust"]["commit"]):
+                    return cargo_manifest(plan["components"]["sdk-rust"]["version"])
+                if url.endswith("release-plan-recovery.yml?ref=v2") or url.endswith(
+                    "release-plan-recovery.yml?ref=main"
+                ):
+                    return b"on:\n  schedule:\n  workflow_dispatch:\n"
+                raise AssertionError(f"unexpected bytes request: {url}")
+
+            def json(self, url: str, **_kwargs: object) -> object:
+                if "/actions/workflows/" in url:
+                    return {
+                        "html_url": url,
+                        "id": 1,
+                        "path": ".github/workflows/release-plan-recovery.yml",
+                        "state": "active",
+                    }
+                if "/commits/" in url:
+                    return {}
+                repository = url.removeprefix("https://api.github.com/repos/durable-workflow/")
+                return {"default_branch": "v2" if repository in {"workflow", "waterline"} else "main"}
+
+        with (
+            mock.patch(
+                "scripts.release_plan.read_public_record",
+                return_value={"candidate": "beta-continuity-foundation"},
+            ),
+            mock.patch("scripts.release_plan.resolve_tag", return_value=None),
+            mock.patch("scripts.release_plan.require_prior_plans_completed", return_value={}),
+            self.assertRaisesRegex(CandidateError, "sdk-python source manifest declares 0.4.99"),
+        ):
+            preflight_plan(plan, FixtureClient())
 
     def test_new_plan_cannot_strand_an_interrupted_prior_plan(self) -> None:
         prior = release_plan()
@@ -597,6 +663,85 @@ class ReleasePlanValidationTest(unittest.TestCase):
 
 
 class ReleasePlanSupersessionTest(unittest.TestCase):
+    def prepare_occupied_python_conflict(
+        self,
+    ) -> tuple[dict[str, object], dict[str, object], dict[str, object], str]:
+        failed = release_plan()
+        failed["plan"] = "plan-a"
+        failed["components"]["sdk-python"] = {
+            "version": "0.4.100",
+            "commit": "2018400368cf4251c58b24b3d53a99f0ca3512e3",
+        }
+        successor = copy.deepcopy(failed)
+        successor["plan"] = "plan-b"
+        successor["components"]["sdk-python"] = {
+            "version": "0.4.101",
+            "commit": "d" * 40,
+        }
+        failed_commit = "a" * 40
+        source_tag = {
+            "repository": "durable-workflow/sdk-python",
+            "tag": "0.4.100",
+            "tag_object": failed["components"]["sdk-python"]["commit"],
+            "commit": failed["components"]["sdk-python"]["commit"],
+            "url": "https://github.com/durable-workflow/sdk-python/tree/0.4.100",
+        }
+
+        class FixtureClient:
+            def bytes(self, url: str, **_kwargs: object) -> bytes:
+                if failed["components"]["sdk-python"]["commit"] in url:
+                    return python_manifest("0.4.99")
+                if successor["components"]["sdk-python"]["commit"] in url:
+                    return python_manifest("0.4.101")
+                return planned_source_manifest(url, failed)
+
+            def json(self, url: str, **_kwargs: object) -> object:
+                if url.endswith("deployment-branch-policies?per_page=100"):
+                    return {
+                        "total_count": 1,
+                        "branch_policies": [{"id": 23, "name": "main", "type": "branch"}],
+                    }
+                if "/environments/" in url:
+                    return github_environment()
+                if url.endswith("/approvals"):
+                    return approval_history()
+                if "/actions/runs/" in url:
+                    return workflow_run()
+                if url.endswith("/releases/tags/0.4.100") or url.endswith(
+                    "/pypi/durable-workflow/0.4.100/json"
+                ):
+                    raise CandidateError(f"public request failed (404) for {url}")
+                raise AssertionError(f"unexpected JSON request: {url}")
+
+        def resolve(_client: object, repository: str, tag: str) -> str | None:
+            if repository == "durable-workflow/.github" and tag == "release-plan/plan-a":
+                return failed_commit
+            if repository == "durable-workflow/sdk-python" and tag == "0.4.100":
+                return failed["components"]["sdk-python"]["commit"]
+            return None
+
+        with (
+            mock.patch("scripts.release_plan.resolve_tag", side_effect=resolve),
+            mock.patch("scripts.release_plan.read_public_record", return_value=failed),
+            mock.patch("scripts.release_plan.resolve_github_tag", return_value=source_tag),
+        ):
+            record, durable_successor = prepare_supersession(
+                "release-plan/plan-a",
+                ["sdk-python"],
+                successor,
+                FixtureClient(),
+                actor="release-operator",
+                run_id="456",
+                run_attempt="1",
+                workflow_ref=(
+                    "durable-workflow/.github/.github/workflows/"
+                    "release-plan-supersession.yml@refs/heads/main"
+                ),
+                workflow_commit="f" * 40,
+            )
+        self.assertEqual(successor, durable_successor)
+        return failed, successor, record, failed_commit
+
     def test_environment_requires_custom_main_branch_policy(self) -> None:
         def evidence(environment: object, policies: object) -> dict[str, object]:
             class FixtureClient:
@@ -708,8 +853,8 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
         observed_commit = "e" * 40
 
         class FixtureClient:
-            def bytes(self, _url: str, **_kwargs: object) -> bytes:
-                return cargo_manifest(failed["components"]["sdk-rust"]["version"])
+            def bytes(self, url: str, **_kwargs: object) -> bytes:
+                return planned_source_manifest(url, failed)
 
             def json(self, url: str, **_kwargs: object) -> object:
                 if url.endswith("deployment-branch-policies?per_page=100"):
@@ -807,6 +952,8 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
 
         class FixtureClient:
             def bytes(self, url: str, **_kwargs: object) -> bytes:
+                if "/sdk-python/" in url:
+                    return planned_source_manifest(url, failed)
                 if failed["components"]["sdk-rust"]["commit"] in url:
                     return cargo_manifest("0.1.15")
                 if successor["components"]["sdk-rust"]["commit"] in url:
@@ -923,6 +1070,113 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
         self.assertEqual(record["conflicts"], state["conflicts"])
         self.assertIn("source manifest declares 0.1.15", state["reason"])
 
+    def test_prepare_occupied_python_manifest_conflict_admits_exact_successor(self) -> None:
+        failed, successor, record, failed_commit = self.prepare_occupied_python_conflict()
+        conflict = record["conflicts"][0]
+
+        self.assertEqual(OCCUPIED_SOURCE_MANIFEST_REASON, conflict["reason"])
+        self.assertEqual("0.4.99", conflict["source_manifest"]["declared_version"])
+        self.assertEqual("absent", conflict["github_release"]["status"])
+        self.assertEqual("absent", conflict["distribution"]["status"])
+        self.assertEqual("0.4.101", conflict["successor_source_manifest"]["declared_version"])
+        for name in COMPONENTS:
+            if name != "sdk-python":
+                self.assertEqual(failed["components"][name], successor["components"][name])
+        validate_supersession_record(record, failed, failed_commit, successor)
+
+        class FixtureClient:
+            def json(self, _url: str) -> list[dict[str, str]]:
+                return [{"ref": "refs/tags/release-plan/plan-a"}]
+
+        terminal = ("release-plan-failure/plan-a", "b" * 40, record, successor)
+        with (
+            mock.patch("scripts.release_plan.resolve_tag", side_effect=[failed_commit, None, None]),
+            mock.patch("scripts.release_plan.read_public_record", return_value=failed),
+            mock.patch("scripts.release_plan.load_public_supersession", return_value=terminal),
+        ):
+            evidence = require_prior_plans_completed(successor, FixtureClient())
+        self.assertEqual("terminal-failure", evidence["release-plan/plan-a"]["outcome"])
+
+    def test_occupied_python_manifest_conflict_rejects_alternate_successors(self) -> None:
+        failed, successor, record, _failed_commit = self.prepare_occupied_python_conflict()
+
+        skipped = copy.deepcopy(successor)
+        skipped["components"]["sdk-python"]["version"] = "0.4.102"
+        with self.assertRaisesRegex(CandidateError, "immediate next version"):
+            validate_successor_transition(failed, skipped, record["conflicts"])
+
+        unchanged_source = copy.deepcopy(successor)
+        unchanged_source["components"]["sdk-python"]["commit"] = failed["components"]["sdk-python"]["commit"]
+        with self.assertRaisesRegex(CandidateError, "replace sdk-python's incompatible tagged source commit"):
+            validate_successor_transition(failed, unchanged_source, record["conflicts"])
+
+        changed_unaffected = copy.deepcopy(successor)
+        changed_unaffected["components"]["server"]["commit"] = "9" * 40
+        with self.assertRaisesRegex(CandidateError, "unaffected component server"):
+            validate_successor_transition(failed, changed_unaffected, record["conflicts"])
+
+    def test_occupied_python_manifest_conflict_rejects_mismatched_successor_manifest(self) -> None:
+        failed, successor, record, failed_commit = self.prepare_occupied_python_conflict()
+        record["conflicts"][0]["successor_source_manifest"] = python_source_manifest_record(
+            successor["components"]["sdk-python"]["commit"], "0.4.100"
+        )
+        with self.assertRaisesRegex(CandidateError, "does not match sdk-python version allocation"):
+            validate_supersession_record(record, failed, failed_commit, successor)
+
+    def test_occupied_python_manifest_conflict_rejects_moved_source_tag(self) -> None:
+        failed, successor, record, failed_commit = self.prepare_occupied_python_conflict()
+        moved_source_tag = copy.deepcopy(record["conflicts"][0]["source_tag"])
+        moved_source_tag["commit"] = "e" * 40
+        with (
+            mock.patch("scripts.release_plan.resolve_tag", return_value="b" * 40),
+            mock.patch("scripts.release_plan.read_public_record", side_effect=[record, successor]),
+            mock.patch("scripts.release_plan.resolve_github_tag", return_value=moved_source_tag),
+            self.assertRaisesRegex(CandidateError, "source tag .* moved"),
+        ):
+            load_public_supersession(failed, failed_commit, object())
+
+    def test_prepare_rejects_omitted_python_manifest_conflict(self) -> None:
+        failed = release_plan()
+        failed["plan"] = "plan-a"
+        failed["components"]["sdk-python"] = {
+            "version": "0.4.100",
+            "commit": "2018400368cf4251c58b24b3d53a99f0ca3512e3",
+        }
+        successor = successor_plan(failed)
+
+        class FixtureClient:
+            def bytes(self, url: str, **_kwargs: object) -> bytes:
+                if "/sdk-python/" in url:
+                    return python_manifest("0.4.99")
+                return planned_source_manifest(url, failed)
+
+        def resolve(_client: object, repository: str, tag: str) -> str | None:
+            if repository == "durable-workflow/.github" and tag == "release-plan/plan-a":
+                return "a" * 40
+            if repository == "durable-workflow/sdk-python" and tag == "0.4.100":
+                return failed["components"]["sdk-python"]["commit"]
+            return None
+
+        with (
+            mock.patch("scripts.release_plan.resolve_tag", side_effect=resolve),
+            mock.patch("scripts.release_plan.read_public_record", return_value=failed),
+            self.assertRaisesRegex(CandidateError, "omit independently proven.*sdk-python"),
+        ):
+            prepare_supersession(
+                "release-plan/plan-a",
+                ["waterline"],
+                successor,
+                FixtureClient(),
+                actor="release-operator",
+                run_id="456",
+                run_attempt="1",
+                workflow_ref=(
+                    "durable-workflow/.github/.github/workflows/"
+                    "release-plan-supersession.yml@refs/heads/main"
+                ),
+                workflow_commit="f" * 40,
+            )
+
     def test_prepare_rejects_omitted_source_manifest_conflict(self) -> None:
         failed = release_plan()
         failed["plan"] = "plan-a"
@@ -933,7 +1187,9 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
         successor = successor_plan(failed)
 
         class FixtureClient:
-            def bytes(self, _url: str, **_kwargs: object) -> bytes:
+            def bytes(self, url: str, **_kwargs: object) -> bytes:
+                if "/sdk-python/" in url:
+                    return planned_source_manifest(url, failed)
                 return cargo_manifest("0.1.15")
 
         def resolve(_client: object, repository: str, tag: str) -> str | None:
@@ -976,7 +1232,9 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
         observed_waterline_commit = "e" * 40
 
         class FixtureClient:
-            def bytes(self, _url: str, **_kwargs: object) -> bytes:
+            def bytes(self, url: str, **_kwargs: object) -> bytes:
+                if "/sdk-python/" in url:
+                    return planned_source_manifest(url, failed)
                 return cargo_manifest("0.1.15")
 
         def resolve(_client: object, repository: str, tag: str) -> str | None:

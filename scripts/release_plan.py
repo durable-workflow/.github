@@ -55,6 +55,7 @@ SUPERSESSION_ENVIRONMENT = "release-plan-supersession"
 SUPERSESSION_WORKFLOW = ".github/workflows/release-plan-supersession.yml"
 SUPERSESSION_REASON = "published-version-source-conflict"
 SOURCE_MANIFEST_REASON = "source-manifest-version-conflict"
+OCCUPIED_SOURCE_MANIFEST_REASON = "occupied-source-manifest-version-conflict"
 SUPERSESSION_API_VERSION = "2026-03-10"
 SUPERSESSION_ENVIRONMENT_URL = (
     f"https://github.com/{CONTROL_REPOSITORY}/deployments/activity_log"
@@ -75,9 +76,15 @@ EXPECTED_DEFAULT_BRANCHES = {
 }
 
 SOURCE_MANIFESTS = {
+    "sdk-python": {
+        "path": "pyproject.toml",
+        "package": "durable-workflow",
+        "table": "project",
+    },
     "sdk-rust": {
         "path": "Cargo.toml",
         "package": "durable-workflow",
+        "table": "package",
     },
 }
 
@@ -301,6 +308,17 @@ def validate_successor_transition(
                 raise CandidateError(
                     f"superseding release plan must replace {name}'s incompatible source commit"
                 )
+        elif conflict.get("reason") == OCCUPIED_SOURCE_MANIFEST_REASON:
+            if not is_immediate_version_successor(
+                failed_identity["version"], successor_identity["version"]
+            ):
+                raise CandidateError(
+                    f"superseding release plan must allocate {name}'s immediate next version"
+                )
+            if successor_identity["commit"] == failed_identity["commit"]:
+                raise CandidateError(
+                    f"superseding release plan must replace {name}'s incompatible tagged source commit"
+                )
         else:
             raise CandidateError(f"release plan failure has an unsupported conflict reason for {name}")
 
@@ -421,6 +439,71 @@ def validate_source_manifest_evidence(
         )
 
 
+def publication_absence_locations(
+    component_name: str, version: str
+) -> tuple[dict[str, str], dict[str, str]]:
+    component = COMPONENTS[component_name]
+    encoded_version = urllib.parse.quote(version, safe="")
+    release = {
+        "api_url": (
+            f"https://api.github.com/repos/{component.repository}/releases/tags/{encoded_version}"
+        ),
+        "status": "absent",
+        "url": f"https://github.com/{component.repository}/releases/tag/{encoded_version}",
+    }
+    encoded_package = urllib.parse.quote(component.package, safe="")
+    if component.distribution == "pypi":
+        distribution = {
+            "api_url": f"https://pypi.org/pypi/{encoded_package}/{encoded_version}/json",
+            "kind": "pypi",
+            "status": "absent",
+            "url": f"https://pypi.org/project/{encoded_package}/{encoded_version}/",
+        }
+    elif component.distribution == "crates.io":
+        distribution = {
+            "api_url": f"https://crates.io/api/v1/crates/{encoded_package}/{encoded_version}",
+            "kind": "crates.io",
+            "status": "absent",
+            "url": f"https://crates.io/crates/{encoded_package}/{encoded_version}",
+        }
+    else:
+        raise CandidateError(
+            f"{component_name} has no supported source-manifest distribution absence proof"
+        )
+    return release, distribution
+
+
+def validate_occupied_source_manifest_evidence(
+    conflict: dict[str, Any], component_name: str, identity: dict[str, str]
+) -> None:
+    component = COMPONENTS[component_name]
+    source_tag = conflict["source_tag"]
+    if (
+        not isinstance(source_tag, dict)
+        or set(source_tag) != {"commit", "repository", "tag", "tag_object", "url"}
+        or source_tag["repository"] != component.repository
+        or source_tag["tag"] != identity["version"]
+        or source_tag["commit"] != identity["commit"]
+        or not COMMIT_PATTERN.fullmatch(str(source_tag["tag_object"]))
+        or source_tag["url"]
+        != f"https://github.com/{component.repository}/tree/{identity['version']}"
+    ):
+        raise CandidateError(
+            f"release plan failure does not prove {component_name}'s occupied planned source tag"
+        )
+    expected_release, expected_distribution = publication_absence_locations(
+        component_name, identity["version"]
+    )
+    if conflict["github_release"] != expected_release:
+        raise CandidateError(
+            f"release plan failure lacks {component_name} GitHub Release absence evidence"
+        )
+    if conflict["distribution"] != expected_distribution:
+        raise CandidateError(
+            f"release plan failure lacks {component_name} distribution absence evidence"
+        )
+
+
 def validate_conflict_record(
     conflict: Any,
     failed_plan: dict[str, Any],
@@ -496,6 +579,32 @@ def validate_conflict_record(
             successor_identity,
             must_match_version=True,
         )
+    elif reason == OCCUPIED_SOURCE_MANIFEST_REASON:
+        expected_keys = {
+            "component",
+            "version",
+            "planned_commit",
+            "reason",
+            "source_manifest",
+            "source_tag",
+            "github_release",
+            "distribution",
+            "successor_source_manifest",
+        }
+        if set(conflict) != expected_keys or not common_identity_matches:
+            raise CandidateError(
+                "release plan failure occupied manifest conflict evidence has an invalid shape"
+            )
+        validate_source_manifest_evidence(
+            conflict["source_manifest"], component_name, identity, must_match_version=False
+        )
+        validate_source_manifest_evidence(
+            conflict["successor_source_manifest"],
+            component_name,
+            successor_identity,
+            must_match_version=True,
+        )
+        validate_occupied_source_manifest_evidence(conflict, component_name, identity)
     else:
         raise CandidateError(f"release plan failure has an unsupported conflict reason for {component_name}")
 
@@ -628,7 +737,7 @@ def source_manifest_evidence(
         manifest = tomllib.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise CandidateError(f"{component_name} source manifest is not valid UTF-8 TOML") from error
-    package = manifest.get("package")
+    package = manifest.get(specification["table"])
     declared_version = package.get("version") if isinstance(package, dict) else None
     declared_package = package.get("name") if isinstance(package, dict) else None
     if declared_package != specification["package"] or not isinstance(declared_version, str):
@@ -682,6 +791,12 @@ def revalidate_conflict_public_evidence(
         return
     failed_identity = failed_plan["components"][component_name]
     successor_identity = successor_plan["components"][component_name]
+    if conflict["reason"] == OCCUPIED_SOURCE_MANIFEST_REASON:
+        source_tag = resolve_github_tag(client, component.repository, failed_identity["version"])
+        if source_tag != conflict["source_tag"]:
+            raise CandidateError(
+                f"terminal conflict source tag {component.repository}@{failed_identity['version']} moved"
+            )
     if source_manifest_evidence(client, component_name, failed_identity) != conflict["source_manifest"]:
         raise CandidateError(f"terminal conflict source manifest for {component_name} no longer matches GitHub")
     if (
@@ -813,6 +928,7 @@ def preflight_plan(plan: dict[str, Any], client: PublicClient) -> dict[str, Any]
     prior_plans = require_prior_plans_completed(plan, client)
     branches: dict[str, str] = {}
     recovery_workflows: dict[str, dict[str, Any]] = {}
+    source_manifests: dict[str, dict[str, Any]] = {}
     tags: dict[str, str] = {}
     for name, component in COMPONENTS.items():
         repository = client.json(f"https://api.github.com/repos/{component.repository}")
@@ -853,6 +969,14 @@ def preflight_plan(plan: dict[str, Any], client: PublicClient) -> dict[str, Any]
 
         identity = plan["components"][name]
         client.json(f"https://api.github.com/repos/{component.repository}/commits/{identity['commit']}")
+        if name in SOURCE_MANIFESTS:
+            manifest = source_manifest_evidence(client, name, identity)
+            if manifest["declared_version"] != identity["version"]:
+                raise CandidateError(
+                    f"{name} source manifest declares {manifest['declared_version']}, "
+                    f"not planned version {identity['version']}"
+                )
+            source_manifests[name] = manifest
         existing = resolve_tag(client, component.repository, identity["version"])
         if existing is not None and existing != identity["commit"]:
             raise CandidateError(
@@ -866,6 +990,7 @@ def preflight_plan(plan: dict[str, Any], client: PublicClient) -> dict[str, Any]
         "default_branches": branches,
         "prior_plans": prior_plans,
         "recovery_workflows": recovery_workflows,
+        "source_manifests": source_manifests,
         "version_tags": tags,
     }
 
@@ -1136,6 +1261,29 @@ def protected_run_approval_evidence(
     return evidence
 
 
+def prove_publication_absence(
+    client: PublicClient, component_name: str, version: str
+) -> tuple[dict[str, str], dict[str, str]]:
+    release, distribution = publication_absence_locations(component_name, version)
+    for surface, evidence in (
+        ("GitHub Release", release),
+        ("public distribution", distribution),
+    ):
+        try:
+            client.json(evidence["api_url"])
+        except CandidateError as error:
+            if "(404)" in str(error):
+                continue
+            raise CandidateError(
+                f"cannot prove {component_name} {surface} absence for {version}: {error}"
+            ) from error
+        raise CandidateError(
+            f"{component_name} version {version} already has a {surface}; "
+            "an occupied source-manifest conflict requires it to be absent"
+        )
+    return release, distribution
+
+
 def prepare_conflict_evidence(
     failed_plan: dict[str, Any],
     successor_plan: dict[str, Any],
@@ -1150,22 +1298,48 @@ def prepare_conflict_evidence(
         if conflict_component in SOURCE_MANIFESTS
         else None
     )
+    observed_commit = resolve_tag(client, component.repository, identity["version"])
     if failed_manifest is not None and failed_manifest["declared_version"] != identity["version"]:
         successor_manifest = source_manifest_evidence(
             client,
             conflict_component,
             successor_identity,
         )
-        conflict = {
-            "component": conflict_component,
-            "version": identity["version"],
-            "planned_commit": identity["commit"],
-            "reason": SOURCE_MANIFEST_REASON,
-            "source_manifest": failed_manifest,
-            "successor_source_manifest": successor_manifest,
-        }
+        if observed_commit is None:
+            conflict = {
+                "component": conflict_component,
+                "version": identity["version"],
+                "planned_commit": identity["commit"],
+                "reason": SOURCE_MANIFEST_REASON,
+                "source_manifest": failed_manifest,
+                "successor_source_manifest": successor_manifest,
+            }
+        elif observed_commit == identity["commit"]:
+            source_tag = resolve_github_tag(client, component.repository, identity["version"])
+            if source_tag["commit"] != observed_commit:
+                raise CandidateError(
+                    f"{conflict_component} version {identity['version']} changed while proving its source"
+                )
+            release_absence, distribution_absence = prove_publication_absence(
+                client, conflict_component, identity["version"]
+            )
+            conflict = {
+                "component": conflict_component,
+                "version": identity["version"],
+                "planned_commit": identity["commit"],
+                "reason": OCCUPIED_SOURCE_MANIFEST_REASON,
+                "source_manifest": failed_manifest,
+                "source_tag": source_tag,
+                "github_release": release_absence,
+                "distribution": distribution_absence,
+                "successor_source_manifest": successor_manifest,
+            }
+        else:
+            raise CandidateError(
+                f"{conflict_component} version {identity['version']} has both a source-manifest conflict "
+                f"and a version tag at different commit {observed_commit}"
+            )
     else:
-        observed_commit = resolve_tag(client, component.repository, identity["version"])
         if observed_commit is None:
             raise CandidateError(
                 f"{conflict_component} version {identity['version']} has no terminal public conflict"
@@ -1624,6 +1798,12 @@ def terminal_failure_state(plan: dict[str, Any], client: PublicClient) -> dict[s
     for conflict in conflicts:
         if conflict["reason"] == SUPERSESSION_REASON:
             detail = f"public source {conflict['observed_commit']}"
+        elif conflict["reason"] == OCCUPIED_SOURCE_MANIFEST_REASON:
+            detail = (
+                f"occupied planned source tag {conflict['source_tag']['commit']} has manifest version "
+                f"{conflict['source_manifest']['declared_version']}; successor "
+                f"{conflict['successor_source_manifest']['source_commit']} declares the next allocation"
+            )
         else:
             detail = (
                 f"source manifest declares {conflict['source_manifest']['declared_version']} and "
