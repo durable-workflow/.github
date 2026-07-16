@@ -153,7 +153,7 @@ class PublicClient:
             request_headers["Accept"] = accept
         if self.github_token and urllib.parse.urlsplit(url).hostname == "api.github.com":
             request_headers["Authorization"] = f"Bearer {self.github_token}"
-            request_headers["X-GitHub-Api-Version"] = "2022-11-28"
+            request_headers.setdefault("X-GitHub-Api-Version", "2022-11-28")
         request = urllib.request.Request(url, headers=request_headers)
         try:
             return urllib.request.urlopen(request, timeout=60)

@@ -18,6 +18,7 @@ from scripts.beta_candidate import (
     SCHEMA,
     VERIFICATION_SCHEMA,
     CandidateError,
+    PublicClient,
     canonical_json,
     check_candidate_compatibility,
     manifest_digest,
@@ -62,6 +63,17 @@ def verification(candidate: dict[str, object]) -> dict[str, object]:
 
 
 class ManifestTest(unittest.TestCase):
+    def test_public_client_preserves_explicit_github_api_version(self) -> None:
+        client = PublicClient("fixture-token")
+        with mock.patch("scripts.beta_candidate.urllib.request.urlopen", return_value=object()) as open_url:
+            client.request(
+                "https://api.github.com/repos/durable-workflow/.github/actions/runs/1/approvals",
+                headers={"X-GitHub-Api-Version": "2026-03-10"},
+            )
+        request = open_url.call_args.args[0]
+        self.assertEqual("2026-03-10", request.get_header("X-github-api-version"))
+        self.assertEqual("Bearer fixture-token", request.get_header("Authorization"))
+
     def test_manifest_is_canonical_and_stable(self) -> None:
         candidate = manifest()
         validate_manifest(candidate)

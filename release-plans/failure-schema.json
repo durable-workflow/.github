@@ -1,0 +1,263 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/durable-workflow/.github/blob/main/release-plans/failure-schema.json",
+  "title": "Durable Workflow terminal release plan failure",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "outcome",
+    "failed_plan",
+    "conflicts",
+    "successor_plan",
+    "authorization"
+  ],
+  "properties": {
+    "schema": {
+      "const": "durable-workflow.release-plan-failure/v1"
+    },
+    "outcome": {
+      "const": "terminal-failure"
+    },
+    "failed_plan": {
+      "$ref": "#/$defs/planRecord"
+    },
+    "conflicts": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "oneOf": [
+          {"$ref": "#/$defs/publishedConflict"},
+          {"$ref": "#/$defs/sourceManifestConflict"}
+        ]
+      }
+    },
+    "successor_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tag", "sha256"],
+      "properties": {
+        "tag": {
+          "type": "string",
+          "pattern": "^release-plan/[a-z0-9][a-z0-9._-]{0,55}$"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actor",
+        "environment",
+        "environment_approval",
+        "environment_protection",
+        "repository",
+        "run_attempt",
+        "run_id",
+        "run_url",
+        "workflow_commit",
+        "workflow_ref"
+      ],
+      "properties": {
+        "actor": {"type": "string", "pattern": "^[A-Za-z0-9-]{1,39}$"},
+        "environment": {"const": "release-plan-supersession"},
+        "environment_approval": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["comment", "environments", "run_attempt", "run_id", "state", "user"],
+          "properties": {
+            "comment": {"type": "string"},
+            "environments": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["html_url", "id", "name", "node_id", "url"],
+                "properties": {
+                  "html_url": {"type": "string", "format": "uri"},
+                  "id": {"type": "integer", "minimum": 1},
+                  "name": {"const": "release-plan-supersession"},
+                  "node_id": {"type": "string", "minLength": 1},
+                  "url": {"type": "string", "format": "uri"}
+                }
+              }
+            },
+            "run_attempt": {"type": "integer", "minimum": 1},
+            "run_id": {"type": "integer", "minimum": 1},
+            "state": {"const": "approved"},
+            "user": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["html_url", "id", "login", "node_id", "url"],
+              "properties": {
+                "html_url": {"type": "string", "format": "uri"},
+                "id": {"type": "integer", "minimum": 1},
+                "login": {"type": "string", "pattern": "^[A-Za-z0-9-]{1,39}$"},
+                "node_id": {"type": "string", "minLength": 1},
+                "url": {"type": "string", "format": "uri"}
+              }
+            }
+          }
+        },
+        "environment_protection": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "custom_branch_policies",
+            "deployment_branch_policy",
+            "environment_id",
+            "environment_url",
+            "required_reviewer_rule_ids"
+          ],
+          "properties": {
+            "custom_branch_policies": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id", "name"],
+                "properties": {
+                  "id": {"type": "integer", "minimum": 1},
+                  "name": {"const": "main"}
+                }
+              }
+            },
+            "deployment_branch_policy": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["custom_branch_policies", "protected_branches"],
+              "properties": {
+                "custom_branch_policies": {"const": true},
+                "protected_branches": {"const": false}
+              }
+            },
+            "environment_id": {"type": "integer", "minimum": 1},
+            "environment_url": {"type": "string", "format": "uri"},
+            "required_reviewer_rule_ids": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {"type": "integer", "minimum": 1}
+            }
+          }
+        },
+        "repository": {"const": "durable-workflow/.github"},
+        "run_attempt": {"type": "integer", "minimum": 1},
+        "run_id": {"type": "integer", "minimum": 1},
+        "run_url": {"type": "string", "format": "uri"},
+        "workflow_commit": {"$ref": "#/$defs/commit"},
+        "workflow_ref": {
+          "const": "durable-workflow/.github/.github/workflows/release-plan-supersession.yml@refs/heads/main"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "component": {
+      "enum": ["workflow", "waterline", "server", "cli", "sdk-php", "sdk-python", "sdk-rust"]
+    },
+    "commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "distribution": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {"enum": ["composer", "oci", "github-release", "pypi", "crates.io"]}
+      }
+    },
+    "publishedConflict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "component",
+        "version",
+        "planned_commit",
+        "observed_commit",
+        "reason",
+        "github_release",
+        "distribution"
+      ],
+      "properties": {
+        "component": {"$ref": "#/$defs/component"},
+        "version": {"$ref": "#/$defs/version"},
+        "planned_commit": {"$ref": "#/$defs/commit"},
+        "observed_commit": {"$ref": "#/$defs/commit"},
+        "reason": {"const": "published-version-source-conflict"},
+        "github_release": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "url"],
+          "properties": {
+            "id": {"type": "integer", "minimum": 1},
+            "url": {"type": "string", "format": "uri"}
+          }
+        },
+        "distribution": {"$ref": "#/$defs/distribution"}
+      }
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "sourceManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["declared_version", "package", "path", "sha256", "source_commit", "url"],
+      "properties": {
+        "declared_version": {"$ref": "#/$defs/version"},
+        "package": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "source_commit": {"$ref": "#/$defs/commit"},
+        "url": {"type": "string", "format": "uri"}
+      }
+    },
+    "sourceManifestConflict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "component",
+        "version",
+        "planned_commit",
+        "reason",
+        "source_manifest",
+        "successor_source_manifest"
+      ],
+      "properties": {
+        "component": {"$ref": "#/$defs/component"},
+        "version": {"$ref": "#/$defs/version"},
+        "planned_commit": {"$ref": "#/$defs/commit"},
+        "reason": {"const": "source-manifest-version-conflict"},
+        "source_manifest": {"$ref": "#/$defs/sourceManifest"},
+        "successor_source_manifest": {"$ref": "#/$defs/sourceManifest"}
+      }
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$"
+    },
+    "planRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tag", "commit", "sha256"],
+      "properties": {
+        "tag": {
+          "type": "string",
+          "pattern": "^release-plan/[a-z0-9][a-z0-9._-]{0,55}$"
+        },
+        "commit": {"$ref": "#/$defs/commit"},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

@@ -14,11 +14,12 @@ on:
         default: ''
 
 permissions:
+  actions: read
   attestations: read
   contents: write
 
 concurrency:
-  group: release-plan-observer-${{ inputs.plan_tag || 'latest' }}
+  group: release-plan-registry
   cancel-in-progress: false
 
 jobs:

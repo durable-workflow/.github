@@ -1,0 +1,134 @@
+name: Release plan supersession
+
+run-name: Supersede ${{ inputs.failed_plan_tag }} after ${{ inputs.conflicting_components }} conflicts
+
+on:
+  workflow_dispatch:
+    inputs:
+      failed_plan_tag:
+        description: Immutable release-plan tag made unrecoverable by terminal allocation conflicts
+        required: true
+        type: string
+      conflicting_components:
+        description: Comma-separated terminal-conflict components in release-plan order
+        required: true
+        type: string
+      successor_release_plan:
+        description: Exact successor release plan resolving every conflicting allocation and no others
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: release-plan-registry
+  cancel-in-progress: false
+
+jobs:
+  supersede:
+    name: Record protected terminal failure and exact successor
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release-plan-supersession
+    steps:
+      - name: Check out the public control plane
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install changed-file quality tooling
+        run: python -m pip install ruff==0.12.3 yamllint==1.37.1
+
+      - name: Qualify release-plan tooling
+        run: |
+          python -m ruff check scripts tests
+          python -m yamllint .github/workflows
+          python -m compileall -q scripts tests
+          python -m unittest discover -v
+          python -m json.tool release-plans/failure-schema.json >/dev/null
+
+      - name: Canonicalize exact successor plan
+        env:
+          SUCCESSOR_PLAN: ${{ inputs.successor_release_plan }}
+        run: |
+          python - <<'PYTHON'
+          import os
+          from pathlib import Path
+
+          Path("requested-successor.json").write_text(os.environ["SUCCESSOR_PLAN"], encoding="utf-8")
+          PYTHON
+          python scripts/release_plan.py validate requested-successor.json successor-release-plan.json
+
+      - name: Prove terminal conflicts and protected authorization
+        env:
+          CONFLICTING_COMPONENTS: ${{ inputs.conflicting_components }}
+          FAILED_PLAN_TAG: ${{ inputs.failed_plan_tag }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/release_plan.py prepare-supersession \
+            "$FAILED_PLAN_TAG" "$CONFLICTING_COMPONENTS" successor-release-plan.json \
+            release-plan-failure.json authoritative-successor-release-plan.json \
+            --actor "$GITHUB_ACTOR" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --workflow-ref "$GITHUB_WORKFLOW_REF" \
+            --workflow-commit "$GITHUB_SHA"
+
+      - name: Create or compare immutable terminal record
+        id: record
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/release_plan.py record-supersession \
+            release-plan-failure.json authoritative-successor-release-plan.json \
+            --authoritative-record authoritative-release-plan-failure.json \
+            --authoritative-successor durable-successor-release-plan.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Create or repair durable GitHub Release mirror
+        env:
+          FAILURE_TAG: ${{ steps.record.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+          RECORD_COMMIT: ${{ steps.record.outputs.commit }}
+        run: |
+          set -euo pipefail
+          mirror_dir="$(mktemp -d)"
+          trap 'rm -rf "$mirror_dir"' EXIT
+          if ! gh release view "$FAILURE_TAG" >/dev/null 2>&1; then
+            gh release create "$FAILURE_TAG" --verify-tag --prerelease \
+              --title "Terminal release plan failure" \
+              --notes "Protected terminal record at immutable Git commit ${RECORD_COMMIT}."
+          fi
+          repair_asset() {
+            source_path="$1"
+            asset_name="$2"
+            rm -f "$mirror_dir/$asset_name"
+            if gh release download "$FAILURE_TAG" --pattern "$asset_name" --dir "$mirror_dir" >/dev/null 2>&1; then
+              cmp --silent "$source_path" "$mirror_dir/$asset_name" || {
+                printf 'release asset %s differs from immutable Git authority\n' "$asset_name" >&2
+                exit 1
+              }
+            else
+              upload_dir="$(mktemp -d)"
+              cp "$source_path" "$upload_dir/$asset_name"
+              gh release upload "$FAILURE_TAG" "$upload_dir/$asset_name"
+            fi
+          }
+          repair_asset authoritative-release-plan-failure.json release-plan-failure.json
+          repair_asset durable-successor-release-plan.json successor-release-plan.json
+
+      - name: Upload protected supersession evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-plan-supersession-${{ steps.record.outputs.failed_plan }}
+          path: |
+            authoritative-release-plan-failure.json
+            durable-successor-release-plan.json
+          if-no-files-found: error

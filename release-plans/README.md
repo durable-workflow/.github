@@ -29,11 +29,31 @@ Before a plan is recorded, GitHub must report `v2` as the effective default
 branch for Workflow and Waterline and `main` for the other five repositories.
 This is what makes their scheduled recovery entry points authoritative.
 
-Only one plan may be incomplete at a time. Recording a different plan fails
-closed until every earlier `release-plan/*` Git tag has its matching immutable
-`release-candidate/<channel>/*` completion record. Scheduled newest-plan
-discovery therefore cannot strand an interrupted older plan; the older plan
-continues to be the only discoverable incomplete identity until it completes.
+Only one plan may be recoverable and incomplete at a time. Recording a
+different plan fails closed until every earlier `release-plan/*` Git tag has
+either its matching immutable `release-candidate/<channel>/*` completion record
+or a protected `release-plan-failure/*` terminal record. Ordinary interrupted
+plans remain blocking and continue through their repository recovery actions.
+
+The `Release plan supersession` action is the narrow exception for allocations
+that cannot be published without mutating public history. This includes a
+version already public from a different source commit and an intended source
+whose package manifest declares a different version. The action runs through
+the `release-plan-supersession` environment and requires that the live
+environment allow only a custom `main` branch policy. It verifies public release
+and distribution identities for existing-version conflicts and immutable source
+manifest identities for manifest conflicts. It also verifies the dispatched
+workflow run and its approved environment review through GitHub, retaining both
+the dispatching actor and approving user identities in the terminal record.
+
+The immutable record retains every independently proven conflict and the exact
+successor document as `successor-release-plan.json`. The successor must keep
+every unaffected component unchanged and resolve every affected allocation. An
+existing-version conflict retains the intended source commit and allocates the
+immediate next version. A source-manifest conflict retains the intended version,
+replaces the incompatible source commit, and proves the successor manifest
+declares that version. Repeating the action compares the existing record; it
+cannot replace its conflicts, approval evidence, or successor.
 
 The `Release plan observer` workflow derives progress from the real public
 surfaces and retains `release-state.json` on the plan's GitHub Release. Once all
@@ -42,3 +62,6 @@ records `release-candidate/<channel>/<plan>` with the channel in the immutable
 record itself. This prevents an alpha recovery proof from becoming beta
 authorization. A
 rerun never needs an Actions artifact or a local checkout from an earlier run.
+When an observer encounters a terminal record, `release-state.json` identifies
+all conflicting components and their evidence and directs recovery to the exact
+stored successor plan rather than retrying an unrecoverable publication.
