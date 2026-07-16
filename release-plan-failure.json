@@ -1,0 +1,109 @@
+{
+  "authorization": {
+    "actor": "rmcdaniel",
+    "environment": "release-plan-supersession",
+    "environment_approval": {
+      "comment": "Approve protected Plan A terminal evidence for the Waterline and sdk-rust conflicts and the exact Plan B successor.",
+      "environments": [
+        {
+          "html_url": "https://github.com/durable-workflow/.github/deployments/activity_log?environments_filter=release-plan-supersession",
+          "id": 18260304603,
+          "name": "release-plan-supersession",
+          "node_id": "EN_kwDOIklQaM8AAAAEQGYi2w",
+          "url": "https://api.github.com/repos/durable-workflow/.github/environments/release-plan-supersession"
+        }
+      ],
+      "run_attempt": 1,
+      "run_id": 29513827937,
+      "state": "approved",
+      "user": {
+        "html_url": "https://github.com/rmcdaniel",
+        "id": 1130888,
+        "login": "rmcdaniel",
+        "node_id": "MDQ6VXNlcjExMzA4ODg=",
+        "url": "https://api.github.com/users/rmcdaniel"
+      }
+    },
+    "environment_protection": {
+      "custom_branch_policies": [
+        {
+          "id": 54814175,
+          "name": "main"
+        }
+      ],
+      "deployment_branch_policy": {
+        "custom_branch_policies": true,
+        "protected_branches": false
+      },
+      "environment_id": 18260304603,
+      "environment_url": "https://github.com/durable-workflow/.github/deployments/activity_log?environments_filter=release-plan-supersession",
+      "required_reviewer_rule_ids": [
+        60129316
+      ]
+    },
+    "repository": "durable-workflow/.github",
+    "run_attempt": 1,
+    "run_id": 29513827937,
+    "run_url": "https://github.com/durable-workflow/.github/actions/runs/29513827937",
+    "workflow_commit": "3a7b8e0f8ec9925170efe0529cb909ae00f17d52",
+    "workflow_ref": "durable-workflow/.github/.github/workflows/release-plan-supersession.yml@refs/heads/main"
+  },
+  "conflicts": [
+    {
+      "component": "waterline",
+      "distribution": {
+        "dist": {
+          "sha256": "ce1b430a44fdc6a3b493d8ad43a9850a10bd5f79e5759fbcc87b5d7f0fda673b",
+          "size": 2951405,
+          "url": "https://api.github.com/repos/durable-workflow/waterline/zipball/14f2927010b12a7a842026fd0a1e07c0938e0f78"
+        },
+        "dist_reference": "14f2927010b12a7a842026fd0a1e07c0938e0f78",
+        "kind": "composer",
+        "package": "durable-workflow/waterline",
+        "registry": "https://repo.packagist.org/p2/durable-workflow/waterline.json",
+        "source_reference": "14f2927010b12a7a842026fd0a1e07c0938e0f78"
+      },
+      "github_release": {
+        "id": 355113001,
+        "url": "https://github.com/durable-workflow/waterline/releases/tag/2.0.0-alpha.135"
+      },
+      "observed_commit": "14f2927010b12a7a842026fd0a1e07c0938e0f78",
+      "planned_commit": "60b2de727e27cc17fcb611b3650e0c100968547b",
+      "reason": "published-version-source-conflict",
+      "version": "2.0.0-alpha.135"
+    },
+    {
+      "component": "sdk-rust",
+      "planned_commit": "dde751dc45366beaf8a829ed42c7ab92d0aad775",
+      "reason": "source-manifest-version-conflict",
+      "source_manifest": {
+        "declared_version": "0.1.15",
+        "package": "durable-workflow",
+        "path": "Cargo.toml",
+        "sha256": "2a75091a8035cc916e76eae6f5237083a25cd88635c507e6090d1ab26cb60857",
+        "source_commit": "dde751dc45366beaf8a829ed42c7ab92d0aad775",
+        "url": "https://github.com/durable-workflow/sdk-rust/blob/dde751dc45366beaf8a829ed42c7ab92d0aad775/Cargo.toml"
+      },
+      "successor_source_manifest": {
+        "declared_version": "0.1.16",
+        "package": "durable-workflow",
+        "path": "Cargo.toml",
+        "sha256": "830b72ef66781c83b4e23553262dc3fd76f1ff2043161778cf5f4fa8af17c0bd",
+        "source_commit": "31e87f4aa13a7fd255fd277a62c43c96ee1532ab",
+        "url": "https://github.com/durable-workflow/sdk-rust/blob/31e87f4aa13a7fd255fd277a62c43c96ee1532ab/Cargo.toml"
+      },
+      "version": "0.1.16"
+    }
+  ],
+  "failed_plan": {
+    "commit": "bac8535036f36b44a6a8defe3623d926b05b6170",
+    "sha256": "7bd737c92f139eec33026bc88a6491dc635d819a87a61c985e14e06aca645582",
+    "tag": "release-plan/alpha-continuity-drill-20260716a"
+  },
+  "outcome": "terminal-failure",
+  "schema": "durable-workflow.release-plan-failure/v1",
+  "successor_plan": {
+    "sha256": "db90616c98f305c61d7eb2fb9ed03cc28f06963e9ca020c8ef6d7c6a8557f7bc",
+    "tag": "release-plan/alpha-continuity-drill-20260716b"
+  }
+}
