@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,6 +21,8 @@ from scripts.release_plan import (
     require_prior_plans_completed,
     validate_plan,
 )
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
 def release_plan(channel: str = "alpha") -> dict[str, object]:
@@ -40,6 +43,20 @@ def release_plan(channel: str = "alpha") -> dict[str, object]:
             {"tag": "beta-authorization/recovery-proof-1", "commit": "f" * 40} if channel == "beta" else None
         ),
     }
+
+
+class ReleasePlanEntryPointTest(unittest.TestCase):
+    def test_workflow_commands_are_directly_executable(self) -> None:
+        for command in ("validate", "check", "preflight", "record", "discover", "observe", "complete"):
+            with self.subTest(command=command):
+                process = subprocess.run(
+                    [sys.executable, "scripts/release_plan.py", command, "--help"],
+                    cwd=REPOSITORY_ROOT,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(0, process.returncode, process.stderr)
 
 
 class ReleasePlanValidationTest(unittest.TestCase):

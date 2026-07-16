@@ -16,6 +16,11 @@ import urllib.parse
 from pathlib import Path
 from typing import Any
 
+# GitHub Actions invokes this file directly from the repository root. In that
+# mode Python adds scripts/, rather than the repository root, to sys.path.
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from scripts.beta_candidate import (
     COMPONENTS,
     CandidateError,
