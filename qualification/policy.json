@@ -1,0 +1,128 @@
+{
+  "$schema": "./schema.json",
+  "organization": "durable-workflow",
+  "required_status_checks_strict": true,
+  "schema": "durable-workflow.github-target-qualification/v1",
+  "targets": {
+    "cli": {
+      "branch": "main",
+      "repository": "cli",
+      "workflows": [
+        {
+          "matrix_independent": true,
+          "path": "build.yml",
+          "required_check": "Target branch qualification"
+        }
+      ]
+    },
+    "documentation": {
+      "branch": "main",
+      "repository": "durable-workflow.github.io",
+      "workflows": [
+        {
+          "matrix_independent": false,
+          "path": "qualification.yml",
+          "required_check": "Executable documentation contracts"
+        }
+      ]
+    },
+    "github-control-plane": {
+      "branch": "main",
+      "repository": ".github",
+      "workflows": [
+        {
+          "matrix_independent": false,
+          "path": "source-qualification.yml",
+          "required_check": "Control-plane source qualification"
+        }
+      ]
+    },
+    "sample-app": {
+      "branch": "main",
+      "repository": "sample-app",
+      "workflows": [
+        {
+          "matrix_independent": true,
+          "path": "ci.yml",
+          "required_check": "Target branch qualification"
+        },
+        {
+          "matrix_independent": false,
+          "path": "polyglot-validation.yml",
+          "required_check": "polyglot smoke (PHP/Python/Rust)"
+        },
+        {
+          "matrix_independent": false,
+          "path": "smoke.yml",
+          "required_check": "docker compose sample workflows"
+        }
+      ]
+    },
+    "sdk-php": {
+      "branch": "main",
+      "repository": "sdk-php",
+      "workflows": [
+        {
+          "matrix_independent": true,
+          "path": "ci.yml",
+          "required_check": "Target branch qualification"
+        }
+      ]
+    },
+    "sdk-python": {
+      "branch": "main",
+      "repository": "sdk-python",
+      "workflows": [
+        {
+          "matrix_independent": true,
+          "path": "ci.yml",
+          "required_check": "Target branch qualification"
+        }
+      ]
+    },
+    "sdk-rust": {
+      "branch": "main",
+      "repository": "sdk-rust",
+      "workflows": [
+        {
+          "matrix_independent": true,
+          "path": "ci.yml",
+          "required_check": "Target branch qualification"
+        }
+      ]
+    },
+    "server": {
+      "branch": "main",
+      "repository": "server",
+      "workflows": [
+        {
+          "matrix_independent": false,
+          "path": "phpunit-feature.yml",
+          "required_check": "PHPUnit feature suite"
+        }
+      ]
+    },
+    "waterline": {
+      "branch": "v2",
+      "repository": "waterline",
+      "workflows": [
+        {
+          "matrix_independent": true,
+          "path": "php.yml",
+          "required_check": "Target branch qualification"
+        }
+      ]
+    },
+    "workflow": {
+      "branch": "v2",
+      "repository": "workflow",
+      "workflows": [
+        {
+          "matrix_independent": true,
+          "path": "php.yml",
+          "required_check": "build"
+        }
+      ]
+    }
+  }
+}

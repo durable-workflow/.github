@@ -12,7 +12,9 @@ on:
         type: string
 
 permissions:
+  actions: read
   attestations: read
+  checks: read
   contents: write
 
 concurrency:
@@ -46,6 +48,24 @@ jobs:
           python -m unittest discover -v
           python -m json.tool candidates/schema.json >/dev/null
           python -m json.tool candidates/verification-schema.json >/dev/null
+
+      - name: Require qualified and protected public target commits
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          QUALIFICATION_EVENT: ${{ github.event_name }}
+        run: |
+          args=(audit --evidence target-qualification-evidence.json)
+          if [ "$QUALIFICATION_EVENT" = push ]; then
+            args+=(--skip-check-runs-for github-control-plane)
+          fi
+          python scripts/qualification_policy.py "${args[@]}"
+
+      - name: Retain beta qualification evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-target-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target-qualification-evidence.json
+          if-no-files-found: error
 
       - name: Select requested candidate
         env:

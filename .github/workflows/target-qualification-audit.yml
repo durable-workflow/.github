@@ -1,0 +1,42 @@
+name: Target Qualification Audit
+
+on:
+  schedule:
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+
+concurrency:
+  group: target-qualification-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Audit exact target commits and branch rules
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Audit GitHub qualification authority
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          python scripts/qualification_policy.py audit
+          --evidence target-qualification-evidence.json
+
+      - name: Retain exact-commit audit evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: target-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target-qualification-evidence.json
+          if-no-files-found: error
