@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/durable-workflow/.github/blob/main/beta-conformance/suite-result-schema.json",
+  "title": "Durable Workflow beta conformance suite result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "candidate",
+    "artifact_tuple",
+    "source_identities",
+    "runner",
+    "server_runner",
+    "source_policy",
+    "github_run",
+    "generated_at",
+    "outcome",
+    "experiments"
+  ],
+  "properties": {
+    "schema": { "const": "durable-workflow.beta-conformance.suite-result/v1" },
+    "candidate": { "$ref": "plan-schema.json#/$defs/candidate" },
+    "artifact_tuple": { "$ref": "plan-schema.json#/$defs/components" },
+    "source_identities": { "$ref": "plan-schema.json#/$defs/sourceIdentities" },
+    "runner": { "$ref": "plan-schema.json#/$defs/runner" },
+    "server_runner": { "$ref": "plan-schema.json#/$defs/serverRunner" },
+    "source_policy": { "$ref": "result-schema.json#/$defs/sourcePolicy" },
+    "github_run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "run_id", "run_attempt", "evidence_tag"],
+      "properties": {
+        "repository": { "const": "durable-workflow/.github" },
+        "run_id": { "type": "integer", "minimum": 1 },
+        "run_attempt": { "type": "integer", "minimum": 1 },
+        "evidence_tag": { "type": "string", "pattern": "^beta-conformance/" }
+      }
+    },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "outcome": { "enum": ["pass", "fail"] },
+    "experiments": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["replay", "polyglot", "heartbeats", "signals-queries"],
+      "properties": {
+        "replay": { "$ref": "#/$defs/experiment" },
+        "polyglot": { "$ref": "#/$defs/experiment" },
+        "heartbeats": { "$ref": "#/$defs/experiment" },
+        "signals-queries": { "$ref": "#/$defs/experiment" }
+      }
+    }
+  },
+  "$defs": {
+    "experiment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcome",
+        "classification",
+        "owning_contract",
+        "required_clients",
+        "result_sha256",
+        "failure_fingerprint"
+      ],
+      "properties": {
+        "outcome": { "enum": ["pass", "fail"] },
+        "classification": { "enum": ["passed", "product_failure", "infrastructure_failure"] },
+        "owning_contract": { "type": "string" },
+        "required_clients": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["sdk-php", "sdk-python", "sdk-rust"] }
+        },
+        "result_sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+        "failure_fingerprint": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" }
+      }
+    }
+  }
+}

@@ -1,0 +1,89 @@
+{
+  "$schema": "./contract-schema.json",
+  "experiments": {
+    "heartbeats": {
+      "owning_contract": "worker-heartbeat-observability",
+      "required_clients": [
+        "sdk-php",
+        "sdk-python",
+        "sdk-rust"
+      ],
+      "runners": [
+        {
+          "id": "php",
+          "path": "scripts/conformance/heartbeats-published-artifacts.sh",
+          "result": "php-sdk-heartbeat-loop-evidence.json"
+        },
+        {
+          "id": "python",
+          "path": "scripts/conformance/heartbeats-python-published-artifacts.sh",
+          "result": "python-sdk-heartbeat-loop-evidence.json"
+        },
+        {
+          "id": "rust",
+          "path": "scripts/conformance/heartbeats-rust-published-artifacts.sh",
+          "result": "rust-sdk-heartbeat-loop-evidence.json"
+        }
+      ],
+      "timeout_seconds": 3600
+    },
+    "polyglot": {
+      "owning_contract": "cross-language-worker-protocol",
+      "required_clients": [
+        "sdk-php",
+        "sdk-python"
+      ],
+      "runners": [
+        {
+          "id": "python-parity",
+          "path": "scripts/conformance/python-published-artifacts.sh",
+          "result": "python-conformance-result.json"
+        },
+        {
+          "id": "php-sdk",
+          "path": "scripts/conformance/php-sdk-published-artifacts.sh",
+          "result": "php-sdk-conformance-result.json"
+        },
+        {
+          "id": "activities-cross-language",
+          "path": "scripts/conformance/activities-published-artifacts.sh",
+          "result": "activities-result.json"
+        }
+      ],
+      "timeout_seconds": 3600
+    },
+    "replay": {
+      "owning_contract": "deterministic-replay",
+      "required_clients": [
+        "sdk-php",
+        "sdk-python",
+        "sdk-rust"
+      ],
+      "runners": [
+        {
+          "id": "replay-matrix",
+          "path": "scripts/conformance/replay-published-artifacts.sh",
+          "result": "replay-conformance-result.json"
+        }
+      ],
+      "timeout_seconds": 3600
+    },
+    "signals-queries": {
+      "owning_contract": "signals-and-queries",
+      "required_clients": [
+        "sdk-php",
+        "sdk-python",
+        "sdk-rust"
+      ],
+      "runners": [
+        {
+          "id": "signals-queries-matrix",
+          "path": "scripts/conformance/signals-queries-published-artifacts.sh",
+          "result": "signals-queries-result.json"
+        }
+      ],
+      "timeout_seconds": 5400
+    }
+  },
+  "schema": "durable-workflow.beta-conformance.contract/v1"
+}

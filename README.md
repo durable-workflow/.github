@@ -13,3 +13,8 @@ It also records and observes channel-aware, pre-publication
 [release plans](release-plans/README.md). Publication remains repository-owned:
 each component discovers plans and resumes with only its own GitHub token and
 repository-local publication environment.
+
+Published candidate tuples can be exercised by the independently runnable
+[beta conformance workflow](beta-conformance/README.md). Its retained GitHub
+Release evidence binds every experiment to the exact seven artifacts, their
+source identities, and the conformance runner revision.

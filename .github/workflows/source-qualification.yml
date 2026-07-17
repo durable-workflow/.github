@@ -38,4 +38,10 @@ jobs:
           python -m unittest discover -v
           python -m json.tool qualification/policy.json >/dev/null
           python -m json.tool qualification/schema.json >/dev/null
+          python scripts/beta_conformance.py validate \
+            beta-conformance/contract.json \
+            beta-conformance/contract-schema.json \
+            beta-conformance/plan-schema.json \
+            beta-conformance/result-schema.json \
+            beta-conformance/suite-result-schema.json
           python scripts/qualification_policy.py validate

@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/durable-workflow/.github/blob/main/beta-conformance/plan-schema.json",
+  "title": "Durable Workflow beta conformance execution plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "candidate",
+    "artifact_tuple",
+    "source_identities",
+    "runner",
+    "server_runner",
+    "experiments"
+  ],
+  "properties": {
+    "schema": { "const": "durable-workflow.beta-conformance.plan/v1" },
+    "candidate": { "$ref": "#/$defs/candidate" },
+    "artifact_tuple": { "$ref": "#/$defs/components" },
+    "source_identities": { "$ref": "#/$defs/sourceIdentities" },
+    "runner": { "$ref": "#/$defs/runner" },
+    "server_runner": { "$ref": "#/$defs/serverRunner" },
+    "experiments": {
+      "type": "array",
+      "const": ["heartbeats", "polyglot", "replay", "signals-queries"]
+    }
+  },
+  "$defs": {
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "commit"],
+      "properties": {
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$"
+        },
+        "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+      }
+    },
+    "components": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workflow", "waterline", "server", "cli", "sdk-php", "sdk-python", "sdk-rust"],
+      "properties": {
+        "workflow": { "$ref": "#/$defs/identity" },
+        "waterline": { "$ref": "#/$defs/identity" },
+        "server": { "$ref": "#/$defs/identity" },
+        "cli": { "$ref": "#/$defs/identity" },
+        "sdk-php": { "$ref": "#/$defs/identity" },
+        "sdk-python": { "$ref": "#/$defs/identity" },
+        "sdk-rust": { "$ref": "#/$defs/identity" }
+      }
+    },
+    "sourceIdentities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workflow", "waterline", "server", "cli", "sdk-php", "sdk-python", "sdk-rust"],
+      "properties": {
+        "workflow": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "waterline": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "server": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "cli": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "sdk-php": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "sdk-python": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "sdk-rust": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "manifest_sha256", "record_ref", "record_commit"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,62}$" },
+        "manifest_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "record_ref": { "type": "string", "pattern": "^beta-candidate/" },
+        "record_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+      }
+    },
+    "runner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "revision", "contract_sha256"],
+      "properties": {
+        "repository": { "const": "durable-workflow/.github" },
+        "revision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "contract_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "serverRunner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image", "manifest_digest", "source_commit"],
+      "properties": {
+        "image": { "type": "string", "pattern": "^docker\\.io/durableworkflow/server@sha256:[0-9a-f]{64}$" },
+        "manifest_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "source_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+      }
+    }
+  }
+}
