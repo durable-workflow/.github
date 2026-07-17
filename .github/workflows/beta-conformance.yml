@@ -208,8 +208,8 @@ jobs:
             notes="$(mktemp)"
             {
               printf 'Beta conformance `%s` for immutable candidate `%s`.\n\n' "$OUTCOME" "$CANDIDATE"
-              printf 'Every attached experiment result binds the seven-artifact tuple, source identities, '
-              printf 'runner revision, owning contract, retry record, and bounded diagnostics.\n'
+              printf 'Every attached experiment result binds the seven-artifact tuple, source and distribution '
+              printf 'identities, runner revision, owning contract, retry record, and bounded diagnostics.\n'
             } > "$notes"
             gh release create "$EVIDENCE_TAG" --target "$GITHUB_SHA" \
               --title "Beta conformance ${CANDIDATE} (${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT})" \

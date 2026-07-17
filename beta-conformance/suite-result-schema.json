@@ -9,6 +9,8 @@
     "candidate",
     "artifact_tuple",
     "source_identities",
+    "distribution_identities",
+    "executed_distribution_identities",
     "runner",
     "server_runner",
     "source_policy",
@@ -22,6 +24,8 @@
     "candidate": { "$ref": "plan-schema.json#/$defs/candidate" },
     "artifact_tuple": { "$ref": "plan-schema.json#/$defs/components" },
     "source_identities": { "$ref": "plan-schema.json#/$defs/sourceIdentities" },
+    "distribution_identities": { "$ref": "plan-schema.json#/$defs/distributionIdentities" },
+    "executed_distribution_identities": { "$ref": "plan-schema.json#/$defs/partialDistributionIdentities" },
     "runner": { "$ref": "plan-schema.json#/$defs/runner" },
     "server_runner": { "$ref": "plan-schema.json#/$defs/serverRunner" },
     "source_policy": { "$ref": "result-schema.json#/$defs/sourcePolicy" },
@@ -59,6 +63,7 @@
         "classification",
         "owning_contract",
         "required_clients",
+        "required_distributions",
         "result_sha256",
         "failure_fingerprint"
       ],
@@ -71,6 +76,14 @@
           "minItems": 1,
           "uniqueItems": true,
           "items": { "enum": ["sdk-php", "sdk-python", "sdk-rust"] }
+        },
+        "required_distributions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": ["workflow", "waterline", "server", "cli", "sdk-php", "sdk-python", "sdk-rust"]
+          }
         },
         "result_sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
         "failure_fingerprint": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" }

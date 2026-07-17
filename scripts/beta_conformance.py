@@ -25,6 +25,7 @@ if __package__ in {None, ""}:
 
 from scripts.beta_candidate import (
     CANDIDATE_PATTERN,
+    CLI_ASSETS,
     COMPONENTS,
     VERSION_PATTERN,
     CandidateError,
@@ -124,6 +125,7 @@ def validate_contract(contract: Any) -> None:
         if not isinstance(specification, dict) or set(specification) != {
             "owning_contract",
             "required_clients",
+            "required_distributions",
             "runners",
             "timeout_seconds",
         }:
@@ -139,6 +141,15 @@ def validate_contract(contract: Any) -> None:
             or not set(clients).issubset({"sdk-php", "sdk-python", "sdk-rust"})
         ):
             raise ConformanceError(f"experiment {name} has invalid required clients")
+        required_distributions = specification["required_distributions"]
+        if (
+            not isinstance(required_distributions, list)
+            or not required_distributions
+            or len(required_distributions) != len(set(required_distributions))
+            or not set(required_distributions).issubset(COMPONENTS)
+            or not {"server", *clients}.issubset(required_distributions)
+        ):
+            raise ConformanceError(f"experiment {name} has invalid required distributions")
         timeout = specification["timeout_seconds"]
         if not isinstance(timeout, int) or not 60 <= timeout <= 5400:
             raise ConformanceError(f"experiment {name} timeout must be between 60 and 5400 seconds")
@@ -163,6 +174,13 @@ def validate_contract(contract: Any) -> None:
             safe_relative_path(runner["result"], suffix=".json")
             if "/" in runner["result"]:
                 raise ConformanceError(f"experiment {name} native result must be a file name")
+    covered_distributions = {
+        distribution
+        for specification in experiments.values()
+        for distribution in specification["required_distributions"]
+    }
+    if covered_distributions != set(COMPONENTS):
+        raise ConformanceError("beta conformance contract does not execute all seven distributions")
 
 
 def load_contract(path: Path) -> dict[str, Any]:
@@ -202,6 +220,126 @@ def read_candidate_record(repository: Path, manifest: dict[str, Any]) -> tuple[s
     return record_commit, verification
 
 
+def distribution_locator(name: str, version: str) -> str:
+    component = COMPONENTS[name]
+    return f"{component.distribution}:{component.package}@{version}"
+
+
+def distribution_artifact(name: Any, sha256: Any) -> dict[str, str]:
+    if not isinstance(name, str) or not name or len(name) > 256:
+        raise ConformanceError("candidate verification has an invalid distribution artifact name")
+    if not isinstance(sha256, str) or not DIGEST_PATTERN.fullmatch(sha256):
+        raise ConformanceError(f"candidate verification distribution artifact {name} has no SHA-256 identity")
+    return {"name": name, "sha256": sha256}
+
+
+def normalized_distribution_identity(
+    name: str, version: str, artifacts: list[dict[str, str]]
+) -> dict[str, Any]:
+    ordered = sorted(artifacts, key=lambda artifact: artifact["name"])
+    if not ordered or len(ordered) != len({artifact["name"] for artifact in ordered}):
+        raise ConformanceError(f"candidate verification has invalid {name} distribution artifacts")
+    return {
+        "kind": COMPONENTS[name].distribution,
+        "locator": distribution_locator(name, version),
+        "artifacts": ordered,
+    }
+
+
+def normalize_distribution_identities(
+    verification: dict[str, Any], manifest: dict[str, Any]
+) -> dict[str, dict[str, Any]]:
+    identities: dict[str, dict[str, Any]] = {}
+    for name, component in COMPONENTS.items():
+        version = manifest["components"][name]["version"]
+        distribution = verification["components"][name].get("distribution")
+        if not isinstance(distribution, dict) or distribution.get("kind") != component.distribution:
+            raise ConformanceError(f"candidate verification has no exact {name} distribution identity")
+        if component.distribution == "composer":
+            dist = distribution.get("dist")
+            artifacts = [
+                distribution_artifact(component.package, dist.get("sha256") if isinstance(dist, dict) else None)
+            ]
+        elif component.distribution == "github-release":
+            raw_assets = distribution.get("assets")
+            if not isinstance(raw_assets, list):
+                raise ConformanceError("candidate verification has no CLI release-asset identities")
+            artifacts = [
+                distribution_artifact(asset.get("name"), asset.get("sha256"))
+                for asset in raw_assets
+                if isinstance(asset, dict)
+            ]
+            if {artifact["name"] for artifact in artifacts} != CLI_ASSETS:
+                raise ConformanceError("candidate verification does not identify every required CLI release asset")
+        elif component.distribution == "pypi":
+            raw_files = distribution.get("files")
+            if not isinstance(raw_files, list):
+                raise ConformanceError("candidate verification has no PyPI file identities")
+            artifacts = [
+                distribution_artifact(item.get("filename"), item.get("sha256"))
+                for item in raw_files
+                if isinstance(item, dict)
+            ]
+        elif component.distribution == "crates.io":
+            archive = distribution.get("archive")
+            artifacts = [
+                distribution_artifact(
+                    f"{component.package}-{version}.crate",
+                    archive.get("sha256") if isinstance(archive, dict) else None,
+                )
+            ]
+        elif component.distribution == "oci":
+            digest = distribution.get("manifest_digest")
+            artifacts = [
+                distribution_artifact("manifest", digest.removeprefix("sha256:") if isinstance(digest, str) else None)
+            ]
+        else:
+            raise AssertionError(f"unsupported distribution kind: {component.distribution}")
+        identities[name] = normalized_distribution_identity(name, version, artifacts)
+    return identities
+
+
+def validate_distribution_identity(name: str, identity: Any, components: dict[str, Any]) -> None:
+    expected_locator = distribution_locator(name, components[name]["version"])
+    if (
+        not isinstance(identity, dict)
+        or set(identity) != {"kind", "locator", "artifacts"}
+        or identity["kind"] != COMPONENTS[name].distribution
+        or identity["locator"] != expected_locator
+    ):
+        raise ConformanceError(f"distribution identity for {name} has an invalid locator")
+    artifacts = identity["artifacts"]
+    if not isinstance(artifacts, list) or not 1 <= len(artifacts) <= 128:
+        raise ConformanceError(f"distribution identity for {name} has invalid artifacts")
+    names = []
+    for artifact in artifacts:
+        if (
+            not isinstance(artifact, dict)
+            or set(artifact) != {"name", "sha256"}
+            or not isinstance(artifact["name"], str)
+            or not artifact["name"]
+            or len(artifact["name"]) > 256
+            or not DIGEST_PATTERN.fullmatch(str(artifact["sha256"]))
+        ):
+            raise ConformanceError(f"distribution identity for {name} has an invalid artifact digest")
+        names.append(artifact["name"])
+    if names != sorted(names) or len(names) != len(set(names)):
+        raise ConformanceError(f"distribution identity for {name} artifacts are not uniquely normalized")
+
+
+def validate_partial_distribution_identities(identities: Any, components: dict[str, Any]) -> None:
+    if not isinstance(identities, dict) or not set(identities).issubset(COMPONENTS):
+        raise ConformanceError("executed distribution identities name an unknown component")
+    for name, identity in identities.items():
+        validate_distribution_identity(name, identity, components)
+
+
+def validate_distribution_identities(identities: Any, components: dict[str, Any]) -> None:
+    if not isinstance(identities, dict) or set(identities) != set(COMPONENTS):
+        raise ConformanceError("distribution identities do not bind the exact seven-artifact tuple")
+    validate_partial_distribution_identities(identities, components)
+
+
 def prepare_plan(
     repository: Path,
     manifest: dict[str, Any],
@@ -212,6 +350,7 @@ def prepare_plan(
         raise ConformanceError("runner revision must be a full lowercase Git commit")
     git(repository, "cat-file", "-e", f"{runner_revision}^{{commit}}")
     record_commit, verification = read_candidate_record(repository, manifest)
+    distribution_identities = normalize_distribution_identities(verification, manifest)
     server_distribution = verification["components"]["server"].get("distribution")
     if not isinstance(server_distribution, dict):
         raise ConformanceError("candidate verification has no server distribution identity")
@@ -226,11 +365,13 @@ def prepare_plan(
         "candidate": {
             "name": manifest["candidate"],
             "manifest_sha256": manifest_digest(manifest),
+            "verification_sha256": sha256_bytes(canonical_json(verification)),
             "record_ref": f"beta-candidate/{manifest['candidate']}",
             "record_commit": record_commit,
         },
         "artifact_tuple": components,
         "source_identities": {name: identity["commit"] for name, identity in components.items()},
+        "distribution_identities": distribution_identities,
         "runner": {
             "repository": "durable-workflow/.github",
             "revision": runner_revision,
@@ -253,6 +394,7 @@ def validate_plan(plan: Any) -> None:
         "candidate",
         "artifact_tuple",
         "source_identities",
+        "distribution_identities",
         "runner",
         "server_runner",
         "experiments",
@@ -274,13 +416,15 @@ def validate_plan(plan: Any) -> None:
     sources = plan["source_identities"]
     if not isinstance(sources, dict) or sources != {name: item["commit"] for name, item in components.items()}:
         raise ConformanceError("beta conformance plan source identities do not match the artifact tuple")
+    validate_distribution_identities(plan["distribution_identities"], components)
     candidate = plan["candidate"]
     if (
         not isinstance(candidate, dict)
-        or set(candidate) != {"name", "manifest_sha256", "record_ref", "record_commit"}
+        or set(candidate) != {"name", "manifest_sha256", "verification_sha256", "record_ref", "record_commit"}
         or not isinstance(candidate["name"], str)
         or not CANDIDATE_PATTERN.fullmatch(candidate["name"])
         or not DIGEST_PATTERN.fullmatch(str(candidate["manifest_sha256"]))
+        or not DIGEST_PATTERN.fullmatch(str(candidate["verification_sha256"]))
         or not COMMIT_PATTERN.fullmatch(str(candidate["record_commit"]))
         or candidate["record_ref"] != f"beta-candidate/{candidate['name']}"
     ):
@@ -423,7 +567,56 @@ def native_state(native: Any) -> tuple[str | None, bool, list[dict[str, str]]]:
     return outcome, runner_blocked, summarize_findings(native)
 
 
-def summarize_native_result(native: Any) -> dict[str, Any] | None:
+def summarize_executed_distribution_identities(
+    native: dict[str, Any], plan: dict[str, Any]
+) -> dict[str, Any]:
+    raw = native.get("executed_distribution_identities", native.get("executedDistributionIdentities", {}))
+    if not isinstance(raw, dict):
+        return {}
+    identities: dict[str, Any] = {}
+    for name, identity in raw.items():
+        if name not in COMPONENTS or not isinstance(identity, dict):
+            continue
+        kind = identity.get("kind")
+        locator = identity.get("locator")
+        artifacts = identity.get("artifacts")
+        if (
+            kind != COMPONENTS[name].distribution
+            or not isinstance(locator, str)
+            or not locator
+            or len(locator) > 256
+            or not isinstance(artifacts, list)
+        ):
+            continue
+        normalized_artifacts = []
+        for artifact in artifacts:
+            if (
+                not isinstance(artifact, dict)
+                or set(artifact) != {"name", "sha256"}
+                or not isinstance(artifact["name"], str)
+                or not artifact["name"]
+                or len(artifact["name"]) > 256
+                or not isinstance(artifact["sha256"], str)
+                or not DIGEST_PATTERN.fullmatch(artifact["sha256"])
+            ):
+                normalized_artifacts = []
+                break
+            normalized_artifacts.append({"name": artifact["name"], "sha256": artifact["sha256"]})
+        normalized_artifacts.sort(key=lambda artifact: artifact["name"])
+        if (
+            normalized_artifacts
+            and len(normalized_artifacts) == len({artifact["name"] for artifact in normalized_artifacts})
+        ):
+            normalized = {"kind": kind, "locator": locator, "artifacts": normalized_artifacts}
+            try:
+                validate_distribution_identity(name, normalized, plan["artifact_tuple"])
+            except ConformanceError:
+                continue
+            identities[name] = normalized
+    return identities
+
+
+def summarize_native_result(native: Any, plan: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(native, dict):
         return None
     versions = native.get("artifact_versions", native.get("artifactVersions", {}))
@@ -462,6 +655,7 @@ def summarize_native_result(native: Any) -> dict[str, Any] | None:
     return {
         "schema": bounded_text(schema, 256) if isinstance(schema, str) else None,
         "artifact_versions": bounded_versions,
+        "executed_distribution_identities": summarize_executed_distribution_identities(native, plan),
         "scenario_statuses": scenarios,
         "local_product_source_checkout_used": local_source_used,
     }
@@ -529,6 +723,7 @@ def artifact_environment(plan: dict[str, Any], scratch: Path) -> dict[str, str]:
     versions = {name: identity["version"] for name, identity in plan["artifact_tuple"].items()}
     return {
         **os.environ,
+        "DW_CANDIDATE_VERIFICATION_SHA256": plan["candidate"]["verification_sha256"],
         "DW_SERVER_IMAGE": plan["server_runner"]["image"],
         "DW_SERVER_VERSION": versions["server"],
         "DW_CLI_VERSION": versions["cli"],
@@ -548,6 +743,7 @@ def failure_fingerprint(
         return None
     stable = {
         "candidate_manifest_sha256": plan["candidate"]["manifest_sha256"],
+        "candidate_verification_sha256": plan["candidate"]["verification_sha256"],
         "contract_sha256": plan["runner"]["contract_sha256"],
         "experiment": experiment,
         "classification": classification,
@@ -560,7 +756,12 @@ def failure_fingerprint(
 
 
 def injected_failure_result(
-    plan: dict[str, Any], experiment: str, owner: str, required_clients: list[str], started_at: str
+    plan: dict[str, Any],
+    experiment: str,
+    owner: str,
+    required_clients: list[str],
+    required_distributions: list[str],
+    started_at: str,
 ) -> dict[str, Any]:
     diagnostic = {
         "runner": "injected-product-failure",
@@ -588,6 +789,7 @@ def injected_failure_result(
         experiment,
         owner,
         required_clients,
+        required_distributions,
         started_at,
         "product_failure",
         1,
@@ -600,6 +802,7 @@ def experiment_result(
     experiment: str,
     owner: str,
     required_clients: list[str],
+    required_distributions: list[str],
     started_at: str,
     classification: str,
     attempts: int,
@@ -611,10 +814,12 @@ def experiment_result(
         "candidate": plan["candidate"],
         "artifact_tuple": plan["artifact_tuple"],
         "source_identities": plan["source_identities"],
+        "distribution_identities": plan["distribution_identities"],
         "runner": plan["runner"],
         "server_runner": plan["server_runner"],
         "owning_contract": owner,
         "required_clients": required_clients,
+        "required_distributions": required_distributions,
         "source_policy": {
             "product_artifacts": "published_only",
             "orchestration_source": "exact_server_container",
@@ -637,10 +842,11 @@ def experiment_result(
 
 
 def artifact_binding_failures(
-    plan: dict[str, Any], required_clients: list[str], diagnostics: list[dict[str, Any]]
+    plan: dict[str, Any], required_distributions: list[str], diagnostics: list[dict[str, Any]]
 ) -> list[str]:
-    observed: dict[str, set[str]] = {}
-    failures = []
+    observed_versions: dict[str, set[str]] = {}
+    observed_identities: dict[str, list[dict[str, Any]]] = {}
+    failures: list[str] = []
     for diagnostic in diagnostics:
         summary = diagnostic.get("native_summary")
         if not isinstance(summary, dict):
@@ -648,18 +854,45 @@ def artifact_binding_failures(
         if summary.get("local_product_source_checkout_used") is True:
             failures.append("native evidence reports a local product source checkout")
         versions = summary.get("artifact_versions")
-        if not isinstance(versions, dict):
-            continue
-        for name, version in versions.items():
-            observed.setdefault(name, set()).add(str(version))
-    for name, versions in observed.items():
+        if isinstance(versions, dict):
+            for name, version in versions.items():
+                observed_versions.setdefault(name, set()).add(str(version))
+        identities = summary.get("executed_distribution_identities")
+        if isinstance(identities, dict):
+            for name, identity in identities.items():
+                observed_identities.setdefault(name, []).append(identity)
+    for name, versions in observed_versions.items():
         expected = plan["artifact_tuple"][name]["version"]
         if versions != {expected}:
             failures.append(f"{name} native evidence reports {sorted(versions)}, expected exact version {expected}")
-    for name in ["server", *required_clients]:
-        if name not in observed:
+    for name, identities in observed_identities.items():
+        expected = plan["distribution_identities"][name]
+        expected_artifacts = {artifact["name"]: artifact["sha256"] for artifact in expected["artifacts"]}
+        for identity in identities:
+            try:
+                validate_distribution_identity(name, identity, plan["artifact_tuple"])
+            except ConformanceError:
+                failures.append(f"{name} native evidence has an invalid executed distribution identity")
+                continue
+            if identity["kind"] != expected["kind"] or identity["locator"] != expected["locator"]:
+                failures.append(f"{name} native evidence reports a different distribution locator")
+                continue
+            for artifact in identity["artifacts"]:
+                expected_sha256 = expected_artifacts.get(artifact["name"])
+                if expected_sha256 is None:
+                    failures.append(
+                        f"{name} native evidence reports unknown executed distribution artifact {artifact['name']}"
+                    )
+                elif artifact["sha256"] != expected_sha256:
+                    failures.append(
+                        f"{name} executed distribution artifact {artifact['name']} does not match the candidate digest"
+                    )
+    for name in required_distributions:
+        if name not in observed_versions:
             failures.append(f"native evidence does not report the exact {name} artifact version")
-    return failures
+        if name not in observed_identities:
+            failures.append(f"native evidence does not report the executed {name} distribution identity")
+    return list(dict.fromkeys(failures))
 
 
 def run_experiment(
@@ -682,7 +915,14 @@ def run_experiment(
     started_at = now()
     result_dir.mkdir(parents=True, exist_ok=True)
     if inject_product_failure:
-        result = injected_failure_result(plan, experiment, owner, specification["required_clients"], started_at)
+        result = injected_failure_result(
+            plan,
+            experiment,
+            owner,
+            specification["required_clients"],
+            specification["required_distributions"],
+            started_at,
+        )
         write_json(result_dir / "experiment-result.json", result)
         return result
 
@@ -779,7 +1019,7 @@ def run_experiment(
                     "stderr_tail": stderr_tail,
                     "stderr_sha256": stderr_digest,
                     "native_result_sha256": native_digest,
-                    "native_summary": summarize_native_result(native),
+                    "native_summary": summarize_native_result(native, plan),
                     "findings": findings,
                 }
             )
@@ -794,7 +1034,7 @@ def run_experiment(
             break
 
     if final_classification == "passed":
-        binding_failures = artifact_binding_failures(plan, specification["required_clients"], diagnostics)
+        binding_failures = artifact_binding_failures(plan, specification["required_distributions"], diagnostics)
         if binding_failures:
             message = "\n".join(binding_failures)
             diagnostics.append(
@@ -828,6 +1068,7 @@ def run_experiment(
         experiment,
         owner,
         specification["required_clients"],
+        specification["required_distributions"],
         started_at,
         final_classification,
         maximum_attempts_used,
@@ -844,10 +1085,12 @@ def validate_experiment_result(result: Any, plan: dict[str, Any]) -> None:
         "candidate",
         "artifact_tuple",
         "source_identities",
+        "distribution_identities",
         "runner",
         "server_runner",
         "owning_contract",
         "required_clients",
+        "required_distributions",
         "source_policy",
         "started_at",
         "finished_at",
@@ -861,7 +1104,14 @@ def validate_experiment_result(result: Any, plan: dict[str, Any]) -> None:
         raise ConformanceError("experiment result has an invalid top-level shape")
     if result["experiment"] not in EXPERIMENTS:
         raise ConformanceError("experiment result has an unknown experiment")
-    for field in ("candidate", "artifact_tuple", "source_identities", "runner", "server_runner"):
+    for field in (
+        "candidate",
+        "artifact_tuple",
+        "source_identities",
+        "distribution_identities",
+        "runner",
+        "server_runner",
+    ):
         if result[field] != plan[field]:
             raise ConformanceError(f"experiment result {result['experiment']} has a mismatched {field} binding")
     classification = result["classification"]
@@ -873,6 +1123,15 @@ def validate_experiment_result(result: Any, plan: dict[str, Any]) -> None:
         or not set(clients).issubset({"sdk-php", "sdk-python", "sdk-rust"})
     ):
         raise ConformanceError("experiment result has invalid required clients")
+    required_distributions = result["required_distributions"]
+    if (
+        not isinstance(required_distributions, list)
+        or not required_distributions
+        or len(required_distributions) != len(set(required_distributions))
+        or not set(required_distributions).issubset(COMPONENTS)
+        or not {"server", *clients}.issubset(required_distributions)
+    ):
+        raise ConformanceError("experiment result has invalid required distributions")
     if result["source_policy"] != {
         "product_artifacts": "published_only",
         "orchestration_source": "exact_server_container",
@@ -917,24 +1176,36 @@ def validate_experiment_result(result: Any, plan: dict[str, Any]) -> None:
             if not isinstance(native_summary, dict) or set(native_summary) != {
                 "schema",
                 "artifact_versions",
+                "executed_distribution_identities",
                 "scenario_statuses",
                 "local_product_source_checkout_used",
             }:
                 raise ConformanceError("experiment result has an invalid native summary")
             if (
                 len(native_summary["artifact_versions"]) > len(COMPONENTS)
+                or len(native_summary["executed_distribution_identities"]) > len(COMPONENTS)
                 or len(native_summary["scenario_statuses"]) > 128
             ):
                 raise ConformanceError("experiment result has an unbounded native summary")
+            validate_partial_distribution_identities(
+                native_summary["executed_distribution_identities"], plan["artifact_tuple"]
+            )
+    if classification == "passed" and artifact_binding_failures(plan, required_distributions, diagnostics):
+        raise ConformanceError("passing experiment result has incomplete or mismatched native artifact evidence")
 
 
 def missing_experiment_summary(
-    plan: dict[str, Any], experiment: str, owner: str, required_clients: list[str]
+    plan: dict[str, Any],
+    experiment: str,
+    owner: str,
+    required_clients: list[str],
+    required_distributions: list[str],
 ) -> dict[str, Any]:
     fingerprint = sha256_bytes(
         canonical_json(
             {
                 "candidate_manifest_sha256": plan["candidate"]["manifest_sha256"],
+                "candidate_verification_sha256": plan["candidate"]["verification_sha256"],
                 "contract_sha256": plan["runner"]["contract_sha256"],
                 "experiment": experiment,
                 "classification": "infrastructure_failure",
@@ -947,6 +1218,7 @@ def missing_experiment_summary(
         "classification": "infrastructure_failure",
         "owning_contract": owner,
         "required_clients": required_clients,
+        "required_distributions": required_distributions,
         "result_sha256": None,
         "failure_fingerprint": fingerprint,
     }
@@ -974,6 +1246,7 @@ def aggregate_results(
         discovered[experiment] = (result, path)
     summaries: dict[str, Any] = {}
     retained_paths: dict[str, Path] = {}
+    executed_distribution_identities: dict[str, dict[str, Any]] = {}
     for experiment in EXPERIMENTS:
         if experiment not in discovered:
             summaries[experiment] = missing_experiment_summary(
@@ -981,6 +1254,7 @@ def aggregate_results(
                 experiment,
                 contract["experiments"][experiment]["owning_contract"],
                 contract["experiments"][experiment]["required_clients"],
+                contract["experiments"][experiment]["required_distributions"],
             )
             continue
         result, path = discovered[experiment]
@@ -990,22 +1264,47 @@ def aggregate_results(
         expected_clients = contract["experiments"][experiment]["required_clients"]
         if result["required_clients"] != expected_clients:
             raise ConformanceError(f"experiment result {experiment} names different required clients")
+        expected_distributions = contract["experiments"][experiment]["required_distributions"]
+        if result["required_distributions"] != expected_distributions:
+            raise ConformanceError(f"experiment result {experiment} names different required distributions")
+        for diagnostic in result["diagnostics"]:
+            native_summary = diagnostic.get("native_summary")
+            if not isinstance(native_summary, dict):
+                continue
+            for name, identity in native_summary["executed_distribution_identities"].items():
+                merged = executed_distribution_identities.setdefault(
+                    name,
+                    {"kind": identity["kind"], "locator": identity["locator"], "artifacts": []},
+                )
+                artifacts = {
+                    artifact["name"]: artifact["sha256"]
+                    for artifact in [*merged["artifacts"], *identity["artifacts"]]
+                }
+                merged["artifacts"] = [
+                    {"name": artifact_name, "sha256": artifacts[artifact_name]}
+                    for artifact_name in sorted(artifacts)
+                ]
         summaries[experiment] = {
             "outcome": result["outcome"],
             "classification": result["classification"],
             "owning_contract": result["owning_contract"],
             "required_clients": result["required_clients"],
+            "required_distributions": result["required_distributions"],
             "result_sha256": sha256_file(path),
             "failure_fingerprint": result["failure_fingerprint"],
         }
         retained_paths[experiment] = path
     outcome = "pass" if all(item["outcome"] == "pass" for item in summaries.values()) else "fail"
+    if outcome == "pass" and set(executed_distribution_identities) != set(COMPONENTS):
+        raise ConformanceError("passing suite does not retain executed identities for all seven distributions")
     evidence_tag = f"beta-conformance/{plan['candidate']['name']}/{run_id}.{run_attempt}"
     suite = {
         "schema": SUITE_RESULT_SCHEMA,
         "candidate": plan["candidate"],
         "artifact_tuple": plan["artifact_tuple"],
         "source_identities": plan["source_identities"],
+        "distribution_identities": plan["distribution_identities"],
+        "executed_distribution_identities": executed_distribution_identities,
         "runner": plan["runner"],
         "server_runner": plan["server_runner"],
         "source_policy": {

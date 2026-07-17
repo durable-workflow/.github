@@ -4,7 +4,10 @@ The `Beta conformance` workflow runs the portable beta experiment set from a
 clean GitHub-hosted runner. Its only product input is a canonical manifest that
 already exists at the immutable Git tag `beta-candidate/<candidate>`.
 `prepare` rejects a different tuple, invalid verification, an abbreviated
-source identity, or a server image without the recorded OCI manifest digest.
+source identity, a distribution without recorded SHA-256 identities, or a
+server image without the recorded OCI manifest digest. The plan binds the
+digest of the complete candidate verification document as well as normalized
+digests for every package, crate, image manifest, and CLI release asset.
 
 The experiment contract is [`contract.json`](contract.json). It selects replay,
 polyglot, worker-heartbeat, and signals/query runners shipped inside the exact
@@ -45,6 +48,9 @@ Every experiment result conforms to
 - the candidate name, manifest digest, immutable Git record, and exact
   seven-artifact version/commit tuple;
 - the public source commit for every artifact;
+- the candidate verification-document digest and expected distribution digests;
+- bounded native evidence identifying the package, crate, image manifest, and
+  release-asset bytes actually executed by the published runner;
 - the control-plane runner revision and contract digest;
 - the exact server OCI digest used to obtain the product-owned runner;
 - the owning product contract, outcome, retry record, failure fingerprint,
@@ -53,6 +59,12 @@ Every experiment result conforms to
 The wrapper recognizes only a small allowlist of registry and connection
 transients. Those failures may run twice. A native non-passing result, timeout,
 missing published runner, or injected product failure is never retried.
+Detached registry snapshots are not accepted as execution evidence. A runner
+must report identities derived from its executed downloads, and every artifact
+required by its experiment contract must match the immutable candidate record.
+Missing evidence or a digest change is a non-retryable product failure under the
+experiment's owning contract; matching version strings cannot satisfy the
+check. A passing retained suite covers all seven distributions.
 Experiments run in separate GitHub matrix jobs, have explicit deadlines, use
 unique scratch and Docker state, and prune Docker resources on every exit path.
 

@@ -8,6 +8,13 @@
         "sdk-python",
         "sdk-rust"
       ],
+      "required_distributions": [
+        "server",
+        "cli",
+        "sdk-php",
+        "sdk-python",
+        "sdk-rust"
+      ],
       "runners": [
         {
           "id": "php",
@@ -30,6 +37,14 @@
     "polyglot": {
       "owning_contract": "cross-language-worker-protocol",
       "required_clients": [
+        "sdk-php",
+        "sdk-python"
+      ],
+      "required_distributions": [
+        "workflow",
+        "waterline",
+        "server",
+        "cli",
         "sdk-php",
         "sdk-python"
       ],
@@ -59,6 +74,15 @@
         "sdk-python",
         "sdk-rust"
       ],
+      "required_distributions": [
+        "workflow",
+        "waterline",
+        "server",
+        "cli",
+        "sdk-php",
+        "sdk-python",
+        "sdk-rust"
+      ],
       "runners": [
         {
           "id": "replay-matrix",
@@ -71,6 +95,15 @@
     "signals-queries": {
       "owning_contract": "signals-and-queries",
       "required_clients": [
+        "sdk-php",
+        "sdk-python",
+        "sdk-rust"
+      ],
+      "required_distributions": [
+        "workflow",
+        "waterline",
+        "server",
+        "cli",
         "sdk-php",
         "sdk-python",
         "sdk-rust"

@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from scripts.beta_candidate import COMPONENTS, SCHEMA, VERIFICATION_SCHEMA, canonical_json, manifest_digest
+from scripts.beta_candidate import CLI_ASSETS, COMPONENTS, SCHEMA, VERIFICATION_SCHEMA, canonical_json, manifest_digest
 from scripts.beta_conformance import (
     EXPERIMENTS,
     MAX_INFRASTRUCTURE_ATTEMPTS,
@@ -46,13 +46,42 @@ def candidate_verification(candidate: dict[str, object]) -> dict[str, object]:
     results = {}
     for name, identity in components.items():
         assert isinstance(identity, dict)
-        distribution = {}
-        if name == "server":
+        digest = f"{list(COMPONENTS).index(name) + 1:064x}"
+        component = COMPONENTS[name]
+        if component.distribution == "composer":
+            distribution = {
+                "kind": "composer",
+                "dist": {"sha256": digest},
+            }
+        elif component.distribution == "github-release":
+            distribution = {
+                "kind": "github-release",
+                "assets": [
+                    {"name": asset_name, "sha256": f"{index + 20:064x}"}
+                    for index, asset_name in enumerate(sorted(CLI_ASSETS))
+                ],
+            }
+        elif component.distribution == "pypi":
+            distribution = {
+                "kind": "pypi",
+                "files": [
+                    {"filename": "durable_workflow.whl", "sha256": digest},
+                    {"filename": "durable_workflow.tar.gz", "sha256": f"{100:064x}"},
+                ],
+            }
+        elif component.distribution == "crates.io":
+            distribution = {
+                "kind": "crates.io",
+                "archive": {"sha256": digest},
+            }
+        elif component.distribution == "oci":
             distribution = {
                 "kind": "oci",
                 "image": f"docker.io/durableworkflow/server:{identity['version']}",
                 "manifest_digest": f"sha256:{'a' * 64}",
             }
+        else:
+            raise AssertionError(component.distribution)
         results[name] = {
             "version": identity["version"],
             "commit": identity["commit"],
@@ -70,7 +99,14 @@ def candidate_verification(candidate: dict[str, object]) -> dict[str, object]:
     }
 
 
-def successful_diagnostic() -> dict[str, object]:
+def successful_diagnostic(
+    plan: dict[str, object], required_distributions: list[str] | None = None
+) -> dict[str, object]:
+    selected = required_distributions or list(COMPONENTS)
+    artifact_tuple = plan["artifact_tuple"]
+    distribution_identities = plan["distribution_identities"]
+    assert isinstance(artifact_tuple, dict)
+    assert isinstance(distribution_identities, dict)
     empty_digest = sha256_bytes(b"")
     return {
         "runner": "fixture",
@@ -86,7 +122,10 @@ def successful_diagnostic() -> dict[str, object]:
         "native_result_sha256": "b" * 64,
         "native_summary": {
             "schema": "fixture.result/v1",
-            "artifact_versions": {},
+            "artifact_versions": {name: artifact_tuple[name]["version"] for name in selected},
+            "executed_distribution_identities": {
+                name: json.loads(canonical_json(distribution_identities[name])) for name in selected
+            },
             "scenario_statuses": [{"id": "fixture", "status": "pass"}],
             "local_product_source_checkout_used": False,
         },
@@ -149,6 +188,14 @@ class ContractTest(unittest.TestCase):
                 for client in specification["required_clients"]
             },
         )
+        self.assertEqual(
+            set(COMPONENTS),
+            {
+                distribution
+                for specification in contract["experiments"].values()
+                for distribution in specification["required_distributions"]
+            },
+        )
         encoded = canonical_json(contract).decode()
         self.assertIsNone(re.search(r'"/(?:[^"\\]|\\.)*"', encoded))
         self.assertNotIn("../", encoded)
@@ -186,6 +233,11 @@ class PlanTest(unittest.TestCase):
             f"docker.io/durableworkflow/server@sha256:{'a' * 64}",
             plan["server_runner"]["image"],
         )
+        self.assertEqual(
+            sha256_bytes(canonical_json(candidate_verification(self.fixture.manifest))),
+            plan["candidate"]["verification_sha256"],
+        )
+        self.assertEqual(set(COMPONENTS), set(plan["distribution_identities"]))
 
     def test_plan_rejects_tuple_mutation_after_immutable_record(self) -> None:
         changed = json.loads(canonical_json(self.fixture.manifest))
@@ -233,9 +285,8 @@ class FailureClassificationTest(unittest.TestCase):
         try:
             contract = load_contract(CONTRACT_PATH)
             plan = prepare_plan(fixture.repository, fixture.manifest, contract, fixture.commit)
-            diagnostic = successful_diagnostic()
+            diagnostic = successful_diagnostic(plan, ["sdk-python"])
             diagnostic["native_summary"]["artifact_versions"] = {
-                "server": plan["artifact_tuple"]["server"]["version"],
                 "sdk-python": "9.9.9",
             }
             failures = artifact_binding_failures(plan, ["sdk-python"], [diagnostic])
@@ -244,14 +295,56 @@ class FailureClassificationTest(unittest.TestCase):
         finally:
             fixture.close()
 
+    def test_same_version_with_a_different_distribution_digest_stays_red(self) -> None:
+        fixture = CandidateRecordFixture()
+        try:
+            contract = load_contract(CONTRACT_PATH)
+            plan = prepare_plan(fixture.repository, fixture.manifest, contract, fixture.commit)
+            diagnostic = successful_diagnostic(plan, ["sdk-python"])
+            diagnostic["native_summary"]["executed_distribution_identities"]["sdk-python"]["artifacts"][0][
+                "sha256"
+            ] = "f" * 64
+            failures = artifact_binding_failures(plan, ["sdk-python"], [diagnostic])
+            self.assertEqual(1, len(failures))
+            self.assertIn("sdk-python executed distribution artifact", failures[0])
+        finally:
+            fixture.close()
+
+    def test_missing_distribution_evidence_stays_red(self) -> None:
+        fixture = CandidateRecordFixture()
+        try:
+            contract = load_contract(CONTRACT_PATH)
+            plan = prepare_plan(fixture.repository, fixture.manifest, contract, fixture.commit)
+            diagnostic = successful_diagnostic(plan, ["cli"])
+            del diagnostic["native_summary"]["executed_distribution_identities"]["cli"]
+            failures = artifact_binding_failures(plan, ["cli"], [diagnostic])
+            self.assertEqual(1, len(failures))
+            self.assertIn("executed cli distribution identity", failures[0])
+        finally:
+            fixture.close()
+
     def test_injected_product_failure_has_stable_fingerprint_and_one_attempt(self) -> None:
         fixture = CandidateRecordFixture()
         try:
             contract = load_contract(CONTRACT_PATH)
             plan = prepare_plan(fixture.repository, fixture.manifest, contract, fixture.commit)
-            clients = contract["experiments"]["replay"]["required_clients"]
-            first = injected_failure_result(plan, "replay", "deterministic-replay", clients, "2026-07-17T00:00:00Z")
-            second = injected_failure_result(plan, "replay", "deterministic-replay", clients, "2026-07-18T00:00:00Z")
+            specification = contract["experiments"]["replay"]
+            first = injected_failure_result(
+                plan,
+                "replay",
+                "deterministic-replay",
+                specification["required_clients"],
+                specification["required_distributions"],
+                "2026-07-17T00:00:00Z",
+            )
+            second = injected_failure_result(
+                plan,
+                "replay",
+                "deterministic-replay",
+                specification["required_clients"],
+                specification["required_distributions"],
+                "2026-07-18T00:00:00Z",
+            )
             self.assertEqual(first["failure_fingerprint"], second["failure_fingerprint"])
             self.assertEqual(1, first["retry"]["attempts"])
             self.assertEqual(MAX_INFRASTRUCTURE_ATTEMPTS, first["retry"]["maximum_infrastructure_attempts"])
@@ -290,7 +383,11 @@ class ExperimentRetryTest(unittest.TestCase):
             "outcome": outcome,
             "artifact_versions": {
                 name: self.plan["artifact_tuple"][name]["version"]
-                for name in ["server", *self.specification["required_clients"]]
+                for name in self.specification["required_distributions"]
+            },
+            "executed_distribution_identities": {
+                name: json.loads(canonical_json(self.plan["distribution_identities"][name]))
+                for name in self.specification["required_distributions"]
             },
             "local_product_source_checkout_used": False,
             "scenario_results": {"fixture": outcome},
@@ -374,6 +471,36 @@ class ExperimentRetryTest(unittest.TestCase):
         self.assertEqual("product_failure", result["classification"])
         self.assertEqual(1, result["retry"]["attempts"])
 
+    def test_passing_native_result_with_same_version_and_different_digest_stays_red(self) -> None:
+        def execute(command: list[str], **arguments: object) -> tuple[int, bool]:
+            stdout_path = arguments["stdout_path"]
+            stderr_path = arguments["stderr_path"]
+            assert isinstance(stdout_path, Path)
+            assert isinstance(stderr_path, Path)
+            stdout_path.write_text("", encoding="utf-8")
+            stderr_path.write_text("", encoding="utf-8")
+            native = self.native_result("pass")
+            native["executed_distribution_identities"]["sdk-python"]["artifacts"][0]["sha256"] = "f" * 64
+            native_dir = Path(command[-1])
+            (native_dir / self.runner["result"]).write_bytes(canonical_json(native))
+            return 0, False
+
+        with mock.patch("scripts.beta_conformance.execute_command", side_effect=execute) as execute_command:
+            result = run_experiment(
+                self.plan,
+                self.contract,
+                "replay",
+                self.artifact_root,
+                self.result_dir,
+            )
+
+        execute_command.assert_called_once()
+        self.assertEqual("product_failure", result["classification"])
+        binding = result["diagnostics"][-1]
+        self.assertEqual("artifact-binding", binding["runner"])
+        self.assertEqual("deterministic-replay", binding["findings"][0]["owning_contract"])
+        self.assertIn("sdk-python executed distribution artifact", binding["findings"][0]["summary"])
+
 
 class EvidenceTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -400,18 +527,27 @@ class EvidenceTest(unittest.TestCase):
             for experiment in EXPERIMENTS:
                 owner = self.contract["experiments"][experiment]["owning_contract"]
                 clients = self.contract["experiments"][experiment]["required_clients"]
+                distributions = self.contract["experiments"][experiment]["required_distributions"]
                 if experiment == "signals-queries":
-                    result = injected_failure_result(self.plan, experiment, owner, clients, "2026-07-17T00:00:00Z")
+                    result = injected_failure_result(
+                        self.plan,
+                        experiment,
+                        owner,
+                        clients,
+                        distributions,
+                        "2026-07-17T00:00:00Z",
+                    )
                 else:
                     result = experiment_result(
                         self.plan,
                         experiment,
                         owner,
                         clients,
+                        distributions,
                         "2026-07-17T00:00:00Z",
                         "passed",
                         1,
-                        [successful_diagnostic()],
+                        [successful_diagnostic(self.plan, distributions)],
                     )
                 path = root / experiment / "experiment-result.json"
                 path.parent.mkdir()
@@ -448,16 +584,48 @@ class EvidenceTest(unittest.TestCase):
             self.assertEqual("infrastructure_failure", suite["experiments"][experiment]["classification"])
             self.assertRegex(suite["experiments"][experiment]["failure_fingerprint"], r"^[0-9a-f]{64}$")
 
+    def test_green_suite_retains_executed_identities_for_all_seven_distributions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for experiment in EXPERIMENTS:
+                specification = self.contract["experiments"][experiment]
+                result = experiment_result(
+                    self.plan,
+                    experiment,
+                    specification["owning_contract"],
+                    specification["required_clients"],
+                    specification["required_distributions"],
+                    "2026-07-17T00:00:00Z",
+                    "passed",
+                    1,
+                    [successful_diagnostic(self.plan, specification["required_distributions"])],
+                )
+                path = root / experiment / "experiment-result.json"
+                path.parent.mkdir()
+                path.write_bytes(canonical_json(result))
+
+            suite, _ = aggregate_results(
+                self.plan,
+                self.contract,
+                root,
+                run_id=12345,
+                run_attempt=1,
+            )
+
+        self.assertEqual("pass", suite["outcome"])
+        self.assertEqual(set(COMPONENTS), set(suite["executed_distribution_identities"]))
+
     def test_result_validator_rejects_a_different_source_tuple(self) -> None:
         result = experiment_result(
             self.plan,
             "replay",
             "deterministic-replay",
             self.contract["experiments"]["replay"]["required_clients"],
+            self.contract["experiments"]["replay"]["required_distributions"],
             "2026-07-17T00:00:00Z",
             "passed",
             1,
-            [successful_diagnostic()],
+            [successful_diagnostic(self.plan)],
         )
         result["source_identities"] = dict(result["source_identities"])
         result["source_identities"]["sdk-rust"] = "f" * 40
