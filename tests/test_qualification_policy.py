@@ -144,12 +144,11 @@ jobs:
 
 
 class QualificationPolicyTest(unittest.TestCase):
-    def test_github_client_recovers_from_service_and_connection_interruptions(self) -> None:
+    def test_github_client_falls_back_without_forwarding_authorization(self) -> None:
         sleeps: list[float] = []
-        client = GitHubClient(max_attempts=3, retry_base_seconds=1, sleep=sleeps.append)
+        client = GitHubClient("secret", max_attempts=3, retry_base_seconds=1, sleep=sleeps.append)
         responses = [
-            http_error(503, b"service unavailable"),
-            urllib.error.URLError(ConnectionResetError("connection reset by peer")),
+            http_error(503, b"service unavailable", **{"Retry-After": "120"}),
             FakeResponse(b'{"default_branch":"main"}'),
         ]
 
@@ -157,7 +156,27 @@ class QualificationPolicyTest(unittest.TestCase):
             result = client.json("/repos/durable-workflow/cli")
 
         self.assertEqual({"default_branch": "main"}, result)
-        self.assertEqual([1, 2], sleeps)
+        self.assertEqual([], sleeps)
+        self.assertEqual(2, urlopen.call_count)
+        authenticated_request = urlopen.call_args_list[0].args[0]
+        credential_free_request = urlopen.call_args_list[1].args[0]
+        self.assertEqual("Bearer secret", authenticated_request.get_header("Authorization"))
+        self.assertIsNone(credential_free_request.get_header("Authorization"))
+
+    def test_github_client_recovers_after_both_clients_have_connection_interruptions(self) -> None:
+        sleeps: list[float] = []
+        client = GitHubClient("secret", max_attempts=3, retry_base_seconds=1, sleep=sleeps.append)
+        responses = [
+            urllib.error.URLError(ConnectionResetError("authenticated connection reset")),
+            urllib.error.URLError(ConnectionResetError("credential-free connection reset")),
+            FakeResponse(b'{"default_branch":"main"}'),
+        ]
+
+        with patch.object(urllib.request, "urlopen", side_effect=responses) as urlopen:
+            result = client.json("/repos/durable-workflow/cli")
+
+        self.assertEqual({"default_branch": "main"}, result)
+        self.assertEqual([1], sleeps)
         self.assertEqual(3, urlopen.call_count)
 
     def test_github_client_honors_rate_limit_retry_timing(self) -> None:
@@ -171,45 +190,101 @@ class QualificationPolicyTest(unittest.TestCase):
         )
         responses = [
             http_error(403, b"API rate limit exceeded", **{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "112"}),
-            http_error(429, **{"Retry-After": "7"}),
+            http_error(429, **{"Retry-After": "120"}),
             FakeResponse(b"[]"),
         ]
 
         with patch.object(urllib.request, "urlopen", side_effect=responses):
             self.assertEqual([], client.json("/repos/durable-workflow/cli/rules/branches/main"))
 
-        self.assertEqual([12, 7], sleeps)
+        self.assertEqual([12, 120], sleeps)
 
     def test_github_client_bounds_transient_exhaustion_with_endpoint_evidence(self) -> None:
-        client = GitHubClient(max_attempts=3, retry_base_seconds=1, sleep=lambda _delay: None)
+        client = GitHubClient("secret", max_attempts=3, retry_base_seconds=1, sleep=lambda _delay: None)
 
         with (
             patch.object(
                 urllib.request,
                 "urlopen",
-                side_effect=[http_error(503), http_error(503), http_error(503)],
+                side_effect=[http_error(503), http_error(502)] * 3,
             ),
             self.assertRaisesRegex(
                 GitHubInfrastructureError,
                 r"classification=github-api-transient, endpoint=GET /repos/durable-workflow/cli, "
-                r"attempts=3, status=503",
+                r"reason=retry-exhausted, authenticated_attempts=3, authenticated_status=503, "
+                r"credential_free_attempts=3, credential_free_status=502",
             ),
         ):
             client.json("/repos/durable-workflow/cli")
 
+    def test_github_client_bounds_all_endpoint_retries_by_the_audit_deadline(self) -> None:
+        clock = [0.0]
+        sleeps: list[float] = []
+
+        def sleep(delay: float) -> None:
+            sleeps.append(delay)
+            clock[0] += delay
+
+        client = GitHubClient(
+            "secret",
+            max_attempts=5,
+            retry_base_seconds=2,
+            audit_timeout_seconds=3,
+            sleep=sleep,
+            monotonic=lambda: clock[0],
+        )
+
+        responses = [
+            http_error(503),
+            http_error(503),
+            FakeResponse(b'{"default_branch":"main"}'),
+            http_error(503),
+            http_error(503),
+        ]
+        with patch.object(urllib.request, "urlopen", side_effect=responses) as urlopen:
+            self.assertEqual(
+                {"default_branch": "main"},
+                client.json("/repos/durable-workflow/cli"),
+            )
+            with self.assertRaisesRegex(
+                GitHubInfrastructureError,
+                r"endpoint=GET /repos/durable-workflow/server, reason=audit-deadline, "
+                r"authenticated_attempts=1, authenticated_status=503, credential_free_attempts=1, "
+                r"credential_free_status=503",
+            ):
+                client.json("/repos/durable-workflow/server")
+
+        self.assertEqual([2], sleeps)
+        self.assertEqual(5, urlopen.call_count)
+
     def test_github_client_does_not_retry_authorization_failures(self) -> None:
-        client = GitHubClient(max_attempts=3, sleep=lambda _delay: self.fail("authorization failure was retried"))
+        for status in (401, 403):
+            with self.subTest(status=status):
+                client = GitHubClient(
+                    "secret",
+                    max_attempts=3,
+                    sleep=lambda _delay: self.fail("authorization failure was retried"),
+                )
 
-        with (
-            patch.object(urllib.request, "urlopen", side_effect=http_error(403, b"Resource not accessible")) as urlopen,
-            self.assertRaisesRegex(PolicyError, r"GitHub API 403"),
-        ):
-            client.json("/repos/durable-workflow/cli")
+                with (
+                    patch.object(
+                        urllib.request,
+                        "urlopen",
+                        side_effect=http_error(status, b"Resource not accessible"),
+                    ) as urlopen,
+                    self.assertRaisesRegex(PolicyError, rf"GitHub API {status}"),
+                ):
+                    client.json("/repos/durable-workflow/cli")
 
-        self.assertEqual(1, urlopen.call_count)
+                self.assertEqual(1, urlopen.call_count)
 
     def test_exhaustion_uses_a_distinct_temporary_failure_exit(self) -> None:
-        error = GitHubInfrastructureError("/repos/durable-workflow/cli", 5, status=503)
+        error = GitHubInfrastructureError(
+            "/repos/durable-workflow/cli",
+            {"authenticated": 5, "credential_free": 5},
+            {"authenticated": "status=503", "credential_free": "status=503"},
+            reason="retry-exhausted",
+        )
         stderr = io.StringIO()
 
         with (

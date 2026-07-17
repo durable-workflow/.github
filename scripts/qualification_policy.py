@@ -40,6 +40,8 @@ EXPECTED_TARGETS = {
 GITHUB_API_MAX_ATTEMPTS = 5
 GITHUB_API_RETRY_BASE_SECONDS = 2.0
 GITHUB_API_RETRY_MAX_SECONDS = 120.0
+GITHUB_API_REQUEST_TIMEOUT_SECONDS = 30.0
+GITHUB_API_AUDIT_TIMEOUT_SECONDS = 240.0
 INFRASTRUCTURE_EXIT_CODE = 75
 
 
@@ -57,17 +59,44 @@ class GitHubInfrastructureError(RuntimeError):
     def __init__(
         self,
         path: str,
-        attempts: int,
+        attempts: Mapping[str, int],
+        failures: Mapping[str, str],
+        *,
+        reason: str,
+    ) -> None:
+        evidence = ["classification=github-api-transient", f"endpoint=GET {path}", f"reason={reason}"]
+        for client in ("authenticated", "credential_free"):
+            if client in attempts:
+                evidence.append(f"{client}_attempts={attempts[client]}")
+            if client in failures:
+                evidence.append(f"{client}_{failures[client]}")
+        super().__init__(f"GitHub API transient failure exhausted ({', '.join(evidence)})")
+
+
+class _TransientGitHubFailure(RuntimeError):
+    """One GitHub API client attempt encountered retryable infrastructure."""
+
+    def __init__(
+        self,
         *,
         status: int | None = None,
         transport: str | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> None:
-        evidence = ["classification=github-api-transient", f"endpoint=GET {path}", f"attempts={attempts}"]
-        if status is not None:
-            evidence.append(f"status={status}")
-        if transport is not None:
-            evidence.append(f"transport={transport}")
-        super().__init__(f"GitHub API transient failure exhausted ({', '.join(evidence)})")
+        self.status = status
+        self.transport = transport
+        self.headers = headers or {}
+        super().__init__(self.evidence)
+
+    @property
+    def evidence(self) -> str:
+        if self.status is not None:
+            return f"status={self.status}"
+        return f"transport={self.transport}"
+
+
+class _AuditDeadlineExceeded(RuntimeError):
+    """The shared qualification API deadline elapsed during one request."""
 
 
 class GitHubClient:
@@ -79,17 +108,29 @@ class GitHubClient:
         max_attempts: int = GITHUB_API_MAX_ATTEMPTS,
         retry_base_seconds: float = GITHUB_API_RETRY_BASE_SECONDS,
         retry_max_seconds: float = GITHUB_API_RETRY_MAX_SECONDS,
+        request_timeout_seconds: float = GITHUB_API_REQUEST_TIMEOUT_SECONDS,
+        audit_timeout_seconds: float = GITHUB_API_AUDIT_TIMEOUT_SECONDS,
         sleep: Callable[[float], None] = time.sleep,
         now: Callable[[], float] = time.time,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
-        if max_attempts < 1 or retry_base_seconds < 0 or retry_max_seconds < retry_base_seconds:
+        if (
+            max_attempts < 1
+            or retry_base_seconds < 0
+            or retry_max_seconds < retry_base_seconds
+            or request_timeout_seconds <= 0
+            or audit_timeout_seconds <= 0
+        ):
             raise ValueError("invalid GitHub API retry configuration")
         self.api_url = api_url.rstrip("/")
         self.max_attempts = max_attempts
         self.retry_base_seconds = retry_base_seconds
         self.retry_max_seconds = retry_max_seconds
+        self.request_timeout_seconds = request_timeout_seconds
         self.sleep = sleep
         self.now = now
+        self.monotonic = monotonic
+        self.deadline = monotonic() + audit_timeout_seconds
         self.headers = {
             "Accept": "application/vnd.github+json",
             "User-Agent": "durable-workflow-target-qualification/1",
@@ -112,7 +153,7 @@ class GitHubClient:
     ) -> bool:
         headers = error.headers or {}
         return error.code == 429 or (
-            error.code == 403
+            error.code in {401, 403}
             and (
                 headers.get("Retry-After") is not None
                 or headers.get("X-RateLimit-Remaining") == "0"
@@ -158,48 +199,120 @@ class GitHubClient:
                 delays.append(float(rate_limit_reset) - self.now())
         return max((delay for delay in delays if delay > 0), default=None)
 
-    def _retry_delay(self, attempt: int, headers: Mapping[str, str] | None = None) -> float:
-        backoff = self.retry_base_seconds * (2 ** (attempt - 1))
-        server_delay = self._server_retry_delay(headers or {})
-        delay = max(backoff, server_delay or 0)
-        return min(delay, self.retry_max_seconds)
+    def _retry_delay(self, attempt: int, failures: Mapping[str, _TransientGitHubFailure]) -> float:
+        backoff = min(self.retry_base_seconds * (2 ** (attempt - 1)), self.retry_max_seconds)
+        server_delays = [self._server_retry_delay(failure.headers) for failure in failures.values()]
+        return max(backoff, *(server_delay or 0 for server_delay in server_delays))
 
-    def _retry(self, path: str, attempt: int, failure: str, headers: Mapping[str, str] | None = None) -> None:
-        delay = self._retry_delay(attempt, headers)
+    @staticmethod
+    def _failure_evidence(failures: Mapping[str, _TransientGitHubFailure]) -> dict[str, str]:
+        return {client: failure.evidence for client, failure in failures.items()}
+
+    def _infrastructure_error(
+        self,
+        path: str,
+        attempts: Mapping[str, int],
+        failures: Mapping[str, _TransientGitHubFailure],
+        *,
+        reason: str,
+    ) -> GitHubInfrastructureError:
+        return GitHubInfrastructureError(
+            path,
+            attempts,
+            self._failure_evidence(failures),
+            reason=reason,
+        )
+
+    def _remaining_time(self) -> float:
+        return self.deadline - self.monotonic()
+
+    def _retry(
+        self,
+        path: str,
+        attempt: int,
+        attempts: Mapping[str, int],
+        failures: Mapping[str, _TransientGitHubFailure],
+    ) -> None:
+        delay = self._retry_delay(attempt, failures)
+        if delay >= self._remaining_time():
+            raise self._infrastructure_error(
+                path,
+                attempts,
+                failures,
+                reason="audit-deadline",
+            )
+        failure_summary = " ".join(
+            f"{client.replace('_', '-')}={failure.evidence}" for client, failure in failures.items()
+        )
         print(
-            f"qualification GitHub API retry: endpoint=GET {path} {failure} "
+            f"qualification GitHub API retry: endpoint=GET {path} {failure_summary} "
             f"attempt={attempt}/{self.max_attempts} delay={delay:g}s",
             file=sys.stderr,
         )
         self.sleep(delay)
 
-    def _request(self, path: str, *, accept: str | None = None) -> bytes:
+    def _request_once(self, path: str, *, accept: str | None, authenticated: bool) -> bytes:
         headers = dict(self.headers)
+        if not authenticated:
+            headers.pop("Authorization", None)
         if accept:
             headers["Accept"] = accept
         request = urllib.request.Request(f"{self.api_url}{path}", headers=headers)
+        remaining = self._remaining_time()
+        if remaining <= 0:
+            raise _AuditDeadlineExceeded
+        timeout = min(self.request_timeout_seconds, remaining)
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                payload = response.read()
+            if self._remaining_time() <= 0:
+                raise _AuditDeadlineExceeded
+            return payload
+        except urllib.error.HTTPError as error:
+            detail = self._error_detail(error)
+            if error.code == 404:
+                raise ResourceNotFound(f"GitHub API 404 for {path}: {detail}") from error
+            if 500 <= error.code <= 599 or self._is_rate_limited(error, detail):
+                raise _TransientGitHubFailure(status=error.code, headers=error.headers) from error
+            raise PolicyError(f"GitHub API {error.code} for {path}: {detail}") from error
+        except (urllib.error.URLError, ConnectionError, TimeoutError, http.client.IncompleteRead) as error:
+            transport = self._transport_name(error)
+            if transport is None:
+                reason = error.reason if isinstance(error, urllib.error.URLError) else error
+                raise PolicyError(f"GitHub API request failed for {path}: {reason}") from error
+            raise _TransientGitHubFailure(transport=transport) from error
+
+    def _request(self, path: str, *, accept: str | None = None) -> bytes:
+        authenticated = "Authorization" in self.headers
+        clients = ("authenticated", "credential_free") if authenticated else ("credential_free",)
+        attempts = dict.fromkeys(clients, 0)
         for attempt in range(1, self.max_attempts + 1):
-            try:
-                with urllib.request.urlopen(request, timeout=30) as response:
-                    return response.read()
-            except urllib.error.HTTPError as error:
-                detail = self._error_detail(error)
-                if error.code == 404:
-                    raise ResourceNotFound(f"GitHub API 404 for {path}: {detail}") from error
-                if 500 <= error.code <= 599 or self._is_rate_limited(error, detail):
-                    if attempt == self.max_attempts:
-                        raise GitHubInfrastructureError(path, attempt, status=error.code) from error
-                    self._retry(path, attempt, f"status={error.code}", error.headers)
-                    continue
-                raise PolicyError(f"GitHub API {error.code} for {path}: {detail}") from error
-            except (urllib.error.URLError, ConnectionError, TimeoutError, http.client.IncompleteRead) as error:
-                transport = self._transport_name(error)
-                if transport is None:
-                    reason = error.reason if isinstance(error, urllib.error.URLError) else error
-                    raise PolicyError(f"GitHub API request failed for {path}: {reason}") from error
-                if attempt == self.max_attempts:
-                    raise GitHubInfrastructureError(path, attempt, transport=transport) from error
-                self._retry(path, attempt, f"transport={transport}")
+            failures: dict[str, _TransientGitHubFailure] = {}
+            for client in clients:
+                if self._remaining_time() <= 0:
+                    raise self._infrastructure_error(path, attempts, failures, reason="audit-deadline")
+                attempts[client] += 1
+                try:
+                    return self._request_once(path, accept=accept, authenticated=client == "authenticated")
+                except _AuditDeadlineExceeded:
+                    raise self._infrastructure_error(path, attempts, failures, reason="audit-deadline") from None
+                except _TransientGitHubFailure as error:
+                    failures[client] = error
+                    if client == "authenticated":
+                        print(
+                            f"qualification GitHub API fallback: endpoint=GET {path} "
+                            f"authenticated={error.evidence} attempt={attempt}/{self.max_attempts} "
+                            "client=credential-free",
+                            file=sys.stderr,
+                        )
+            if attempt == self.max_attempts:
+                raise self._infrastructure_error(
+                    path,
+                    attempts,
+                    failures,
+                    reason="retry-exhausted",
+                )
+            self._retry(path, attempt, attempts, failures)
         raise AssertionError("GitHub API retry loop ended unexpectedly")
 
     def json(self, path: str) -> Any:
