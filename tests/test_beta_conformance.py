@@ -124,16 +124,22 @@ def candidate_verification(candidate: dict[str, object]) -> dict[str, object]:
 
 
 def successful_diagnostic(
-    plan: dict[str, object], required_distributions: list[str] | None = None
+    plan: dict[str, object],
+    required_distributions: list[str] | None = None,
+    *,
+    runner_id: str = "fixture",
+    schema: str = "fixture.result/v1",
+    scenario_ids: list[str] | None = None,
 ) -> dict[str, object]:
     selected = required_distributions or list(COMPONENTS)
+    selected_scenarios = scenario_ids or ["fixture"]
     artifact_tuple = plan["artifact_tuple"]
     distribution_identities = plan["distribution_identities"]
     assert isinstance(artifact_tuple, dict)
     assert isinstance(distribution_identities, dict)
     empty_digest = sha256_bytes(b"")
     return {
-        "runner": "fixture",
+        "runner": runner_id,
         "attempt": 1,
         "exit_code": 0,
         "timed_out": False,
@@ -148,16 +154,33 @@ def successful_diagnostic(
         "native_result_prefix_sha256": None,
         "native_result_prefix_bytes": None,
         "native_summary": {
-            "schema": "fixture.result/v1",
+            "schema": schema,
             "artifact_versions": {name: artifact_tuple[name]["version"] for name in selected},
             "executed_distribution_identities": {
                 name: json.loads(canonical_json(distribution_identities[name])) for name in selected
             },
-            "scenario_statuses": [{"id": "fixture", "status": "pass"}],
+            "scenario_statuses": [
+                {"id": scenario_id, "status": "pass"} for scenario_id in selected_scenarios
+            ],
             "local_product_source_checkout_used": False,
         },
         "findings": [],
     }
+
+
+def successful_runner_diagnostics(
+    plan: dict[str, object], specification: dict[str, Any]
+) -> list[dict[str, object]]:
+    return [
+        successful_diagnostic(
+            plan,
+            runner["required_distributions"],
+            runner_id=runner["id"],
+            schema=runner.get("result_schema", "fixture.result/v1"),
+            scenario_ids=runner.get("required_scenarios", ["fixture"]),
+        )
+        for runner in specification["runners"]
+    ]
 
 
 def successful_native_result(
@@ -557,6 +580,7 @@ class FailureClassificationTest(unittest.TestCase):
             self.assertEqual(1, first["retry"]["attempts"])
             self.assertEqual(MAX_INFRASTRUCTURE_ATTEMPTS, first["retry"]["maximum_infrastructure_attempts"])
             self.assertFalse(first["retry"]["semantic_failures_retryable"])
+            validate_experiment_result(first, plan, contract)
         finally:
             fixture.close()
 
@@ -878,6 +902,7 @@ class ExperimentRetryTest(unittest.TestCase):
             diagnostic["native_result_prefix_sha256"],
         )
         self.assertEqual("native_result_unreadable", diagnostic["findings"][0]["type"])
+        validate_experiment_result(result, self.plan, self.contract)
         self.assertNotIn(str(self.result_dir), diagnostic["stderr_tail"])
 
     def test_oversized_native_prefix_read_failure_retains_unreadable_evidence(self) -> None:
@@ -1142,6 +1167,7 @@ class ExperimentRetryTest(unittest.TestCase):
         self.assertTrue(diagnostic["runner_blocked"])
         self.assertIn(missing_scenario, diagnostic["stderr_tail"])
         self.assertEqual("native_result_unreadable", diagnostic["findings"][0]["type"])
+        validate_experiment_result(result, self.plan, self.contract)
 
     def test_missing_native_result_is_runner_infrastructure_not_product_failure(self) -> None:
         def execute(command: list[str], **arguments: object) -> tuple[int, bool]:
@@ -1194,6 +1220,7 @@ class ExperimentRetryTest(unittest.TestCase):
         self.assertEqual("fail", result["outcome"])
         self.assertEqual("product_failure", result["classification"])
         self.assertEqual(1, result["retry"]["attempts"])
+        validate_experiment_result(result, self.plan, self.contract)
 
     def test_passing_native_result_with_same_version_and_different_digest_stays_red(self) -> None:
         def execute(command: list[str], **arguments: object) -> tuple[int, bool]:
@@ -1438,6 +1465,8 @@ class MultiRunnerExperimentTest(unittest.TestCase):
             "artifact versions outside its required distributions: sdk-python",
             result["diagnostics"][0]["stderr_tail"],
         )
+        with self.assertRaisesRegex(ConformanceError, "outside its exact assignment"):
+            validate_experiment_result(result, self.plan, self.contract)
 
     def test_exact_peer_only_identity_is_rejected_without_an_extra_version(self) -> None:
         runner = self.specification["runners"][0]
@@ -1472,6 +1501,7 @@ class MultiRunnerExperimentTest(unittest.TestCase):
         self.assertEqual(1, result["retry"]["attempts"])
         self.assertTrue(result["diagnostics"][0]["runner_blocked"])
         self.assertIn("every required distribution identity", result["diagnostics"][0]["stderr_tail"])
+        validate_experiment_result(result, self.plan, self.contract)
 
     def test_mismatched_consumed_identity_runs_all_shards_then_fails_the_aggregate(self) -> None:
         def mismatch_php_identity(runner_id: str, native: dict[str, object]) -> None:
@@ -1489,6 +1519,7 @@ class MultiRunnerExperimentTest(unittest.TestCase):
         self.assertEqual(1, result["retry"]["attempts"])
         self.assertEqual("artifact-binding", result["diagnostics"][-1]["runner"])
         self.assertIn("does not match the candidate digest", result["diagnostics"][-1]["stderr_tail"])
+        validate_experiment_result(result, self.plan, self.contract)
 
 
 class EvidenceTest(unittest.TestCase):
@@ -1629,6 +1660,7 @@ class EvidenceTest(unittest.TestCase):
                         "2026-07-17T00:00:00Z",
                     )
                 else:
+                    specification = self.contract["experiments"][experiment]
                     result = experiment_result(
                         self.plan,
                         experiment,
@@ -1638,7 +1670,7 @@ class EvidenceTest(unittest.TestCase):
                         "2026-07-17T00:00:00Z",
                         "passed",
                         1,
-                        [successful_diagnostic(self.plan, distributions)],
+                        successful_runner_diagnostics(self.plan, specification),
                     )
                 path = root / experiment / "experiment-result.json"
                 path.parent.mkdir()
@@ -1689,7 +1721,7 @@ class EvidenceTest(unittest.TestCase):
                     "2026-07-17T00:00:00Z",
                     "passed",
                     1,
-                    [successful_diagnostic(self.plan, specification["required_distributions"])],
+                    successful_runner_diagnostics(self.plan, specification),
                 )
                 path = root / experiment / "experiment-result.json"
                 path.parent.mkdir()
@@ -1705,6 +1737,235 @@ class EvidenceTest(unittest.TestCase):
 
         self.assertEqual("pass", suite["outcome"])
         self.assertEqual(set(COMPONENTS), set(suite["executed_distribution_identities"]))
+
+    def test_aggregate_rejects_a_passing_result_missing_a_declared_runner(self) -> None:
+        specification = self.contract["experiments"]["polyglot"]
+        result = experiment_result(
+            self.plan,
+            "polyglot",
+            specification["owning_contract"],
+            specification["required_clients"],
+            specification["required_distributions"],
+            "2026-07-17T00:00:00Z",
+            "passed",
+            1,
+            successful_runner_diagnostics(self.plan, specification),
+        )
+        result["diagnostics"].pop()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "polyglot" / "experiment-result.json"
+            path.parent.mkdir()
+            path.write_bytes(canonical_json(result))
+            with self.assertRaisesRegex(ConformanceError, "every declared runner"):
+                aggregate_results(
+                    self.plan,
+                    self.contract,
+                    Path(temporary),
+                    run_id=12345,
+                    run_attempt=1,
+                )
+
+    def test_aggregate_rejects_an_exact_peer_only_runner_claim(self) -> None:
+        specification = self.contract["experiments"]["heartbeats"]
+        result = experiment_result(
+            self.plan,
+            "heartbeats",
+            specification["owning_contract"],
+            specification["required_clients"],
+            specification["required_distributions"],
+            "2026-07-17T00:00:00Z",
+            "passed",
+            1,
+            successful_runner_diagnostics(self.plan, specification),
+        )
+        php_summary = result["diagnostics"][0]["native_summary"]
+        php_summary["artifact_versions"]["sdk-python"] = self.plan["artifact_tuple"]["sdk-python"][
+            "version"
+        ]
+        php_summary["executed_distribution_identities"]["sdk-python"] = json.loads(
+            canonical_json(self.plan["distribution_identities"]["sdk-python"])
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "heartbeats" / "experiment-result.json"
+            path.parent.mkdir()
+            path.write_bytes(canonical_json(result))
+            with self.assertRaisesRegex(ConformanceError, "outside its exact assignment"):
+                aggregate_results(
+                    self.plan,
+                    self.contract,
+                    Path(temporary),
+                    run_id=12345,
+                    run_attempt=1,
+                )
+
+    def test_aggregate_rejects_a_peer_only_identity_without_an_extra_version(self) -> None:
+        specification = self.contract["experiments"]["heartbeats"]
+        result = experiment_result(
+            self.plan,
+            "heartbeats",
+            specification["owning_contract"],
+            specification["required_clients"],
+            specification["required_distributions"],
+            "2026-07-17T00:00:00Z",
+            "passed",
+            1,
+            successful_runner_diagnostics(self.plan, specification),
+        )
+        php_summary = result["diagnostics"][0]["native_summary"]
+        php_summary["executed_distribution_identities"]["sdk-python"] = json.loads(
+            canonical_json(self.plan["distribution_identities"]["sdk-python"])
+        )
+
+        with self.assertRaisesRegex(ConformanceError, "identities outside its exact assignment"):
+            validate_experiment_result(result, self.plan, self.contract)
+
+    def test_aggregate_rejects_a_duplicate_runner_terminal(self) -> None:
+        specification = self.contract["experiments"]["heartbeats"]
+        result = experiment_result(
+            self.plan,
+            "heartbeats",
+            specification["owning_contract"],
+            specification["required_clients"],
+            specification["required_distributions"],
+            "2026-07-17T00:00:00Z",
+            "passed",
+            1,
+            successful_runner_diagnostics(self.plan, specification),
+        )
+        result["diagnostics"].insert(
+            1,
+            json.loads(canonical_json(result["diagnostics"][0])),
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "heartbeats" / "experiment-result.json"
+            path.parent.mkdir()
+            path.write_bytes(canonical_json(result))
+            with self.assertRaisesRegex(ConformanceError, "duplicate passing terminal"):
+                aggregate_results(
+                    self.plan,
+                    self.contract,
+                    Path(temporary),
+                    run_id=12345,
+                    run_attempt=1,
+                )
+
+    def test_aggregate_rejects_an_unknown_runner(self) -> None:
+        specification = self.contract["experiments"]["heartbeats"]
+        result = experiment_result(
+            self.plan,
+            "heartbeats",
+            specification["owning_contract"],
+            specification["required_clients"],
+            specification["required_distributions"],
+            "2026-07-17T00:00:00Z",
+            "passed",
+            1,
+            successful_runner_diagnostics(self.plan, specification),
+        )
+        result["diagnostics"][1]["runner"] = "undeclared-python"
+
+        with self.assertRaisesRegex(ConformanceError, "unknown runner"):
+            validate_experiment_result(result, self.plan, self.contract)
+
+    def test_contract_validator_requires_every_declared_scenario_cell(self) -> None:
+        specification = self.contract["experiments"]["signals-queries"]
+        result = experiment_result(
+            self.plan,
+            "signals-queries",
+            specification["owning_contract"],
+            specification["required_clients"],
+            specification["required_distributions"],
+            "2026-07-17T00:00:00Z",
+            "passed",
+            1,
+            successful_runner_diagnostics(self.plan, specification),
+        )
+        result["diagnostics"][0]["native_summary"]["scenario_statuses"].pop()
+
+        with self.assertRaisesRegex(ConformanceError, "declared scenario cells"):
+            validate_experiment_result(result, self.plan, self.contract)
+
+    def test_aggregate_rejects_incomplete_product_failure_runner_summaries(self) -> None:
+        specification = self.contract["experiments"]["signals-queries"]
+        diagnostic = successful_runner_diagnostics(self.plan, specification)[0]
+        diagnostic.update({"exit_code": 1, "native_outcome": "fail"})
+        retained = experiment_result(
+            self.plan,
+            "signals-queries",
+            specification["owning_contract"],
+            specification["required_clients"],
+            specification["required_distributions"],
+            "2026-07-17T00:00:00Z",
+            "product_failure",
+            1,
+            [diagnostic],
+        )
+        adversarial_summaries = (
+            (
+                "missing-assignment-with-wrong-schema-and-no-scenarios",
+                {
+                    "artifact_versions": {},
+                    "executed_distribution_identities": {},
+                    "schema": "adversarial.result/v1",
+                    "scenario_statuses": [],
+                },
+                "exact distribution assignment",
+            ),
+            ("wrong-schema", {"schema": "adversarial.result/v1"}, "declared schema"),
+            ("missing-scenario-cells", {"scenario_statuses": []}, "declared scenario cells"),
+        )
+
+        for label, summary_changes, expected_error in adversarial_summaries:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                result = json.loads(canonical_json(retained))
+                result["diagnostics"][0]["native_summary"].update(summary_changes)
+                path = Path(temporary) / "signals-queries" / "experiment-result.json"
+                path.parent.mkdir()
+                path.write_bytes(canonical_json(result))
+
+                with self.assertRaisesRegex(ConformanceError, expected_error):
+                    aggregate_results(
+                        self.plan,
+                        self.contract,
+                        Path(temporary),
+                        run_id=12345,
+                        run_attempt=1,
+                    )
+
+    def test_contract_validator_accepts_a_transient_then_pass_runner_lifecycle(self) -> None:
+        specification = self.contract["experiments"]["heartbeats"]
+        result = experiment_result(
+            self.plan,
+            "heartbeats",
+            specification["owning_contract"],
+            specification["required_clients"],
+            specification["required_distributions"],
+            "2026-07-17T00:00:00Z",
+            "passed",
+            1,
+            successful_runner_diagnostics(self.plan, specification),
+        )
+        transient = json.loads(canonical_json(result["diagnostics"][0]))
+        transient.update(
+            {
+                "exit_code": 75,
+                "native_outcome": None,
+                "runner_blocked": True,
+                "stderr_tail": "package download returned 503",
+                "stderr_sha256": sha256_bytes(b"package download returned 503"),
+                "native_result_size_bytes": None,
+                "native_result_sha256": None,
+                "native_summary": None,
+            }
+        )
+        result["diagnostics"][0]["attempt"] = 2
+        result["diagnostics"].insert(0, transient)
+        result["retry"]["attempts"] = 2
+
+        validate_experiment_result(result, self.plan, self.contract)
 
     def test_result_validator_rejects_a_different_source_tuple(self) -> None:
         result = experiment_result(

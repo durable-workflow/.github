@@ -1717,7 +1717,190 @@ def run_experiment(
     return result
 
 
-def validate_experiment_result(result: Any, plan: dict[str, Any]) -> None:
+def retained_attempt_classification(diagnostic: dict[str, Any]) -> tuple[str, bool]:
+    native_size = diagnostic["native_result_size_bytes"]
+    native_digest = diagnostic["native_result_sha256"]
+    native_summary = diagnostic["native_summary"]
+    native_result_rejected = (isinstance(native_size, int) and native_size > NATIVE_RESULT_LIMIT) or (
+        native_digest is not None and native_summary is None
+    )
+    return classify_attempt(
+        returncode=diagnostic["exit_code"],
+        timed_out=diagnostic["timed_out"],
+        native_outcome=diagnostic["native_outcome"],
+        runner_blocked=diagnostic["runner_blocked"],
+        native_result_rejected=native_result_rejected,
+        diagnostic_text=f"{diagnostic['stdout_tail']}\n{diagnostic['stderr_tail']}",
+    )
+
+
+def validate_retained_runner_summary(
+    diagnostic: dict[str, Any],
+    runner: dict[str, Any],
+    plan: dict[str, Any],
+    *,
+    terminal_pass: bool,
+    require_contract_summary: bool,
+    require_binding: bool,
+) -> None:
+    summary = diagnostic["native_summary"]
+    if summary is None:
+        if terminal_pass:
+            raise ConformanceError(
+                f"passing runner {runner['id']} does not retain a native summary"
+            )
+        return
+    required_distributions = set(runner["required_distributions"])
+    reported_versions = set(summary["artifact_versions"])
+    if reported_versions - required_distributions:
+        raise ConformanceError(
+            f"runner {runner['id']} retains artifact versions outside its exact assignment"
+        )
+    reported_identities = set(summary["executed_distribution_identities"])
+    if reported_identities - required_distributions:
+        raise ConformanceError(
+            f"runner {runner['id']} retains distribution identities outside its exact assignment"
+        )
+    if require_contract_summary and (
+        reported_versions != required_distributions or reported_identities != required_distributions
+    ):
+        raise ConformanceError(f"runner {runner['id']} does not retain its exact distribution assignment")
+    if not require_contract_summary:
+        return
+    result_schema = runner.get("result_schema")
+    if result_schema is not None and summary["schema"] != result_schema:
+        raise ConformanceError(f"runner {runner['id']} does not retain its declared schema")
+    required_scenarios = runner.get("required_scenarios", [])
+    if required_scenarios:
+        scenario_ids = [cell["id"] for cell in summary["scenario_statuses"]]
+        if len(scenario_ids) != len(set(scenario_ids)) or set(scenario_ids) != set(required_scenarios):
+            raise ConformanceError(
+                f"runner {runner['id']} does not retain exactly its declared scenario cells"
+            )
+        if terminal_pass and any(cell["status"] != "pass" for cell in summary["scenario_statuses"]):
+            raise ConformanceError(
+                f"passing runner {runner['id']} retains a non-passing declared scenario cell"
+            )
+    if require_binding and artifact_binding_failures(
+        plan, runner["required_distributions"], [diagnostic]
+    ):
+        raise ConformanceError(
+            f"passing runner {runner['id']} has incomplete or mismatched native artifact evidence"
+        )
+
+
+def validate_retained_attempt_lifecycle(
+    result: dict[str, Any], plan: dict[str, Any], contract: dict[str, Any]
+) -> None:
+    experiment = result["experiment"]
+    specification = contract["experiments"][experiment]
+    if result["owning_contract"] != specification["owning_contract"]:
+        raise ConformanceError(f"experiment result {experiment} names a different owning contract")
+    if result["required_clients"] != specification["required_clients"]:
+        raise ConformanceError(f"experiment result {experiment} names different required clients")
+    if result["required_distributions"] != specification["required_distributions"]:
+        raise ConformanceError(f"experiment result {experiment} names different required distributions")
+
+    diagnostics = result["diagnostics"]
+    if diagnostics[0]["runner"] == "injected-product-failure":
+        if (
+            len(diagnostics) != 1
+            or result["classification"] != "product_failure"
+            or result["retry"]["attempts"] != 1
+            or diagnostics[0]["native_summary"] is not None
+        ):
+            raise ConformanceError("injected product-failure evidence has an invalid lifecycle")
+        return
+    if any(diagnostic["runner"] == "injected-product-failure" for diagnostic in diagnostics):
+        raise ConformanceError("injected product-failure evidence must be the only diagnostic")
+
+    binding_positions = [
+        index for index, diagnostic in enumerate(diagnostics) if diagnostic["runner"] == "artifact-binding"
+    ]
+    if len(binding_positions) > 1 or (binding_positions and binding_positions[0] != len(diagnostics) - 1):
+        raise ConformanceError("artifact-binding evidence has a duplicate or non-terminal lifecycle")
+    binding_diagnostic = diagnostics[-1] if binding_positions else None
+    runner_diagnostics = diagnostics[:-1] if binding_diagnostic is not None else diagnostics
+    if binding_diagnostic is not None:
+        binding_classification, _ = retained_attempt_classification(binding_diagnostic)
+        if (
+            result["classification"] != "product_failure"
+            or binding_classification != "product_failure"
+            or binding_diagnostic["attempt"] != 1
+            or binding_diagnostic["native_summary"] is not None
+        ):
+            raise ConformanceError("artifact-binding evidence has an invalid terminal lifecycle")
+
+    expected_runners = specification["runners"]
+    expected_ids = {runner["id"] for runner in expected_runners}
+    cursor = 0
+    completed_runners = 0
+    maximum_attempt = 1
+    terminal_failure: str | None = None
+    for runner in expected_runners:
+        attempts: list[dict[str, Any]] = []
+        while cursor < len(runner_diagnostics) and runner_diagnostics[cursor]["runner"] == runner["id"]:
+            attempts.append(runner_diagnostics[cursor])
+            cursor += 1
+        if not attempts:
+            break
+        classified = [retained_attempt_classification(diagnostic) for diagnostic in attempts]
+        passing_attempts = [index for index, (classification, _) in enumerate(classified) if classification == "passed"]
+        if len(passing_attempts) > 1 or (passing_attempts and passing_attempts[0] != len(attempts) - 1):
+            raise ConformanceError(f"runner {runner['id']} retains duplicate passing terminal attempts")
+        observed_attempts = [diagnostic["attempt"] for diagnostic in attempts]
+        if observed_attempts != list(range(1, len(attempts) + 1)):
+            raise ConformanceError(
+                f"runner {runner['id']} does not retain a bounded, ordered attempt lifecycle"
+            )
+        maximum_attempt = max(maximum_attempt, observed_attempts[-1])
+        for diagnostic, (classification, _retryable) in zip(attempts, classified, strict=True):
+            validate_retained_runner_summary(
+                diagnostic,
+                runner,
+                plan,
+                terminal_pass=classification == "passed",
+                require_contract_summary=classification in {"passed", "product_failure"},
+                require_binding=result["classification"] == "passed",
+            )
+        for classification, retryable in classified[:-1]:
+            if classification != "infrastructure_failure" or not retryable:
+                raise ConformanceError(
+                    f"runner {runner['id']} retains a non-transient attempt before its terminal attempt"
+                )
+        terminal_classification, _ = classified[-1]
+        if terminal_classification == "passed":
+            completed_runners += 1
+            continue
+        terminal_failure = terminal_classification
+        break
+
+    if cursor < len(runner_diagnostics):
+        runner_id = runner_diagnostics[cursor]["runner"]
+        if runner_id in expected_ids:
+            raise ConformanceError(
+                f"experiment {experiment} retains a duplicate or out-of-order runner {runner_id}"
+            )
+        raise ConformanceError(f"experiment {experiment} retains unknown runner {runner_id}")
+    if result["retry"]["attempts"] != maximum_attempt:
+        raise ConformanceError("experiment result retry count disagrees with its runner attempts")
+    if binding_diagnostic is not None:
+        if completed_runners != len(expected_runners) or terminal_failure is not None:
+            raise ConformanceError("artifact-binding evidence requires every declared runner to pass")
+        return
+    if result["classification"] == "passed":
+        if completed_runners != len(expected_runners) or terminal_failure is not None:
+            raise ConformanceError(
+                f"passing experiment {experiment} does not end in one terminal pass for every declared runner"
+            )
+        return
+    if terminal_failure is None or terminal_failure != result["classification"]:
+        raise ConformanceError("failed experiment result disagrees with its terminal runner attempt")
+
+
+def validate_experiment_result(
+    result: Any, plan: dict[str, Any], contract: dict[str, Any] | None = None
+) -> None:
     required = {
         "schema",
         "experiment",
@@ -1802,6 +1985,24 @@ def validate_experiment_result(result: Any, plan: dict[str, Any]) -> None:
     for diagnostic in diagnostics:
         if not isinstance(diagnostic, dict):
             raise ConformanceError("experiment result diagnostic must be an object")
+        if (
+            not isinstance(diagnostic.get("runner"), str)
+            or not diagnostic["runner"]
+            or len(diagnostic["runner"]) > 63
+            or type(diagnostic.get("attempt")) is not int
+            or not 1 <= diagnostic["attempt"] <= MAX_INFRASTRUCTURE_ATTEMPTS
+            or type(diagnostic.get("exit_code")) is not int
+            or not isinstance(diagnostic.get("timed_out"), bool)
+            or (
+                diagnostic.get("native_outcome") is not None
+                and (
+                    not isinstance(diagnostic["native_outcome"], str)
+                    or len(diagnostic["native_outcome"]) > 128
+                )
+            )
+            or not isinstance(diagnostic.get("runner_blocked"), bool)
+        ):
+            raise ConformanceError("experiment result diagnostic has an invalid attempt shape")
         native_identity_fields = {
             "native_result_size_bytes",
             "native_result_sha256",
@@ -1889,6 +2090,13 @@ def validate_experiment_result(result: Any, plan: dict[str, Any]) -> None:
                 or len(native_summary["scenario_statuses"]) > 128
             ):
                 raise ConformanceError("experiment result has an unbounded native summary")
+            summary_versions = native_summary["artifact_versions"]
+            if (
+                not isinstance(summary_versions, dict)
+                or not set(summary_versions).issubset(COMPONENTS)
+                or any(not isinstance(version, str) or len(version) > 128 for version in summary_versions.values())
+            ):
+                raise ConformanceError("experiment result has invalid native artifact versions")
             summary_identities = native_summary["executed_distribution_identities"]
             if not isinstance(summary_identities, dict) or not set(summary_identities).issubset(COMPONENTS):
                 raise ConformanceError("experiment result retains an unknown native distribution identity")
@@ -1896,8 +2104,25 @@ def validate_experiment_result(result: Any, plan: dict[str, Any]) -> None:
                 identity_error = native_distribution_identity_structure_error(name, identity)
                 if identity_error:
                     raise ConformanceError(identity_error)
+            scenario_statuses = native_summary["scenario_statuses"]
+            if not isinstance(scenario_statuses, list) or any(
+                not isinstance(cell, dict)
+                or set(cell) != {"id", "status"}
+                or not isinstance(cell["id"], str)
+                or not cell["id"]
+                or len(cell["id"]) > 128
+                or not isinstance(cell["status"], str)
+                or len(cell["status"]) > 64
+                for cell in scenario_statuses
+            ):
+                raise ConformanceError("experiment result has invalid native scenario statuses")
     if classification == "passed" and artifact_binding_failures(plan, required_distributions, diagnostics):
         raise ConformanceError("passing experiment result has incomplete or mismatched native artifact evidence")
+    if contract is not None:
+        validate_contract(contract)
+        if sha256_bytes(canonical_json(contract)) != plan["runner"]["contract_sha256"]:
+            raise ConformanceError("retained experiment contract does not match the plan binding")
+        validate_retained_attempt_lifecycle(result, plan, contract)
 
 
 def missing_experiment_summary(
@@ -1945,7 +2170,7 @@ def aggregate_results(
     discovered: dict[str, tuple[dict[str, Any], Path]] = {}
     for path in result_root.rglob("experiment-result.json"):
         result = load_json(path)
-        validate_experiment_result(result, plan)
+        validate_experiment_result(result, plan, contract)
         experiment = result["experiment"]
         if experiment in discovered:
             raise ConformanceError(f"multiple retained results exist for experiment {experiment}")
@@ -1964,15 +2189,6 @@ def aggregate_results(
             )
             continue
         result, path = discovered[experiment]
-        expected_owner = contract["experiments"][experiment]["owning_contract"]
-        if result["owning_contract"] != expected_owner:
-            raise ConformanceError(f"experiment result {experiment} names a different owning contract")
-        expected_clients = contract["experiments"][experiment]["required_clients"]
-        if result["required_clients"] != expected_clients:
-            raise ConformanceError(f"experiment result {experiment} names different required clients")
-        expected_distributions = contract["experiments"][experiment]["required_distributions"]
-        if result["required_distributions"] != expected_distributions:
-            raise ConformanceError(f"experiment result {experiment} names different required distributions")
         for diagnostic in result["diagnostics"]:
             native_summary = diagnostic.get("native_summary")
             if not isinstance(native_summary, dict):
