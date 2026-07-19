@@ -592,7 +592,6 @@ def _preflight_markers(
     selected_ids = {item["id"] for item in backlog["items"]}
     markers, aliases = _marker_index(inventory)
     if aliases:
-        _mark_conflicts(policy, client, [(repository, issue) for repository, issue, _ids in aliases])
         failures = [
             f"{repository}#{issue.get('number')} contains multiple distinct beta work ids {work_ids}"
             for repository, issue, work_ids in aliases
@@ -691,11 +690,11 @@ def _audit_migrated_classification(
 def apply_backlog(policy: dict[str, Any], backlog: dict[str, Any], client: Any) -> dict[str, Any]:
     organization = policy["organization"]
     inventory = _inventory(policy, client)
-    _preflight_unblock_context_layouts(backlog, inventory)
-    milestone_numbers, metadata_evidence = sync_metadata(policy, client)
     resolved = _preflight_markers(policy, backlog, client, inventory, allow_missing=True)
+    _preflight_unblock_context_layouts(backlog, inventory)
     planned_body_updates = _plan_unblock_context_updates(backlog, resolved)
     planned_ready_transitions = _plan_ready_transition_updates(backlog, resolved)
+    milestone_numbers, metadata_evidence = sync_metadata(policy, client)
     dependency_urls = {
         work_id: _issue_url(issue, organization, repository) for work_id, (repository, issue) in resolved.items()
     }
@@ -768,10 +767,10 @@ def apply_backlog(policy: dict[str, Any], backlog: dict[str, Any], client: Any) 
 
 def audit_backlog(policy: dict[str, Any], backlog: dict[str, Any], client: Any) -> dict[str, Any]:
     inventory = _inventory(policy, client)
-    _preflight_unblock_context_layouts(backlog, inventory)
-    _milestones, metadata_evidence = sync_metadata(policy, client)
     resolved = _preflight_markers(policy, backlog, client, inventory, allow_missing=False)
+    _preflight_unblock_context_layouts(backlog, inventory)
     _plan_unblock_context_updates(backlog, resolved)
+    _milestones, metadata_evidence = sync_metadata(policy, client)
     failures = _audit_state_labels(policy, client, inventory)
     failures.extend(_audit_migrated_classification(backlog, resolved))
     if failures:

@@ -63,6 +63,9 @@ class FakeGitHubApi:
             repository: {} for repository in policy["repositories"]
         }
         self.issues: dict[str, list[dict[str, Any]]] = {repository: [] for repository in policy["repositories"]}
+        self.label_updates: list[tuple[str, str, str]] = []
+        self.milestone_updates: list[tuple[str, str, str]] = []
+        self.created_issues: list[tuple[str, int]] = []
         self.replacements: list[tuple[str, int, list[str]]] = []
         self.body_updates: list[tuple[str, int, str]] = []
 
@@ -79,6 +82,7 @@ class FakeGitHubApi:
                 continue
             self.labels[repository][label["name"]] = copy.deepcopy(label)
             changes.append(f"{action}:{label['name']}")
+            self.label_updates.append((repository, action, label["name"]))
         return changes
 
     def ensure_milestone(
@@ -91,7 +95,9 @@ class FakeGitHubApi:
         if current == desired:
             return 1, None
         self.milestones[repository][desired["title"]] = copy.deepcopy(desired)
-        return 1, "created" if current is None else "updated"
+        action = "created" if current is None else "updated"
+        self.milestone_updates.append((repository, action, desired["title"]))
+        return 1, action
 
     def list_issues(self, _organization: str, repository: str) -> list[dict[str, Any]]:
         return list(self.issues[repository])
@@ -117,6 +123,7 @@ class FakeGitHubApi:
             "title": title,
         }
         self.issues[repository].append(issue)
+        self.created_issues.append((repository, number))
         return issue
 
     def replace_issue_labels(
@@ -309,6 +316,20 @@ class MigrationTest(unittest.TestCase):
     def setUp(self) -> None:
         self.policy, self.backlog, _policy_schema, _backlog_schema = contract_fixture()
         self.client = FakeGitHubApi(self.policy)
+
+    def clear_mutation_spies(self) -> None:
+        self.client.label_updates.clear()
+        self.client.milestone_updates.clear()
+        self.client.created_issues.clear()
+        self.client.replacements.clear()
+        self.client.body_updates.clear()
+
+    def assert_no_github_mutations(self) -> None:
+        self.assertEqual([], self.client.label_updates)
+        self.assertEqual([], self.client.milestone_updates)
+        self.assertEqual([], self.client.created_issues)
+        self.assertEqual([], self.client.replacements)
+        self.assertEqual([], self.client.body_updates)
 
     def test_apply_creates_only_reviewed_items_with_dependencies(self) -> None:
         evidence = apply_backlog(self.policy, self.backlog, self.client)
@@ -508,7 +529,7 @@ class MigrationTest(unittest.TestCase):
         self.assertIn("authority:conflict", label_names(duplicate))
         self.assertEqual(5, sum(len(issues) for issues in self.client.issues.values()))
 
-    def test_distinct_markers_on_one_issue_fail_before_blocker_reconciliation(self) -> None:
+    def test_apply_rejects_distinct_markers_before_any_github_mutation(self) -> None:
         apply_backlog(self.policy, self.backlog, self.client)
         repository, issue = find_work_item(self.client, "release-plan-versioned-changelogs")
         alias_repository, alias = find_work_item(self.client, "authorize-2-0-beta")
@@ -516,36 +537,50 @@ class MigrationTest(unittest.TestCase):
         self.client.issues[alias_repository].remove(alias)
         issue["body"] += "\n<!-- beta-work-id: authorize-2-0-beta -->\n"
         self.backlog["items"][3]["unblock_condition"] = "A separate reviewed condition must remain independent."
-        self.client.body_updates.clear()
-        self.client.replacements.clear()
-        body_before = issue["body"]
-        state_before = issue["state"]
+        self.client.labels[repository]["authority:github"]["description"] = "Stale label definition"
+        self.client.milestones[repository]["2.0 beta"]["description"] = "Stale milestone definition"
+        self.clear_mutation_spies()
+        issues_before = copy.deepcopy(self.client.issues)
+        labels_before = copy.deepcopy(self.client.labels)
+        milestones_before = copy.deepcopy(self.client.milestones)
 
-        with self.assertRaisesRegex(AuthorityError, "contains multiple distinct beta work ids"):
+        with self.assertRaises(AuthorityError) as raised:
             apply_backlog(self.policy, self.backlog, self.client)
 
-        self.assertEqual(body_before, issue["body"])
-        self.assertEqual(state_before, issue["state"])
-        self.assertEqual([], self.client.body_updates)
-        self.assertIn("authority:conflict", label_names(issue))
+        message = str(raised.exception)
+        self.assertIn(f"{repository}#{issue['number']}", message)
+        self.assertIn("release-plan-versioned-changelogs", message)
+        self.assertIn("authorize-2-0-beta", message)
+        self.assertEqual(issues_before, self.client.issues)
+        self.assertEqual(labels_before, self.client.labels)
+        self.assertEqual(milestones_before, self.client.milestones)
+        self.assert_no_github_mutations()
 
-    def test_audit_rejects_distinct_markers_that_alias_one_issue(self) -> None:
+    def test_audit_rejects_distinct_markers_before_any_github_mutation(self) -> None:
         apply_backlog(self.policy, self.backlog, self.client)
         repository, issue = find_work_item(self.client, "release-plan-versioned-changelogs")
         alias_repository, alias = find_work_item(self.client, "github-only-beta-continuity-drill")
         self.assertEqual(repository, alias_repository)
         self.client.issues[alias_repository].remove(alias)
         issue["body"] += "\n<!-- beta-work-id: github-only-beta-continuity-drill -->\n"
-        self.client.body_updates.clear()
-        self.client.replacements.clear()
-        body_before = issue["body"]
+        self.client.labels[repository]["authority:github"]["description"] = "Stale label definition"
+        self.client.milestones[repository]["2.0 beta"]["description"] = "Stale milestone definition"
+        self.clear_mutation_spies()
+        issues_before = copy.deepcopy(self.client.issues)
+        labels_before = copy.deepcopy(self.client.labels)
+        milestones_before = copy.deepcopy(self.client.milestones)
 
-        with self.assertRaisesRegex(AuthorityError, "contains multiple distinct beta work ids"):
+        with self.assertRaises(AuthorityError) as raised:
             audit_backlog(self.policy, self.backlog, self.client)
 
-        self.assertEqual(body_before, issue["body"])
-        self.assertEqual([], self.client.body_updates)
-        self.assertIn("authority:conflict", label_names(issue))
+        message = str(raised.exception)
+        self.assertIn(f"{repository}#{issue['number']}", message)
+        self.assertIn("release-plan-versioned-changelogs", message)
+        self.assertIn("github-only-beta-continuity-drill", message)
+        self.assertEqual(issues_before, self.client.issues)
+        self.assertEqual(labels_before, self.client.labels)
+        self.assertEqual(milestones_before, self.client.milestones)
+        self.assert_no_github_mutations()
 
     def test_audit_fails_when_a_selected_issue_is_missing(self) -> None:
         apply_backlog(self.policy, self.backlog, self.client)
