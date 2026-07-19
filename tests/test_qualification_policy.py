@@ -425,6 +425,68 @@ class QualificationPolicyTest(unittest.TestCase):
         with self.assertRaisesRegex(PolicyError, "completed/failure"):
             audit_policy(policy, FailedCheckClient(policy))
 
+    def test_audit_waits_for_a_concurrent_target_qualification(self) -> None:
+        policy = policy_fixture()
+
+        class DelayedCheckClient(FakeGitHubClient):
+            def __init__(self, delayed_policy: dict[str, Any]) -> None:
+                super().__init__(delayed_policy)
+                self.waterline_attempts = 0
+
+            def collection(self, path: str, key: str) -> list[dict[str, Any]]:
+                records = super().collection(path, key)
+                if "/durable-workflow/waterline/" not in path:
+                    return records
+                self.waterline_attempts += 1
+                if self.waterline_attempts == 1:
+                    return []
+                if self.waterline_attempts == 2:
+                    records[0]["conclusion"] = None
+                    records[0]["status"] = "in_progress"
+                return records
+
+        client = DelayedCheckClient(policy)
+        sleeps: list[float] = []
+
+        evidence = audit_policy(
+            policy,
+            client,
+            check_run_max_attempts=3,
+            check_run_poll_seconds=5,
+            check_run_sleep=sleeps.append,
+        )
+
+        self.assertEqual([5, 5], sleeps)
+        self.assertEqual(3, client.waterline_attempts)
+        self.assertEqual(
+            {"Target branch qualification"},
+            set(evidence["targets"]["waterline"]["successful_check_runs"]),
+        )
+
+    def test_audit_fails_after_bounded_check_convergence(self) -> None:
+        policy = policy_fixture()
+
+        class MissingCheckClient(FakeGitHubClient):
+            def collection(self, path: str, key: str) -> list[dict[str, Any]]:
+                if "/durable-workflow/waterline/" in path:
+                    return []
+                return super().collection(path, key)
+
+        sleeps: list[float] = []
+        with self.assertRaisesRegex(
+            PolicyError,
+            "required checks did not converge after 3 attempts: 'Target branch qualification' has not been created",
+        ):
+            audit_policy(
+                policy,
+                MissingCheckClient(policy),
+                check_run_max_attempts=3,
+                check_run_poll_seconds=5,
+                check_run_sleep=sleeps.append,
+            )
+
+        self.assertEqual([5, 5], sleeps)
+
     def test_audit_rejects_unprotected_required_checks(self) -> None:
         policy = policy_fixture()
 

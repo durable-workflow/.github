@@ -41,7 +41,9 @@ GITHUB_API_MAX_ATTEMPTS = 5
 GITHUB_API_RETRY_BASE_SECONDS = 2.0
 GITHUB_API_RETRY_MAX_SECONDS = 120.0
 GITHUB_API_REQUEST_TIMEOUT_SECONDS = 30.0
-GITHUB_API_AUDIT_TIMEOUT_SECONDS = 240.0
+GITHUB_API_AUDIT_TIMEOUT_SECONDS = 600.0
+CHECK_RUN_MAX_ATTEMPTS = 20
+CHECK_RUN_POLL_SECONDS = 30.0
 INFRASTRUCTURE_EXIT_CODE = 75
 
 
@@ -625,11 +627,63 @@ def _latest_check_runs(records: list[dict[str, Any]]) -> dict[str, dict[str, Any
     return latest
 
 
+def _successful_check_runs(
+    client: GitHubClient,
+    slug: str,
+    head_sha: str,
+    required_checks: set[str],
+    *,
+    max_attempts: int,
+    poll_seconds: float,
+    sleep: Callable[[float], None],
+) -> dict[str, int]:
+    if max_attempts < 1 or poll_seconds < 0:
+        raise ValueError("invalid check-run convergence configuration")
+
+    path = f"/repos/{slug}/commits/{head_sha}/check-runs?filter=latest"
+    for attempt in range(1, max_attempts + 1):
+        latest = _latest_check_runs(client.collection(path, "check_runs"))
+        pending: list[str] = []
+        successful: dict[str, int] = {}
+        for check in sorted(required_checks):
+            record = latest.get(check)
+            if record is None:
+                pending.append(f"{check!r} has not been created")
+                continue
+            status = record.get("status")
+            conclusion = record.get("conclusion")
+            if status != "completed":
+                pending.append(f"{check!r} is {status}/{conclusion}")
+                continue
+            if conclusion != "success":
+                raise PolicyError(f"{slug}@{head_sha} check {check!r} is {status}/{conclusion}")
+            successful[check] = int(record.get("id", 0))
+
+        if not pending:
+            return successful
+        if attempt == max_attempts:
+            raise PolicyError(
+                f"{slug}@{head_sha} required checks did not converge after {max_attempts} attempts: "
+                + "; ".join(pending)
+            )
+        print(
+            f"qualification check wait: target={slug}@{head_sha} attempt={attempt}/{max_attempts} "
+            f"delay={poll_seconds:g}s pending={'; '.join(pending)}",
+            file=sys.stderr,
+        )
+        sleep(poll_seconds)
+
+    raise AssertionError("check-run convergence loop ended unexpectedly")
+
+
 def audit_policy(
     policy: dict[str, Any],
     client: GitHubClient,
     *,
     skip_check_runs_for: set[str] | None = None,
+    check_run_max_attempts: int = CHECK_RUN_MAX_ATTEMPTS,
+    check_run_poll_seconds: float = CHECK_RUN_POLL_SECONDS,
+    check_run_sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     validate_policy(policy)
     organization = policy["organization"]
@@ -681,20 +735,15 @@ def audit_policy(
         required_checks = {workflow["required_check"] for workflow in target["workflows"]}
         successful_checks: dict[str, int] = {}
         if name not in skipped:
-            records = client.collection(
-                f"/repos/{slug}/commits/{head_sha}/check-runs?filter=latest",
-                "check_runs",
+            successful_checks = _successful_check_runs(
+                client,
+                slug,
+                head_sha,
+                required_checks,
+                max_attempts=check_run_max_attempts,
+                poll_seconds=check_run_poll_seconds,
+                sleep=check_run_sleep,
             )
-            latest = _latest_check_runs(records)
-            for check in sorted(required_checks):
-                record = latest.get(check)
-                if record is None:
-                    raise PolicyError(f"{slug}@{head_sha} has no {check!r} check run")
-                if record.get("status") != "completed" or record.get("conclusion") != "success":
-                    raise PolicyError(
-                        f"{slug}@{head_sha} check {check!r} is {record.get('status')}/{record.get('conclusion')}"
-                    )
-                successful_checks[check] = int(record.get("id", 0))
 
         rules = client.list_collection(f"/repos/{slug}/rules/branches/{encoded_branch}")
         protected_checks: set[str] = set()
