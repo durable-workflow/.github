@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+
+from jsonschema import Draft202012Validator
 
 from scripts.beta_candidate import CandidateError, canonical_json
 from scripts.release_plan import (
@@ -16,7 +19,9 @@ from scripts.release_plan import (
     FOUNDATION_TAG,
     OCCUPIED_SOURCE_MANIFEST_REASON,
     PLAN_TAG_PREFIX,
+    PREPARATION_SCHEMA,
     SCHEMA,
+    SOURCE_CHANGELOGS,
     SOURCE_MANIFEST_REASON,
     candidate_manifest,
     check_plan_compatibility,
@@ -26,6 +31,7 @@ from scripts.release_plan import (
     manifest_digest,
     parse_conflict_components,
     preflight_plan,
+    prepare_release,
     prepare_supersession,
     protected_environment_evidence,
     protected_run_approval_evidence,
@@ -34,6 +40,7 @@ from scripts.release_plan import (
     require_prior_plans_completed,
     terminal_failure_state,
     validate_plan,
+    validate_release_preparation,
     validate_successor_transition,
     validate_supersession_record,
 )
@@ -99,6 +106,47 @@ def release_plan(channel: str = "alpha") -> dict[str, object]:
             {"tag": "beta-authorization/recovery-proof-1", "commit": "f" * 40} if channel == "beta" else None
         ),
     }
+
+
+def release_preparation(plan: dict[str, object], release_date: str = "2026-07-19") -> dict[str, object]:
+    components: dict[str, object] = {}
+    for name, identity in plan["components"].items():
+        body = f"Prepared source changes for {name}."
+        heading = f"## [{identity['version']}] - {release_date}"
+        markdown = f"{heading}\n\n{body}\n"
+        repository = COMPONENTS[name].repository
+        if name in SOURCE_CHANGELOGS:
+            kind = "changelog-unreleased"
+            url = f"https://github.com/{repository}/blob/{identity['commit']}/CHANGELOG.md"
+        else:
+            kind = "source-commit-message"
+            url = f"https://github.com/{repository}/commit/{identity['commit']}"
+        components[name] = {
+            "version": identity["version"],
+            "source_commit": identity["commit"],
+            "release_notes": {
+                "format": "text/markdown",
+                "heading": heading,
+                "markdown": markdown,
+                "release_date": release_date,
+                "sha256": hashlib.sha256(markdown.encode()).hexdigest(),
+                "source": {
+                    "kind": kind,
+                    "sha256": hashlib.sha256(body.encode()).hexdigest(),
+                    "url": url,
+                },
+            },
+        }
+    preparation = {
+        "schema": PREPARATION_SCHEMA,
+        "release_plan": {
+            "tag": f"{PLAN_TAG_PREFIX}{plan['plan']}",
+            "sha256": manifest_digest(plan),
+        },
+        "components": components,
+    }
+    validate_release_preparation(preparation, plan)
+    return preparation
 
 
 def successor_plan(
@@ -309,13 +357,64 @@ class ReleasePlanEntryPointTest(unittest.TestCase):
 
 
 class ReleasePlanValidationTest(unittest.TestCase):
+    def test_preparation_derives_exact_notes_from_immutable_sources(self) -> None:
+        plan = release_plan()
+
+        class FixtureClient:
+            def bytes(self, url: str, **_kwargs: object) -> bytes:
+                component = next(name for name in SOURCE_CHANGELOGS if f"/{name}/" in url)
+                return (
+                    f"# Changelog\n\n## [Unreleased]\n\nSource changes for {component}.\n\n"
+                    "## [0.0.1] - 2026-07-18\n\nEarlier changes.\n"
+                ).encode()
+
+            def json(self, url: str, **_kwargs: object) -> dict[str, object]:
+                component = next(name for name in COMPONENTS if f"/{name}/" in url)
+                return {"commit": {"message": f"Source changes for {component}."}}
+
+        preparation = prepare_release(plan, FixtureClient(), "2026-07-19")
+
+        self.assertEqual(set(COMPONENTS), set(preparation["components"]))
+        for name, identity in plan["components"].items():
+            entry = preparation["components"][name]
+            self.assertEqual(identity["version"], entry["version"])
+            self.assertEqual(identity["commit"], entry["source_commit"])
+            self.assertEqual(
+                f"## [{identity['version']}] - 2026-07-19",
+                entry["release_notes"]["heading"],
+            )
+            self.assertEqual(
+                hashlib.sha256(entry["release_notes"]["markdown"].encode()).hexdigest(),
+                entry["release_notes"]["sha256"],
+            )
+
+        preparation["components"]["sdk-php"]["version"] = "9.9.9"
+        with self.assertRaisesRegex(CandidateError, "different planned identity"):
+            validate_release_preparation(preparation, plan)
+
+        preparation = release_preparation(plan)
+        preparation["components"]["sdk-php"]["release_notes"]["source"]["url"] = (
+            "https://github.com/durable-workflow/sdk-php/blob/"
+            f"{'f' * 40}/CHANGELOG.md"
+        )
+        with self.assertRaisesRegex(CandidateError, "invalid note-source evidence"):
+            validate_release_preparation(preparation, plan)
+
+    def test_preparation_schema_accepts_the_machine_record(self) -> None:
+        schema = json.loads(
+            (REPOSITORY_ROOT / "release-plans" / "preparation-schema.json").read_bytes()
+        )
+        Draft202012Validator.check_schema(schema)
+        Draft202012Validator(schema).validate(release_preparation(release_plan()))
+
     def test_alpha_plan_is_channel_bound(self) -> None:
         plan = release_plan()
         validate_plan(plan)
         candidate = candidate_manifest(plan)
         self.assertEqual("alpha-recovery-proof-1", candidate["candidate"])
         self.assertEqual(plan["components"], candidate["components"])
-        completion = completion_manifest(plan, "a" * 40)
+        preparation = release_preparation(plan)
+        completion = completion_manifest(plan, "a" * 40, preparation)
         self.assertEqual("alpha", completion["channel"])
         self.assertEqual("durable-workflow.release-candidate/v1", completion["schema"])
 
@@ -351,7 +450,10 @@ class ReleasePlanValidationTest(unittest.TestCase):
                 if url.endswith("release-plan-recovery.yml?ref=v2") or url.endswith(
                     "release-plan-recovery.yml?ref=main"
                 ):
-                    return b"on:\n  schedule:\n  workflow_dispatch:\n"
+                    return (
+                        b"on:\n  schedule:\n  workflow_dispatch:\n"
+                        b"steps:\n  - run: recovery resolve --preparation-output release-preparation.json\n"
+                    )
                 raise AssertionError(f"unexpected bytes request: {url}")
 
             def json(self, url: str, **_kwargs: object) -> object:
@@ -422,11 +524,13 @@ class ReleasePlanValidationTest(unittest.TestCase):
                 return None
             return "b" * 40 if tag.startswith("release-candidate/") else "a" * 40
 
-        def read_record(_client: object, tag: str, commit: str, _filename: str) -> dict[str, object]:
+        def read_record(_client: object, tag: str, commit: str, filename: str) -> dict[str, object]:
             if tag.startswith("release-plan/"):
-                return plan_for_tag(tag)
+                plan = plan_for_tag(tag)
+                return release_preparation(plan) if filename == "release-preparation.json" else plan
             plan_tag = tag.removeprefix("release-candidate/alpha/")
-            return completion_manifest(plan_for_tag(f"release-plan/{plan_tag}"), "a" * 40)
+            plan = plan_for_tag(f"release-plan/{plan_tag}")
+            return completion_manifest(plan, "a" * 40, release_preparation(plan))
 
         with (
             mock.patch("scripts.release_plan.resolve_tag", side_effect=resolve),
@@ -451,7 +555,8 @@ class ReleasePlanValidationTest(unittest.TestCase):
         requested["plan"] = "plan-b"
         record_commit = "a" * 40
         completed_commit = "b" * 40
-        completion = completion_manifest(prior, record_commit)
+        preparation = release_preparation(prior)
+        completion = completion_manifest(prior, record_commit, preparation)
 
         class FixtureClient:
             def json(self, _url: str) -> list[dict[str, str]]:
@@ -464,7 +569,7 @@ class ReleasePlanValidationTest(unittest.TestCase):
             ),
             mock.patch(
                 "scripts.release_plan.read_public_record",
-                side_effect=[prior, completion],
+                side_effect=[prior, completion, preparation],
             ),
             mock.patch("scripts.release_plan.load_public_supersession", return_value=None),
         ):
@@ -1308,7 +1413,9 @@ class ReleasePlanRecordTest(unittest.TestCase):
         subprocess.run(["git", "init", "--bare", str(self.remote)], check=True, capture_output=True)
         subprocess.run(["git", "init", str(self.repository)], check=True, capture_output=True)
         self.plan_path = root / "release-plan.json"
+        self.preparation_path = root / "release-preparation.json"
         self.authoritative_path = root / "authoritative-release-plan.json"
+        self.authoritative_preparation_path = root / "authoritative-release-preparation.json"
         self.failure_path = root / "release-plan-failure.json"
         self.successor_path = root / "successor-release-plan.json"
         self.authoritative_failure_path = root / "authoritative-release-plan-failure.json"
@@ -1319,21 +1426,30 @@ class ReleasePlanRecordTest(unittest.TestCase):
 
     def write_plan(self, plan: dict[str, object]) -> None:
         self.plan_path.write_bytes(canonical_json(plan))
+        self.preparation_path.write_bytes(canonical_json(release_preparation(plan)))
 
     def test_first_record_and_identical_recovery_keep_one_commit(self) -> None:
         plan = release_plan()
         self.write_plan(plan)
+        first_preparation = release_preparation(plan)
         created = record_plan(
             self.repository,
             self.plan_path,
+            self.preparation_path,
             remote=str(self.remote),
             authoritative_plan=self.authoritative_path,
+            authoritative_preparation=self.authoritative_preparation_path,
+        )
+        self.preparation_path.write_bytes(
+            canonical_json(release_preparation(plan, "2026-07-20"))
         )
         repeated = record_plan(
             self.repository,
             self.plan_path,
+            self.preparation_path,
             remote=str(self.remote),
             authoritative_plan=self.authoritative_path,
+            authoritative_preparation=self.authoritative_preparation_path,
         )
         self.assertEqual("created", created["status"])
         self.assertEqual("existing", repeated["status"])
@@ -1344,8 +1460,12 @@ class ReleasePlanRecordTest(unittest.TestCase):
             text=True,
             capture_output=True,
         ).stdout.splitlines()
-        self.assertEqual(["release-plan.json"], files)
+        self.assertEqual(["release-plan.json", "release-preparation.json"], files)
         self.assertEqual(canonical_json(plan), self.authoritative_path.read_bytes())
+        self.assertEqual(
+            canonical_json(first_preparation),
+            self.authoritative_preparation_path.read_bytes(),
+        )
 
     def test_existing_plan_rejects_tuple_mutation(self) -> None:
         plan = release_plan()
@@ -1353,8 +1473,10 @@ class ReleasePlanRecordTest(unittest.TestCase):
         record_plan(
             self.repository,
             self.plan_path,
+            self.preparation_path,
             remote=str(self.remote),
             authoritative_plan=self.authoritative_path,
+            authoritative_preparation=self.authoritative_preparation_path,
         )
         changed = copy.deepcopy(plan)
         changed["components"]["server"]["commit"] = "e" * 40

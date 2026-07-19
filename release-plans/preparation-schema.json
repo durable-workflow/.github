@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/durable-workflow/.github/blob/main/release-plans/preparation-schema.json",
+  "title": "Durable Workflow release preparation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "release_plan", "components"],
+  "properties": {
+    "schema": {
+      "const": "durable-workflow.release-preparation/v1"
+    },
+    "release_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tag", "sha256"],
+      "properties": {
+        "tag": {
+          "type": "string",
+          "pattern": "^release-plan/[a-z0-9][a-z0-9._-]{0,55}$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "components": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workflow",
+        "waterline",
+        "server",
+        "cli",
+        "sdk-php",
+        "sdk-python",
+        "sdk-rust"
+      ],
+      "properties": {
+        "workflow": { "$ref": "#/$defs/component" },
+        "waterline": { "$ref": "#/$defs/component" },
+        "server": { "$ref": "#/$defs/component" },
+        "cli": { "$ref": "#/$defs/component" },
+        "sdk-php": { "$ref": "#/$defs/component" },
+        "sdk-python": { "$ref": "#/$defs/component" },
+        "sdk-rust": { "$ref": "#/$defs/component" }
+      }
+    }
+  },
+  "$defs": {
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "source_commit", "release_notes"],
+      "properties": {
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$"
+        },
+        "source_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "release_notes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "format",
+            "heading",
+            "markdown",
+            "release_date",
+            "sha256",
+            "source"
+          ],
+          "properties": {
+            "format": { "const": "text/markdown" },
+            "heading": { "type": "string", "minLength": 1 },
+            "markdown": { "type": "string", "minLength": 1 },
+            "release_date": {
+              "type": "string",
+              "format": "date"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "source": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "sha256", "url"],
+              "properties": {
+                "kind": {
+                  "enum": ["changelog-unreleased", "source-commit-message"]
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "url": {
+                  "type": "string",
+                  "format": "uri",
+                  "pattern": "^https://github\\.com/durable-workflow/"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

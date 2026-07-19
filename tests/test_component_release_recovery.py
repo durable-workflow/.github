@@ -14,12 +14,18 @@ from scripts.component_release_recovery import (
     COMPONENTS,
     FOUNDATION_COMMIT,
     FOUNDATION_TAG,
+    PREPARATION_SCHEMA,
     SCHEMA,
+    NotFound,
     RecoveryError,
     canonical_json,
+    discover_plan,
     main,
+    manifest_digest,
+    resolve_component,
     select_publication_run,
     validate_plan,
+    validate_release_preparation,
     verify_cli,
     verify_recovery_workflow_source,
 )
@@ -45,7 +51,115 @@ def plan(channel: str = "alpha") -> dict[str, object]:
     }
 
 
+def preparation(candidate: dict[str, object]) -> dict[str, object]:
+    release_date = "2026-07-19"
+    components: dict[str, object] = {}
+    for name, identity in candidate["components"].items():
+        heading = f"## [{identity['version']}] - {release_date}"
+        markdown = f"{heading}\n\nPrepared source changes.\n"
+        repository = COMPONENTS[name].repository
+        changelog = name in {"workflow", "waterline", "sdk-php", "sdk-python"}
+        components[name] = {
+            "version": identity["version"],
+            "source_commit": identity["commit"],
+            "release_notes": {
+                "format": "text/markdown",
+                "heading": heading,
+                "markdown": markdown,
+                "release_date": release_date,
+                "sha256": hashlib.sha256(markdown.encode()).hexdigest(),
+                "source": {
+                    "kind": "changelog-unreleased" if changelog else "source-commit-message",
+                    "sha256": "a" * 64,
+                    "url": (
+                        f"https://github.com/{repository}/blob/{identity['commit']}/CHANGELOG.md"
+                        if changelog
+                        else f"https://github.com/{repository}/commit/{identity['commit']}"
+                    ),
+                },
+            },
+        }
+    return {
+        "schema": PREPARATION_SCHEMA,
+        "release_plan": {
+            "tag": f"release-plan/{candidate['plan']}",
+            "sha256": manifest_digest(candidate),
+        },
+        "components": components,
+    }
+
+
 class ComponentRecoveryContractTest(unittest.TestCase):
+    def test_discovery_rejects_missing_preparation_for_an_incomplete_release(self) -> None:
+        candidate = plan()
+        tag = f"release-plan/{candidate['plan']}"
+        record_commit = "a" * 40
+        client = mock.Mock()
+        client.json.return_value = {
+            "tag_name": tag,
+            "draft": False,
+            "assets": [
+                {
+                    "name": "release-plan.json",
+                    "browser_download_url": "https://example.invalid/release-plan.json",
+                }
+            ],
+        }
+        client.bytes.return_value = canonical_json(candidate)
+
+        with (
+            mock.patch("scripts.component_release_recovery.resolve_tag", return_value=record_commit),
+            mock.patch(
+                "scripts.component_release_recovery.read_record",
+                side_effect=[candidate, NotFound("missing preparation", "plan-discovery")],
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.verify_component",
+                side_effect=NotFound("release is incomplete"),
+            ),
+            self.assertRaisesRegex(RecoveryError, "only completed legacy releases"),
+        ):
+            discover_plan(client, tag, "workflow")
+
+    def test_resolution_rejects_missing_preparation_before_publish(self) -> None:
+        candidate = plan()
+        with (
+            mock.patch("scripts.component_release_recovery.verify_plan_authority", return_value=({}, {})),
+            mock.patch("scripts.component_release_recovery.resolve_tag", return_value=None),
+            self.assertRaisesRegex(RecoveryError, "release preparation required before publishing workflow"),
+        ):
+            resolve_component(
+                mock.Mock(),
+                "workflow",
+                f"release-plan/{candidate['plan']}",
+                "a" * 40,
+                candidate,
+                None,
+            )
+
+    def test_completed_legacy_release_is_the_only_missing_preparation_exception(self) -> None:
+        candidate = plan()
+        identity = candidate["components"]["workflow"]
+        public_evidence = {"version": identity["version"], "commit": identity["commit"]}
+        with (
+            mock.patch("scripts.component_release_recovery.verify_plan_authority", return_value=({}, {})),
+            mock.patch("scripts.component_release_recovery.resolve_tag", return_value=identity["commit"]),
+            mock.patch("scripts.component_release_recovery.verify_component", return_value=public_evidence),
+        ):
+            state, outputs = resolve_component(
+                mock.Mock(),
+                "workflow",
+                f"release-plan/{candidate['plan']}",
+                "a" * 40,
+                candidate,
+                None,
+            )
+
+        self.assertEqual("skip", outputs["action"])
+        self.assertEqual("complete", state["phase"])
+        self.assertEqual(public_evidence, state["public_evidence"])
+        self.assertNotIn("release_preparation", state)
+
     def test_dependency_progression_is_public_and_acyclic(self) -> None:
         self.assertEqual((), COMPONENTS["workflow"].dependencies)
         self.assertEqual((), COMPONENTS["sdk-php"].dependencies)
@@ -62,8 +176,17 @@ class ComponentRecoveryContractTest(unittest.TestCase):
             self.assertEqual("main", COMPONENTS[name].default_branch)
 
     def test_alpha_and_beta_plans_validate_independently(self) -> None:
-        validate_plan(plan("alpha"))
-        validate_plan(plan("beta"))
+        for channel in ("alpha", "beta"):
+            candidate = plan(channel)
+            validate_plan(candidate)
+            validate_release_preparation(preparation(candidate), candidate)
+
+    def test_preparation_rejects_notes_for_another_version(self) -> None:
+        candidate = plan()
+        prepared = preparation(candidate)
+        prepared["components"]["server"]["version"] = "9.9.9"
+        with self.assertRaisesRegex(RecoveryError, "different planned identity"):
+            validate_release_preparation(prepared, candidate)
 
     def test_beta_plan_rejects_alpha_workflow_version(self) -> None:
         candidate = plan("beta")
@@ -91,6 +214,7 @@ class ComponentRecoveryContractTest(unittest.TestCase):
 jobs:
   recover:
     steps:
+      - run: python recovery.py resolve --preparation-output release-preparation.json
       - name: Create the exact source tag
         run: |
           gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \\
@@ -230,6 +354,7 @@ jobs:
             with self.subTest(requested_tag=requested_tag), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 plan_output = root / "release-plan.json"
+                preparation_output = root / "release-preparation.json"
                 evidence_output = root / "release-recovery-evidence.json"
                 arguments = [
                     "component_release_recovery.py",
@@ -238,6 +363,8 @@ jobs:
                     "server",
                     "--plan-output",
                     str(plan_output),
+                    "--preparation-output",
+                    str(preparation_output),
                     "--evidence",
                     str(evidence_output),
                 ]
@@ -250,7 +377,7 @@ jobs:
                     mock.patch.object(sys, "argv", arguments),
                     mock.patch(
                         "scripts.component_release_recovery.discover_plan",
-                        return_value=(plan_tag, record_commit, candidate),
+                        return_value=(plan_tag, record_commit, candidate, preparation(candidate)),
                     ) as discover,
                     mock.patch(
                         "scripts.component_release_recovery.resolve_component",
@@ -259,8 +386,12 @@ jobs:
                 ):
                     self.assertEqual(1, main())
 
-                discover.assert_called_once_with(mock.ANY, requested_tag)
+                discover.assert_called_once_with(mock.ANY, requested_tag, "server")
                 self.assertEqual(canonical_json(candidate), plan_output.read_bytes())
+                self.assertEqual(
+                    canonical_json(preparation(candidate)),
+                    preparation_output.read_bytes(),
+                )
                 evidence = json.loads(evidence_output.read_bytes())
                 self.assertEqual(plan_tag, evidence["release_plan_tag"])
                 self.assertEqual(candidate["plan"], evidence["plan"])

@@ -40,6 +40,7 @@ from scripts.beta_candidate import (
 )
 
 SCHEMA = "durable-workflow.release-plan/v1"
+PREPARATION_SCHEMA = "durable-workflow.release-preparation/v1"
 PLAN_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,55}$")
 VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
@@ -87,6 +88,15 @@ SOURCE_MANIFESTS = {
         "table": "package",
     },
 }
+
+SOURCE_CHANGELOGS = {
+    "workflow": "CHANGELOG.md",
+    "waterline": "CHANGELOG.md",
+    "sdk-php": "CHANGELOG.md",
+    "sdk-python": "CHANGELOG.md",
+}
+
+MARKDOWN_MEDIA_TYPE = "text/markdown"
 
 
 def load_plan(path: Path) -> dict[str, Any]:
@@ -199,6 +209,197 @@ def verify_beta_authorization(client: PublicClient, plan: dict[str, Any]) -> Non
     }
     if record != expected:
         raise CandidateError("beta authorization does not name the same candidate and seven-component tuple")
+
+
+def sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def parse_release_date(value: str) -> str:
+    try:
+        parsed = dt.date.fromisoformat(value)
+    except (TypeError, ValueError) as error:
+        raise CandidateError("release preparation date must be an exact YYYY-MM-DD date") from error
+    if parsed.isoformat() != value:
+        raise CandidateError("release preparation date must be an exact YYYY-MM-DD date")
+    return value
+
+
+def unreleased_changelog_body(raw: bytes, component_name: str) -> str:
+    if len(raw) > 1024 * 1024:
+        raise CandidateError(f"{component_name} CHANGELOG.md exceeds the 1 MiB preparation limit")
+    try:
+        source = raw.decode("utf-8").replace("\r\n", "\n")
+    except UnicodeDecodeError as error:
+        raise CandidateError(f"{component_name} CHANGELOG.md is not valid UTF-8") from error
+    heading = re.search(r"(?m)^## \[?Unreleased\]?\s*$", source)
+    if heading is None:
+        raise CandidateError(f"{component_name} CHANGELOG.md has no unique Unreleased section")
+    if re.search(r"(?m)^## \[?Unreleased\]?\s*$", source[heading.end() :]):
+        raise CandidateError(f"{component_name} CHANGELOG.md has no unique Unreleased section")
+    following = re.search(r"(?m)^##\s+", source[heading.end() :])
+    end = heading.end() + following.start() if following else len(source)
+    body = source[heading.end() : end].strip()
+    if not body:
+        raise CandidateError(f"{component_name} CHANGELOG.md Unreleased section is empty")
+    return body
+
+
+def component_release_notes(
+    plan: dict[str, Any],
+    component_name: str,
+    client: PublicClient,
+    release_date: str,
+) -> dict[str, Any]:
+    component = COMPONENTS[component_name]
+    identity = plan["components"][component_name]
+    if component_name in SOURCE_CHANGELOGS:
+        path = SOURCE_CHANGELOGS[component_name]
+        encoded_path = urllib.parse.quote(path, safe="/")
+        raw = client.bytes(
+            f"https://api.github.com/repos/{component.repository}/contents/{encoded_path}"
+            f"?ref={identity['commit']}",
+            accept="application/vnd.github.raw+json",
+        )
+        body = unreleased_changelog_body(raw, component_name)
+        source = {
+            "kind": "changelog-unreleased",
+            "sha256": sha256_bytes(raw),
+            "url": f"https://github.com/{component.repository}/blob/{identity['commit']}/{path}",
+        }
+    else:
+        commit = client.json(
+            f"https://api.github.com/repos/{component.repository}/commits/{identity['commit']}"
+        )
+        message = commit.get("commit", {}).get("message") if isinstance(commit, dict) else None
+        if not isinstance(message, str) or not message.strip():
+            raise CandidateError(f"{component_name} source commit has no public release-note summary")
+        body = message.strip().replace("\r\n", "\n")
+        source = {
+            "kind": "source-commit-message",
+            "sha256": sha256_bytes(body.encode()),
+            "url": f"https://github.com/{component.repository}/commit/{identity['commit']}",
+        }
+    heading = f"## [{identity['version']}] - {release_date}"
+    markdown = f"{heading}\n\n{body}\n"
+    return {
+        "format": MARKDOWN_MEDIA_TYPE,
+        "heading": heading,
+        "markdown": markdown,
+        "release_date": release_date,
+        "sha256": sha256_bytes(markdown.encode()),
+        "source": source,
+    }
+
+
+def prepare_release(
+    plan: dict[str, Any], client: PublicClient, release_date: str
+) -> dict[str, Any]:
+    validate_plan(plan)
+    release_date = parse_release_date(release_date)
+    preparation = {
+        "schema": PREPARATION_SCHEMA,
+        "release_plan": {
+            "tag": f"{PLAN_TAG_PREFIX}{plan['plan']}",
+            "sha256": manifest_digest(plan),
+        },
+        "components": {
+            name: {
+                "version": plan["components"][name]["version"],
+                "source_commit": plan["components"][name]["commit"],
+                "release_notes": component_release_notes(plan, name, client, release_date),
+            }
+            for name in COMPONENTS
+        },
+    }
+    validate_release_preparation(preparation, plan)
+    return preparation
+
+
+def validate_release_preparation(preparation: Any, plan: dict[str, Any]) -> None:
+    validate_plan(plan)
+    if not isinstance(preparation, dict) or set(preparation) != {
+        "schema",
+        "release_plan",
+        "components",
+    }:
+        raise CandidateError("release preparation has an invalid top-level shape")
+    if preparation["schema"] != PREPARATION_SCHEMA:
+        raise CandidateError(f"release preparation schema must be {PREPARATION_SCHEMA}")
+    expected_plan = {
+        "tag": f"{PLAN_TAG_PREFIX}{plan['plan']}",
+        "sha256": manifest_digest(plan),
+    }
+    if preparation["release_plan"] != expected_plan:
+        raise CandidateError("release preparation names a different immutable release plan")
+    components = preparation["components"]
+    if not isinstance(components, dict) or set(components) != set(COMPONENTS):
+        raise CandidateError(f"release preparation components must be exactly {sorted(COMPONENTS)}")
+    for name, entry in components.items():
+        identity = plan["components"][name]
+        if not isinstance(entry, dict) or set(entry) != {
+            "version",
+            "source_commit",
+            "release_notes",
+        }:
+            raise CandidateError(f"release preparation component {name} has an invalid shape")
+        if entry["version"] != identity["version"] or entry["source_commit"] != identity["commit"]:
+            raise CandidateError(f"release preparation component {name} names a different planned identity")
+        notes = entry["release_notes"]
+        if not isinstance(notes, dict) or set(notes) != {
+            "format",
+            "heading",
+            "markdown",
+            "release_date",
+            "sha256",
+            "source",
+        }:
+            raise CandidateError(f"release preparation component {name} has invalid release notes")
+        release_date = parse_release_date(notes["release_date"])
+        expected_heading = f"## [{identity['version']}] - {release_date}"
+        if notes["format"] != MARKDOWN_MEDIA_TYPE or notes["heading"] != expected_heading:
+            raise CandidateError(f"release preparation component {name} has a mismatched versioned heading")
+        markdown = notes["markdown"]
+        if (
+            not isinstance(markdown, str)
+            or not markdown.startswith(f"{expected_heading}\n\n")
+            or not markdown.endswith("\n")
+            or notes["sha256"] != sha256_bytes(markdown.encode())
+        ):
+            raise CandidateError(f"release preparation component {name} has mismatched note content")
+        source = notes["source"]
+        expected_kind = (
+            "changelog-unreleased" if name in SOURCE_CHANGELOGS else "source-commit-message"
+        )
+        expected_source_url = (
+            f"https://github.com/{COMPONENTS[name].repository}/blob/{identity['commit']}/"
+            f"{SOURCE_CHANGELOGS[name]}"
+            if name in SOURCE_CHANGELOGS
+            else f"https://github.com/{COMPONENTS[name].repository}/commit/{identity['commit']}"
+        )
+        if (
+            not isinstance(source, dict)
+            or set(source) != {"kind", "sha256", "url"}
+            or source["kind"] != expected_kind
+            or not re.fullmatch(r"[0-9a-f]{64}", str(source["sha256"]))
+            or source["url"] != expected_source_url
+        ):
+            raise CandidateError(f"release preparation component {name} has invalid note-source evidence")
+
+
+def revalidate_release_preparation(
+    preparation: dict[str, Any], plan: dict[str, Any], client: PublicClient
+) -> None:
+    validate_release_preparation(preparation, plan)
+    dates = {
+        entry["release_notes"]["release_date"]
+        for entry in preparation["components"].values()
+    }
+    if len(dates) != 1:
+        raise CandidateError("release preparation components do not share one release date")
+    expected = prepare_release(plan, client, dates.pop())
+    if canonical_json(preparation) != canonical_json(expected):
+        raise CandidateError("release preparation no longer matches its immutable source evidence")
 
 
 def is_immediate_version_successor(previous: str, successor: str) -> bool:
@@ -1011,7 +1212,20 @@ def require_prior_plans_completed(plan: dict[str, Any], client: PublicClient) ->
             completion_commit,
             "release-candidate.json",
         )
-        if completion != completion_manifest(prior, record_commit):
+        try:
+            preparation = read_public_record(
+                client,
+                tag,
+                record_commit,
+                "release-preparation.json",
+            )
+        except CandidateError as error:
+            if "(404)" not in str(error):
+                raise
+            preparation = None
+        if preparation is not None:
+            validate_release_preparation(preparation, prior)
+        if completion != completion_manifest(prior, record_commit, preparation):
             raise CandidateError(f"prior completion record {completion_tag} does not prove {tag}")
         if load_public_supersession(prior, record_commit, client) is not None:
             raise CandidateError(f"prior release plan {tag} has conflicting completion and terminal-failure records")
@@ -1023,7 +1237,9 @@ def require_prior_plans_completed(plan: dict[str, Any], client: PublicClient) ->
     return completed
 
 
-def preflight_plan(plan: dict[str, Any], client: PublicClient) -> dict[str, Any]:
+def preflight_plan(
+    plan: dict[str, Any], client: PublicClient, *, release_date: str | None = None
+) -> dict[str, Any]:
     foundation = read_public_record(client, FOUNDATION_TAG, FOUNDATION_COMMIT, "candidate.json")
     if foundation.get("candidate") != "beta-continuity-foundation":
         raise CandidateError("immutable candidate foundation has an unexpected identity")
@@ -1067,11 +1283,14 @@ def preflight_plan(plan: dict[str, Any], client: PublicClient) -> dict[str, Any]
             f"https://api.github.com/repos/{component.repository}/contents/{expected_path}?ref={expected_branch}"
         )
         workflow_source = client.bytes(contents_url, accept="application/vnd.github.raw+json").decode("utf-8")
-        if not re.search(r"(?m)^  schedule:\s*$", workflow_source) or not re.search(
-            r"(?m)^  workflow_dispatch:\s*$", workflow_source
+        if (
+            not re.search(r"(?m)^  schedule:\s*$", workflow_source)
+            or not re.search(r"(?m)^  workflow_dispatch:\s*$", workflow_source)
+            or "--preparation-output" not in workflow_source
         ):
             raise CandidateError(
-                f"{component.repository} recovery workflow lacks schedule or manual dispatch on {expected_branch}"
+                f"{component.repository} recovery workflow lacks prepared-plan schedule/manual dispatch "
+                f"on {expected_branch}"
             )
         recovery_workflows[name] = {
             "default_branch": expected_branch,
@@ -1100,10 +1319,16 @@ def preflight_plan(plan: dict[str, Any], client: PublicClient) -> dict[str, Any]
         tags[name] = existing or "absent"
 
     verify_beta_authorization(client, plan)
+    preparation = prepare_release(
+        plan,
+        client,
+        release_date or dt.datetime.now(dt.UTC).date().isoformat(),
+    )
     return {
         "default_branches": branches,
         "prior_plans": prior_plans,
         "recovery_workflows": recovery_workflows,
+        "release_preparation": preparation,
         "source_manifests": source_manifests,
         "version_tags": tags,
     }
@@ -1119,29 +1344,71 @@ def check_plan_compatibility(repository: Path, plan_path: Path, *, remote: str) 
     existing = read_record_file(repository, existing_ref, "release-plan.json")
     if existing != canonical:
         raise CandidateError(f"release plan {plan['plan']} is immutable and the requested tuple is different")
+    try:
+        preparation = json.loads(
+            read_record_file(repository, existing_ref, "release-preparation.json")
+        )
+    except json.JSONDecodeError as error:
+        raise CandidateError(f"release plan {plan['plan']} has invalid preparation authority") from error
+    validate_release_preparation(preparation, plan)
     return {
         "status": "existing",
         "plan": plan["plan"],
         "tag": tag,
         "commit": run_git(["rev-parse", f"{existing_ref}^{{commit}}"], cwd=repository),
+        "preparation_sha256": manifest_digest(preparation),
     }
 
 
-def record_plan(repository: Path, plan_path: Path, *, remote: str, authoritative_plan: Path) -> dict[str, str]:
+def load_release_preparation(path: Path, plan: dict[str, Any]) -> dict[str, Any]:
+    try:
+        raw = path.read_bytes()
+    except OSError as error:
+        raise CandidateError(f"cannot read release preparation {path}: {error}") from error
+    if len(raw) > 2 * 1024 * 1024:
+        raise CandidateError("release preparation exceeds the 2 MiB limit")
+    try:
+        preparation = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise CandidateError(f"release preparation is not valid JSON: {error}") from error
+    validate_release_preparation(preparation, plan)
+    return preparation
+
+
+def record_plan(
+    repository: Path,
+    plan_path: Path,
+    preparation_path: Path,
+    *,
+    remote: str,
+    authoritative_plan: Path,
+    authoritative_preparation: Path,
+) -> dict[str, str]:
     plan = load_plan(plan_path)
     canonical = canonical_json(plan)
+    preparation = load_release_preparation(preparation_path, plan)
+    canonical_preparation = canonical_json(preparation)
     tag = f"{PLAN_TAG_PREFIX}{plan['plan']}"
     existing_ref = fetch_existing_record(repository, remote, tag)
     if existing_ref:
         existing = read_record_file(repository, existing_ref, "release-plan.json")
         if existing != canonical:
             raise CandidateError(f"release plan {plan['plan']} is immutable and the requested tuple is different")
+        existing_preparation = read_record_file(repository, existing_ref, "release-preparation.json")
+        try:
+            validate_release_preparation(json.loads(existing_preparation), plan)
+        except json.JSONDecodeError as error:
+            raise CandidateError(
+                f"release plan {plan['plan']} has invalid immutable preparation authority"
+            ) from error
         authoritative_plan.write_bytes(existing)
+        authoritative_preparation.write_bytes(existing_preparation)
         return {
             "status": "existing",
             "plan": plan["plan"],
             "tag": tag,
             "commit": run_git(["rev-parse", f"{existing_ref}^{{commit}}"], cwd=repository),
+            "preparation_sha256": manifest_digest(json.loads(existing_preparation)),
         }
 
     with tempfile.NamedTemporaryFile(prefix="release-plan-index-", delete=False) as index:
@@ -1151,19 +1418,27 @@ def record_plan(repository: Path, plan_path: Path, *, remote: str, authoritative
         env["GIT_INDEX_FILE"] = str(index_path)
         index_path.unlink(missing_ok=True)
         run_git(["read-tree", "--empty"], cwd=repository, env=env)
-        blob = (
-            subprocess.run(
-                ["git", "hash-object", "-w", "--stdin"],
+        for filename, content in (
+            ("release-plan.json", canonical),
+            ("release-preparation.json", canonical_preparation),
+        ):
+            blob = (
+                subprocess.run(
+                    ["git", "hash-object", "-w", "--stdin"],
+                    cwd=repository,
+                    env=env,
+                    input=content,
+                    check=True,
+                    stdout=subprocess.PIPE,
+                )
+                .stdout.decode()
+                .strip()
+            )
+            run_git(
+                ["update-index", "--add", "--cacheinfo", f"100644,{blob},{filename}"],
                 cwd=repository,
                 env=env,
-                input=canonical,
-                check=True,
-                stdout=subprocess.PIPE,
             )
-            .stdout.decode()
-            .strip()
-        )
-        run_git(["update-index", "--add", "--cacheinfo", f"100644,{blob},release-plan.json"], cwd=repository, env=env)
         tree = run_git(["write-tree"], cwd=repository, env=env)
         commit_env = env | {
             "GIT_AUTHOR_NAME": "Durable Workflow Release Planner",
@@ -1192,9 +1467,22 @@ def record_plan(repository: Path, plan_path: Path, *, remote: str, authoritative
             if recovered["status"] != "existing":
                 raise CandidateError(f"cannot publish immutable release plan: {process.stderr.strip()}")
             authoritative_plan.write_bytes(canonical)
+            recovered_ref = fetch_existing_record(repository, remote, tag)
+            if not recovered_ref:
+                raise CandidateError("immutable release preparation disappeared during recovery")
+            authoritative_preparation.write_bytes(
+                read_record_file(repository, recovered_ref, "release-preparation.json")
+            )
             return recovered
         authoritative_plan.write_bytes(canonical)
-        return {"status": "created", "plan": plan["plan"], "tag": tag, "commit": commit}
+        authoritative_preparation.write_bytes(canonical_preparation)
+        return {
+            "status": "created",
+            "plan": plan["plan"],
+            "tag": tag,
+            "commit": commit,
+            "preparation_sha256": manifest_digest(preparation),
+        }
     finally:
         index_path.unlink(missing_ok=True)
 
@@ -1750,8 +2038,12 @@ def candidate_manifest(plan: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def completion_manifest(plan: dict[str, Any], plan_record_commit: str) -> dict[str, Any]:
-    return {
+def completion_manifest(
+    plan: dict[str, Any],
+    plan_record_commit: str,
+    preparation: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    completion = {
         "schema": "durable-workflow.release-candidate/v1",
         "candidate": plan["plan"],
         "channel": plan["channel"],
@@ -1762,6 +2054,10 @@ def completion_manifest(plan: dict[str, Any], plan_record_commit: str) -> dict[s
         },
         "components": plan["components"],
     }
+    if preparation is not None:
+        validate_release_preparation(preparation, plan)
+        completion["release_preparation_sha256"] = manifest_digest(preparation)
+    return completion
 
 
 def record_completion(
@@ -1781,7 +2077,20 @@ def record_completion(
         raise CandidateError(f"release plan tag {plan_tag} is absent")
     if load_public_supersession(plan, plan_record_commit, client) is not None:
         raise CandidateError(f"terminally failed release plan {plan_tag} cannot be completed")
-    completion = completion_manifest(plan, plan_record_commit)
+    try:
+        preparation = read_public_record(
+            client,
+            plan_tag,
+            plan_record_commit,
+            "release-preparation.json",
+        )
+    except CandidateError as error:
+        if "(404)" not in str(error):
+            raise
+        preparation = None
+    if preparation is not None:
+        validate_release_preparation(preparation, plan)
+    completion = completion_manifest(plan, plan_record_commit, preparation)
     canonical_completion = canonical_json(completion)
     try:
         verification = json.loads(verification_path.read_bytes())
@@ -1795,6 +2104,8 @@ def record_completion(
         "release_plan_sha256": manifest_digest(plan),
         "public_verification": verification,
     }
+    if preparation is not None:
+        completion_verification["release_preparation_sha256"] = manifest_digest(preparation)
     canonical_verification = canonical_json(completion_verification)
     tag = f"{COMPLETION_TAG_PREFIX}{plan['channel']}/{plan['plan']}"
     existing_ref = fetch_existing_record(repository, remote, tag)
@@ -1944,7 +2255,11 @@ def terminal_failure_state(plan: dict[str, Any], client: PublicClient) -> dict[s
     }
 
 
-def observe_plan(plan: dict[str, Any], client: PublicClient) -> tuple[dict[str, Any], dict[str, Any]]:
+def observe_plan(
+    plan: dict[str, Any], preparation: dict[str, Any] | None, client: PublicClient
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if preparation is not None:
+        revalidate_release_preparation(preparation, plan, client)
     candidate = candidate_manifest(plan)
     state: dict[str, Any] = {
         "schema": "durable-workflow.release-state/v1",
@@ -1960,6 +2275,8 @@ def observe_plan(plan: dict[str, Any], client: PublicClient) -> tuple[dict[str, 
         },
         "resume_action": "Run the component's Release plan recovery action, then rerun Release plan observer",
     }
+    if preparation is not None:
+        state["durable_evidence"]["release_preparation_sha256"] = manifest_digest(preparation)
     try:
         for name, component in COMPONENTS.items():
             version = plan["components"][name]["version"]
@@ -1985,7 +2302,9 @@ def observe_plan(plan: dict[str, Any], client: PublicClient) -> tuple[dict[str, 
     return verification, state
 
 
-def discover_plan(client: PublicClient, requested_tag: str | None) -> tuple[str, dict[str, Any]]:
+def discover_plan(
+    client: PublicClient, requested_tag: str | None
+) -> tuple[str, dict[str, Any], dict[str, Any] | None]:
     if requested_tag:
         tag = requested_tag
         if not tag.startswith(PLAN_TAG_PREFIX):
@@ -2009,7 +2328,29 @@ def discover_plan(client: PublicClient, requested_tag: str | None) -> tuple[str,
     validate_plan(plan)
     if tag != f"{PLAN_TAG_PREFIX}{plan['plan']}":
         raise CandidateError("release plan tag and document identity differ")
-    return tag, plan
+    try:
+        preparation = read_public_record(client, tag, commit, "release-preparation.json")
+    except CandidateError as error:
+        if "(404)" not in str(error):
+            raise
+        preparation = None
+    if preparation is not None:
+        validate_release_preparation(preparation, plan)
+    release = client.json(
+        f"https://api.github.com/repos/{CONTROL_REPOSITORY}/releases/tags/"
+        f"{urllib.parse.quote(tag, safe='')}"
+    )
+    assets = {asset.get("name"): asset for asset in release.get("assets", [])}
+    records = [("release-plan.json", plan)]
+    if preparation is not None:
+        records.append(("release-preparation.json", preparation))
+    for filename, value in records:
+        asset = assets.get(filename)
+        if not isinstance(asset, dict) or not isinstance(asset.get("browser_download_url"), str):
+            raise CandidateError(f"release plan {tag} lacks durable {filename} mirror")
+        if client.bytes(asset["browser_download_url"]) != canonical_json(value):
+            raise CandidateError(f"release plan {tag} {filename} mirror differs from Git authority")
+    return tag, plan, preparation
 
 
 def main() -> int:
@@ -2023,6 +2364,8 @@ def main() -> int:
     preflight = subparsers.add_parser("preflight")
     preflight.add_argument("plan", type=Path)
     preflight.add_argument("evidence", type=Path)
+    preflight.add_argument("--preparation", required=True, type=Path)
+    preflight.add_argument("--release-date", required=True)
 
     check = subparsers.add_parser("check")
     check.add_argument("plan", type=Path)
@@ -2030,8 +2373,10 @@ def main() -> int:
 
     record = subparsers.add_parser("record")
     record.add_argument("plan", type=Path)
+    record.add_argument("preparation", type=Path)
     record.add_argument("--remote", default="origin")
     record.add_argument("--authoritative-plan", required=True, type=Path)
+    record.add_argument("--authoritative-preparation", required=True, type=Path)
     record.add_argument("--github-output", type=Path)
 
     supersede = subparsers.add_parser("prepare-supersession")
@@ -2056,11 +2401,13 @@ def main() -> int:
 
     discover = subparsers.add_parser("discover")
     discover.add_argument("destination", type=Path)
+    discover.add_argument("--preparation", required=True, type=Path)
     discover.add_argument("--tag")
     discover.add_argument("--github-output", type=Path)
 
     observe = subparsers.add_parser("observe")
     observe.add_argument("plan", type=Path)
+    observe.add_argument("preparation", type=Path)
     observe.add_argument("candidate", type=Path)
     observe.add_argument("verification", type=Path)
     observe.add_argument("state", type=Path)
@@ -2081,7 +2428,14 @@ def main() -> int:
             args.destination.write_bytes(canonical_json(plan))
         elif args.command == "preflight":
             plan = load_plan(args.plan)
-            evidence = preflight_plan(plan, PublicClient(token))
+            evidence = preflight_plan(
+                plan,
+                PublicClient(token),
+                release_date=args.release_date,
+            )
+            preparation = evidence.pop("release_preparation")
+            args.preparation.write_bytes(canonical_json(preparation))
+            evidence["release_preparation_sha256"] = manifest_digest(preparation)
             args.evidence.write_bytes(
                 canonical_json(
                     {
@@ -2096,7 +2450,14 @@ def main() -> int:
         elif args.command == "check":
             print(json.dumps(check_plan_compatibility(Path.cwd(), args.plan, remote=args.remote), sort_keys=True))
         elif args.command == "record":
-            result = record_plan(Path.cwd(), args.plan, remote=args.remote, authoritative_plan=args.authoritative_plan)
+            result = record_plan(
+                Path.cwd(),
+                args.plan,
+                args.preparation,
+                remote=args.remote,
+                authoritative_plan=args.authoritative_plan,
+                authoritative_preparation=args.authoritative_preparation,
+            )
             write_github_output(args.github_output, result)
             print(json.dumps(result, sort_keys=True))
         elif args.command == "prepare-supersession":
@@ -2127,13 +2488,20 @@ def main() -> int:
             write_github_output(args.github_output, result)
             print(json.dumps(result, sort_keys=True))
         elif args.command == "discover":
-            tag, plan = discover_plan(PublicClient(token), args.tag)
+            tag, plan, preparation = discover_plan(PublicClient(token), args.tag)
             args.destination.write_bytes(canonical_json(plan))
+            if preparation is not None:
+                args.preparation.write_bytes(canonical_json(preparation))
             values = {"tag": tag, "plan": plan["plan"], "channel": plan["channel"]}
             write_github_output(args.github_output, values)
             print(json.dumps(values, sort_keys=True))
         elif args.command == "observe":
             plan = load_plan(args.plan)
+            preparation = (
+                load_release_preparation(args.preparation, plan)
+                if args.preparation.exists()
+                else None
+            )
             candidate = candidate_manifest(plan)
             args.candidate.write_bytes(canonical_json(candidate))
             client = PublicClient(token)
@@ -2142,7 +2510,7 @@ def main() -> int:
                 args.state.write_bytes(canonical_json(terminal_state))
                 raise CandidateError(terminal_state["reason"])
             try:
-                verification, state = observe_plan(plan, client)
+                verification, state = observe_plan(plan, preparation, client)
             except CandidateError as error:
                 reason = str(error)
                 failed_component = next(
@@ -2167,6 +2535,10 @@ def main() -> int:
                         "Run the component's Release plan recovery action, then rerun Release plan observer"
                     ),
                 }
+                if preparation is not None:
+                    failed_state["durable_evidence"]["release_preparation_sha256"] = manifest_digest(
+                        preparation
+                    )
                 args.state.write_bytes(canonical_json(failed_state))
                 raise
             args.verification.write_bytes(canonical_json(verification))

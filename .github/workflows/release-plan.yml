@@ -42,6 +42,7 @@ jobs:
           python -m compileall -q scripts tests
           python -m unittest discover -v
           python -m json.tool release-plans/schema.json >/dev/null
+          python -m json.tool release-plans/preparation-schema.json >/dev/null
           python -m json.tool release-plans/candidate-schema.json >/dev/null
 
       - name: Canonicalize requested plan
@@ -62,13 +63,17 @@ jobs:
       - name: Verify public branch, source, tag, and channel preconditions
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python scripts/release_plan.py preflight release-plan.json release-plan-preflight.json
+        run: |
+          python scripts/release_plan.py preflight release-plan.json release-plan-preflight.json \
+            --preparation release-preparation.json --release-date "$(date -u +%F)"
 
       - name: Create or compare the immutable Git record
         id: record
         run: |
           python scripts/release_plan.py record release-plan.json \
+            release-preparation.json \
             --authoritative-plan authoritative-release-plan.json \
+            --authoritative-preparation authoritative-release-preparation.json \
             --github-output "$GITHUB_OUTPUT"
 
       - name: Create or repair the durable GitHub Release mirror
@@ -85,7 +90,7 @@ jobs:
             notes="$(mktemp)"
             {
               printf 'Immutable pre-publication plan at Git record `%s`.\n\n' "$RECORD_COMMIT"
-              printf 'Component repositories discover and recover this plan independently.\n'
+              printf 'Component repositories discover its exact prepared notes and recover independently.\n'
             } > "$notes"
             gh release create "$PLAN_TAG" --verify-tag --prerelease \
               --title "Release plan ${PLAN}" --notes-file "$notes"
@@ -100,10 +105,25 @@ jobs:
             cp authoritative-release-plan.json "$upload_dir/release-plan.json"
             gh release upload "$PLAN_TAG" "$upload_dir/release-plan.json"
           fi
+          rm -f "$mirror_dir/release-preparation.json"
+          if gh release download "$PLAN_TAG" --pattern release-preparation.json \
+              --dir "$mirror_dir" >/dev/null 2>&1; then
+            cmp --silent authoritative-release-preparation.json \
+              "$mirror_dir/release-preparation.json" || {
+              printf 'release-preparation.json differs from immutable Git authority\n' >&2
+              exit 1
+            }
+          else
+            upload_dir="$(mktemp -d)"
+            cp authoritative-release-preparation.json "$upload_dir/release-preparation.json"
+            gh release upload "$PLAN_TAG" "$upload_dir/release-preparation.json"
+          fi
 
       - name: Upload preflight evidence
         uses: actions/upload-artifact@v7
         with:
           name: release-plan-preflight
-          path: release-plan-preflight.json
+          path: |
+            release-plan-preflight.json
+            release-preparation.json
           if-no-files-found: error

@@ -42,7 +42,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           REQUESTED_PLAN_TAG: ${{ inputs.plan_tag }}
         run: |
-          arguments=(release-plan.json --github-output "$GITHUB_OUTPUT")
+          arguments=(release-plan.json --preparation release-preparation.json \
+            --github-output "$GITHUB_OUTPUT")
           if [ -n "$REQUESTED_PLAN_TAG" ]; then
             arguments+=(--tag "$REQUESTED_PLAN_TAG")
           fi
@@ -55,7 +56,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          python scripts/release_plan.py observe release-plan.json \
+          python scripts/release_plan.py observe release-plan.json release-preparation.json \
             candidate-verifier-input.json verification.json release-state.json
 
       - name: Retain aggregate state on the plan release
@@ -75,6 +76,7 @@ jobs:
           name: release-plan-observation-${{ steps.plan.outputs.plan || github.run_id }}
           path: |
             release-plan.json
+            release-preparation.json
             release-state.json
             verification.json
           if-no-files-found: warn

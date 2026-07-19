@@ -6,6 +6,26 @@ document against [`schema.json`](schema.json), proves its public branch and tag
 preconditions, and records it at `release-plan/<plan>` in Git and as a GitHub
 Release asset.
 
+Before recording the plan, the workflow also prepares exact dated release
+notes for every component. The resulting record, validated by
+[`preparation-schema.json`](preparation-schema.json), is stored in the same
+immutable Git record and mirrored on the same GitHub Release. Each entry binds
+the planned version, the original source commit, the note text and digest, and
+the immutable public source from which the text was derived. Repositories with
+a maintained `CHANGELOG.md` use its `Unreleased` section; other release
+surfaces use the planned source commit message. Product contributors therefore
+keep describing unreleased changes without selecting the automatically planned
+patch version.
+
+The preparation record is structured release-note authority; it does not
+create a component commit or update a component default branch. Replaying the
+same plan recovers the first immutable preparation record even if the retry is
+on a later date. Component recovery and publication can compare the plan tag,
+plan digest, component version, source commit, note digest, and source evidence
+before creating a version tag or publishing. Preparation consequently cannot
+look like new component source, recursively allocate another patch, or resume
+with notes prepared for another version.
+
 Plans contain only public source identities, intended versions, their release
 channel, and immutable authorization references. They never contain registry
 credentials. Each component repository discovers these records on its own
