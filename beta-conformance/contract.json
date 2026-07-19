@@ -57,7 +57,13 @@
         {
           "id": "php-sdk",
           "path": "scripts/conformance/php-sdk-published-artifacts.sh",
-          "result": "php-sdk-conformance-result.json"
+          "result": "php-sdk-conformance-result.json",
+          "runtime": {
+            "kind": "standalone-server",
+            "namespace_environment": "DW_PHP_SDK_CONFORMANCE_NAMESPACE",
+            "server_url_environment": "DW_PHP_SDK_CONFORMANCE_SERVER_URL",
+            "token_environment": "DW_PHP_SDK_CONFORMANCE_TOKEN"
+          }
         },
         {
           "id": "activities-cross-language",

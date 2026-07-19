@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import subprocess
@@ -12,6 +13,8 @@ from scripts.beta_candidate import CLI_ASSETS, COMPONENTS, SCHEMA, VERIFICATION_
 from scripts.beta_conformance import (
     EXPERIMENTS,
     MAX_INFRASTRUCTURE_ATTEMPTS,
+    NATIVE_RESULT_LIMIT,
+    ConformanceError,
     aggregate_results,
     artifact_binding_failures,
     bounded_text,
@@ -22,6 +25,7 @@ from scripts.beta_conformance import (
     load_contract,
     prepare_plan,
     run_experiment,
+    runner_runtime_environment,
     sha256_bytes,
     validate_experiment_result,
     validate_plan,
@@ -202,6 +206,19 @@ class ContractTest(unittest.TestCase):
         self.assertNotIn("../", encoded)
         self.assertNotIn(":latest", encoded)
 
+        php_runner = next(
+            runner for runner in contract["experiments"]["polyglot"]["runners"] if runner["id"] == "php-sdk"
+        )
+        self.assertEqual(
+            {
+                "kind": "standalone-server",
+                "namespace_environment": "DW_PHP_SDK_CONFORMANCE_NAMESPACE",
+                "server_url_environment": "DW_PHP_SDK_CONFORMANCE_SERVER_URL",
+                "token_environment": "DW_PHP_SDK_CONFORMANCE_TOKEN",
+            },
+            php_runner["runtime"],
+        )
+
     def test_every_schema_is_parseable_draft_2020_12(self) -> None:
         for path in sorted((ROOT / "beta-conformance").glob("*schema.json")):
             schema = json.loads(path.read_bytes())
@@ -245,6 +262,60 @@ class PlanTest(unittest.TestCase):
         changed["components"]["sdk-python"]["version"] = "9.9.9"
         with self.assertRaisesRegex(RuntimeError, "does not contain the requested immutable tuple"):
             prepare_plan(self.fixture.repository, changed, self.contract, self.fixture.commit)
+
+
+class StandaloneServerRuntimeTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.fixture = CandidateRecordFixture()
+        self.contract = load_contract(CONTRACT_PATH)
+        self.plan = prepare_plan(
+            self.fixture.repository,
+            self.fixture.manifest,
+            self.contract,
+            self.fixture.commit,
+        )
+        self.temporary = tempfile.TemporaryDirectory()
+        self.scratch = Path(self.temporary.name)
+        self.runner = next(
+            runner for runner in self.contract["experiments"]["polyglot"]["runners"] if runner["id"] == "php-sdk"
+        )
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+        self.fixture.close()
+
+    def test_declared_runtime_uses_exact_candidate_image_and_cleans_isolated_state(self) -> None:
+        commands: list[list[str]] = []
+
+        def docker(command: list[str], **arguments: object) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            if command[1] == "port":
+                stdout = "127.0.0.1:49152\n"
+            elif command[1] == "inspect":
+                stdout = "true\n"
+            else:
+                stdout = "runtime-id\n"
+            return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+        with (
+            mock.patch("scripts.beta_conformance.docker_runtime_command", side_effect=docker),
+            mock.patch("scripts.beta_conformance.wait_for_server_ready") as wait_for_server,
+            runner_runtime_environment(self.plan, self.runner, self.scratch) as environment,
+        ):
+            self.assertEqual("http://127.0.0.1:49152", environment["DW_PHP_SDK_CONFORMANCE_SERVER_URL"])
+            self.assertEqual("default", environment["DW_PHP_SDK_CONFORMANCE_NAMESPACE"])
+            self.assertRegex(environment["DW_PHP_SDK_CONFORMANCE_TOKEN"], r"^beta-[0-9a-f]{32}$")
+
+        wait_for_server.assert_called_once()
+        run_commands = [command for command in commands if command[1] == "run"]
+        self.assertEqual(4, len(run_commands))
+        self.assertTrue(all(self.plan["server_runner"]["image"] in command for command in run_commands))
+        self.assertTrue(any("127.0.0.1::8080" in command for command in run_commands))
+        self.assertTrue(any(command[-1] == "server-bootstrap" for command in run_commands))
+        self.assertTrue(any("queue:work" in command for command in run_commands))
+        self.assertTrue(any("schedule:evaluate" in command[-1] for command in run_commands))
+        self.assertEqual(4, len([command for command in commands if command[1:3] == ["rm", "--force"]]))
+        self.assertEqual(1, len([command for command in commands if command[1:4] == ["volume", "rm", "--force"]]))
 
 
 class FailureClassificationTest(unittest.TestCase):
@@ -302,9 +373,9 @@ class FailureClassificationTest(unittest.TestCase):
             contract = load_contract(CONTRACT_PATH)
             plan = prepare_plan(fixture.repository, fixture.manifest, contract, fixture.commit)
             diagnostic = successful_diagnostic(plan, ["sdk-python"])
-            diagnostic["native_summary"]["executed_distribution_identities"]["sdk-python"]["artifacts"][0][
-                "sha256"
-            ] = "f" * 64
+            diagnostic["native_summary"]["executed_distribution_identities"]["sdk-python"]["artifacts"][0]["sha256"] = (
+                "f" * 64
+            )
             failures = artifact_binding_failures(plan, ["sdk-python"], [diagnostic])
             self.assertEqual(1, len(failures))
             self.assertIn("sdk-python executed distribution artifact", failures[0])
@@ -318,13 +389,9 @@ class FailureClassificationTest(unittest.TestCase):
             plan = prepare_plan(fixture.repository, fixture.manifest, contract, fixture.commit)
             diagnostic = successful_diagnostic(plan, ["sdk-python"])
             native = {
-                "executed_distribution_identities": diagnostic["native_summary"][
-                    "executed_distribution_identities"
-                ]
+                "executed_distribution_identities": diagnostic["native_summary"]["executed_distribution_identities"]
             }
-            component, artifact_name = inject_distribution_identity_mismatch(
-                native, plan, ["sdk-python"]
-            )
+            component, artifact_name = inject_distribution_identity_mismatch(native, plan, ["sdk-python"])
             self.assertEqual("sdk-python", component)
             self.assertEqual("durable_workflow.tar.gz", artifact_name)
             self.assertEqual(
@@ -471,6 +538,124 @@ class ExperimentRetryTest(unittest.TestCase):
         self.assertIsNone(result["failure_fingerprint"])
         self.assertEqual(2, result["retry"]["attempts"])
         self.assertEqual([1, 2], [diagnostic["attempt"] for diagnostic in result["diagnostics"]])
+
+    def test_declared_runtime_environment_reaches_the_published_runner(self) -> None:
+        self.runner["runtime"] = {
+            "kind": "standalone-server",
+            "namespace_environment": "DW_PHP_SDK_CONFORMANCE_NAMESPACE",
+            "server_url_environment": "DW_PHP_SDK_CONFORMANCE_SERVER_URL",
+            "token_environment": "DW_PHP_SDK_CONFORMANCE_TOKEN",
+        }
+        self.plan = prepare_plan(
+            self.fixture.repository,
+            self.fixture.manifest,
+            self.contract,
+            self.fixture.commit,
+        )
+
+        @contextlib.contextmanager
+        def runtime(*arguments: object, **options: object):
+            yield {
+                "DW_PHP_SDK_CONFORMANCE_NAMESPACE": "default",
+                "DW_PHP_SDK_CONFORMANCE_SERVER_URL": "http://127.0.0.1:49152",
+                "DW_PHP_SDK_CONFORMANCE_TOKEN": "beta-token",
+            }
+
+        def execute(command: list[str], **arguments: object) -> tuple[int, bool]:
+            environment = arguments["environment"]
+            stdout_path = arguments["stdout_path"]
+            stderr_path = arguments["stderr_path"]
+            assert isinstance(environment, dict)
+            assert isinstance(stdout_path, Path)
+            assert isinstance(stderr_path, Path)
+            self.assertEqual("http://127.0.0.1:49152", environment["DW_PHP_SDK_CONFORMANCE_SERVER_URL"])
+            stdout_path.write_text("", encoding="utf-8")
+            stderr_path.write_text("", encoding="utf-8")
+            native_dir = Path(command[-1])
+            (native_dir / self.runner["result"]).write_bytes(canonical_json(self.native_result("pass")))
+            return 0, False
+
+        with (
+            mock.patch("scripts.beta_conformance.runner_runtime_environment", side_effect=runtime),
+            mock.patch("scripts.beta_conformance.execute_command", side_effect=execute) as execute_command,
+        ):
+            result = run_experiment(
+                self.plan,
+                self.contract,
+                "replay",
+                self.artifact_root,
+                self.result_dir,
+            )
+
+        execute_command.assert_called_once()
+        self.assertEqual("pass", result["outcome"])
+
+    def test_unavailable_declared_runtime_is_retained_without_unclassified_retry(self) -> None:
+        self.runner["runtime"] = {
+            "kind": "standalone-server",
+            "namespace_environment": "DW_PHP_SDK_CONFORMANCE_NAMESPACE",
+            "server_url_environment": "DW_PHP_SDK_CONFORMANCE_SERVER_URL",
+            "token_environment": "DW_PHP_SDK_CONFORMANCE_TOKEN",
+        }
+        self.plan = prepare_plan(
+            self.fixture.repository,
+            self.fixture.manifest,
+            self.contract,
+            self.fixture.commit,
+        )
+
+        with (
+            mock.patch(
+                "scripts.beta_conformance.runner_runtime_environment",
+                side_effect=ConformanceError("exact candidate standalone server did not become ready"),
+            ),
+            mock.patch("scripts.beta_conformance.execute_command") as execute_command,
+        ):
+            result = run_experiment(
+                self.plan,
+                self.contract,
+                "replay",
+                self.artifact_root,
+                self.result_dir,
+            )
+
+        execute_command.assert_not_called()
+        self.assertEqual("fail", result["outcome"])
+        self.assertEqual("infrastructure_failure", result["classification"])
+        self.assertEqual(1, result["retry"]["attempts"])
+        self.assertTrue(result["diagnostics"][0]["runner_blocked"])
+        self.assertEqual("declared_runtime_unavailable", result["diagnostics"][0]["findings"][0]["type"])
+
+    def test_oversized_native_result_is_runner_infrastructure_not_product_failure(self) -> None:
+        def execute(command: list[str], **arguments: object) -> tuple[int, bool]:
+            stdout_path = arguments["stdout_path"]
+            stderr_path = arguments["stderr_path"]
+            assert isinstance(stdout_path, Path)
+            assert isinstance(stderr_path, Path)
+            stdout_path.write_text("", encoding="utf-8")
+            stderr_path.write_text("", encoding="utf-8")
+            native_dir = Path(command[-1])
+            (native_dir / self.runner["result"]).write_bytes(b"{" + b"x" * NATIVE_RESULT_LIMIT)
+            return 0, False
+
+        with mock.patch("scripts.beta_conformance.execute_command", side_effect=execute) as execute_command:
+            result = run_experiment(
+                self.plan,
+                self.contract,
+                "replay",
+                self.artifact_root,
+                self.result_dir,
+            )
+
+        execute_command.assert_called_once()
+        self.assertEqual("fail", result["outcome"])
+        self.assertEqual("infrastructure_failure", result["classification"])
+        self.assertEqual(1, result["retry"]["attempts"])
+        diagnostic = result["diagnostics"][0]
+        self.assertTrue(diagnostic["runner_blocked"])
+        self.assertRegex(diagnostic["native_result_sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual("native_result_unreadable", diagnostic["findings"][0]["type"])
+        self.assertNotIn(str(self.result_dir), diagnostic["stderr_tail"])
 
     def test_semantic_failure_is_not_retried_by_the_experiment_runner(self) -> None:
         def execute(command: list[str], **arguments: object) -> tuple[int, bool]:

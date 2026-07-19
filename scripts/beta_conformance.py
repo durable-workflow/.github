@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import contextlib
 import datetime as dt
 import hashlib
 import json
@@ -15,6 +17,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +49,7 @@ COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 OCI_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 DIAGNOSTIC_LIMIT = 8192
+NATIVE_RESULT_LIMIT = 4 * 1024 * 1024
 FINDING_LIMIT = 20
 FINDING_TEXT_LIMIT = 2048
 MAX_INFRASTRUCTURE_ATTEMPTS = 2
@@ -158,7 +163,11 @@ def validate_contract(contract: Any) -> None:
             raise ConformanceError(f"experiment {name} must have between one and three runners")
         runner_ids: set[str] = set()
         for runner in runners:
-            if not isinstance(runner, dict) or set(runner) != {"id", "path", "result"}:
+            if (
+                not isinstance(runner, dict)
+                or not {"id", "path", "result"}.issubset(runner)
+                or not set(runner).issubset({"id", "path", "result", "runtime"})
+            ):
                 raise ConformanceError(f"experiment {name} runner has an invalid shape")
             runner_id = runner["id"]
             if (
@@ -174,6 +183,27 @@ def validate_contract(contract: Any) -> None:
             safe_relative_path(runner["result"], suffix=".json")
             if "/" in runner["result"]:
                 raise ConformanceError(f"experiment {name} native result must be a file name")
+            runtime = runner.get("runtime")
+            if runtime is not None:
+                if not isinstance(runtime, dict) or set(runtime) != {
+                    "kind",
+                    "namespace_environment",
+                    "server_url_environment",
+                    "token_environment",
+                }:
+                    raise ConformanceError(f"experiment {name} runner has an invalid runtime dependency")
+                if runtime["kind"] != "standalone-server":
+                    raise ConformanceError(f"experiment {name} runner has an unsupported runtime dependency")
+                environment_names = [
+                    runtime["namespace_environment"],
+                    runtime["server_url_environment"],
+                    runtime["token_environment"],
+                ]
+                if len(set(environment_names)) != len(environment_names) or any(
+                    not isinstance(value, str) or not re.fullmatch(r"DW_[A-Z0-9_]{1,95}", value)
+                    for value in environment_names
+                ):
+                    raise ConformanceError(f"experiment {name} runner has invalid runtime environment bindings")
     covered_distributions = {
         distribution
         for specification in experiments.values()
@@ -233,9 +263,7 @@ def distribution_artifact(name: Any, sha256: Any) -> dict[str, str]:
     return {"name": name, "sha256": sha256}
 
 
-def normalized_distribution_identity(
-    name: str, version: str, artifacts: list[dict[str, str]]
-) -> dict[str, Any]:
+def normalized_distribution_identity(name: str, version: str, artifacts: list[dict[str, str]]) -> dict[str, Any]:
     ordered = sorted(artifacts, key=lambda artifact: artifact["name"])
     if not ordered or len(ordered) != len({artifact["name"] for artifact in ordered}):
         raise ConformanceError(f"candidate verification has invalid {name} distribution artifacts")
@@ -567,9 +595,7 @@ def native_state(native: Any) -> tuple[str | None, bool, list[dict[str, str]]]:
     return outcome, runner_blocked, summarize_findings(native)
 
 
-def summarize_executed_distribution_identities(
-    native: dict[str, Any], plan: dict[str, Any]
-) -> dict[str, Any]:
+def summarize_executed_distribution_identities(native: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
     raw = native.get("executed_distribution_identities", native.get("executedDistributionIdentities", {}))
     if not isinstance(raw, dict):
         return {}
@@ -603,9 +629,8 @@ def summarize_executed_distribution_identities(
                 break
             normalized_artifacts.append({"name": artifact["name"], "sha256": artifact["sha256"]})
         normalized_artifacts.sort(key=lambda artifact: artifact["name"])
-        if (
-            normalized_artifacts
-            and len(normalized_artifacts) == len({artifact["name"] for artifact in normalized_artifacts})
+        if normalized_artifacts and len(normalized_artifacts) == len(
+            {artifact["name"] for artifact in normalized_artifacts}
         ):
             normalized = {"kind": kind, "locator": locator, "artifacts": normalized_artifacts}
             try:
@@ -674,9 +699,7 @@ def inject_distribution_identity_mismatch(
         expected_identity = plan["distribution_identities"][name]
         if not isinstance(identity, dict) or not isinstance(identity.get("artifacts"), list):
             continue
-        expected_artifacts = {
-            artifact["name"]: artifact["sha256"] for artifact in expected_identity["artifacts"]
-        }
+        expected_artifacts = {artifact["name"]: artifact["sha256"] for artifact in expected_identity["artifacts"]}
         artifacts = sorted(
             (artifact for artifact in identity["artifacts"] if isinstance(artifact, dict)),
             key=lambda artifact: str(artifact.get("name", "")),
@@ -688,9 +711,7 @@ def inject_distribution_identity_mismatch(
             expected_digest = expected_artifacts[artifact_name]
             artifact["sha256"] = "0" * 64 if expected_digest != "0" * 64 else "f" * 64
             return name, artifact_name
-    raise ConformanceError(
-        "distribution identity failure injection found no required executed artifact identity"
-    )
+    raise ConformanceError("distribution identity failure injection found no required executed artifact identity")
 
 
 def is_classified_transient(text: str) -> bool:
@@ -766,6 +787,227 @@ def artifact_environment(plan: dict[str, Any], scratch: Path) -> dict[str, str]:
         "DW_WATERLINE_VERSION": versions["waterline"],
         "DW_CONFORMANCE_TMPDIR": str(scratch),
     }
+
+
+def docker_runtime_command(
+    command: list[str], *, timeout_seconds: int = 180, check: bool = True
+) -> subprocess.CompletedProcess[str]:
+    try:
+        process = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except FileNotFoundError as error:
+        raise ConformanceError("Docker is required by the declared standalone-server runtime") from error
+    except subprocess.TimeoutExpired as error:
+        raise ConformanceError("standalone-server Docker command exceeded its bounded deadline") from error
+    if check and process.returncode:
+        detail = bounded_text((process.stderr or process.stdout).strip(), DIAGNOSTIC_LIMIT)
+        action = command[1] if len(command) > 1 else "command"
+        raise ConformanceError(f"standalone-server Docker {action} failed: {detail}")
+    return process
+
+
+def wait_for_server_ready(server_url: str, container_name: str, *, docker: str = "docker") -> None:
+    deadline = time.monotonic() + 120
+    last_error = "server did not answer its readiness endpoint"
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(f"{server_url}/api/ready", timeout=3) as response:
+                if response.status < 500:
+                    return
+                last_error = f"readiness endpoint returned HTTP {response.status}"
+        except Exception as error:  # Network error details are retained only after the bounded wait.
+            last_error = f"{type(error).__name__}: {error}"
+        time.sleep(2)
+    logs = docker_runtime_command(
+        [docker, "logs", "--tail", "80", container_name],
+        timeout_seconds=30,
+        check=False,
+    )
+    detail = bounded_text(f"{last_error}\n{logs.stdout}\n{logs.stderr}".strip(), DIAGNOSTIC_LIMIT)
+    raise ConformanceError(f"exact candidate standalone server did not become ready: {detail}")
+
+
+def require_running_container(container_name: str, *, docker: str = "docker") -> None:
+    state = docker_runtime_command(
+        [docker, "inspect", "--format", "{{.State.Running}}", container_name],
+        timeout_seconds=30,
+    )
+    if state.stdout.strip() == "true":
+        return
+    logs = docker_runtime_command(
+        [docker, "logs", "--tail", "80", container_name],
+        timeout_seconds=30,
+        check=False,
+    )
+    detail = bounded_text(f"{logs.stdout}\n{logs.stderr}".strip(), DIAGNOSTIC_LIMIT)
+    raise ConformanceError(f"exact candidate standalone server process {container_name} exited: {detail}")
+
+
+def cleanup_docker_runtime(command: list[str]) -> None:
+    with contextlib.suppress(ConformanceError):
+        docker_runtime_command(command, timeout_seconds=30, check=False)
+
+
+@contextlib.contextmanager
+def standalone_server_runtime(
+    plan: dict[str, Any], runner: dict[str, Any], scratch: Path, *, docker: str = "docker"
+) -> Iterator[dict[str, str]]:
+    runtime = runner["runtime"]
+    identity_seed = f"{scratch.resolve()}:{os.getpid()}:{time.time_ns()}".encode()
+    suffix = sha256_bytes(identity_seed)[:12]
+    prefix = f"dw-beta-{runner['id']}-{suffix}"
+    volume = f"{prefix}-database"
+    container_names = [
+        f"{prefix}-bootstrap",
+        f"{prefix}-http",
+        f"{prefix}-queue",
+        f"{prefix}-scheduler",
+    ]
+    bootstrap_name, http_name, queue_name, scheduler_name = container_names
+    image = plan["server_runner"]["image"]
+    manifest_digest = plan["candidate"]["manifest_sha256"]
+    runtime_token = f"beta-{manifest_digest[:32]}"
+    runtime_key = (
+        "base64:" + base64.b64encode(hashlib.sha256(f"{manifest_digest}:{runner['id']}".encode()).digest()).decode()
+    )
+    labels = ["--label", f"dev.durable-workflow.beta-conformance={manifest_digest}"]
+    shared_environment = [
+        "-e",
+        f"DW_SERVER_KEY={runtime_key}",
+        "-e",
+        "DW_AUTH_DRIVER=token",
+        "-e",
+        f"DW_AUTH_TOKEN={runtime_token}",
+        "-e",
+        "DW_WORKER_POLL_TIMEOUT=1",
+        "-e",
+        "DW_WORKER_POLL_INTERVAL_MS=100",
+        "-e",
+        "DW_QUERY_TASK_TIMEOUT=3",
+        "-e",
+        "DB_CONNECTION=sqlite",
+        "-e",
+        "DB_DATABASE=/app/database/database.sqlite",
+        "-e",
+        "QUEUE_CONNECTION=database",
+        "-e",
+        "CACHE_STORE=file",
+        "-v",
+        f"{volume}:/app/database",
+    ]
+
+    try:
+        docker_runtime_command([docker, "volume", "create", *labels, volume])
+        docker_runtime_command(
+            [
+                docker,
+                "run",
+                "--rm",
+                "--name",
+                bootstrap_name,
+                *labels,
+                *shared_environment,
+                image,
+                "server-bootstrap",
+            ]
+        )
+        docker_runtime_command(
+            [
+                docker,
+                "run",
+                "-d",
+                "--rm",
+                "--name",
+                http_name,
+                *labels,
+                "-p",
+                "127.0.0.1::8080",
+                *shared_environment,
+                "-e",
+                "DW_SERVER_TOPOLOGY_SHAPE=standalone_server",
+                "-e",
+                "DW_SERVER_PROCESS_CLASS=server_http_node",
+                image,
+            ]
+        )
+        docker_runtime_command(
+            [
+                docker,
+                "run",
+                "-d",
+                "--rm",
+                "--name",
+                queue_name,
+                *labels,
+                *shared_environment,
+                "-e",
+                "DW_SERVER_TOPOLOGY_SHAPE=standalone_server",
+                "-e",
+                "DW_SERVER_PROCESS_CLASS=worker_node",
+                image,
+                "php",
+                "artisan",
+                "queue:work",
+                "--sleep=1",
+                "--tries=3",
+                "--max-time=5400",
+            ]
+        )
+        docker_runtime_command(
+            [
+                docker,
+                "run",
+                "-d",
+                "--rm",
+                "--name",
+                scheduler_name,
+                *labels,
+                *shared_environment,
+                "-e",
+                "DW_SERVER_TOPOLOGY_SHAPE=standalone_server",
+                "-e",
+                "DW_SERVER_PROCESS_CLASS=scheduler_node",
+                image,
+                "sh",
+                "-c",
+                "while true; do php artisan schedule:evaluate --limit=100 --json; "
+                "php artisan activity:timeout-enforce --limit=100; sleep 1; done",
+            ]
+        )
+        port_result = docker_runtime_command([docker, "port", http_name, "8080/tcp"], timeout_seconds=30)
+        port_match = re.search(r"127\.0\.0\.1:(\d+)\s*$", port_result.stdout)
+        if port_match is None:
+            raise ConformanceError("standalone-server Docker runtime did not publish a loopback HTTP port")
+        server_url = f"http://127.0.0.1:{port_match.group(1)}"
+        wait_for_server_ready(server_url, http_name, docker=docker)
+        for container_name in (http_name, queue_name, scheduler_name):
+            require_running_container(container_name, docker=docker)
+        yield {
+            runtime["server_url_environment"]: server_url,
+            runtime["namespace_environment"]: "default",
+            runtime["token_environment"]: runtime_token,
+        }
+    finally:
+        for container_name in reversed(container_names):
+            cleanup_docker_runtime([docker, "rm", "--force", container_name])
+        cleanup_docker_runtime([docker, "volume", "rm", "--force", volume])
+
+
+@contextlib.contextmanager
+def runner_runtime_environment(plan: dict[str, Any], runner: dict[str, Any], scratch: Path) -> Iterator[dict[str, str]]:
+    runtime = runner.get("runtime")
+    if runtime is None:
+        yield {}
+        return
+    if runtime["kind"] != "standalone-server":
+        raise ConformanceError(f"unsupported runner runtime: {runtime['kind']}")
+    with standalone_server_runtime(plan, runner, scratch) as environment:
+        yield environment
 
 
 def failure_fingerprint(
@@ -1002,26 +1244,48 @@ def run_experiment(
             maximum_attempts_used = max(maximum_attempts_used, attempt)
             stdout_path = result_dir / f"{runner['id']}-attempt-{attempt}.stdout.log"
             stderr_path = result_dir / f"{runner['id']}-attempt-{attempt}.stderr.log"
-            environment = artifact_environment(plan, scratch)
-            returncode, timed_out = execute_command(
-                ["bash", str(runner_path), "--result-dir", str(native_dir)],
-                cwd=artifact_root,
-                environment=environment,
-                timeout_seconds=specification["timeout_seconds"],
-                stdout_path=stdout_path,
-                stderr_path=stderr_path,
-            )
+            runtime_blocked = False
+            runtime_error = ""
+            try:
+                with runner_runtime_environment(plan, runner, scratch) as runtime_environment:
+                    environment = {**artifact_environment(plan, scratch), **runtime_environment}
+                    returncode, timed_out = execute_command(
+                        ["bash", str(runner_path), "--result-dir", str(native_dir)],
+                        cwd=artifact_root,
+                        environment=environment,
+                        timeout_seconds=specification["timeout_seconds"],
+                        stdout_path=stdout_path,
+                        stderr_path=stderr_path,
+                    )
+            except ConformanceError as error:
+                runtime_blocked = True
+                runtime_error = bounded_text(str(error), DIAGNOSTIC_LIMIT)
+                stdout_path.write_text("", encoding="utf-8")
+                stderr_path.write_text(runtime_error, encoding="utf-8")
+                returncode = 1
+                timed_out = False
             stdout_tail, stdout_digest = tail_and_digest(stdout_path)
             stderr_tail, stderr_digest = tail_and_digest(stderr_path)
             native_path = native_dir / runner["result"]
             native: Any = None
             native_digest = None
+            native_result_error = ""
             injected_identity: tuple[str, str] | None = None
             if native_path.is_file():
+                with contextlib.suppress(OSError):
+                    native_digest = sha256_file(native_path)
                 try:
-                    native = load_json(native_path)
+                    native = load_json(native_path, limit=NATIVE_RESULT_LIMIT)
                 except ConformanceError as error:
-                    stderr_tail = bounded_text(f"{stderr_tail}\n{error}", DIAGNOSTIC_LIMIT)
+                    if "exceeds" in str(error):
+                        native_result_error = (
+                            f"published runner result exceeds the {NATIVE_RESULT_LIMIT}-byte portable evidence limit"
+                        )
+                    elif "invalid JSON" in str(error):
+                        native_result_error = "published runner result is not valid JSON"
+                    else:
+                        native_result_error = "published runner result could not be read"
+                    stderr_tail = bounded_text(f"{stderr_tail}\n{native_result_error}", DIAGNOSTIC_LIMIT)
                 else:
                     native_outcome, _, _ = native_state(native)
                     if (
@@ -1038,6 +1302,32 @@ def run_experiment(
                         identity_failure_injected = True
                     native_digest = sha256_file(native_path)
             native_outcome, runner_blocked, findings = native_state(native)
+            runner_blocked = runner_blocked or runtime_blocked or bool(native_result_error)
+            if runtime_blocked:
+                findings.insert(
+                    0,
+                    {
+                        "type": "declared_runtime_unavailable",
+                        "owning_contract": owner,
+                        "summary": bounded_text(
+                            f"Published runner {runner['id']} could not start its declared runtime: {runtime_error}"
+                        ),
+                    },
+                )
+                findings = findings[:FINDING_LIMIT]
+            if native_result_error:
+                findings.insert(
+                    0,
+                    {
+                        "type": "native_result_unreadable",
+                        "owning_contract": owner,
+                        "summary": bounded_text(
+                            f"Published runner {runner['id']} emitted evidence the portable wrapper could not read: "
+                            f"{native_result_error}."
+                        ),
+                    },
+                )
+                findings = findings[:FINDING_LIMIT]
             if injected_identity is not None:
                 component, artifact_name = injected_identity
                 findings.insert(
@@ -1341,12 +1631,10 @@ def aggregate_results(
                     {"kind": identity["kind"], "locator": identity["locator"], "artifacts": []},
                 )
                 artifacts = {
-                    artifact["name"]: artifact["sha256"]
-                    for artifact in [*merged["artifacts"], *identity["artifacts"]]
+                    artifact["name"]: artifact["sha256"] for artifact in [*merged["artifacts"], *identity["artifacts"]]
                 }
                 merged["artifacts"] = [
-                    {"name": artifact_name, "sha256": artifacts[artifact_name]}
-                    for artifact_name in sorted(artifacts)
+                    {"name": artifact_name, "sha256": artifacts[artifact_name]} for artifact_name in sorted(artifacts)
                 ]
         summaries[experiment] = {
             "outcome": result["outcome"],

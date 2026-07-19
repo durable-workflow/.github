@@ -16,6 +16,14 @@ Packagist, Python SDK from PyPI, Rust SDK from crates.io, CLI release assets,
 and Composer packages by exact version. Product checkouts and mutable package
 selectors are not inputs to this workflow.
 
+Runner entries also declare any runtime they need from the candidate. The direct
+PHP SDK runner declares a standalone server dependency, so the portable wrapper
+bootstraps the digest-pinned candidate image and starts its HTTP, queue-worker,
+and scheduler processes on isolated Docker state. The wrapper waits for the
+published readiness endpoint before injecting the loopback URL, namespace, and
+ephemeral token into that runner; it removes the containers and database volume
+after every attempt.
+
 ## Independent execution
 
 Dispatch `.github/workflows/beta-conformance.yml` with the complete canonical

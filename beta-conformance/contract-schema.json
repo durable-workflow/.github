@@ -61,7 +61,19 @@
       "properties": {
         "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$" },
         "path": { "type": "string", "pattern": "^scripts/conformance/[a-z0-9-]+\\.(?:sh|mjs|py)$" },
-        "result": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.-]+\\.json$" }
+        "result": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.-]+\\.json$" },
+        "runtime": { "$ref": "#/$defs/runtime" }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "namespace_environment", "server_url_environment", "token_environment"],
+      "properties": {
+        "kind": { "const": "standalone-server" },
+        "namespace_environment": { "type": "string", "pattern": "^DW_[A-Z0-9_]{1,95}$" },
+        "server_url_environment": { "type": "string", "pattern": "^DW_[A-Z0-9_]{1,95}$" },
+        "token_environment": { "type": "string", "pattern": "^DW_[A-Z0-9_]{1,95}$" }
       }
     }
   }
