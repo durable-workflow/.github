@@ -1,0 +1,84 @@
+name: Cross-repository product work
+description: Define a public contract or coordinated change spanning multiple Durable Workflow repositories.
+title: "[cross-repository] <short description>"
+labels:
+  - "authority:github"
+  - "kind:cross-repository"
+  - "priority:untriaged"
+  - "status:triage"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Open this in the repository that owns the shared decision, usually `durable-workflow/.github` for organization-level
+        release and recovery contracts. Link focused implementation issues in each affected public repository.
+
+  - type: dropdown
+    id: owner
+    attributes:
+      label: Primary owning repository
+      options:
+        - durable-workflow/.github
+        - durable-workflow/workflow
+        - durable-workflow/waterline
+        - durable-workflow/server
+        - durable-workflow/cli
+        - durable-workflow/sdk-php
+        - durable-workflow/sdk-python
+        - durable-workflow/sdk-rust
+        - durable-workflow/sample-app
+        - durable-workflow/durable-workflow.github.io
+    validations:
+      required: true
+
+  - type: textarea
+    id: affected
+    attributes:
+      label: Affected public repositories
+      description: Name every consumer or producer and explain its role in the contract.
+    validations:
+      required: true
+
+  - type: textarea
+    id: contract
+    attributes:
+      label: Shared public contract
+      description: Define exact API, artifact, protocol, release, or recovery behavior and identify its authority.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Source evidence
+      description: Link public source, runs, releases, specifications, or reproductions needed to continue independently.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria by repository
+      description: Describe independently mergeable outcomes and the end-to-end proof that closes the coordinating issue.
+    validations:
+      required: true
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependency graph
+      description: Link authoritative GitHub issues with full URLs and identify which one blocks which outcome.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: intake
+    attributes:
+      label: Cross-repository intake checks
+      options:
+        - label: I searched every affected repository for an existing authoritative issue.
+          required: true
+        - label: The primary owner can make the shared decision without relying on a private database or local mirror.
+          required: true
+        - label: Private implementation details are excluded; only public contracts are recorded here.
+          required: true

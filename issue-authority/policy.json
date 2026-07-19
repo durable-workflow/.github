@@ -1,0 +1,180 @@
+{
+  "$schema": "./policy-schema.json",
+  "authority_repository": ".github",
+  "labels": [
+    {
+      "color": "0969da",
+      "description": "GitHub is the authoritative lifecycle record for this work",
+      "name": "authority:github"
+    },
+    {
+      "color": "b60205",
+      "description": "Issue authority has a duplicate or state conflict requiring review",
+      "name": "authority:conflict"
+    },
+    {
+      "color": "d73a4a",
+      "description": "A public product behavior is incorrect",
+      "name": "kind:defect"
+    },
+    {
+      "color": "a2eeef",
+      "description": "A public product capability or experience is requested",
+      "name": "kind:feature"
+    },
+    {
+      "color": "b60205",
+      "description": "A release cannot proceed until this issue is resolved",
+      "name": "kind:release-blocker"
+    },
+    {
+      "color": "5319e7",
+      "description": "Work spans more than one public repository",
+      "name": "kind:cross-repository"
+    },
+    {
+      "color": "b60205",
+      "description": "Immediate release or data-integrity risk",
+      "name": "priority:P0"
+    },
+    {
+      "color": "d93f0b",
+      "description": "High-priority product or release risk",
+      "name": "priority:P1"
+    },
+    {
+      "color": "fbca04",
+      "description": "Normal-priority product work",
+      "name": "priority:P2"
+    },
+    {
+      "color": "0e8a16",
+      "description": "Lower-priority product improvement",
+      "name": "priority:P3"
+    },
+    {
+      "color": "cfd3d7",
+      "description": "Maintainers have not assigned a priority",
+      "name": "priority:untriaged"
+    },
+    {
+      "color": "ededed",
+      "description": "Awaiting maintainer classification",
+      "name": "status:triage"
+    },
+    {
+      "color": "0e8a16",
+      "description": "Ready for implementation",
+      "name": "status:ready"
+    },
+    {
+      "color": "d93f0b",
+      "description": "Waiting on a named dependency or decision",
+      "name": "status:blocked"
+    },
+    {
+      "color": "6f42c1",
+      "description": "Derived from the authoritative closed issue state",
+      "name": "status:done"
+    },
+    {
+      "color": "b60205",
+      "description": "Must be resolved before the first 2.0 beta",
+      "name": "beta:blocker"
+    },
+    {
+      "color": "0e8a16",
+      "description": "May be completed without changing the frozen beta contract",
+      "name": "beta:compatible"
+    },
+    {
+      "color": "c5def5",
+      "description": "Explicitly deferred until after 2.0",
+      "name": "post-2.0"
+    },
+    {
+      "color": "bfdadc",
+      "description": "Owned by the public organization control plane",
+      "name": "repo:github-control-plane"
+    },
+    {
+      "color": "bfdadc",
+      "description": "Owned by the Workflow engine repository",
+      "name": "repo:workflow"
+    },
+    {
+      "color": "bfdadc",
+      "description": "Owned by the Waterline operator repository",
+      "name": "repo:waterline"
+    },
+    {
+      "color": "bfdadc",
+      "description": "Owned by the standalone server repository",
+      "name": "repo:server"
+    },
+    {
+      "color": "bfdadc",
+      "description": "Owned by the CLI repository",
+      "name": "repo:cli"
+    },
+    {
+      "color": "bfdadc",
+      "description": "Owned by the sample application repository",
+      "name": "repo:sample-app"
+    },
+    {
+      "color": "bfdadc",
+      "description": "Owned by the PHP SDK repository",
+      "name": "repo:sdk-php"
+    },
+    {
+      "color": "bfdadc",
+      "description": "Owned by the Python SDK repository",
+      "name": "repo:sdk-python"
+    },
+    {
+      "color": "bfdadc",
+      "description": "Owned by the Rust SDK repository",
+      "name": "repo:sdk-rust"
+    },
+    {
+      "color": "bfdadc",
+      "description": "Owned by the public documentation repository",
+      "name": "repo:documentation"
+    }
+  ],
+  "milestones": [
+    {
+      "description": "Public product work that must be resolved or explicitly classified before 2.0 beta authorization.",
+      "repositories": [
+        ".github",
+        "workflow",
+        "waterline",
+        "server",
+        "cli",
+        "sample-app",
+        "sdk-php",
+        "sdk-python",
+        "sdk-rust",
+        "durable-workflow.github.io"
+      ],
+      "state": "open",
+      "title": "2.0 beta"
+    }
+  ],
+  "organization": "durable-workflow",
+  "repositories": [
+    ".github",
+    "workflow",
+    "waterline",
+    "server",
+    "cli",
+    "sample-app",
+    "sdk-php",
+    "sdk-python",
+    "sdk-rust",
+    "durable-workflow.github.io"
+  ],
+  "schema": "durable-workflow.github-issue-authority/v1",
+  "state_direction": "github-to-mirrors"
+}

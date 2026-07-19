@@ -1,0 +1,84 @@
+name: Public release blocker
+description: Record a defect or missing decision that blocks a public release.
+title: "[release blocker] <short description>"
+labels:
+  - "authority:github"
+  - "kind:release-blocker"
+  - "priority:untriaged"
+  - "status:triage"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Release blockers need exact public evidence and a bounded exit condition. A failed experiment without an unresolved
+        product contract belongs with its retained evidence, not as a product blocker.
+
+  - type: input
+    id: release
+    attributes:
+      label: Blocked release or candidate
+      description: Exact public version, candidate name, tag, or immutable candidate URL.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Primary owning public component
+      options:
+        - Workflow engine
+        - Waterline operator UI
+        - Standalone server
+        - CLI
+        - PHP SDK
+        - Python SDK
+        - Rust SDK
+        - Documentation
+        - Organization control plane
+        - Cross-repository release contract
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Blocking product impact
+      description: Explain the public correctness, compatibility, security, or recoverability risk.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Exact public evidence
+      description: Link public Actions runs, releases, packages, commits, or reproducible failures. Include the failing cell or assertion.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Exit criteria
+      description: State the observable checks and retained evidence required to unblock the release.
+    validations:
+      required: true
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: Link every blocking GitHub issue using a full public URL. Write "None" if this is ready.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: intake
+    attributes:
+      label: Release intake checks
+      options:
+        - label: I searched open and closed GitHub issues and found no authoritative duplicate.
+          required: true
+        - label: The blocker describes unresolved product behavior or a required public decision, not only a runner result.
+          required: true
+        - label: The report contains no credentials, customer data, or private implementation details.
+          required: true

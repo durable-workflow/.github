@@ -1,0 +1,85 @@
+name: Public product defect
+description: Report incorrect behavior in a public Durable Workflow component or contract.
+title: "[defect] <short description>"
+labels:
+  - "authority:github"
+  - "kind:defect"
+  - "priority:untriaged"
+  - "status:triage"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        GitHub is the authoritative lifecycle record for accepted public product work.
+        Provide public-safe evidence that lets maintainers continue without access to your environment.
+
+        Do not include credentials, customer data, private deployment topology, or private Cloud implementation details.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Owning public component
+      options:
+        - Workflow engine
+        - Waterline operator UI
+        - Standalone server
+        - CLI
+        - PHP SDK
+        - Python SDK
+        - Rust SDK
+        - Sample application
+        - Documentation
+        - Organization control plane
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Exact version or source identity
+      description: Published version, image digest, tag, or full public commit SHA where the defect is present.
+      placeholder: 2.0.0-beta.1 or a 40-character commit SHA
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction and evidence
+      description: Commands, public run URL, event sequence, or a small program that demonstrates the behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: Include the exact failure, status, or externally visible contract mismatch.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior and acceptance criteria
+      description: State the public contract and how a maintainer can prove the correction complete.
+    validations:
+      required: true
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies and related public issues
+      description: Link blocking or related GitHub issues using full public URLs. Write "None" if there are none.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: intake
+    attributes:
+      label: Public intake checks
+      options:
+        - label: I searched open and closed GitHub issues for an existing report.
+          required: true
+        - label: This report contains only public product context and redacted evidence.
+          required: true

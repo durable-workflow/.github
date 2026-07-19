@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/durable-workflow/.github/blob/main/issue-authority/backlog-schema.json",
+  "title": "Durable Workflow selectively migrated beta backlog",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "reviewed", "milestone", "review", "items"],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "schema": {
+      "const": "durable-workflow.github-beta-backlog/v1"
+    },
+    "reviewed": {
+      "type": "string",
+      "format": "date"
+    },
+    "milestone": {
+      "type": "string",
+      "minLength": 1
+    },
+    "review": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["review_id", "repository", "title", "disposition", "reason"],
+        "properties": {
+          "review_id": {
+            "$ref": "#/$defs/workId"
+          },
+          "repository": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "disposition": {
+            "enum": ["migrate", "superseded", "evidence-only", "experiment-only"]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "repository",
+          "title",
+          "kind",
+          "priority",
+          "classification",
+          "status",
+          "body",
+          "depends_on"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/$defs/workId"
+          },
+          "repository": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "kind": {
+            "enum": ["defect", "feature", "release-blocker", "cross-repository"]
+          },
+          "priority": {
+            "enum": ["P0", "P1", "P2", "P3"]
+          },
+          "classification": {
+            "enum": ["blocker", "compatible", "post-2.0"]
+          },
+          "status": {
+            "enum": ["ready", "blocked"]
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1
+          },
+          "depends_on": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/$defs/workId"
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "workId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{2,79}$"
+    }
+  }
+}

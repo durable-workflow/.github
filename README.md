@@ -18,3 +18,8 @@ Published candidate tuples can be exercised by the independently runnable
 [beta conformance workflow](beta-conformance/README.md). Its retained GitHub
 Release evidence binds every experiment to the exact seven artifacts, their
 source identities, and the conformance runner revision.
+
+New public product work and the deliberately selected unresolved beta backlog
+use [GitHub issue authority](issue-authority/README.md). Organization issue
+forms capture durable intake context, while a one-way lifecycle audit prevents
+an external mirror from reopening completed GitHub work.

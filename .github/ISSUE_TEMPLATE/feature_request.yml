@@ -1,0 +1,80 @@
+name: Public product feature
+description: Propose a new public Durable Workflow capability or developer experience.
+title: "[feature] <short description>"
+labels:
+  - "authority:github"
+  - "kind:feature"
+  - "priority:untriaged"
+  - "status:triage"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the public product contract and its user value. Private implementation work belongs on its protected surface;
+        public issues should contain only the contract that public components must expose or consume.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Primary owning public component
+      options:
+        - Workflow engine
+        - Waterline operator UI
+        - Standalone server
+        - CLI
+        - PHP SDK
+        - Python SDK
+        - Rust SDK
+        - Sample application
+        - Documentation
+        - Organization control plane
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Explain the user-visible limitation without prescribing private implementation details.
+    validations:
+      required: true
+
+  - type: textarea
+    id: contract
+    attributes:
+      label: Proposed public contract
+      description: Describe APIs, wire behavior, operator experience, documentation, or artifact behavior that should exist.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List observable outcomes and compatibility constraints that define completion.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Supporting public evidence
+      description: Link specifications, public examples, GitHub discussions, or related product issues.
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies and affected repositories
+      description: Name the primary owner, dependent public repositories, and full GitHub issue URLs. Write "None" if unblocked.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: intake
+    attributes:
+      label: Public intake checks
+      options:
+        - label: I searched open and closed GitHub issues for an existing request.
+          required: true
+        - label: This request contains only public product contracts and public-safe rationale.
+          required: true

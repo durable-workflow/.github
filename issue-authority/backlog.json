@@ -1,0 +1,126 @@
+{
+  "$schema": "./backlog-schema.json",
+  "items": [
+    {
+      "body": "## Classification\n\nBeta-compatible release preparation owned by `durable-workflow/.github`.\n\n## Problem\n\nA component publisher cannot require an exact, dated version heading in a source commit when the release plan chooses that version only after the commit lands. Guessing the next version in ordinary product work can deadlock automatic releases or bind notes to the wrong tag. The public [release-plan contract](https://github.com/durable-workflow/.github/blob/main/release-plans/README.md) is the source boundary for the correction.\n\n## Acceptance criteria\n\n- GitHub release preparation durably binds the exact planned component version and source identity before publication.\n- The tagged source contains or immutably binds exact dated release notes without requiring a product contributor to select the version.\n- Preparation is idempotent and cannot recursively create another release.\n- Recovery resumes the same prepared source and version after interruption.\n- PHP, Python, Rust, CLI, and server release surfaces can fail closed on missing or mismatched versioned notes.\n\n## Completion\n\nOne automatic patch release retains exact planned-version changelog evidence at its source tag, recovers after interruption, and does not create a follow-on release from preparation metadata alone.",
+      "classification": "compatible",
+      "depends_on": [],
+      "id": "release-plan-versioned-changelogs",
+      "kind": "cross-repository",
+      "priority": "P2",
+      "repository": ".github",
+      "status": "blocked",
+      "title": "Prepare versioned changelogs without guessing release tags"
+    },
+    {
+      "body": "## Classification\n\nBeta-compatible public-contract defect owned by `durable-workflow/durable-workflow.github.io`.\n\n## Evidence\n\nThe live [PHP SDK conformance contract](https://durable-workflow.com/platform-conformance/php-sdk-conformance.json) exposes repository-relative runner paths, an image-local path, and internal evidence filenames. The [source contract](https://github.com/durable-workflow/durable-workflow.github.io/blob/main/static/platform-conformance/php-sdk-conformance.json) is also not registered by the public suite discovery surface, so external consumers cannot resolve its authority relationship.\n\n## Acceptance criteria\n\n- If normative, the contract is registered by public URL and schema identity from the platform-conformance suite and discovery pages.\n- Runner and evidence requirements use public identifiers, schemas, or resolvable URLs. Validation-only paths and filenames are not published.\n- The public-boundary validator rejects absolute filesystem references, local URLs, repository paths, and internal harness artifacts while accepting public API routes and public URLs.\n- Validation considers every path candidate in mixed text independently, so an allowed API route cannot hide a later filesystem reference.\n\n## Completion\n\nThe live contract is consumer-resolvable or is removed from public publication, and GitHub qualification rejects reintroduction of validation-only paths.",
+      "classification": "compatible",
+      "depends_on": [],
+      "id": "docs-php-conformance-public-authority",
+      "kind": "defect",
+      "priority": "P2",
+      "repository": "durable-workflow.github.io",
+      "status": "ready",
+      "title": "Make the PHP SDK conformance contract consumer-resolvable"
+    },
+    {
+      "body": "## Classification\n\nFinal beta continuity acceptance drill owned by `durable-workflow/.github`.\n\n## Required outcome\n\n- Accept and triage a representative public product issue entirely on GitHub.\n- Qualify a landed target commit through protected GitHub checks and retain the exact candidate identity remotely.\n- Initiate a coherent seven-artifact prerelease wave from GitHub, interrupt it after partial publication, and resume the identical plan without duplicate tags, versions, or artifacts.\n- Verify the public artifacts and run representative exact-tuple conformance from a clean GitHub runner.\n- Retain queryable GitHub evidence for issue state, qualification, release phases, verification, and conformance.\n- Demonstrate repository-owned recovery and protected credential boundaries with the bootstrap environment unavailable.\n- File every dependency discovered during the drill as focused GitHub-owned product work.\n\n## Scope\n\nThis issue proves the assembled public system. Product defects discovered by the drill belong in their owning public repositories and are linked here.\n\n## Completion\n\nThe complete flow succeeds using GitHub and public registries as its durable authorities, and no required beta decision exists only in an operator-local system.",
+      "classification": "blocker",
+      "depends_on": [],
+      "id": "github-only-beta-continuity-drill",
+      "kind": "cross-repository",
+      "priority": "P2",
+      "repository": ".github",
+      "status": "ready",
+      "title": "Prove beta continuity from GitHub and public registries"
+    },
+    {
+      "body": "## Classification\n\nFinal 2.0 beta authorization gate owned by `durable-workflow/.github`.\n\n## Required outcome\n\n- Review the public API, wire protocol, durable history, storage schema, worker registration/versioning, and PHP/Python/Rust SDK contracts. No unresolved P0 or P1 item may require an intentional breaking redesign.\n- Workflow and Waterline pass their authoritative GitHub matrices on the exact candidate commits, and every other public target passes its required GitHub qualification.\n- One coherent seven-artifact prerelease tuple is publicly installable, immutable, and covered by retained exact-artifact conformance.\n- GitHub owns release initiation and recovery, public issue intake and the selective beta backlog, and portable conformance.\n- The complete GitHub-only continuity drill passes, including recovery after partial publication.\n- Every remaining open issue is classified as a beta-compatible defect, post-2.0 work, or a beta blocker.\n\n## Beta contract\n\nAuthorizing `2.0.0-beta.1` ends routine alpha-style breaking changes. Later changes preserve beta compatibility unless a correctness or security defect requires an explicitly recorded exception. Stable `2.0.0` remains separately authorized.\n\n## Completion\n\nThe product owner records the exact candidate, qualification, verification, conformance, backlog review, and continuity-drill evidence in GitHub, then authorizes the first beta release wave.",
+      "classification": "blocker",
+      "depends_on": [
+        "github-only-beta-continuity-drill"
+      ],
+      "id": "authorize-2-0-beta",
+      "kind": "release-blocker",
+      "priority": "P0",
+      "repository": ".github",
+      "status": "blocked",
+      "title": "Authorize 2.0 beta after contract freeze and remote continuity"
+    }
+  ],
+  "milestone": "2.0 beta",
+  "review": [
+    {
+      "disposition": "evidence-only",
+      "reason": "The public source correction has landed and current public-file leak evidence passes; only published-artifact observation remained.",
+      "repository": "workflow",
+      "review_id": "workflow-ci-host-neutrality",
+      "title": "Remove internal CI-host terminology from the public build contract"
+    },
+    {
+      "disposition": "superseded",
+      "reason": "The focused continuity drill and beta authorization gate preserve the executable acceptance criteria without duplicating an umbrella milestone.",
+      "repository": "server",
+      "review_id": "beta-continuity-umbrella",
+      "title": "Beta exit criterion: prove GitHub-only product continuity"
+    },
+    {
+      "disposition": "evidence-only",
+      "reason": "The public source correction has landed and current public-file leak evidence passes; only published-artifact observation remained.",
+      "repository": "sdk-python",
+      "review_id": "python-ci-host-neutrality",
+      "title": "Make public CI portability fixtures host-neutral"
+    },
+    {
+      "disposition": "migrate",
+      "reason": "Version-aware release preparation remains unresolved and affects recoverable beta patch publication across public repositories.",
+      "repository": ".github",
+      "review_id": "release-plan-versioned-changelogs",
+      "title": "Prepare versioned changelogs without guessing release tags"
+    },
+    {
+      "disposition": "migrate",
+      "reason": "The GitHub-only continuity drill is a required beta gate and has no substitute in completed alpha history.",
+      "repository": ".github",
+      "review_id": "github-only-beta-continuity-drill",
+      "title": "Prove beta continuity from GitHub and public registries"
+    },
+    {
+      "disposition": "migrate",
+      "reason": "The final beta authorization decision and its evidence must remain available without any operator-local database.",
+      "repository": ".github",
+      "review_id": "authorize-2-0-beta",
+      "title": "Authorize 2.0 beta after contract freeze and remote continuity"
+    },
+    {
+      "disposition": "evidence-only",
+      "reason": "The tuple refresh is already deployed; only a post-deployment execution record remained.",
+      "repository": "durable-workflow.github.io",
+      "review_id": "docs-public-tuple-refresh",
+      "title": "Refresh the public 2.0 artifact tuple"
+    },
+    {
+      "disposition": "experiment-only",
+      "reason": "This record exists only to retain a passing runtime experiment and does not describe unresolved product implementation.",
+      "repository": "durable-workflow.github.io",
+      "review_id": "php-sdk-published-conformance-evidence",
+      "title": "Record passing published PHP SDK conformance"
+    },
+    {
+      "disposition": "migrate",
+      "reason": "The live public contract still exposes validation-only paths and lacks a consumer-resolvable authority relationship.",
+      "repository": "durable-workflow.github.io",
+      "review_id": "docs-php-conformance-public-authority",
+      "title": "Make the PHP SDK conformance contract consumer-resolvable"
+    },
+    {
+      "disposition": "evidence-only",
+      "reason": "The onboarding source and live execution contract have landed; the remaining acceptance is a published quickstart execution record.",
+      "repository": "durable-workflow.github.io",
+      "review_id": "docs-first-success-quickstart",
+      "title": "Make the 2.0 quickstart a true first-success guide"
+    }
+  ],
+  "reviewed": "2026-07-19",
+  "schema": "durable-workflow.github-beta-backlog/v1"
+}

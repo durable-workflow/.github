@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Durable Workflow documentation
+    url: https://durable-workflow.com/docs/2.0/
+    about: Read the explicit prerelease documentation before filing product work.
+  - name: Public platform conformance
+    url: https://durable-workflow.com/docs/2.0/platform-conformance/
+    about: Check public artifact contracts and retained compatibility evidence.
+  - name: Organization repositories
+    url: https://github.com/orgs/durable-workflow/repositories
+    about: File repository-specific work with the public component that owns the behavior.
