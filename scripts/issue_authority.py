@@ -23,10 +23,7 @@ BACKLOG_SCHEMA = "durable-workflow.github-beta-backlog/v1"
 MARKER_PATTERN = re.compile(r"<!-- beta-work-id: ([a-z0-9][a-z0-9-]{2,79}) -->")
 UNBLOCK_CONTEXT_START = "<!-- beta-unblock-condition:start -->"
 UNBLOCK_CONTEXT_END = "<!-- beta-unblock-condition:end -->"
-UNBLOCK_CONTEXT_PATTERN = re.compile(
-    rf"{re.escape(UNBLOCK_CONTEXT_START)}\n.*?\n{re.escape(UNBLOCK_CONTEXT_END)}",
-    re.DOTALL,
-)
+UNBLOCK_CONTEXT_MARKERS = (UNBLOCK_CONTEXT_START, UNBLOCK_CONTEXT_END)
 NON_PUBLIC_CONTEXT_PATTERNS = (
     re.compile(r"(?<![:/A-Za-z0-9_.-])/(?!/)[^\s)>\]]+"),
     re.compile(r"\b(?:localhost|127\.0\.0\.1)(?::[0-9]+)?\b", re.I),
@@ -78,6 +75,8 @@ def _validate_schema(instance: dict[str, Any], schema: dict[str, Any], label: st
 
 def _public_safe(values: Sequence[str]) -> None:
     for value in values:
+        if any(marker in value for marker in UNBLOCK_CONTEXT_MARKERS):
+            raise AuthorityError("selective backlog contains a reserved unblock condition marker")
         for pattern in NON_PUBLIC_CONTEXT_PATTERNS:
             match = pattern.search(value)
             if match:
@@ -424,24 +423,72 @@ def _render_body(
     )
 
 
-def _reconcile_unblock_context(item: dict[str, Any], issue: dict[str, Any]) -> str | None:
-    desired = _render_unblock_context(item)
-    if not desired:
+def _marker_is_line_bounded(body: str, marker: str, index: int) -> bool:
+    starts_line = index == 0 or body[index - 1] == "\n"
+    after = index + len(marker)
+    ends_line = after == len(body) or body.startswith(("\n", "\r\n"), after)
+    return starts_line and ends_line
+
+
+def _unblock_context_span(item: dict[str, Any], body: str) -> tuple[int, int] | None:
+    start_count = body.count(UNBLOCK_CONTEXT_START)
+    end_count = body.count(UNBLOCK_CONTEXT_END)
+    if start_count == 0 and end_count == 0:
         return None
+    if start_count != 1 or end_count != 1:
+        raise AuthorityError(f"GitHub issue for {item['id']} has malformed unblock condition context")
+
+    start = body.index(UNBLOCK_CONTEXT_START)
+    end = body.index(UNBLOCK_CONTEXT_END)
+    if (
+        start >= end
+        or not _marker_is_line_bounded(body, UNBLOCK_CONTEXT_START, start)
+        or not _marker_is_line_bounded(body, UNBLOCK_CONTEXT_END, end)
+    ):
+        raise AuthorityError(f"GitHub issue for {item['id']} has malformed unblock condition context")
+    return start, end + len(UNBLOCK_CONTEXT_END)
+
+
+def _reconcile_unblock_context(item: dict[str, Any], issue: dict[str, Any]) -> str | None:
     body = issue.get("body")
     if not isinstance(body, str):
         raise AuthorityError(f"GitHub issue for {item['id']} has no text body")
-    if body.count(UNBLOCK_CONTEXT_START) != body.count(UNBLOCK_CONTEXT_END):
-        raise AuthorityError(f"GitHub issue for {item['id']} has malformed unblock condition context")
-    matches = list(UNBLOCK_CONTEXT_PATTERN.finditer(body))
-    if len(matches) > 1 or body.count(UNBLOCK_CONTEXT_START) > 1:
-        raise AuthorityError(f"GitHub issue for {item['id']} repeats its unblock condition context")
-    if matches:
-        updated = UNBLOCK_CONTEXT_PATTERN.sub(lambda _match: desired, body, count=1)
+    context_span = _unblock_context_span(item, body)
+    desired = _render_unblock_context(item)
+    if not desired:
+        return None
+    if context_span is not None:
+        start, end = context_span
+        updated = body[:start] + desired + body[end:]
     else:
         marker = f"<!-- beta-work-id: {item['id']} -->"
         updated = body.replace(marker, f"{desired}\n\n{marker}", 1)
     return updated if updated != body else None
+
+
+def _plan_unblock_context_updates(
+    backlog: dict[str, Any],
+    resolved: Mapping[str, tuple[str, dict[str, Any]]],
+) -> dict[str, str | None]:
+    return {
+        item["id"]: _reconcile_unblock_context(item, resolved[item["id"]][1])
+        for item in backlog["items"]
+        if item["id"] in resolved
+    }
+
+
+def _preflight_unblock_context_layouts(
+    backlog: dict[str, Any],
+    inventory: Mapping[str, Sequence[dict[str, Any]]],
+) -> None:
+    items = {item["id"]: item for item in backlog["items"]}
+    for issues in inventory.values():
+        for issue in issues:
+            body = issue.get("body")
+            if not isinstance(body, str):
+                continue
+            for work_id in set(MARKER_PATTERN.findall(body)) & items.keys():
+                _unblock_context_span(items[work_id], body)
 
 
 def _inventory(policy: dict[str, Any], client: Any) -> dict[str, list[dict[str, Any]]]:
@@ -591,9 +638,11 @@ def _audit_migrated_classification(
 
 def apply_backlog(policy: dict[str, Any], backlog: dict[str, Any], client: Any) -> dict[str, Any]:
     organization = policy["organization"]
-    milestone_numbers, metadata_evidence = sync_metadata(policy, client)
     inventory = _inventory(policy, client)
+    _preflight_unblock_context_layouts(backlog, inventory)
+    milestone_numbers, metadata_evidence = sync_metadata(policy, client)
     resolved = _preflight_markers(policy, backlog, client, inventory, allow_missing=True)
+    planned_body_updates = _plan_unblock_context_updates(backlog, resolved)
     dependency_urls = {
         work_id: _issue_url(issue, organization, repository) for work_id, (repository, issue) in resolved.items()
     }
@@ -603,7 +652,7 @@ def apply_backlog(policy: dict[str, Any], backlog: dict[str, Any], client: Any) 
     for item in backlog["items"]:
         if item["id"] in resolved:
             repository, issue = resolved[item["id"]]
-            updated_body = _reconcile_unblock_context(item, issue)
+            updated_body = planned_body_updates[item["id"]]
             if updated_body is not None:
                 client.update_issue_body(
                     organization,
@@ -650,9 +699,11 @@ def apply_backlog(policy: dict[str, Any], backlog: dict[str, Any], client: Any) 
 
 
 def audit_backlog(policy: dict[str, Any], backlog: dict[str, Any], client: Any) -> dict[str, Any]:
-    _milestones, metadata_evidence = sync_metadata(policy, client)
     inventory = _inventory(policy, client)
+    _preflight_unblock_context_layouts(backlog, inventory)
+    _milestones, metadata_evidence = sync_metadata(policy, client)
     resolved = _preflight_markers(policy, backlog, client, inventory, allow_missing=False)
+    _plan_unblock_context_updates(backlog, resolved)
     failures = _audit_state_labels(policy, client, inventory)
     failures.extend(_audit_migrated_classification(backlog, resolved))
     if failures:

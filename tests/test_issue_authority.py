@@ -13,6 +13,8 @@ import yaml
 from scripts.issue_authority import (
     OWNER_LABELS,
     STATUS_LABELS,
+    UNBLOCK_CONTEXT_END,
+    UNBLOCK_CONTEXT_START,
     AuthorityError,
     GitHubApi,
     apply_backlog,
@@ -145,6 +147,12 @@ def find_work_item(client: FakeGitHubApi, work_id: str) -> tuple[str, dict[str, 
     raise AssertionError(f"missing work item {work_id}")
 
 
+def replace_unblock_context(issue: dict[str, Any], replacement: str) -> None:
+    start = issue["body"].index(UNBLOCK_CONTEXT_START)
+    end = issue["body"].index(UNBLOCK_CONTEXT_END) + len(UNBLOCK_CONTEXT_END)
+    issue["body"] = issue["body"][:start] + replacement + issue["body"][end:]
+
+
 class ContractValidationTest(unittest.TestCase):
     def test_checked_in_contract_is_valid(self) -> None:
         policy, backlog = load_contract(
@@ -184,6 +192,15 @@ class ContractValidationTest(unittest.TestCase):
 
         with self.assertRaisesRegex(AuthorityError, "non-public context"):
             validate_contract(policy, backlog, policy_schema, backlog_schema)
+
+    def test_reviewed_source_fields_reject_reserved_unblock_context_markers(self) -> None:
+        for marker in (UNBLOCK_CONTEXT_START, UNBLOCK_CONTEXT_END):
+            with self.subTest(marker=marker):
+                policy, backlog, policy_schema, backlog_schema = contract_fixture()
+                backlog["review"][0]["reason"] += f" {marker}"
+
+                with self.assertRaisesRegex(AuthorityError, "reserved unblock condition marker"):
+                    validate_contract(policy, backlog, policy_schema, backlog_schema)
 
     def test_private_operational_context_is_rejected(self) -> None:
         policy, backlog, policy_schema, backlog_schema = contract_fixture()
@@ -281,23 +298,107 @@ class MigrationTest(unittest.TestCase):
     def test_replay_restores_machine_owned_unblock_context_without_losing_edits(self) -> None:
         apply_backlog(self.policy, self.backlog, self.client)
         repository, issue = find_work_item(self.client, "release-plan-versioned-changelogs")
-        start = issue["body"].index("<!-- beta-unblock-condition:start -->")
-        end_marker = "<!-- beta-unblock-condition:end -->"
-        end = issue["body"].index(end_marker) + len(end_marker)
-        issue["body"] = issue["body"][:start] + issue["body"][end:]
+        replace_unblock_context(issue, "")
         issue["body"] = issue["body"].replace("## Problem", "Maintainer context.\n\n## Problem")
+        issue["state"] = "closed"
+        issue["labels"] = [
+            {"name": "status:done" if label["name"] in STATUS_LABELS else label["name"]} for label in issue["labels"]
+        ]
+        expected_labels = copy.deepcopy(issue["labels"])
 
         evidence = apply_backlog(self.policy, self.backlog, self.client)
 
         self.assertEqual("updated-blocker-context", evidence["issues"]["release-plan-versioned-changelogs"]["action"])
         self.assertIn("Maintainer context.", issue["body"])
         self.assertIn(self.backlog["items"][0]["unblock_condition"], issue["body"])
+        self.assertEqual("closed", issue["state"])
+        self.assertEqual(expected_labels, issue["labels"])
         self.assertEqual(1, len(self.client.body_updates))
 
         replay_evidence = apply_backlog(self.policy, self.backlog, self.client)
 
         self.assertEqual("preserved", replay_evidence["issues"]["release-plan-versioned-changelogs"]["action"])
         self.assertEqual(1, len(self.client.body_updates))
+
+    def test_replay_replaces_one_valid_unblock_context_without_losing_edits(self) -> None:
+        apply_backlog(self.policy, self.backlog, self.client)
+        _repository, issue = find_work_item(self.client, "release-plan-versioned-changelogs")
+        stale_context = (
+            f"{UNBLOCK_CONTEXT_START}\n## Unblock condition\n\nStale reviewed condition.\n{UNBLOCK_CONTEXT_END}"
+        )
+        replace_unblock_context(issue, stale_context)
+        issue["body"] = issue["body"].replace("## Problem", "Maintainer context.\n\n## Problem")
+        issue["state"] = "closed"
+        issue["labels"] = [
+            {"name": "status:done" if label["name"] in STATUS_LABELS else label["name"]} for label in issue["labels"]
+        ]
+        expected_labels = copy.deepcopy(issue["labels"])
+
+        evidence = apply_backlog(self.policy, self.backlog, self.client)
+
+        self.assertEqual("updated-blocker-context", evidence["issues"]["release-plan-versioned-changelogs"]["action"])
+        self.assertIn("Maintainer context.", issue["body"])
+        self.assertNotIn("Stale reviewed condition.", issue["body"])
+        self.assertIn(self.backlog["items"][0]["unblock_condition"], issue["body"])
+        self.assertEqual("closed", issue["state"])
+        self.assertEqual(expected_labels, issue["labels"])
+        self.assertEqual(1, len(self.client.body_updates))
+
+        replay_evidence = apply_backlog(self.policy, self.backlog, self.client)
+
+        self.assertEqual("preserved", replay_evidence["issues"]["release-plan-versioned-changelogs"]["action"])
+        self.assertEqual(1, len(self.client.body_updates))
+
+    def test_apply_rejects_malformed_unblock_context_before_issue_mutation(self) -> None:
+        valid_context = f"{UNBLOCK_CONTEXT_START}\n## Unblock condition\n\nReviewed condition.\n{UNBLOCK_CONTEXT_END}"
+        malformed_contexts = {
+            "reversed": f"{UNBLOCK_CONTEXT_END}\nReviewed condition.\n{UNBLOCK_CONTEXT_START}",
+            "repeated": f"{valid_context}\n\n{valid_context}",
+            "nested": (
+                f"{UNBLOCK_CONTEXT_START}\n{UNBLOCK_CONTEXT_START}\nReviewed condition.\n"
+                f"{UNBLOCK_CONTEXT_END}\n{UNBLOCK_CONTEXT_END}"
+            ),
+            "start-only": f"{UNBLOCK_CONTEXT_START}\nReviewed condition.",
+            "end-only": f"Reviewed condition.\n{UNBLOCK_CONTEXT_END}",
+            "inline-start": f"prefix {UNBLOCK_CONTEXT_START}\nReviewed condition.\n{UNBLOCK_CONTEXT_END}",
+            "inline-end": f"{UNBLOCK_CONTEXT_START}\nReviewed condition.\n{UNBLOCK_CONTEXT_END} suffix",
+            "same-line": f"{UNBLOCK_CONTEXT_START} Reviewed condition. {UNBLOCK_CONTEXT_END}",
+        }
+
+        for name, malformed_context in malformed_contexts.items():
+            with self.subTest(name=name):
+                client = FakeGitHubApi(self.policy)
+                apply_backlog(self.policy, self.backlog, client)
+                _repository, issue = find_work_item(client, "release-plan-versioned-changelogs")
+                replace_unblock_context(issue, malformed_context)
+                client.body_updates.clear()
+                client.replacements.clear()
+                issues_before = copy.deepcopy(client.issues)
+
+                with self.assertRaisesRegex(AuthorityError, "malformed unblock condition context"):
+                    apply_backlog(self.policy, self.backlog, client)
+
+                self.assertEqual(issues_before, client.issues)
+                self.assertEqual([], client.body_updates)
+                self.assertEqual([], client.replacements)
+
+    def test_audit_rejects_malformed_unblock_context_before_issue_mutation(self) -> None:
+        apply_backlog(self.policy, self.backlog, self.client)
+        _repository, issue = find_work_item(self.client, "release-plan-versioned-changelogs")
+        replace_unblock_context(
+            issue,
+            f"{UNBLOCK_CONTEXT_END}\nReviewed condition.\n{UNBLOCK_CONTEXT_START}",
+        )
+        self.client.body_updates.clear()
+        self.client.replacements.clear()
+        issues_before = copy.deepcopy(self.client.issues)
+
+        with self.assertRaisesRegex(AuthorityError, "malformed unblock condition context"):
+            audit_backlog(self.policy, self.backlog, self.client)
+
+        self.assertEqual(issues_before, self.client.issues)
+        self.assertEqual([], self.client.body_updates)
+        self.assertEqual([], self.client.replacements)
 
     def test_replay_preserves_github_edits_and_closed_state(self) -> None:
         apply_backlog(self.policy, self.backlog, self.client)
