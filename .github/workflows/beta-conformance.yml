@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       injected_failure_experiment:
-        description: Exercise deterministic product-failure retention without retry
+        description: Exercise deterministic distribution-identity failure retention without retry
         required: true
         default: none
         type: choice
@@ -118,7 +118,7 @@ jobs:
           mkdir -p "$DOCKER_CONFIG" "$RUNNER_TEMP/result"
           injection=()
           if [ "$INJECTED_FAILURE_EXPERIMENT" = "$EXPERIMENT" ]; then
-            injection+=(--inject-product-failure)
+            injection+=(--inject-identity-failure)
           fi
           python scripts/beta_conformance.py run \
             conformance-input/execution-plan.json \

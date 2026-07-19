@@ -17,6 +17,7 @@ from scripts.beta_conformance import (
     bounded_text,
     classify_attempt,
     experiment_result,
+    inject_distribution_identity_mismatch,
     injected_failure_result,
     load_contract,
     prepare_plan,
@@ -310,6 +311,32 @@ class FailureClassificationTest(unittest.TestCase):
         finally:
             fixture.close()
 
+    def test_identity_failure_injection_changes_a_required_digest_not_the_version(self) -> None:
+        fixture = CandidateRecordFixture()
+        try:
+            contract = load_contract(CONTRACT_PATH)
+            plan = prepare_plan(fixture.repository, fixture.manifest, contract, fixture.commit)
+            diagnostic = successful_diagnostic(plan, ["sdk-python"])
+            native = {
+                "executed_distribution_identities": diagnostic["native_summary"][
+                    "executed_distribution_identities"
+                ]
+            }
+            component, artifact_name = inject_distribution_identity_mismatch(
+                native, plan, ["sdk-python"]
+            )
+            self.assertEqual("sdk-python", component)
+            self.assertEqual("durable_workflow.tar.gz", artifact_name)
+            self.assertEqual(
+                plan["artifact_tuple"]["sdk-python"]["version"],
+                diagnostic["native_summary"]["artifact_versions"]["sdk-python"],
+            )
+            failures = artifact_binding_failures(plan, ["sdk-python"], [diagnostic])
+            self.assertEqual(1, len(failures))
+            self.assertIn("does not match the candidate digest", failures[0])
+        finally:
+            fixture.close()
+
     def test_missing_distribution_evidence_stays_red(self) -> None:
         fixture = CandidateRecordFixture()
         try:
@@ -500,6 +527,45 @@ class ExperimentRetryTest(unittest.TestCase):
         self.assertEqual("artifact-binding", binding["runner"])
         self.assertEqual("deterministic-replay", binding["findings"][0]["owning_contract"])
         self.assertIn("sdk-python executed distribution artifact", binding["findings"][0]["summary"])
+
+    def test_injected_identity_failure_exercises_binding_and_is_not_retried(self) -> None:
+        def execute(command: list[str], **arguments: object) -> tuple[int, bool]:
+            stdout_path = arguments["stdout_path"]
+            stderr_path = arguments["stderr_path"]
+            assert isinstance(stdout_path, Path)
+            assert isinstance(stderr_path, Path)
+            stdout_path.write_text("", encoding="utf-8")
+            stderr_path.write_text("", encoding="utf-8")
+            native_dir = Path(command[-1])
+            (native_dir / self.runner["result"]).write_bytes(canonical_json(self.native_result("pass")))
+            return 0, False
+
+        with mock.patch("scripts.beta_conformance.execute_command", side_effect=execute) as execute_command:
+            result = run_experiment(
+                self.plan,
+                self.contract,
+                "replay",
+                self.artifact_root,
+                self.result_dir,
+                inject_identity_failure=True,
+            )
+
+        execute_command.assert_called_once()
+        self.assertEqual("product_failure", result["classification"])
+        self.assertEqual(1, result["retry"]["attempts"])
+        self.assertFalse(result["retry"]["semantic_failures_retryable"])
+        native = result["diagnostics"][0]
+        self.assertEqual(
+            "injected_distribution_identity_mismatch",
+            native["findings"][0]["type"],
+        )
+        self.assertEqual(
+            self.plan["artifact_tuple"]["cli"]["version"],
+            native["native_summary"]["artifact_versions"]["cli"],
+        )
+        binding = result["diagnostics"][-1]
+        self.assertEqual("artifact-binding", binding["runner"])
+        self.assertIn("does not match the candidate digest", binding["findings"][0]["summary"])
 
 
 class EvidenceTest(unittest.TestCase):

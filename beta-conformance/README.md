@@ -20,8 +20,9 @@ selectors are not inputs to this workflow.
 
 Dispatch `.github/workflows/beta-conformance.yml` with the complete canonical
 candidate JSON. An optional `injected_failure_experiment` proves that a
-semantic failure is recorded once, retained, and left red. It is never passed
-through the infrastructure retry classifier.
+same-version distribution digest mismatch is recorded, retained, and left red.
+The injected mismatch is never passed through the infrastructure retry
+classifier.
 
 The same entry point can be exercised on any clean runner with Git, Python,
 and Docker after checking out this repository at a full commit and fetching
@@ -58,7 +59,8 @@ Every experiment result conforms to
 
 The wrapper recognizes only a small allowlist of registry and connection
 transients. Those failures may run twice. A native non-passing result, timeout,
-missing published runner, or injected product failure is never retried.
+missing published runner, or injected distribution identity mismatch is never
+retried.
 Detached registry snapshots are not accepted as execution evidence. A runner
 must report identities derived from its executed downloads, and every artifact
 required by its experiment contract must match the immutable candidate record.

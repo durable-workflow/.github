@@ -661,6 +661,38 @@ def summarize_native_result(native: Any, plan: dict[str, Any]) -> dict[str, Any]
     }
 
 
+def inject_distribution_identity_mismatch(
+    native: Any, plan: dict[str, Any], required_distributions: list[str]
+) -> tuple[str, str]:
+    if not isinstance(native, dict):
+        raise ConformanceError("distribution identity failure injection requires a native result object")
+    raw = native.get("executed_distribution_identities", native.get("executedDistributionIdentities"))
+    if not isinstance(raw, dict):
+        raise ConformanceError("distribution identity failure injection requires executed distribution evidence")
+    for name in sorted(required_distributions):
+        identity = raw.get(name)
+        expected_identity = plan["distribution_identities"][name]
+        if not isinstance(identity, dict) or not isinstance(identity.get("artifacts"), list):
+            continue
+        expected_artifacts = {
+            artifact["name"]: artifact["sha256"] for artifact in expected_identity["artifacts"]
+        }
+        artifacts = sorted(
+            (artifact for artifact in identity["artifacts"] if isinstance(artifact, dict)),
+            key=lambda artifact: str(artifact.get("name", "")),
+        )
+        for artifact in artifacts:
+            artifact_name = artifact.get("name")
+            if artifact_name not in expected_artifacts:
+                continue
+            expected_digest = expected_artifacts[artifact_name]
+            artifact["sha256"] = "0" * 64 if expected_digest != "0" * 64 else "f" * 64
+            return name, artifact_name
+    raise ConformanceError(
+        "distribution identity failure injection found no required executed artifact identity"
+    )
+
+
 def is_classified_transient(text: str) -> bool:
     return any(pattern.search(text) for pattern in TRANSIENT_PATTERNS)
 
@@ -903,6 +935,7 @@ def run_experiment(
     result_dir: Path,
     *,
     inject_product_failure: bool = False,
+    inject_identity_failure: bool = False,
 ) -> dict[str, Any]:
     validate_plan(plan)
     validate_contract(contract)
@@ -910,6 +943,8 @@ def run_experiment(
         raise ConformanceError("execution contract does not match the runner revision bound into the plan")
     if experiment not in EXPERIMENTS:
         raise ConformanceError(f"unknown beta conformance experiment: {experiment}")
+    if inject_product_failure and inject_identity_failure:
+        raise ConformanceError("product and distribution identity failures cannot both be injected")
     specification = contract["experiments"][experiment]
     owner = specification["owning_contract"]
     started_at = now()
@@ -929,6 +964,7 @@ def run_experiment(
     diagnostics: list[dict[str, Any]] = []
     final_classification = "passed"
     maximum_attempts_used = 1
+    identity_failure_injected = False
     for runner in specification["runners"]:
         runner_path = artifact_root / safe_relative_path(runner["path"])
         if not runner_path.is_file():
@@ -980,13 +1016,41 @@ def run_experiment(
             native_path = native_dir / runner["result"]
             native: Any = None
             native_digest = None
+            injected_identity: tuple[str, str] | None = None
             if native_path.is_file():
                 try:
                     native = load_json(native_path)
-                    native_digest = sha256_file(native_path)
                 except ConformanceError as error:
                     stderr_tail = bounded_text(f"{stderr_tail}\n{error}", DIAGNOSTIC_LIMIT)
+                else:
+                    native_outcome, _, _ = native_state(native)
+                    if (
+                        inject_identity_failure
+                        and not identity_failure_injected
+                        and returncode == 0
+                        and not timed_out
+                        and native_outcome in PASS_OUTCOMES
+                    ):
+                        injected_identity = inject_distribution_identity_mismatch(
+                            native, plan, specification["required_distributions"]
+                        )
+                        write_json(native_path, native)
+                        identity_failure_injected = True
+                    native_digest = sha256_file(native_path)
             native_outcome, runner_blocked, findings = native_state(native)
+            if injected_identity is not None:
+                component, artifact_name = injected_identity
+                findings.insert(
+                    0,
+                    {
+                        "type": "injected_distribution_identity_mismatch",
+                        "owning_contract": owner,
+                        "summary": bounded_text(
+                            f"Injected a same-version digest mismatch for {component} artifact {artifact_name}."
+                        ),
+                    },
+                )
+                findings = findings[:FINDING_LIMIT]
             classification, retryable = classify_attempt(
                 returncode=returncode,
                 timed_out=timed_out,
@@ -1364,6 +1428,7 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("result_dir", type=Path)
     run.add_argument("--contract", type=Path, required=True)
     run.add_argument("--inject-product-failure", action="store_true")
+    run.add_argument("--inject-identity-failure", action="store_true")
 
     aggregate = commands.add_parser("aggregate", help="aggregate retained matrix evidence")
     aggregate.add_argument("plan", type=Path)
@@ -1416,6 +1481,7 @@ def main(argv: list[str] | None = None) -> int:
                 arguments.artifact_root,
                 arguments.result_dir,
                 inject_product_failure=arguments.inject_product_failure,
+                inject_identity_failure=arguments.inject_identity_failure,
             )
             print(json.dumps({"experiment": arguments.experiment, "outcome": result["outcome"]}, sort_keys=True))
             return 0 if result["outcome"] == "pass" else 1
