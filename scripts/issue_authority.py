@@ -30,6 +30,9 @@ NON_PUBLIC_CONTEXT_PATTERNS = (
 )
 STATUS_LABELS = {"status:triage", "status:ready", "status:blocked", "status:done"}
 OPEN_STATUS_LABELS = STATUS_LABELS - {"status:done"}
+COMPLETION_REQUIRED_LABEL = "completion:evidence-required"
+COMPLETION_VERIFIED_LABEL = "completion:evidence-verified"
+COMPLETION_LABELS = {COMPLETION_REQUIRED_LABEL, COMPLETION_VERIFIED_LABEL}
 KIND_LABELS = {"kind:defect", "kind:feature", "kind:release-blocker", "kind:cross-repository"}
 PRIORITY_LABELS = {"priority:P0", "priority:P1", "priority:P2", "priority:P3", "priority:untriaged"}
 CLASSIFICATION_LABELS = {"beta:blocker", "beta:compatible", "post-2.0"}
@@ -110,6 +113,7 @@ def validate_contract(
         "authority:github",
         "authority:conflict",
         *STATUS_LABELS,
+        *COMPLETION_LABELS,
         *KIND_LABELS,
         *PRIORITY_LABELS,
         *CLASSIFICATION_LABELS,
@@ -355,6 +359,15 @@ class GitHubApi:
     ) -> None:
         self.request("PATCH", f"/repos/{organization}/{repository}/issues/{number}", {"body": body})
 
+    def update_issue_state(
+        self,
+        organization: str,
+        repository: str,
+        number: int,
+        state: str,
+    ) -> None:
+        self.request("PATCH", f"/repos/{organization}/{repository}/issues/{number}", {"state": state})
+
 
 def _label_names(issue: dict[str, Any]) -> set[str]:
     names: set[str] = set()
@@ -385,6 +398,7 @@ def _item_labels(item: dict[str, Any]) -> list[str]:
     return sorted(
         {
             "authority:github",
+            COMPLETION_REQUIRED_LABEL,
             f"kind:{item['kind']}",
             f"priority:{item['priority']}",
             f"status:{item['status']}",
@@ -642,6 +656,28 @@ def _audit_state_labels(
             statuses = labels & STATUS_LABELS
             state = issue.get("state")
             replacement = set(labels)
+            if state == "open" and COMPLETION_REQUIRED_LABEL not in labels:
+                replacement.add(COMPLETION_REQUIRED_LABEL)
+                client.replace_issue_labels(organization, repository, number, sorted(replacement))
+                issue["labels"] = [{"name": label} for label in sorted(replacement)]
+                labels = replacement
+                statuses = labels & STATUS_LABELS
+
+            completion_is_pending = COMPLETION_REQUIRED_LABEL in labels and COMPLETION_VERIFIED_LABEL not in labels
+            if state == "closed" and completion_is_pending:
+                client.update_issue_state(organization, repository, number, "open")
+                issue["state"] = "open"
+                replacement -= STATUS_LABELS
+                previous_open_statuses = statuses & OPEN_STATUS_LABELS
+                replacement.update(previous_open_statuses if len(previous_open_statuses) == 1 else {"status:triage"})
+                if replacement != labels:
+                    client.replace_issue_labels(organization, repository, number, sorted(replacement))
+                    issue["labels"] = [{"name": label} for label in sorted(replacement)]
+                labels = replacement
+                statuses = labels & STATUS_LABELS
+                state = "open"
+                failures.append(f"{location} closed before its required public completion evidence was verified")
+
             if state == "closed" and statuses != {"status:done"}:
                 replacement -= STATUS_LABELS
                 replacement.add("status:done")

@@ -3,6 +3,7 @@ description: Propose a new public Durable Workflow capability or developer exper
 title: "[feature] <short description>"
 labels:
   - "authority:github"
+  - "completion:evidence-required"
   - "kind:feature"
   - "priority:untriaged"
   - "status:triage"

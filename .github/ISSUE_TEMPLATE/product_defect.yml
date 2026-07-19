@@ -3,6 +3,7 @@ description: Report incorrect behavior in a public Durable Workflow component or
 title: "[defect] <short description>"
 labels:
   - "authority:github"
+  - "completion:evidence-required"
   - "kind:defect"
   - "priority:untriaged"
   - "status:triage"

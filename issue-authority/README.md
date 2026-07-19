@@ -13,10 +13,22 @@ to GitHub.
 
 ## State direction
 
-An issue's GitHub `open` or `closed` state always wins. Status labels are
-derived triage aids: the audit changes stale open labels to `status:done` when
-GitHub closes an issue, but never reopens it. External automation may read or
-mirror GitHub state; it must not send lifecycle state back to this workflow.
+GitHub owns both lifecycle state and completion approval. Every new or still-open
+authoritative issue carries `completion:evidence-required`. Landing source or
+passing qualification does not satisfy that gate when the issue's acceptance
+criteria also require publication, installable-artifact verification, an
+operational drill, or another later observation. After those criteria are
+publicly demonstrated, a maintainer records `completion:evidence-verified`; for
+a defect, the public report must name the fixed version or source identity.
+
+Status labels remain derived triage aids. The audit changes stale labels to
+`status:done` only when a closed issue has satisfied its explicit completion
+gate. A premature close is reopened on GitHub and remains in its previous open
+status (or returns to triage when that status is unavailable). Closed issues
+that predate the gate are preserved unless they are reopened, at which point
+the audit enrolls them in the current completion contract. External automation
+may read or mirror GitHub state; it must not send lifecycle state back to this
+workflow.
 
 Every migrated issue contains exactly one stable `beta-work-id` marker, and each
 work ID identifies exactly one issue. Migration first searches open and closed

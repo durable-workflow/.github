@@ -11,6 +11,8 @@ from unittest.mock import patch
 import yaml
 
 from scripts.issue_authority import (
+    COMPLETION_REQUIRED_LABEL,
+    COMPLETION_VERIFIED_LABEL,
     OWNER_LABELS,
     STATUS_LABELS,
     UNBLOCK_CONTEXT_END,
@@ -68,6 +70,7 @@ class FakeGitHubApi:
         self.created_issues: list[tuple[str, int]] = []
         self.replacements: list[tuple[str, int, list[str]]] = []
         self.body_updates: list[tuple[str, int, str]] = []
+        self.state_updates: list[tuple[str, int, str]] = []
 
     def ensure_labels(
         self,
@@ -147,6 +150,17 @@ class FakeGitHubApi:
         issue = next(issue for issue in self.issues[repository] if issue["number"] == number)
         issue["body"] = body
         self.body_updates.append((repository, number, body))
+
+    def update_issue_state(
+        self,
+        _organization: str,
+        repository: str,
+        number: int,
+        state: str,
+    ) -> None:
+        issue = next(issue for issue in self.issues[repository] if issue["number"] == number)
+        issue["state"] = state
+        self.state_updates.append((repository, number, state))
 
 
 def label_names(issue: dict[str, Any]) -> set[str]:
@@ -251,15 +265,12 @@ class ContractValidationTest(unittest.TestCase):
             form = forms[name]
             self.assertTrue(set(form["labels"]) <= policy_labels)
             self.assertIn("authority:github", form["labels"])
+            self.assertIn(COMPLETION_REQUIRED_LABEL, form["labels"])
             self.assertIn("priority:untriaged", form["labels"])
 
     def test_authority_jobs_are_limited_to_the_canonical_github_host(self) -> None:
-        workflow = yaml.safe_load(
-            (ROOT / ".github" / "workflows" / "issue-authority.yml").read_text(encoding="utf-8")
-        )
-        conditions = {
-            job: " ".join(workflow["jobs"][job]["if"].split()) for job in ("validate", "apply", "audit")
-        }
+        workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "issue-authority.yml").read_text(encoding="utf-8"))
+        conditions = {job: " ".join(workflow["jobs"][job]["if"].split()) for job in ("validate", "apply", "audit")}
 
         self.assertEqual(
             "${{ github.event_name != 'issues' || github.server_url == 'https://github.com' }}",
@@ -323,6 +334,7 @@ class MigrationTest(unittest.TestCase):
         self.client.created_issues.clear()
         self.client.replacements.clear()
         self.client.body_updates.clear()
+        self.client.state_updates.clear()
 
     def assert_no_github_mutations(self) -> None:
         self.assertEqual([], self.client.label_updates)
@@ -330,6 +342,7 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual([], self.client.created_issues)
         self.assertEqual([], self.client.replacements)
         self.assertEqual([], self.client.body_updates)
+        self.assertEqual([], self.client.state_updates)
 
     def test_apply_creates_only_reviewed_items_with_dependencies(self) -> None:
         evidence = apply_backlog(self.policy, self.backlog, self.client)
@@ -358,8 +371,7 @@ class MigrationTest(unittest.TestCase):
         repository, issue = find_work_item(self.client, blocked_item["id"])
         issue["body"] = issue["body"].replace("## Problem", "Maintainer context.\n\n## Problem")
         blocker_context = (
-            f"{UNBLOCK_CONTEXT_START}\n## Unblock condition\n\n"
-            f"{REVIEWED_BLOCK_CONDITION}\n{UNBLOCK_CONTEXT_END}"
+            f"{UNBLOCK_CONTEXT_START}\n## Unblock condition\n\n{REVIEWED_BLOCK_CONDITION}\n{UNBLOCK_CONTEXT_END}"
         )
         expected_body = issue["body"].replace(f"\n\n{blocker_context}", "")
         issue_number = issue["number"]
@@ -394,6 +406,7 @@ class MigrationTest(unittest.TestCase):
         issue["labels"] = [
             {"name": "status:done" if label["name"] in STATUS_LABELS else label["name"]} for label in issue["labels"]
         ]
+        issue["labels"].append({"name": COMPLETION_VERIFIED_LABEL})
         expected_labels = copy.deepcopy(issue["labels"])
 
         evidence = apply_backlog(self.policy, self.backlog, self.client)
@@ -423,6 +436,7 @@ class MigrationTest(unittest.TestCase):
         issue["labels"] = [
             {"name": "status:done" if label["name"] in STATUS_LABELS else label["name"]} for label in issue["labels"]
         ]
+        issue["labels"].append({"name": COMPLETION_VERIFIED_LABEL})
         expected_labels = copy.deepcopy(issue["labels"])
 
         evidence = apply_backlog(self.policy, self.backlog, self.client)
@@ -504,6 +518,7 @@ class MigrationTest(unittest.TestCase):
             for label in issue["labels"]
             if label["name"] not in STATUS_LABELS or label["name"] == "status:ready"
         ]
+        issue["labels"].append({"name": COMPLETION_VERIFIED_LABEL})
 
         evidence = apply_backlog(self.policy, self.backlog, self.client)
 
@@ -590,17 +605,49 @@ class MigrationTest(unittest.TestCase):
         with self.assertRaisesRegex(AuthorityError, "has no GitHub issue"):
             audit_backlog(self.policy, self.backlog, self.client)
 
-    def test_closed_github_state_wins_and_reverse_drift_fails_visibly(self) -> None:
+    def test_unverified_close_is_reopened_and_fails_visibly(self) -> None:
         apply_backlog(self.policy, self.backlog, self.client)
         repository, issue = find_work_item(self.client, "github-only-beta-continuity-drill")
         issue["state"] = "closed"
 
-        with self.assertRaisesRegex(AuthorityError, "closed state overrode stale lifecycle labels"):
+        with self.assertRaisesRegex(
+            AuthorityError,
+            "closed before its required public completion evidence was verified",
+        ):
             audit_backlog(self.policy, self.backlog, self.client)
 
-        self.assertEqual({"status:done"}, label_names(issue) & STATUS_LABELS)
-        self.assertEqual("closed", issue["state"])
+        self.assertEqual({"status:ready"}, label_names(issue) & STATUS_LABELS)
+        self.assertEqual("open", issue["state"])
+        self.assertIn((repository, issue["number"], "open"), self.client.state_updates)
+
+    def test_verified_public_completion_evidence_allows_closed_state_to_win(self) -> None:
+        apply_backlog(self.policy, self.backlog, self.client)
+        _repository, issue = find_work_item(self.client, "github-only-beta-continuity-drill")
+        issue["state"] = "closed"
+        issue["labels"] = [
+            {"name": "status:done" if label["name"] in STATUS_LABELS else label["name"]} for label in issue["labels"]
+        ]
+        issue["labels"].append({"name": COMPLETION_VERIFIED_LABEL})
+        self.clear_mutation_spies()
+
+        evidence = audit_backlog(self.policy, self.backlog, self.client)
+
+        self.assertEqual("pass", evidence["outcome"])
+        self.assertEqual("closed", evidence["issues"]["github-only-beta-continuity-drill"]["state"])
+        self.assert_no_github_mutations()
+
+    def test_open_authoritative_issue_is_enrolled_in_the_completion_gate(self) -> None:
+        apply_backlog(self.policy, self.backlog, self.client)
+        repository, issue = find_work_item(self.client, "github-only-beta-continuity-drill")
+        issue["labels"] = [label for label in issue["labels"] if label["name"] != COMPLETION_REQUIRED_LABEL]
+        self.clear_mutation_spies()
+
+        evidence = audit_backlog(self.policy, self.backlog, self.client)
+
+        self.assertEqual("pass", evidence["outcome"])
+        self.assertIn(COMPLETION_REQUIRED_LABEL, label_names(issue))
         self.assertIn((repository, issue["number"], sorted(label_names(issue))), self.client.replacements)
+        self.assertEqual([], self.client.state_updates)
 
     def test_ambiguous_open_status_is_labeled_and_fails(self) -> None:
         apply_backlog(self.policy, self.backlog, self.client)

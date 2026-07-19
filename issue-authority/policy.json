@@ -78,6 +78,16 @@
       "name": "status:done"
     },
     {
+      "color": "d93f0b",
+      "description": "Close only after all explicit acceptance and operational evidence is public",
+      "name": "completion:evidence-required"
+    },
+    {
+      "color": "0e8a16",
+      "description": "Acceptance, fixed version, and required operational evidence are publicly verified",
+      "name": "completion:evidence-verified"
+    },
+    {
       "color": "b60205",
       "description": "Must be resolved before the first 2.0 beta",
       "name": "beta:blocker"

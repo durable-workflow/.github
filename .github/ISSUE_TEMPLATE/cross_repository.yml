@@ -3,6 +3,7 @@ description: Define a public contract or coordinated change spanning multiple Du
 title: "[cross-repository] <short description>"
 labels:
   - "authority:github"
+  - "completion:evidence-required"
   - "kind:cross-repository"
   - "priority:untriaged"
   - "status:triage"
