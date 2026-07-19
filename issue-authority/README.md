@@ -20,10 +20,16 @@ mirror GitHub state; it must not send lifecycle state back to this workflow.
 
 Every migrated issue contains a stable `beta-work-id` marker. Migration first
 searches open and closed issues across the complete public inventory. One match
-is preserved exactly, including its current title, body, labels, and lifecycle
-state. More than one match receives `authority:conflict` and makes the workflow
-fail. Replaying migration therefore cannot duplicate an issue or make completed
-GitHub work pending again.
+preserves its current title, maintainer-authored body, labels, and lifecycle
+state. The only source-owned body field reconciled on replay is the bounded
+unblock-condition section for a blocked migration. More than one match receives
+`authority:conflict` and makes the workflow fail. Replaying migration therefore
+cannot duplicate an issue or make completed GitHub work pending again.
+
+A blocked migration must name either an earlier migrated dependency or an
+explicit public-safe unblock condition. The renderer links migrated dependencies
+and publishes external decision gates under an `Unblock condition` heading, so a
+consumer can tell what must change before the work becomes ready.
 
 The scheduled audit also fails when a selected item is missing, when a marker
 appears in the wrong repository, when an open authoritative issue has ambiguous

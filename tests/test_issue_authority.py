@@ -54,6 +54,7 @@ class FakeGitHubApi:
         }
         self.issues: dict[str, list[dict[str, Any]]] = {repository: [] for repository in policy["repositories"]}
         self.replacements: list[tuple[str, int, list[str]]] = []
+        self.body_updates: list[tuple[str, int, str]] = []
 
     def ensure_labels(
         self,
@@ -119,6 +120,17 @@ class FakeGitHubApi:
         issue["labels"] = [{"name": label} for label in labels]
         self.replacements.append((repository, number, labels))
 
+    def update_issue_body(
+        self,
+        _organization: str,
+        repository: str,
+        number: int,
+        body: str,
+    ) -> None:
+        issue = next(issue for issue in self.issues[repository] if issue["number"] == number)
+        issue["body"] = body
+        self.body_updates.append((repository, number, body))
+
 
 def label_names(issue: dict[str, Any]) -> set[str]:
     return {label["name"] for label in issue["labels"]}
@@ -142,6 +154,8 @@ class ContractValidationTest(unittest.TestCase):
 
         self.assertEqual("github-to-mirrors", policy["state_direction"])
         self.assertEqual(4, len(backlog["items"]))
+        blocked = [item for item in backlog["items"] if item["status"] == "blocked"]
+        self.assertTrue(all(item["depends_on"] or item.get("unblock_condition") for item in blocked))
 
     def test_review_and_migration_sets_must_match_exactly(self) -> None:
         policy, backlog, policy_schema, backlog_schema = contract_fixture()
@@ -155,6 +169,20 @@ class ContractValidationTest(unittest.TestCase):
         backlog["items"][0]["depends_on"] = ["authorize-2-0-beta"]
 
         with self.assertRaisesRegex(AuthorityError, "dependencies must precede"):
+            validate_contract(policy, backlog, policy_schema, backlog_schema)
+
+    def test_blocked_item_must_name_dependency_or_unblock_condition(self) -> None:
+        policy, backlog, policy_schema, backlog_schema = contract_fixture()
+        backlog["items"][0].pop("unblock_condition")
+
+        with self.assertRaisesRegex(AuthorityError, "must name a dependency or explicit unblock condition"):
+            validate_contract(policy, backlog, policy_schema, backlog_schema)
+
+    def test_unblock_condition_must_be_public_safe(self) -> None:
+        policy, backlog, policy_schema, backlog_schema = contract_fixture()
+        backlog["items"][0]["unblock_condition"] = "Wait for /var/private-state."
+
+        with self.assertRaisesRegex(AuthorityError, "non-public context"):
             validate_contract(policy, backlog, policy_schema, backlog_schema)
 
     def test_private_operational_context_is_rejected(self) -> None:
@@ -245,7 +273,31 @@ class MigrationTest(unittest.TestCase):
 
         _repository, authorization = find_work_item(self.client, "authorize-2-0-beta")
         _drill_repository, drill = find_work_item(self.client, "github-only-beta-continuity-drill")
+        _release_repository, release = find_work_item(self.client, "release-plan-versioned-changelogs")
         self.assertIn(drill["html_url"], authorization["body"])
+        self.assertIn("## Unblock condition", release["body"])
+        self.assertIn(self.backlog["items"][0]["unblock_condition"], release["body"])
+
+    def test_replay_restores_machine_owned_unblock_context_without_losing_edits(self) -> None:
+        apply_backlog(self.policy, self.backlog, self.client)
+        repository, issue = find_work_item(self.client, "release-plan-versioned-changelogs")
+        start = issue["body"].index("<!-- beta-unblock-condition:start -->")
+        end_marker = "<!-- beta-unblock-condition:end -->"
+        end = issue["body"].index(end_marker) + len(end_marker)
+        issue["body"] = issue["body"][:start] + issue["body"][end:]
+        issue["body"] = issue["body"].replace("## Problem", "Maintainer context.\n\n## Problem")
+
+        evidence = apply_backlog(self.policy, self.backlog, self.client)
+
+        self.assertEqual("updated-blocker-context", evidence["issues"]["release-plan-versioned-changelogs"]["action"])
+        self.assertIn("Maintainer context.", issue["body"])
+        self.assertIn(self.backlog["items"][0]["unblock_condition"], issue["body"])
+        self.assertEqual(1, len(self.client.body_updates))
+
+        replay_evidence = apply_backlog(self.policy, self.backlog, self.client)
+
+        self.assertEqual("preserved", replay_evidence["issues"]["release-plan-versioned-changelogs"]["action"])
+        self.assertEqual(1, len(self.client.body_updates))
 
     def test_replay_preserves_github_edits_and_closed_state(self) -> None:
         apply_backlog(self.policy, self.backlog, self.client)

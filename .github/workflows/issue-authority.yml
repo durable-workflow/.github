@@ -71,7 +71,7 @@ jobs:
       - name: Install schema validator
         run: python -m pip install jsonschema==4.23.0
 
-      - name: Create only reviewed issues and preserve GitHub lifecycle state
+      - name: Create reviewed issues and reconcile blocker context
         env:
           BETA_PRODUCT_WORK_TOKEN: ${{ secrets.BETA_PRODUCT_WORK_TOKEN }}
         run: >-

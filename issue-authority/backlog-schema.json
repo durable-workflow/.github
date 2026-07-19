@@ -99,6 +99,11 @@
             "items": {
               "$ref": "#/$defs/workId"
             }
+          },
+          "unblock_condition": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
           }
         }
       }

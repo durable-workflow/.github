@@ -21,6 +21,12 @@ from jsonschema import Draft202012Validator, FormatChecker
 POLICY_SCHEMA = "durable-workflow.github-issue-authority/v1"
 BACKLOG_SCHEMA = "durable-workflow.github-beta-backlog/v1"
 MARKER_PATTERN = re.compile(r"<!-- beta-work-id: ([a-z0-9][a-z0-9-]{2,79}) -->")
+UNBLOCK_CONTEXT_START = "<!-- beta-unblock-condition:start -->"
+UNBLOCK_CONTEXT_END = "<!-- beta-unblock-condition:end -->"
+UNBLOCK_CONTEXT_PATTERN = re.compile(
+    rf"{re.escape(UNBLOCK_CONTEXT_START)}\n.*?\n{re.escape(UNBLOCK_CONTEXT_END)}",
+    re.DOTALL,
+)
 NON_PUBLIC_CONTEXT_PATTERNS = (
     re.compile(r"(?<![:/A-Za-z0-9_.-])/(?!/)[^\s)>\]]+"),
     re.compile(r"\b(?:localhost|127\.0\.0\.1)(?::[0-9]+)?\b", re.I),
@@ -133,6 +139,15 @@ def validate_contract(
     for item in items:
         if item["repository"] not in repositories:
             raise AuthorityError(f"backlog item {item['id']} names an unknown public repository")
+        unblock_condition = item.get("unblock_condition")
+        if (
+            item["status"] == "blocked"
+            and not item["depends_on"]
+            and (not unblock_condition or not unblock_condition.strip())
+        ):
+            raise AuthorityError(
+                f"blocked backlog item {item['id']} must name a dependency or explicit unblock condition"
+            )
         future_dependencies = set(item["depends_on"]) - known_ids
         if future_dependencies:
             raise AuthorityError(
@@ -157,6 +172,8 @@ def validate_contract(
         public_values.extend((record["title"], record["reason"]))
     for item in items:
         public_values.extend((item["title"], item["body"]))
+        if unblock_condition := item.get("unblock_condition"):
+            public_values.append(unblock_condition)
     _public_safe(public_values)
 
 
@@ -330,6 +347,15 @@ class GitHubApi:
             {"labels": sorted(set(labels))},
         )
 
+    def update_issue_body(
+        self,
+        organization: str,
+        repository: str,
+        number: int,
+        body: str,
+    ) -> None:
+        self.request("PATCH", f"/repos/{organization}/{repository}/issues/{number}", {"body": body})
+
 
 def _label_names(issue: dict[str, Any]) -> set[str]:
     names: set[str] = set()
@@ -369,6 +395,13 @@ def _item_labels(item: dict[str, Any]) -> list[str]:
     )
 
 
+def _render_unblock_context(item: dict[str, Any]) -> str:
+    unblock_condition = item.get("unblock_condition")
+    if not unblock_condition:
+        return ""
+    return f"{UNBLOCK_CONTEXT_START}\n## Unblock condition\n\n{unblock_condition.rstrip()}\n{UNBLOCK_CONTEXT_END}"
+
+
 def _render_body(
     item: dict[str, Any],
     dependency_urls: Mapping[str, str],
@@ -381,18 +414,39 @@ def _render_body(
         )
     else:
         dependency_lines = "None."
+    unblock_context = _render_unblock_context(item)
+    rendered_unblock_context = f"\n\n{unblock_context}" if unblock_context else ""
     return (
         f"{item['body'].rstrip()}\n\n"
-        f"## Dependencies\n\n{dependency_lines}\n\n"
+        f"## Dependencies\n\n{dependency_lines}"
+        f"{rendered_unblock_context}\n\n"
         f"<!-- beta-work-id: {item['id']} -->\n"
     )
 
 
+def _reconcile_unblock_context(item: dict[str, Any], issue: dict[str, Any]) -> str | None:
+    desired = _render_unblock_context(item)
+    if not desired:
+        return None
+    body = issue.get("body")
+    if not isinstance(body, str):
+        raise AuthorityError(f"GitHub issue for {item['id']} has no text body")
+    if body.count(UNBLOCK_CONTEXT_START) != body.count(UNBLOCK_CONTEXT_END):
+        raise AuthorityError(f"GitHub issue for {item['id']} has malformed unblock condition context")
+    matches = list(UNBLOCK_CONTEXT_PATTERN.finditer(body))
+    if len(matches) > 1 or body.count(UNBLOCK_CONTEXT_START) > 1:
+        raise AuthorityError(f"GitHub issue for {item['id']} repeats its unblock condition context")
+    if matches:
+        updated = UNBLOCK_CONTEXT_PATTERN.sub(lambda _match: desired, body, count=1)
+    else:
+        marker = f"<!-- beta-work-id: {item['id']} -->"
+        updated = body.replace(marker, f"{desired}\n\n{marker}", 1)
+    return updated if updated != body else None
+
+
 def _inventory(policy: dict[str, Any], client: Any) -> dict[str, list[dict[str, Any]]]:
     organization = policy["organization"]
-    return {
-        repository: client.list_issues(organization, repository) for repository in policy["repositories"]
-    }
+    return {repository: client.list_issues(organization, repository) for repository in policy["repositories"]}
 
 
 def sync_metadata(policy: dict[str, Any], client: Any) -> tuple[dict[tuple[str, str], int], dict[str, Any]]:
@@ -541,8 +595,7 @@ def apply_backlog(policy: dict[str, Any], backlog: dict[str, Any], client: Any) 
     inventory = _inventory(policy, client)
     resolved = _preflight_markers(policy, backlog, client, inventory, allow_missing=True)
     dependency_urls = {
-        work_id: _issue_url(issue, organization, repository)
-        for work_id, (repository, issue) in resolved.items()
+        work_id: _issue_url(issue, organization, repository) for work_id, (repository, issue) in resolved.items()
     }
     dependency_titles = {item["id"]: item["title"] for item in backlog["items"]}
     issue_evidence: dict[str, Any] = {}
@@ -550,8 +603,17 @@ def apply_backlog(policy: dict[str, Any], backlog: dict[str, Any], client: Any) 
     for item in backlog["items"]:
         if item["id"] in resolved:
             repository, issue = resolved[item["id"]]
+            updated_body = _reconcile_unblock_context(item, issue)
+            if updated_body is not None:
+                client.update_issue_body(
+                    organization,
+                    repository,
+                    int(issue["number"]),
+                    updated_body,
+                )
+                issue["body"] = updated_body
             issue_evidence[item["id"]] = {
-                "action": "preserved",
+                "action": "updated-blocker-context" if updated_body is not None else "preserved",
                 "state": issue.get("state"),
                 "url": _issue_url(issue, organization, repository),
             }
