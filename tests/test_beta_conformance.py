@@ -9,11 +9,16 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError
+from referencing import Registry, Resource
+
 from scripts.beta_candidate import CLI_ASSETS, COMPONENTS, SCHEMA, VERIFICATION_SCHEMA, canonical_json, manifest_digest
 from scripts.beta_conformance import (
     EXPERIMENTS,
     MAX_INFRASTRUCTURE_ATTEMPTS,
     NATIVE_RESULT_LIMIT,
+    NATIVE_RESULT_PREFIX_LIMIT,
     ConformanceError,
     aggregate_results,
     artifact_binding_failures,
@@ -23,16 +28,27 @@ from scripts.beta_conformance import (
     inject_distribution_identity_mismatch,
     injected_failure_result,
     load_contract,
+    native_result_completeness_error,
     prepare_plan,
     run_experiment,
     runner_runtime_environment,
     sha256_bytes,
+    sha256_file,
     validate_experiment_result,
     validate_plan,
+    write_json,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATH = ROOT / "beta-conformance" / "contract.json"
+
+
+def beta_schema_validator(name: str) -> Draft202012Validator:
+    schemas = {
+        path.name: json.loads(path.read_bytes()) for path in sorted((ROOT / "beta-conformance").glob("*schema.json"))
+    }
+    registry = Registry().with_resources((schema["$id"], Resource.from_contents(schema)) for schema in schemas.values())
+    return Draft202012Validator(schemas[name], registry=registry)
 
 
 def candidate_manifest() -> dict[str, object]:
@@ -124,7 +140,10 @@ def successful_diagnostic(
         "stdout_sha256": empty_digest,
         "stderr_tail": "",
         "stderr_sha256": empty_digest,
+        "native_result_size_bytes": 128,
         "native_result_sha256": "b" * 64,
+        "native_result_prefix_sha256": None,
+        "native_result_prefix_bytes": None,
         "native_summary": {
             "schema": "fixture.result/v1",
             "artifact_versions": {name: artifact_tuple[name]["version"] for name in selected},
@@ -218,11 +237,44 @@ class ContractTest(unittest.TestCase):
             },
             php_runner["runtime"],
         )
+        signals_runner = contract["experiments"]["signals-queries"]["runners"][0]
+        self.assertEqual("durable-workflow.v2.signal-query-runtime.result", signals_runner["result_schema"])
+        self.assertEqual(
+            {
+                "schema",
+                "started_at",
+                "finished_at",
+                "outcome",
+                "runner_blocked",
+                "artifactVersions",
+                "executed_distribution_identities",
+                "runtime_matrix",
+                "scenario_results",
+                "findings",
+                "finding_links",
+            },
+            set(signals_runner["required_result_fields"]),
+        )
+        self.assertEqual(18, len(signals_runner["required_scenarios"]))
+        self.assertIn("published_artifact_install_only", signals_runner["required_scenarios"])
+        self.assertIn("waterline_operator_visibility", signals_runner["required_scenarios"])
 
     def test_every_schema_is_parseable_draft_2020_12(self) -> None:
         for path in sorted((ROOT / "beta-conformance").glob("*schema.json")):
             schema = json.loads(path.read_bytes())
             self.assertEqual("https://json-schema.org/draft/2020-12/schema", schema["$schema"])
+
+        result_schema = json.loads((ROOT / "beta-conformance" / "result-schema.json").read_bytes())
+        diagnostic = result_schema["properties"]["diagnostics"]["items"]
+        self.assertTrue(
+            {
+                "native_result_size_bytes",
+                "native_result_sha256",
+                "native_result_prefix_sha256",
+                "native_result_prefix_bytes",
+            }.issubset(diagnostic["required"])
+        )
+        self.assertEqual(4, len(diagnostic["oneOf"]))
 
 
 class PlanTest(unittest.TestCase):
@@ -325,6 +377,7 @@ class FailureClassificationTest(unittest.TestCase):
             timed_out=False,
             native_outcome="fail",
             runner_blocked=False,
+            native_result_rejected=False,
             diagnostic_text="HTTP 503 appeared in a product assertion",
         )
         self.assertEqual("product_failure", classification)
@@ -336,6 +389,7 @@ class FailureClassificationTest(unittest.TestCase):
             timed_out=False,
             native_outcome=None,
             runner_blocked=False,
+            native_result_rejected=False,
             diagnostic_text="registry returned 503 Service Unavailable during pull",
         )
         self.assertEqual("infrastructure_failure", classification)
@@ -347,9 +401,22 @@ class FailureClassificationTest(unittest.TestCase):
             timed_out=True,
             native_outcome=None,
             runner_blocked=False,
+            native_result_rejected=False,
             diagnostic_text="",
         )
         self.assertEqual("product_failure", classification)
+        self.assertFalse(retryable)
+
+    def test_rejected_native_result_is_never_retried_as_a_transient(self) -> None:
+        classification, retryable = classify_attempt(
+            returncode=75,
+            timed_out=False,
+            native_outcome=None,
+            runner_blocked=True,
+            native_result_rejected=True,
+            diagnostic_text="tls handshake timeout",
+        )
+        self.assertEqual("infrastructure_failure", classification)
         self.assertFalse(retryable)
 
     def test_native_artifact_version_drift_stays_red(self) -> None:
@@ -498,6 +565,93 @@ class ExperimentRetryTest(unittest.TestCase):
             ),
         }
 
+    def portable_signals_query_result(self) -> tuple[dict[str, object], dict[str, object]]:
+        runner = self.contract["experiments"]["signals-queries"]["runners"][0]
+        native = self.native_result("pass")
+        native.update(
+            {
+                "schema": runner["result_schema"],
+                "started_at": "2026-07-19T00:00:00Z",
+                "finished_at": "2026-07-19T00:01:00Z",
+                "runner_blocked": False,
+                "artifactVersions": native.pop("artifact_versions"),
+                "runtime_matrix": {},
+                "scenario_results": {
+                    scenario: {"scenario_id": scenario, "status": "pass"}
+                    for scenario in runner["required_scenarios"]
+                },
+                "finding_links": {},
+            }
+        )
+        return native, runner
+
+    def test_every_declared_portable_field_is_required(self) -> None:
+        native, runner = self.portable_signals_query_result()
+        required_distributions = self.contract["experiments"]["signals-queries"]["required_distributions"]
+        self.assertEqual("", native_result_completeness_error(native, required_distributions, runner))
+
+        for field in runner["required_result_fields"]:
+            with self.subTest(field=field):
+                incomplete = dict(native)
+                incomplete.pop(field)
+                self.assertIn(
+                    field,
+                    native_result_completeness_error(incomplete, required_distributions, runner),
+                )
+
+    def test_malformed_portable_identity_bodies_are_incomplete_evidence(self) -> None:
+        native, runner = self.portable_signals_query_result()
+        required_distributions = self.contract["experiments"]["signals-queries"]["required_distributions"]
+        malformed_identities = (
+            None,
+            {"kind": "pypi", "locator": "pypi:durable-workflow@1.2.0"},
+            {"kind": "pypi", "locator": "pypi:durable-workflow@1.2.0", "artifacts": []},
+            {
+                "kind": "pypi",
+                "locator": "not-a-distribution-locator",
+                "artifacts": [{"name": "package.whl", "sha256": "a" * 64}],
+            },
+            {
+                "kind": "pypi",
+                "locator": "pypi:durable-workflow/sdk-python@1.2.0",
+                "artifacts": [{"name": "package.whl", "sha256": "a" * 64}],
+            },
+            {
+                "kind": "pypi",
+                "locator": "pypi:durable-workflow@not-a-version",
+                "artifacts": [{"name": "package.whl", "sha256": "a" * 64}],
+            },
+            {
+                "kind": "composer",
+                "locator": "composer:durable-workflow/sdk-python@1.2.0",
+                "artifacts": [{"name": "package.whl", "sha256": "a" * 64}],
+            },
+            {
+                "kind": "pypi",
+                "locator": "pypi:durable-workflow@1.2.0",
+                "artifacts": [{"name": "package.whl", "sha256": "not-a-digest"}],
+            },
+        )
+
+        for identity in malformed_identities:
+            with self.subTest(identity=identity):
+                malformed = json.loads(canonical_json(native))
+                malformed["executed_distribution_identities"]["sdk-python"] = identity
+                self.assertIn(
+                    "malformed sdk-python distribution",
+                    native_result_completeness_error(malformed, required_distributions, runner),
+                )
+
+    def test_passing_outcome_cannot_hide_a_non_passing_required_scenario(self) -> None:
+        native, runner = self.portable_signals_query_result()
+        required_distributions = self.contract["experiments"]["signals-queries"]["required_distributions"]
+        native["scenario_results"][runner["required_scenarios"][0]]["status"] = "fail"
+
+        self.assertIn(
+            "passing outcome with non-passing required scenarios",
+            native_result_completeness_error(native, required_distributions, runner),
+        )
+
     def test_classified_infrastructure_retry_can_recover_the_experiment(self) -> None:
         attempts = 0
 
@@ -626,7 +780,83 @@ class ExperimentRetryTest(unittest.TestCase):
         self.assertTrue(result["diagnostics"][0]["runner_blocked"])
         self.assertEqual("declared_runtime_unavailable", result["diagnostics"][0]["findings"][0]["type"])
 
-    def test_oversized_native_result_is_runner_infrastructure_not_product_failure(self) -> None:
+    def test_oversized_native_result_is_not_retried_with_transient_diagnostics(self) -> None:
+        oversized_size = 1 << 40
+        native_path = self.result_dir / "native" / self.runner["id"] / self.runner["result"]
+
+        def bounded_digest(path: Path) -> str:
+            if path == native_path:
+                raise AssertionError("oversized native result must not be hashed in full")
+            return sha256_file(path)
+
+        def execute(command: list[str], **arguments: object) -> tuple[int, bool]:
+            stdout_path = arguments["stdout_path"]
+            stderr_path = arguments["stderr_path"]
+            assert isinstance(stdout_path, Path)
+            assert isinstance(stderr_path, Path)
+            stdout_path.write_text("", encoding="utf-8")
+            stderr_path.write_text("tls handshake timeout", encoding="utf-8")
+            native_dir = Path(command[-1])
+            with (native_dir / self.runner["result"]).open("wb") as handle:
+                handle.write(b"{" + b"x" * (NATIVE_RESULT_PREFIX_LIMIT - 1))
+                handle.truncate(oversized_size)
+            return 0, False
+
+        with (
+            mock.patch("scripts.beta_conformance.execute_command", side_effect=execute) as execute_command,
+            mock.patch(
+                "scripts.beta_conformance.sha256_file",
+                side_effect=bounded_digest,
+            ),
+        ):
+            result = run_experiment(
+                self.plan,
+                self.contract,
+                "replay",
+                self.artifact_root,
+                self.result_dir,
+            )
+
+        execute_command.assert_called_once()
+        self.assertEqual("fail", result["outcome"])
+        self.assertEqual("infrastructure_failure", result["classification"])
+        self.assertEqual(1, result["retry"]["attempts"])
+        diagnostic = result["diagnostics"][0]
+        self.assertTrue(diagnostic["runner_blocked"])
+        self.assertEqual(oversized_size, diagnostic["native_result_size_bytes"])
+        self.assertIsNone(diagnostic["native_result_sha256"])
+        self.assertEqual(NATIVE_RESULT_PREFIX_LIMIT, diagnostic["native_result_prefix_bytes"])
+        self.assertEqual(
+            sha256_bytes(b"{" + b"x" * (NATIVE_RESULT_PREFIX_LIMIT - 1)),
+            diagnostic["native_result_prefix_sha256"],
+        )
+        self.assertEqual("native_result_unreadable", diagnostic["findings"][0]["type"])
+        self.assertNotIn(str(self.result_dir), diagnostic["stderr_tail"])
+
+    def test_oversized_native_prefix_read_failure_retains_unreadable_evidence(self) -> None:
+        oversized_size = 1 << 40
+        native_path = self.result_dir / "native" / self.runner["id"] / self.runner["result"]
+        original_open = Path.open
+
+        class PrefixReadFailure:
+            def __enter__(self) -> PrefixReadFailure:
+                self.handle = original_open(native_path, "rb")
+                return self
+
+            def __exit__(self, *arguments: object) -> None:
+                self.handle.close()
+
+            def fileno(self) -> int:
+                return self.handle.fileno()
+
+            def read(self, size: int = -1) -> bytes:
+                raise OSError("simulated native evidence read failure")
+
+        def open_with_prefix_failure(path: Path, *arguments: object, **options: object):
+            if path == native_path and arguments == ("rb",):
+                return PrefixReadFailure()
+            return original_open(path, *arguments, **options)
+
         def execute(command: list[str], **arguments: object) -> tuple[int, bool]:
             stdout_path = arguments["stdout_path"]
             stderr_path = arguments["stderr_path"]
@@ -635,7 +865,82 @@ class ExperimentRetryTest(unittest.TestCase):
             stdout_path.write_text("", encoding="utf-8")
             stderr_path.write_text("", encoding="utf-8")
             native_dir = Path(command[-1])
-            (native_dir / self.runner["result"]).write_bytes(b"{" + b"x" * NATIVE_RESULT_LIMIT)
+            with (native_dir / self.runner["result"]).open("wb") as handle:
+                handle.truncate(oversized_size)
+            return 0, False
+
+        with (
+            mock.patch("scripts.beta_conformance.execute_command", side_effect=execute) as execute_command,
+            mock.patch.object(Path, "open", open_with_prefix_failure),
+        ):
+            result = run_experiment(
+                self.plan,
+                self.contract,
+                "replay",
+                self.artifact_root,
+                self.result_dir,
+            )
+
+        execute_command.assert_called_once()
+        retained = json.loads((self.result_dir / "experiment-result.json").read_bytes())
+        self.assertEqual(result, retained)
+        self.assertEqual("infrastructure_failure", result["classification"])
+        self.assertEqual(1, result["retry"]["attempts"])
+        self.assertEqual(1, len(result["diagnostics"]))
+        diagnostic = result["diagnostics"][0]
+        self.assertTrue(diagnostic["runner_blocked"])
+        self.assertEqual(oversized_size, diagnostic["native_result_size_bytes"])
+        self.assertIsNone(diagnostic["native_result_sha256"])
+        self.assertIsNone(diagnostic["native_result_prefix_sha256"])
+        self.assertIsNone(diagnostic["native_result_prefix_bytes"])
+        self.assertIsNone(diagnostic["native_summary"])
+
+    def test_malformed_native_result_is_not_retried_with_transient_diagnostics(self) -> None:
+        malformed = b'{"outcome":'
+
+        def execute(command: list[str], **arguments: object) -> tuple[int, bool]:
+            stdout_path = arguments["stdout_path"]
+            stderr_path = arguments["stderr_path"]
+            assert isinstance(stdout_path, Path)
+            assert isinstance(stderr_path, Path)
+            stdout_path.write_text("", encoding="utf-8")
+            stderr_path.write_text(
+                "registry returned 503 Service Unavailable during pull",
+                encoding="utf-8",
+            )
+            native_dir = Path(command[-1])
+            (native_dir / self.runner["result"]).write_bytes(malformed)
+            return 0, False
+
+        with mock.patch("scripts.beta_conformance.execute_command", side_effect=execute) as execute_command:
+            result = run_experiment(
+                self.plan,
+                self.contract,
+                "replay",
+                self.artifact_root,
+                self.result_dir,
+            )
+
+        execute_command.assert_called_once()
+        self.assertEqual("infrastructure_failure", result["classification"])
+        self.assertEqual(1, result["retry"]["attempts"])
+        diagnostic = result["diagnostics"][0]
+        self.assertEqual(len(malformed), diagnostic["native_result_size_bytes"])
+        self.assertEqual(sha256_bytes(malformed), diagnostic["native_result_sha256"])
+        self.assertIsNone(diagnostic["native_result_prefix_sha256"])
+
+    def test_incomplete_native_result_is_not_retried_with_transient_diagnostics(self) -> None:
+        def execute(command: list[str], **arguments: object) -> tuple[int, bool]:
+            stdout_path = arguments["stdout_path"]
+            stderr_path = arguments["stderr_path"]
+            assert isinstance(stdout_path, Path)
+            assert isinstance(stderr_path, Path)
+            stdout_path.write_text("", encoding="utf-8")
+            stderr_path.write_text("tls handshake timeout", encoding="utf-8")
+            native_dir = Path(command[-1])
+            (native_dir / self.runner["result"]).write_bytes(
+                canonical_json({"schema": "fixture.result/v1", "outcome": "pass"})
+            )
             return 0, False
 
         with mock.patch("scripts.beta_conformance.execute_command", side_effect=execute) as execute_command:
@@ -652,10 +957,170 @@ class ExperimentRetryTest(unittest.TestCase):
         self.assertEqual("infrastructure_failure", result["classification"])
         self.assertEqual(1, result["retry"]["attempts"])
         diagnostic = result["diagnostics"][0]
+        self.assertEqual("pass", diagnostic["native_outcome"])
         self.assertTrue(diagnostic["runner_blocked"])
-        self.assertRegex(diagnostic["native_result_sha256"], r"^[0-9a-f]{64}$")
         self.assertEqual("native_result_unreadable", diagnostic["findings"][0]["type"])
-        self.assertNotIn(str(self.result_dir), diagnostic["stderr_tail"])
+
+    def test_malformed_identity_is_runner_infrastructure_not_product_failure(self) -> None:
+        def execute(command: list[str], **arguments: object) -> tuple[int, bool]:
+            stdout_path = arguments["stdout_path"]
+            stderr_path = arguments["stderr_path"]
+            assert isinstance(stdout_path, Path)
+            assert isinstance(stderr_path, Path)
+            stdout_path.write_text("", encoding="utf-8")
+            stderr_path.write_text("", encoding="utf-8")
+            native = self.native_result("pass")
+            native["executed_distribution_identities"]["sdk-python"] = {
+                "kind": "pypi",
+                "locator": "pypi:durable-workflow@1.2.0",
+            }
+            native_dir = Path(command[-1])
+            (native_dir / self.runner["result"]).write_bytes(canonical_json(native))
+            return 0, False
+
+        with mock.patch("scripts.beta_conformance.execute_command", side_effect=execute):
+            result = run_experiment(
+                self.plan,
+                self.contract,
+                "replay",
+                self.artifact_root,
+                self.result_dir,
+            )
+
+        self.assertEqual("fail", result["outcome"])
+        self.assertEqual("infrastructure_failure", result["classification"])
+        diagnostic = result["diagnostics"][0]
+        self.assertEqual("pass", diagnostic["native_outcome"])
+        self.assertTrue(diagnostic["runner_blocked"])
+        self.assertEqual("native_result_unreadable", diagnostic["findings"][0]["type"])
+        self.assertNotIn("artifact-binding", [item["runner"] for item in result["diagnostics"]])
+
+    def test_malformed_identity_locator_is_runner_infrastructure_not_product_failure(self) -> None:
+        def execute(command: list[str], **arguments: object) -> tuple[int, bool]:
+            stdout_path = arguments["stdout_path"]
+            stderr_path = arguments["stderr_path"]
+            assert isinstance(stdout_path, Path)
+            assert isinstance(stderr_path, Path)
+            stdout_path.write_text("", encoding="utf-8")
+            stderr_path.write_text("", encoding="utf-8")
+            native = self.native_result("pass")
+            native["executed_distribution_identities"]["sdk-python"]["locator"] = (
+                "not-a-distribution-locator"
+            )
+            native_dir = Path(command[-1])
+            (native_dir / self.runner["result"]).write_bytes(canonical_json(native))
+            return 0, False
+
+        with mock.patch("scripts.beta_conformance.execute_command", side_effect=execute) as execute_command:
+            result = run_experiment(
+                self.plan,
+                self.contract,
+                "replay",
+                self.artifact_root,
+                self.result_dir,
+            )
+
+        execute_command.assert_called_once()
+        self.assertEqual("fail", result["outcome"])
+        self.assertEqual("infrastructure_failure", result["classification"])
+        diagnostic = result["diagnostics"][0]
+        self.assertEqual("pass", diagnostic["native_outcome"])
+        self.assertTrue(diagnostic["runner_blocked"])
+        self.assertIn("malformed sdk-python distribution identity locator", diagnostic["stderr_tail"])
+        self.assertEqual("native_result_unreadable", diagnostic["findings"][0]["type"])
+        self.assertNotIn("artifact-binding", [item["runner"] for item in result["diagnostics"]])
+
+    def test_accepted_native_result_retains_exact_full_identity(self) -> None:
+        native_bytes = json.dumps(self.native_result("pass"), indent=2).encode() + b"\n"
+
+        def execute(command: list[str], **arguments: object) -> tuple[int, bool]:
+            stdout_path = arguments["stdout_path"]
+            stderr_path = arguments["stderr_path"]
+            assert isinstance(stdout_path, Path)
+            assert isinstance(stderr_path, Path)
+            stdout_path.write_text("", encoding="utf-8")
+            stderr_path.write_text("", encoding="utf-8")
+            native_dir = Path(command[-1])
+            (native_dir / self.runner["result"]).write_bytes(native_bytes)
+            return 0, False
+
+        with mock.patch("scripts.beta_conformance.execute_command", side_effect=execute):
+            result = run_experiment(
+                self.plan,
+                self.contract,
+                "replay",
+                self.artifact_root,
+                self.result_dir,
+            )
+
+        self.assertEqual("passed", result["classification"])
+        diagnostic = result["diagnostics"][0]
+        self.assertEqual(len(native_bytes), diagnostic["native_result_size_bytes"])
+        self.assertEqual(sha256_bytes(native_bytes), diagnostic["native_result_sha256"])
+        self.assertIsNone(diagnostic["native_result_prefix_sha256"])
+
+    def test_missing_required_scenario_is_one_attempt_runner_infrastructure_failure(self) -> None:
+        native, runner = self.portable_signals_query_result()
+        missing_scenario = runner["required_scenarios"][0]
+        native["scenario_results"].pop(missing_scenario)
+        runner_path = self.artifact_root / runner["path"]
+        runner_path.parent.mkdir(parents=True, exist_ok=True)
+        runner_path.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+
+        def execute(command: list[str], **arguments: object) -> tuple[int, bool]:
+            stdout_path = arguments["stdout_path"]
+            stderr_path = arguments["stderr_path"]
+            assert isinstance(stdout_path, Path)
+            assert isinstance(stderr_path, Path)
+            stdout_path.write_text("", encoding="utf-8")
+            stderr_path.write_text("", encoding="utf-8")
+            native_dir = Path(command[-1])
+            (native_dir / runner["result"]).write_bytes(canonical_json(native))
+            return 0, False
+
+        with mock.patch("scripts.beta_conformance.execute_command", side_effect=execute) as execute_command:
+            result = run_experiment(
+                self.plan,
+                self.contract,
+                "signals-queries",
+                self.artifact_root,
+                self.result_dir,
+            )
+
+        execute_command.assert_called_once()
+        self.assertEqual("fail", result["outcome"])
+        self.assertEqual("infrastructure_failure", result["classification"])
+        self.assertEqual(1, result["retry"]["attempts"])
+        diagnostic = result["diagnostics"][0]
+        self.assertTrue(diagnostic["runner_blocked"])
+        self.assertIn(missing_scenario, diagnostic["stderr_tail"])
+        self.assertEqual("native_result_unreadable", diagnostic["findings"][0]["type"])
+
+    def test_missing_native_result_is_runner_infrastructure_not_product_failure(self) -> None:
+        def execute(command: list[str], **arguments: object) -> tuple[int, bool]:
+            stdout_path = arguments["stdout_path"]
+            stderr_path = arguments["stderr_path"]
+            assert isinstance(stdout_path, Path)
+            assert isinstance(stderr_path, Path)
+            stdout_path.write_text("", encoding="utf-8")
+            stderr_path.write_text("", encoding="utf-8")
+            return 0, False
+
+        with mock.patch("scripts.beta_conformance.execute_command", side_effect=execute) as execute_command:
+            result = run_experiment(
+                self.plan,
+                self.contract,
+                "replay",
+                self.artifact_root,
+                self.result_dir,
+            )
+
+        execute_command.assert_called_once()
+        self.assertEqual("fail", result["outcome"])
+        self.assertEqual("infrastructure_failure", result["classification"])
+        self.assertEqual(1, result["retry"]["attempts"])
+        self.assertTrue(result["diagnostics"][0]["runner_blocked"])
+        self.assertEqual("native_result_unreadable", result["diagnostics"][0]["findings"][0]["type"])
 
     def test_semantic_failure_is_not_retried_by_the_experiment_runner(self) -> None:
         def execute(command: list[str], **arguments: object) -> tuple[int, bool]:
@@ -713,7 +1178,46 @@ class ExperimentRetryTest(unittest.TestCase):
         self.assertEqual("deterministic-replay", binding["findings"][0]["owning_contract"])
         self.assertIn("sdk-python executed distribution artifact", binding["findings"][0]["summary"])
 
+    def test_passing_native_result_with_different_valid_locator_stays_red(self) -> None:
+        def execute(command: list[str], **arguments: object) -> tuple[int, bool]:
+            stdout_path = arguments["stdout_path"]
+            stderr_path = arguments["stderr_path"]
+            assert isinstance(stdout_path, Path)
+            assert isinstance(stderr_path, Path)
+            stdout_path.write_text("", encoding="utf-8")
+            stderr_path.write_text("", encoding="utf-8")
+            native = self.native_result("pass")
+            native["executed_distribution_identities"]["sdk-python"]["locator"] = (
+                "pypi:durable-workflow@9.9.9"
+            )
+            native_dir = Path(command[-1])
+            (native_dir / self.runner["result"]).write_bytes(canonical_json(native))
+            return 0, False
+
+        with mock.patch("scripts.beta_conformance.execute_command", side_effect=execute) as execute_command:
+            result = run_experiment(
+                self.plan,
+                self.contract,
+                "replay",
+                self.artifact_root,
+                self.result_dir,
+            )
+
+        execute_command.assert_called_once()
+        self.assertEqual("product_failure", result["classification"])
+        binding = result["diagnostics"][-1]
+        self.assertEqual("artifact-binding", binding["runner"])
+        self.assertEqual(
+            "pypi:durable-workflow@9.9.9",
+            result["diagnostics"][0]["native_summary"]["executed_distribution_identities"]["sdk-python"][
+                "locator"
+            ],
+        )
+        self.assertIn("different distribution locator", binding["findings"][0]["summary"])
+
     def test_injected_identity_failure_exercises_binding_and_is_not_retried(self) -> None:
+        native_path = self.result_dir / "native" / self.runner["id"] / self.runner["result"]
+
         def execute(command: list[str], **arguments: object) -> tuple[int, bool]:
             stdout_path = arguments["stdout_path"]
             stderr_path = arguments["stderr_path"]
@@ -725,7 +1229,16 @@ class ExperimentRetryTest(unittest.TestCase):
             (native_dir / self.runner["result"]).write_bytes(canonical_json(self.native_result("pass")))
             return 0, False
 
-        with mock.patch("scripts.beta_conformance.execute_command", side_effect=execute) as execute_command:
+        def write_distinct_native(path: Path, value: object) -> None:
+            if path == native_path:
+                path.write_bytes(json.dumps(value, separators=(",", ":")).encode() + b"\n")
+            else:
+                write_json(path, value)
+
+        with (
+            mock.patch("scripts.beta_conformance.execute_command", side_effect=execute) as execute_command,
+            mock.patch("scripts.beta_conformance.write_json", side_effect=write_distinct_native),
+        ):
             result = run_experiment(
                 self.plan,
                 self.contract,
@@ -748,6 +1261,9 @@ class ExperimentRetryTest(unittest.TestCase):
             self.plan["artifact_tuple"]["cli"]["version"],
             native["native_summary"]["artifact_versions"]["cli"],
         )
+        literal_native = native_path.read_bytes()
+        self.assertEqual(len(literal_native), native["native_result_size_bytes"])
+        self.assertEqual(sha256_bytes(literal_native), native["native_result_sha256"])
         binding = result["diagnostics"][-1]
         self.assertEqual("artifact-binding", binding["runner"])
         self.assertIn("does not match the candidate digest", binding["findings"][0]["summary"])
@@ -771,6 +1287,108 @@ class EvidenceTest(unittest.TestCase):
         value = bounded_text("x" * 9000, 8192)
         self.assertEqual(8192, len(value))
         self.assertTrue(value.endswith("…"))
+
+    def native_identity_results(self) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+        specification = self.contract["experiments"]["replay"]
+        complete = experiment_result(
+            self.plan,
+            "replay",
+            specification["owning_contract"],
+            specification["required_clients"],
+            specification["required_distributions"],
+            "2026-07-19T00:00:00Z",
+            "passed",
+            1,
+            [successful_diagnostic(self.plan, specification["required_distributions"])],
+        )
+        unreadable_diagnostic = successful_diagnostic(self.plan, specification["required_distributions"])
+        unreadable_diagnostic.update(
+            {
+                "exit_code": 1,
+                "native_outcome": None,
+                "runner_blocked": True,
+                "native_result_size_bytes": 512,
+                "native_result_sha256": None,
+                "native_summary": None,
+            }
+        )
+        unreadable = experiment_result(
+            self.plan,
+            "replay",
+            specification["owning_contract"],
+            specification["required_clients"],
+            specification["required_distributions"],
+            "2026-07-19T00:00:00Z",
+            "infrastructure_failure",
+            1,
+            [unreadable_diagnostic],
+        )
+        oversized_unreadable = json.loads(canonical_json(unreadable))
+        oversized_unreadable["diagnostics"][0]["native_result_size_bytes"] = NATIVE_RESULT_LIMIT + 1
+        return complete, unreadable, oversized_unreadable
+
+    def test_result_validator_accepts_complete_and_unreadable_native_identity_shapes(self) -> None:
+        complete, unreadable, oversized_unreadable = self.native_identity_results()
+
+        validate_experiment_result(complete, self.plan)
+        validate_experiment_result(unreadable, self.plan)
+        validate_experiment_result(oversized_unreadable, self.plan)
+
+    def test_result_schema_accepts_complete_and_unreadable_native_identity_shapes(self) -> None:
+        validator = beta_schema_validator("result-schema.json")
+        complete, unreadable, oversized_unreadable = self.native_identity_results()
+
+        validator.validate(complete)
+        validator.validate(unreadable)
+        validator.validate(oversized_unreadable)
+
+    def test_parsed_native_summary_requires_a_complete_identity(self) -> None:
+        validator = beta_schema_validator("result-schema.json")
+        complete, unreadable, oversized_unreadable = self.native_identity_results()
+        complete["diagnostics"][0]["native_result_sha256"] = None
+
+        with self.assertRaisesRegex(ConformanceError, "parsed native results"):
+            validate_experiment_result(complete, self.plan)
+        with self.assertRaises(ValidationError):
+            validator.validate(complete)
+
+        for invalid_unreadable in (unreadable, oversized_unreadable):
+            with self.subTest(size=invalid_unreadable["diagnostics"][0]["native_result_size_bytes"]):
+                invalid_unreadable["diagnostics"][0]["runner_blocked"] = False
+                with self.assertRaisesRegex(ConformanceError, "unreadable infrastructure evidence"):
+                    validate_experiment_result(invalid_unreadable, self.plan)
+                with self.assertRaises(ValidationError):
+                    validator.validate(invalid_unreadable)
+
+    def test_result_validator_requires_exclusive_native_identity_fields(self) -> None:
+        specification = self.contract["experiments"]["replay"]
+        result = injected_failure_result(
+            self.plan,
+            "replay",
+            specification["owning_contract"],
+            specification["required_clients"],
+            specification["required_distributions"],
+            "2026-07-19T00:00:00Z",
+        )
+        del result["diagnostics"][0]["native_result_size_bytes"]
+        with self.assertRaisesRegex(ConformanceError, "native result identity shape"):
+            validate_experiment_result(result, self.plan)
+
+        result = injected_failure_result(
+            self.plan,
+            "replay",
+            specification["owning_contract"],
+            specification["required_clients"],
+            specification["required_distributions"],
+            "2026-07-19T00:00:00Z",
+        )
+        diagnostic = result["diagnostics"][0]
+        diagnostic["native_result_size_bytes"] = NATIVE_RESULT_LIMIT + 1
+        diagnostic["native_result_sha256"] = "a" * 64
+        diagnostic["native_result_prefix_sha256"] = "b" * 64
+        diagnostic["native_result_prefix_bytes"] = NATIVE_RESULT_PREFIX_LIMIT
+        with self.assertRaisesRegex(ConformanceError, "complete native identities"):
+            validate_experiment_result(result, self.plan)
 
     def test_aggregate_binds_each_result_and_preserves_red_product_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

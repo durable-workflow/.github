@@ -118,7 +118,41 @@
         {
           "id": "signals-queries-matrix",
           "path": "scripts/conformance/signals-queries-published-artifacts.sh",
-          "result": "signals-queries-result.json"
+          "result": "signals-queries-result.json",
+          "result_schema": "durable-workflow.v2.signal-query-runtime.result",
+          "required_result_fields": [
+            "schema",
+            "started_at",
+            "finished_at",
+            "outcome",
+            "runner_blocked",
+            "artifactVersions",
+            "executed_distribution_identities",
+            "runtime_matrix",
+            "scenario_results",
+            "findings",
+            "finding_links"
+          ],
+          "required_scenarios": [
+            "published_artifact_install_only",
+            "python_worker_cli_and_sdk_baseline",
+            "php_worker_cli_and_sdk_baseline",
+            "python_worker_php_facing_and_cli_clients",
+            "php_worker_python_and_cli_clients",
+            "rust_worker_rust_php_python_clients",
+            "python_worker_rust_client",
+            "php_worker_rust_client",
+            "rust_query_error_and_immutability",
+            "ordered_signal_delivery",
+            "dedup_contract_observation",
+            "signal_during_replay",
+            "query_during_replay",
+            "rust_replayed_instance_state_query_after_cold_restart",
+            "completed_run_signal_and_query",
+            "unknown_signal_and_query_errors",
+            "malformed_signal_and_query_payloads",
+            "waterline_operator_visibility"
+          ]
         }
       ],
       "timeout_seconds": 5400

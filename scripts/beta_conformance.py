@@ -50,9 +50,11 @@ DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 OCI_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 DIAGNOSTIC_LIMIT = 8192
 NATIVE_RESULT_LIMIT = 4 * 1024 * 1024
+NATIVE_RESULT_PREFIX_LIMIT = 64 * 1024
 FINDING_LIMIT = 20
 FINDING_TEXT_LIMIT = 2048
 MAX_INFRASTRUCTURE_ATTEMPTS = 2
+NATIVE_SCENARIO_STATUSES = {"pass", "fail", "unsupported", "not_covered", "runner_blocked"}
 TRANSIENT_PATTERNS = (
     re.compile(
         r"\b(?:registry|pypi|packagist|crates\.io|docker hub|package download|artifact download)\b"
@@ -103,6 +105,41 @@ def load_json(path: Path, *, limit: int = 4 * 1024 * 1024) -> Any:
         return json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
         raise ConformanceError(f"invalid JSON document {path}: {error}") from error
+
+
+def load_native_result(
+    path: Path,
+) -> tuple[Any, int | None, str | None, str | None, int | None, str | None]:
+    """Read native evidence with bounded work and distinguish complete from prefix identities."""
+    observed_size: int | None = None
+    try:
+        with path.open("rb") as handle:
+            observed_size = os.fstat(handle.fileno()).st_size
+            if observed_size > NATIVE_RESULT_LIMIT:
+                prefix = handle.read(NATIVE_RESULT_PREFIX_LIMIT)
+                return (
+                    None,
+                    observed_size,
+                    None,
+                    sha256_bytes(prefix),
+                    len(prefix),
+                    "oversized",
+                )
+            raw = handle.read(NATIVE_RESULT_LIMIT + 1)
+            observed_size = max(observed_size, os.fstat(handle.fileno()).st_size, len(raw))
+    except OSError:
+        return None, observed_size, None, None, None, "unreadable"
+
+    if observed_size > NATIVE_RESULT_LIMIT or len(raw) > NATIVE_RESULT_LIMIT:
+        prefix = raw[:NATIVE_RESULT_PREFIX_LIMIT]
+        return None, observed_size, None, sha256_bytes(prefix), len(prefix), "oversized"
+
+    digest = sha256_bytes(raw)
+    try:
+        native = json.loads(raw)
+    except (json.JSONDecodeError, RecursionError, UnicodeDecodeError, ValueError):
+        return None, observed_size, digest, None, None, "invalid_json"
+    return native, observed_size, digest, None, None, None
 
 
 def safe_relative_path(value: Any, *, suffix: str | None = None) -> str:
@@ -166,7 +203,17 @@ def validate_contract(contract: Any) -> None:
             if (
                 not isinstance(runner, dict)
                 or not {"id", "path", "result"}.issubset(runner)
-                or not set(runner).issubset({"id", "path", "result", "runtime"})
+                or not set(runner).issubset(
+                    {
+                        "id",
+                        "path",
+                        "result",
+                        "result_schema",
+                        "required_result_fields",
+                        "required_scenarios",
+                        "runtime",
+                    }
+                )
             ):
                 raise ConformanceError(f"experiment {name} runner has an invalid shape")
             runner_id = runner["id"]
@@ -183,6 +230,43 @@ def validate_contract(contract: Any) -> None:
             safe_relative_path(runner["result"], suffix=".json")
             if "/" in runner["result"]:
                 raise ConformanceError(f"experiment {name} native result must be a file name")
+            result_schema = runner.get("result_schema")
+            required_result_fields = runner.get("required_result_fields")
+            required_scenarios = runner.get("required_scenarios")
+            if (result_schema is None) != (required_result_fields is None):
+                raise ConformanceError(
+                    f"experiment {name} runner must declare its result schema and required fields together"
+                )
+            if result_schema is not None:
+                if not isinstance(result_schema, str) or not re.fullmatch(
+                    r"[a-z0-9][a-z0-9.-]{0,126}", result_schema
+                ):
+                    raise ConformanceError(f"experiment {name} runner has an invalid result schema")
+                if (
+                    not isinstance(required_result_fields, list)
+                    or not required_result_fields
+                    or len(required_result_fields) != len(set(required_result_fields))
+                    or any(
+                        not isinstance(field, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,126}", field)
+                        for field in required_result_fields
+                    )
+                ):
+                    raise ConformanceError(f"experiment {name} runner has invalid required result fields")
+            if required_scenarios is not None:
+                if required_result_fields is None or "scenario_results" not in required_result_fields:
+                    raise ConformanceError(
+                        f"experiment {name} runner scenarios require a declared scenario_results field"
+                    )
+                if (
+                    not isinstance(required_scenarios, list)
+                    or not required_scenarios
+                    or len(required_scenarios) != len(set(required_scenarios))
+                    or any(
+                        not isinstance(scenario, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,126}", scenario)
+                        for scenario in required_scenarios
+                    )
+                ):
+                    raise ConformanceError(f"experiment {name} runner has invalid required scenarios")
             runtime = runner.get("runtime")
             if runtime is not None:
                 if not isinstance(runtime, dict) or set(runtime) != {
@@ -595,7 +679,117 @@ def native_state(native: Any) -> tuple[str | None, bool, list[dict[str, str]]]:
     return outcome, runner_blocked, summarize_findings(native)
 
 
-def summarize_executed_distribution_identities(native: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+def native_distribution_identity_structure_error(name: str, identity: Any) -> str:
+    if not isinstance(identity, dict) or set(identity) != {"kind", "locator", "artifacts"}:
+        return f"published runner result has a malformed {name} distribution identity body"
+    component = COMPONENTS[name]
+    locator_prefix = f"{component.distribution}:{component.package}@"
+    if (
+        not isinstance(identity["kind"], str)
+        or not identity["kind"]
+        or len(identity["kind"]) > 64
+        or identity["kind"] != component.distribution
+        or not isinstance(identity["locator"], str)
+        or not identity["locator"]
+        or len(identity["locator"]) > 256
+        or not identity["locator"].startswith(locator_prefix)
+        or not VERSION_PATTERN.fullmatch(identity["locator"][len(locator_prefix) :])
+    ):
+        return f"published runner result has a malformed {name} distribution identity locator"
+    artifacts = identity["artifacts"]
+    if not isinstance(artifacts, list) or not 1 <= len(artifacts) <= 128:
+        return f"published runner result has malformed {name} distribution identity artifacts"
+    artifact_names: list[str] = []
+    for artifact in artifacts:
+        if (
+            not isinstance(artifact, dict)
+            or set(artifact) != {"name", "sha256"}
+            or not isinstance(artifact["name"], str)
+            or not artifact["name"]
+            or len(artifact["name"]) > 256
+            or not isinstance(artifact["sha256"], str)
+            or not DIGEST_PATTERN.fullmatch(artifact["sha256"])
+        ):
+            return f"published runner result has a malformed {name} distribution artifact identity"
+        artifact_names.append(artifact["name"])
+    if artifact_names != sorted(artifact_names) or len(artifact_names) != len(set(artifact_names)):
+        return f"published runner result has non-normalized {name} distribution artifact identities"
+    return ""
+
+
+def native_result_completeness_error(
+    native: Any,
+    required_distributions: list[str],
+    runner: dict[str, Any],
+) -> str:
+    if not isinstance(native, dict):
+        return "published runner result must be a JSON object"
+    required_fields = runner.get("required_result_fields", [])
+    missing_fields = [field for field in required_fields if field not in native]
+    if missing_fields:
+        return f"published runner result is missing required fields: {', '.join(missing_fields)}"
+    result_schema = runner.get("result_schema")
+    if result_schema is not None and native.get("schema") != result_schema:
+        return "published runner result does not use its declared schema"
+    for field in ("started_at", "finished_at"):
+        if field in required_fields and (not isinstance(native[field], str) or not native[field].strip()):
+            return f"published runner result has an invalid {field} value"
+    outcome = native.get("outcome", native.get("status"))
+    if not isinstance(outcome, str) or not outcome.strip():
+        return "published runner result does not declare an outcome"
+    if "runner_blocked" in required_fields and not isinstance(native["runner_blocked"], bool):
+        return "published runner result does not declare a boolean runner_blocked value"
+    versions = native.get("artifact_versions", native.get("artifactVersions"))
+    if not isinstance(versions, dict) or any(
+        name not in versions or not isinstance(versions[name], str) or not versions[name]
+        for name in required_distributions
+    ):
+        return "published runner result does not retain every required artifact version"
+    identities = native.get(
+        "executed_distribution_identities",
+        native.get("executedDistributionIdentities"),
+    )
+    if not isinstance(identities, dict) or any(name not in identities for name in required_distributions):
+        return "published runner result does not retain every required distribution identity"
+    if not set(identities).issubset(COMPONENTS):
+        return "published runner result retains an unknown distribution identity"
+    for name, identity in identities.items():
+        identity_error = native_distribution_identity_structure_error(name, identity)
+        if identity_error:
+            return identity_error
+    if "runtime_matrix" in required_fields and not isinstance(native["runtime_matrix"], dict):
+        return "published runner result does not retain a runtime matrix"
+    scenarios = native.get("scenario_results", native.get("scenarioResults"))
+    if not isinstance(scenarios, dict | list) or not scenarios:
+        return "published runner result does not retain scenario statuses"
+    required_scenarios = runner.get("required_scenarios", [])
+    if required_scenarios:
+        if not isinstance(scenarios, dict):
+            return "published runner result does not retain keyed required scenario statuses"
+        missing_scenarios = [scenario for scenario in required_scenarios if scenario not in scenarios]
+        if missing_scenarios:
+            return f"published runner result is missing required scenarios: {', '.join(missing_scenarios)}"
+        for scenario in required_scenarios:
+            cell = scenarios[scenario]
+            if (
+                not isinstance(cell, dict)
+                or cell.get("scenario_id") != scenario
+                or not isinstance(cell.get("status"), str)
+                or cell["status"] not in NATIVE_SCENARIO_STATUSES
+            ):
+                return f"published runner result has a malformed {scenario} scenario status"
+        if outcome.lower() in PASS_OUTCOMES and any(
+            scenarios[scenario]["status"] != "pass" for scenario in required_scenarios
+        ):
+            return "published runner result declares a passing outcome with non-passing required scenarios"
+    if not isinstance(native.get("findings"), list):
+        return "published runner result does not retain a findings list"
+    if "finding_links" in required_fields and not isinstance(native["finding_links"], dict):
+        return "published runner result does not retain finding links"
+    return ""
+
+
+def summarize_executed_distribution_identities(native: dict[str, Any]) -> dict[str, Any]:
     raw = native.get("executed_distribution_identities", native.get("executedDistributionIdentities", {}))
     if not isinstance(raw, dict):
         return {}
@@ -633,15 +827,13 @@ def summarize_executed_distribution_identities(native: dict[str, Any], plan: dic
             {artifact["name"] for artifact in normalized_artifacts}
         ):
             normalized = {"kind": kind, "locator": locator, "artifacts": normalized_artifacts}
-            try:
-                validate_distribution_identity(name, normalized, plan["artifact_tuple"])
-            except ConformanceError:
+            if native_distribution_identity_structure_error(name, normalized):
                 continue
             identities[name] = normalized
     return identities
 
 
-def summarize_native_result(native: Any, plan: dict[str, Any]) -> dict[str, Any] | None:
+def summarize_native_result(native: Any) -> dict[str, Any] | None:
     if not isinstance(native, dict):
         return None
     versions = native.get("artifact_versions", native.get("artifactVersions", {}))
@@ -680,7 +872,7 @@ def summarize_native_result(native: Any, plan: dict[str, Any]) -> dict[str, Any]
     return {
         "schema": bounded_text(schema, 256) if isinstance(schema, str) else None,
         "artifact_versions": bounded_versions,
-        "executed_distribution_identities": summarize_executed_distribution_identities(native, plan),
+        "executed_distribution_identities": summarize_executed_distribution_identities(native),
         "scenario_statuses": scenarios,
         "local_product_source_checkout_used": local_source_used,
     }
@@ -724,8 +916,11 @@ def classify_attempt(
     timed_out: bool,
     native_outcome: str | None,
     runner_blocked: bool,
+    native_result_rejected: bool,
     diagnostic_text: str,
 ) -> tuple[str, bool]:
+    if native_result_rejected:
+        return "infrastructure_failure", False
     if native_outcome is not None and native_outcome not in PASS_OUTCOMES and not runner_blocked:
         return "product_failure", False
     if timed_out:
@@ -1048,7 +1243,10 @@ def injected_failure_result(
         "stdout_sha256": sha256_bytes(b""),
         "stderr_tail": "deterministic product-failure injection requested by workflow input",
         "stderr_sha256": sha256_bytes(b"deterministic product-failure injection requested by workflow input"),
+        "native_result_size_bytes": None,
         "native_result_sha256": None,
+        "native_result_prefix_sha256": None,
+        "native_result_prefix_bytes": None,
         "native_summary": None,
         "findings": [
             {
@@ -1143,9 +1341,7 @@ def artifact_binding_failures(
         expected = plan["distribution_identities"][name]
         expected_artifacts = {artifact["name"]: artifact["sha256"] for artifact in expected["artifacts"]}
         for identity in identities:
-            try:
-                validate_distribution_identity(name, identity, plan["artifact_tuple"])
-            except ConformanceError:
+            if native_distribution_identity_structure_error(name, identity):
                 failures.append(f"{name} native evidence has an invalid executed distribution identity")
                 continue
             if identity["kind"] != expected["kind"] or identity["locator"] != expected["locator"]:
@@ -1221,7 +1417,10 @@ def run_experiment(
                 "stdout_sha256": sha256_bytes(b""),
                 "stderr_tail": bounded_text(f"published server image is missing {runner['path']}", DIAGNOSTIC_LIMIT),
                 "stderr_sha256": sha256_bytes(f"published server image is missing {runner['path']}".encode()),
+                "native_result_size_bytes": None,
                 "native_result_sha256": None,
+                "native_result_prefix_sha256": None,
+                "native_result_prefix_bytes": None,
                 "native_summary": None,
                 "findings": [
                     {
@@ -1268,27 +1467,49 @@ def run_experiment(
             stderr_tail, stderr_digest = tail_and_digest(stderr_path)
             native_path = native_dir / runner["result"]
             native: Any = None
+            native_size = None
             native_digest = None
+            native_prefix_digest = None
+            native_prefix_bytes = None
             native_result_error = ""
+            native_result_rejected = False
             injected_identity: tuple[str, str] | None = None
             if native_path.is_file():
-                with contextlib.suppress(OSError):
-                    native_digest = sha256_file(native_path)
-                try:
-                    native = load_json(native_path, limit=NATIVE_RESULT_LIMIT)
-                except ConformanceError as error:
-                    if "exceeds" in str(error):
-                        native_result_error = (
-                            f"published runner result exceeds the {NATIVE_RESULT_LIMIT}-byte portable evidence limit"
-                        )
-                    elif "invalid JSON" in str(error):
-                        native_result_error = "published runner result is not valid JSON"
-                    else:
-                        native_result_error = "published runner result could not be read"
+                (
+                    native,
+                    native_size,
+                    native_digest,
+                    native_prefix_digest,
+                    native_prefix_bytes,
+                    native_result_status,
+                ) = load_native_result(native_path)
+                if native_result_status == "oversized":
+                    native_result_error = (
+                        f"published runner result size {native_size} exceeds the "
+                        f"{NATIVE_RESULT_LIMIT}-byte portable evidence limit"
+                    )
+                    native_result_rejected = True
+                elif native_result_status == "invalid_json":
+                    native_result_error = "published runner result is not valid JSON"
+                    native_result_rejected = True
+                elif native_result_status == "unreadable":
+                    native_result_error = "published runner result could not be read"
+                if native_result_error:
                     stderr_tail = bounded_text(f"{stderr_tail}\n{native_result_error}", DIAGNOSTIC_LIMIT)
                 else:
                     native_outcome, _, _ = native_state(native)
-                    if (
+                    native_result_error = native_result_completeness_error(
+                        native,
+                        specification["required_distributions"],
+                        runner,
+                    )
+                    native_result_rejected = bool(native_result_error)
+                    if native_result_error:
+                        stderr_tail = bounded_text(
+                            f"{stderr_tail}\n{native_result_error}",
+                            DIAGNOSTIC_LIMIT,
+                        )
+                    elif (
                         inject_identity_failure
                         and not identity_failure_injected
                         and returncode == 0
@@ -1300,7 +1521,34 @@ def run_experiment(
                         )
                         write_json(native_path, native)
                         identity_failure_injected = True
-                    native_digest = sha256_file(native_path)
+                        (
+                            native,
+                            native_size,
+                            native_digest,
+                            native_prefix_digest,
+                            native_prefix_bytes,
+                            rewritten_native_status,
+                        ) = load_native_result(native_path)
+                        if rewritten_native_status == "oversized":
+                            native_result_error = (
+                                f"published runner result size {native_size} exceeds the "
+                                f"{NATIVE_RESULT_LIMIT}-byte portable evidence limit"
+                            )
+                            native_result_rejected = True
+                        elif rewritten_native_status == "invalid_json":
+                            native_result_error = "published runner result is not valid JSON"
+                            native_result_rejected = True
+                        elif rewritten_native_status == "unreadable":
+                            native_result_error = "published runner result could not be read"
+                        if native_result_error:
+                            stderr_tail = bounded_text(f"{stderr_tail}\n{native_result_error}", DIAGNOSTIC_LIMIT)
+            else:
+                if not runtime_blocked:
+                    native_result_error = "published runner did not emit its declared native result"
+                    stderr_tail = bounded_text(
+                        f"{stderr_tail}\n{native_result_error}",
+                        DIAGNOSTIC_LIMIT,
+                    )
             native_outcome, runner_blocked, findings = native_state(native)
             runner_blocked = runner_blocked or runtime_blocked or bool(native_result_error)
             if runtime_blocked:
@@ -1346,6 +1594,7 @@ def run_experiment(
                 timed_out=timed_out,
                 native_outcome=native_outcome,
                 runner_blocked=runner_blocked,
+                native_result_rejected=native_result_rejected,
                 diagnostic_text=f"{stdout_tail}\n{stderr_tail}",
             )
             if classification != "passed" and not findings:
@@ -1372,8 +1621,11 @@ def run_experiment(
                     "stdout_sha256": stdout_digest,
                     "stderr_tail": stderr_tail,
                     "stderr_sha256": stderr_digest,
+                    "native_result_size_bytes": native_size,
                     "native_result_sha256": native_digest,
-                    "native_summary": summarize_native_result(native, plan),
+                    "native_result_prefix_sha256": native_prefix_digest,
+                    "native_result_prefix_bytes": native_prefix_bytes,
+                    "native_summary": summarize_native_result(native),
                     "findings": findings,
                 }
             )
@@ -1403,7 +1655,10 @@ def run_experiment(
                     "stdout_sha256": sha256_bytes(b""),
                     "stderr_tail": bounded_text(message, DIAGNOSTIC_LIMIT),
                     "stderr_sha256": sha256_bytes(message.encode()),
+                    "native_result_size_bytes": None,
                     "native_result_sha256": None,
+                    "native_result_prefix_sha256": None,
+                    "native_result_prefix_bytes": None,
                     "native_summary": None,
                     "findings": [
                         {
@@ -1517,6 +1772,14 @@ def validate_experiment_result(result: Any, plan: dict[str, Any]) -> None:
     for diagnostic in diagnostics:
         if not isinstance(diagnostic, dict):
             raise ConformanceError("experiment result diagnostic must be an object")
+        native_identity_fields = {
+            "native_result_size_bytes",
+            "native_result_sha256",
+            "native_result_prefix_sha256",
+            "native_result_prefix_bytes",
+        }
+        if not native_identity_fields.issubset(diagnostic):
+            raise ConformanceError("experiment result diagnostic must retain the native result identity shape")
         if (
             len(str(diagnostic.get("stdout_tail", ""))) > DIAGNOSTIC_LIMIT
             or len(str(diagnostic.get("stderr_tail", ""))) > DIAGNOSTIC_LIMIT
@@ -1525,7 +1788,62 @@ def validate_experiment_result(result: Any, plan: dict[str, Any]) -> None:
         findings = diagnostic.get("findings")
         if not isinstance(findings, list) or len(findings) > FINDING_LIMIT:
             raise ConformanceError("experiment result contains unbounded findings")
+        native_size = diagnostic.get("native_result_size_bytes")
+        native_digest = diagnostic.get("native_result_sha256")
+        native_prefix_digest = diagnostic.get("native_result_prefix_sha256")
+        native_prefix_bytes = diagnostic.get("native_result_prefix_bytes")
         native_summary = diagnostic.get("native_summary")
+        if native_size is not None and (type(native_size) is not int or native_size < 0):
+            raise ConformanceError("experiment result has an invalid native result size")
+        if native_digest is not None and (
+            not isinstance(native_digest, str) or not DIGEST_PATTERN.fullmatch(native_digest)
+        ):
+            raise ConformanceError("experiment result has an invalid complete native result identity")
+        if (native_prefix_digest is None) != (native_prefix_bytes is None) or (
+            native_prefix_digest is not None
+            and (
+                not isinstance(native_prefix_digest, str)
+                or not DIGEST_PATTERN.fullmatch(native_prefix_digest)
+                or type(native_prefix_bytes) is not int
+                or not 1 <= native_prefix_bytes <= NATIVE_RESULT_PREFIX_LIMIT
+            )
+        ):
+            raise ConformanceError("experiment result has an invalid bounded native result identity")
+        if native_digest is not None and (
+            native_size is None
+            or native_size > NATIVE_RESULT_LIMIT
+            or native_prefix_digest is not None
+            or native_prefix_bytes is not None
+        ):
+            raise ConformanceError("complete native identities are only valid for bounded evidence")
+        if native_prefix_digest is not None and (
+            native_size is None or native_size <= NATIVE_RESULT_LIMIT or native_digest is not None
+        ):
+            raise ConformanceError("bounded native identities are only valid for oversized evidence")
+        known_size_without_identity = (
+            native_size is not None
+            and native_digest is None
+            and native_prefix_digest is None
+            and native_prefix_bytes is None
+        )
+        if (
+            native_size is not None
+            and native_size > NATIVE_RESULT_LIMIT
+            and (native_digest is not None or (native_prefix_digest is None and not known_size_without_identity))
+        ):
+            raise ConformanceError("oversized native evidence must retain only a bounded identity")
+        if native_summary is not None and (
+            native_size is None
+            or native_size > NATIVE_RESULT_LIMIT
+            or native_digest is None
+            or native_prefix_digest is not None
+            or native_prefix_bytes is not None
+        ):
+            raise ConformanceError("parsed native results must retain their complete bounded identity")
+        if known_size_without_identity and diagnostic.get("runner_blocked") is not True:
+            raise ConformanceError(
+                "native result sizes without an identity are only valid for unreadable infrastructure evidence"
+            )
         if native_summary is not None:
             if not isinstance(native_summary, dict) or set(native_summary) != {
                 "schema",
@@ -1541,9 +1859,13 @@ def validate_experiment_result(result: Any, plan: dict[str, Any]) -> None:
                 or len(native_summary["scenario_statuses"]) > 128
             ):
                 raise ConformanceError("experiment result has an unbounded native summary")
-            validate_partial_distribution_identities(
-                native_summary["executed_distribution_identities"], plan["artifact_tuple"]
-            )
+            summary_identities = native_summary["executed_distribution_identities"]
+            if not isinstance(summary_identities, dict) or not set(summary_identities).issubset(COMPONENTS):
+                raise ConformanceError("experiment result retains an unknown native distribution identity")
+            for name, identity in summary_identities.items():
+                identity_error = native_distribution_identity_structure_error(name, identity)
+                if identity_error:
+                    raise ConformanceError(identity_error)
     if classification == "passed" and artifact_binding_failures(plan, required_distributions, diagnostics):
         raise ConformanceError("passing experiment result has incomplete or mismatched native artifact evidence")
 

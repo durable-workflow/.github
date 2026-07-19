@@ -83,7 +83,10 @@
           "stdout_sha256",
           "stderr_tail",
           "stderr_sha256",
+          "native_result_size_bytes",
           "native_result_sha256",
+          "native_result_prefix_sha256",
+          "native_result_prefix_bytes",
           "native_summary",
           "findings"
         ],
@@ -98,7 +101,10 @@
           "stderr_tail": { "type": "string", "maxLength": 8192 },
           "stdout_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
           "stderr_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "native_result_size_bytes": { "type": ["integer", "null"], "minimum": 0 },
           "native_result_sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+          "native_result_prefix_sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+          "native_result_prefix_bytes": { "type": ["integer", "null"], "minimum": 0, "maximum": 65536 },
           "native_summary": {
             "oneOf": [
               { "type": "null" },
@@ -119,7 +125,45 @@
               }
             }
           }
-        }
+        },
+        "oneOf": [
+          {
+            "properties": {
+              "native_result_size_bytes": { "type": "null" },
+              "native_result_sha256": { "type": "null" },
+              "native_result_prefix_sha256": { "type": "null" },
+              "native_result_prefix_bytes": { "type": "null" },
+              "native_summary": { "type": "null" }
+            }
+          },
+          {
+            "properties": {
+              "runner_blocked": { "const": true },
+              "native_result_size_bytes": { "type": "integer", "minimum": 0 },
+              "native_result_sha256": { "type": "null" },
+              "native_result_prefix_sha256": { "type": "null" },
+              "native_result_prefix_bytes": { "type": "null" },
+              "native_summary": { "type": "null" }
+            }
+          },
+          {
+            "properties": {
+              "native_result_size_bytes": { "type": "integer", "minimum": 0, "maximum": 4194304 },
+              "native_result_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              "native_result_prefix_sha256": { "type": "null" },
+              "native_result_prefix_bytes": { "type": "null" }
+            }
+          },
+          {
+            "properties": {
+              "native_result_size_bytes": { "type": "integer", "minimum": 4194305 },
+              "native_result_sha256": { "type": "null" },
+              "native_result_prefix_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              "native_result_prefix_bytes": { "type": "integer", "minimum": 1, "maximum": 65536 },
+              "native_summary": { "type": "null" }
+            }
+          }
+        ]
       }
     }
   },

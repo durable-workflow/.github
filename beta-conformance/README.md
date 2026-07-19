@@ -65,6 +65,11 @@ Every experiment result conforms to
 - the owning product contract, outcome, retry record, failure fingerprint,
   and bounded diagnostic tails and findings.
 
+Native results at or below the 4 MiB portable evidence limit retain their exact
+size and complete SHA-256 identity. An oversized result is never read or hashed
+in full: the wrapper retains its observed size and the SHA-256 identity of at
+most the first 64 KiB, with the hashed byte count recorded separately.
+
 The wrapper recognizes only a small allowlist of registry and connection
 transients. Those failures may run twice. A native non-passing result, timeout,
 missing published runner, or injected distribution identity mismatch is never
