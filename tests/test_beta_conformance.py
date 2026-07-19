@@ -432,12 +432,39 @@ class StandaloneServerRuntimeTest(unittest.TestCase):
         run_commands = [command for command in commands if command[1] == "run"]
         self.assertEqual(4, len(run_commands))
         self.assertTrue(all(self.plan["server_runner"]["image"] in command for command in run_commands))
+        expected_version = self.plan["artifact_tuple"]["server"]["version"]
+        self.assertTrue(all(f"APP_VERSION={expected_version}" in command for command in run_commands))
         self.assertTrue(any("127.0.0.1::8080" in command for command in run_commands))
         self.assertTrue(any(command[-1] == "server-bootstrap" for command in run_commands))
         self.assertTrue(any("queue:work" in command for command in run_commands))
         self.assertTrue(any("schedule:evaluate" in command[-1] for command in run_commands))
+        self.assertEqual(6, len([command for command in commands if command[1] == "inspect"]))
         self.assertEqual(4, len([command for command in commands if command[1:3] == ["rm", "--force"]]))
         self.assertEqual(1, len([command for command in commands if command[1:4] == ["volume", "rm", "--force"]]))
+
+    def test_declared_runtime_rejects_a_companion_that_exits_during_the_matrix(self) -> None:
+        inspect_count = 0
+
+        def docker(command: list[str], **arguments: object) -> subprocess.CompletedProcess[str]:
+            nonlocal inspect_count
+            if command[1] == "port":
+                stdout = "127.0.0.1:49152\n"
+            elif command[1] == "inspect":
+                inspect_count += 1
+                stdout = "false\n" if inspect_count == 5 else "true\n"
+            elif command[1] == "logs":
+                stdout = "queue worker stopped\n"
+            else:
+                stdout = "runtime-id\n"
+            return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+        with (
+            mock.patch("scripts.beta_conformance.docker_runtime_command", side_effect=docker),
+            mock.patch("scripts.beta_conformance.wait_for_server_ready"),
+            self.assertRaisesRegex(ConformanceError, r"standalone server process .*queue.* exited"),
+            runner_runtime_environment(self.plan, self.runner, self.scratch),
+        ):
+            pass
 
 
 class FailureClassificationTest(unittest.TestCase):

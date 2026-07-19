@@ -1095,6 +1095,7 @@ def standalone_server_runtime(
     ]
     bootstrap_name, http_name, queue_name, scheduler_name = container_names
     image = plan["server_runner"]["image"]
+    server_version = plan["artifact_tuple"]["server"]["version"]
     manifest_digest = plan["candidate"]["manifest_sha256"]
     runtime_token = f"beta-{manifest_digest[:32]}"
     runtime_key = (
@@ -1102,6 +1103,8 @@ def standalone_server_runtime(
     )
     labels = ["--label", f"dev.durable-workflow.beta-conformance={manifest_digest}"]
     shared_environment = [
+        "-e",
+        f"APP_VERSION={server_version}",
         "-e",
         f"DW_SERVER_KEY={runtime_key}",
         "-e",
@@ -1217,6 +1220,8 @@ def standalone_server_runtime(
             runtime["namespace_environment"]: "default",
             runtime["token_environment"]: runtime_token,
         }
+        for container_name in (http_name, queue_name, scheduler_name):
+            require_running_container(container_name, docker=docker)
     finally:
         for container_name in reversed(container_names):
             cleanup_docker_runtime([docker, "rm", "--force", container_name])
