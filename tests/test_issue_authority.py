@@ -436,6 +436,45 @@ class MigrationTest(unittest.TestCase):
         self.assertIn("authority:conflict", label_names(duplicate))
         self.assertEqual(5, sum(len(issues) for issues in self.client.issues.values()))
 
+    def test_distinct_markers_on_one_issue_fail_before_blocker_reconciliation(self) -> None:
+        apply_backlog(self.policy, self.backlog, self.client)
+        repository, issue = find_work_item(self.client, "release-plan-versioned-changelogs")
+        alias_repository, alias = find_work_item(self.client, "authorize-2-0-beta")
+        self.assertEqual(repository, alias_repository)
+        self.client.issues[alias_repository].remove(alias)
+        issue["body"] += "\n<!-- beta-work-id: authorize-2-0-beta -->\n"
+        self.backlog["items"][3]["unblock_condition"] = "A separate reviewed condition must remain independent."
+        self.client.body_updates.clear()
+        self.client.replacements.clear()
+        body_before = issue["body"]
+        state_before = issue["state"]
+
+        with self.assertRaisesRegex(AuthorityError, "contains multiple distinct beta work ids"):
+            apply_backlog(self.policy, self.backlog, self.client)
+
+        self.assertEqual(body_before, issue["body"])
+        self.assertEqual(state_before, issue["state"])
+        self.assertEqual([], self.client.body_updates)
+        self.assertIn("authority:conflict", label_names(issue))
+
+    def test_audit_rejects_distinct_markers_that_alias_one_issue(self) -> None:
+        apply_backlog(self.policy, self.backlog, self.client)
+        repository, issue = find_work_item(self.client, "release-plan-versioned-changelogs")
+        alias_repository, alias = find_work_item(self.client, "github-only-beta-continuity-drill")
+        self.assertEqual(repository, alias_repository)
+        self.client.issues[alias_repository].remove(alias)
+        issue["body"] += "\n<!-- beta-work-id: github-only-beta-continuity-drill -->\n"
+        self.client.body_updates.clear()
+        self.client.replacements.clear()
+        body_before = issue["body"]
+
+        with self.assertRaisesRegex(AuthorityError, "contains multiple distinct beta work ids"):
+            audit_backlog(self.policy, self.backlog, self.client)
+
+        self.assertEqual(body_before, issue["body"])
+        self.assertEqual([], self.client.body_updates)
+        self.assertIn("authority:conflict", label_names(issue))
+
     def test_audit_fails_when_a_selected_issue_is_missing(self) -> None:
         apply_backlog(self.policy, self.backlog, self.client)
         repository, issue = find_work_item(self.client, "docs-php-conformance-public-authority")

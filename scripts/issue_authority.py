@@ -514,8 +514,12 @@ def sync_metadata(policy: dict[str, Any], client: Any) -> tuple[dict[tuple[str, 
 
 def _marker_index(
     inventory: Mapping[str, Sequence[dict[str, Any]]],
-) -> dict[str, list[tuple[str, dict[str, Any]]]]:
+) -> tuple[
+    dict[str, list[tuple[str, dict[str, Any]]]],
+    list[tuple[str, dict[str, Any], list[str]]],
+]:
     markers: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    aliases: list[tuple[str, dict[str, Any], list[str]]] = []
     for repository, issues in inventory.items():
         for issue in issues:
             body = issue.get("body") or ""
@@ -524,9 +528,12 @@ def _marker_index(
             ids = MARKER_PATTERN.findall(body)
             if len(ids) != len(set(ids)):
                 raise AuthorityError(f"issue {repository}/{issue.get('number')} repeats its beta work marker")
+            distinct_ids = sorted(set(ids))
+            if len(distinct_ids) > 1:
+                aliases.append((repository, issue, distinct_ids))
             for work_id in ids:
                 markers.setdefault(work_id, []).append((repository, issue))
-    return markers
+    return markers, aliases
 
 
 def _mark_conflicts(policy: dict[str, Any], client: Any, matches: Sequence[tuple[str, dict[str, Any]]]) -> None:
@@ -545,7 +552,14 @@ def _preflight_markers(
     allow_missing: bool,
 ) -> dict[str, tuple[str, dict[str, Any]]]:
     selected_ids = {item["id"] for item in backlog["items"]}
-    markers = _marker_index(inventory)
+    markers, aliases = _marker_index(inventory)
+    if aliases:
+        _mark_conflicts(policy, client, [(repository, issue) for repository, issue, _ids in aliases])
+        failures = [
+            f"{repository}#{issue.get('number')} contains multiple distinct beta work ids {work_ids}"
+            for repository, issue, work_ids in aliases
+        ]
+        raise AuthorityError("issue authority marker audit failed: " + "; ".join(failures))
     unknown = set(markers) - selected_ids
     if unknown:
         for work_id in sorted(unknown):
