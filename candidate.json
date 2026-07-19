@@ -1,0 +1,34 @@
+{
+  "candidate": "exact-artifacts-2026-07-19-r4",
+  "components": {
+    "cli": {
+      "commit": "9aafb87f2432cba0be9ed21e4e509cb9b6acda5d",
+      "version": "0.1.92"
+    },
+    "sdk-php": {
+      "commit": "9bac66abb0df59bf24a0bc4ecf8fff0a49e7045a",
+      "version": "0.1.12"
+    },
+    "sdk-python": {
+      "commit": "0c7ea1b18a754191a72d4c4884ea83b087f27ff9",
+      "version": "0.4.102"
+    },
+    "sdk-rust": {
+      "commit": "68f1adf24939885bb6779918c1cc197f7f0565d7",
+      "version": "0.1.17"
+    },
+    "server": {
+      "commit": "bc04d226e9878714985742db9619f4c8c8a4a029",
+      "version": "0.2.685"
+    },
+    "waterline": {
+      "commit": "4c90258f077724fd1267fd8a2d6e902162a835bf",
+      "version": "2.0.0-alpha.137"
+    },
+    "workflow": {
+      "commit": "518a27492d38bd92bca3e2bb91b9ccf82da9589b",
+      "version": "2.0.0-alpha.291"
+    }
+  },
+  "schema": "durable-workflow.beta-candidate/v1"
+}
