@@ -1,0 +1,40 @@
+{
+  "beta_authorization": null,
+  "channel": "alpha",
+  "components": {
+    "cli": {
+      "commit": "3fcc580722d0e1e9f5d3da21472d811697f3d3e9",
+      "version": "0.1.93"
+    },
+    "sdk-php": {
+      "commit": "4863f4d8ce4ac935f6187d87bfb435918cdf8653",
+      "version": "0.1.13"
+    },
+    "sdk-python": {
+      "commit": "0c7ea1b18a754191a72d4c4884ea83b087f27ff9",
+      "version": "0.4.102"
+    },
+    "sdk-rust": {
+      "commit": "68f1adf24939885bb6779918c1cc197f7f0565d7",
+      "version": "0.1.17"
+    },
+    "server": {
+      "commit": "5772b22c81c20b2d3b49fe539fe1244f69b3e66d",
+      "version": "0.2.689"
+    },
+    "waterline": {
+      "commit": "4c90258f077724fd1267fd8a2d6e902162a835bf",
+      "version": "2.0.0-alpha.137"
+    },
+    "workflow": {
+      "commit": "518a27492d38bd92bca3e2bb91b9ccf82da9589b",
+      "version": "2.0.0-alpha.291"
+    }
+  },
+  "foundation": {
+    "commit": "4995052410bd4301c5796ffba54e0b6d2f490ed1",
+    "tag": "beta-candidate/beta-continuity-foundation"
+  },
+  "plan": "alpha-release-preparation-proof-20260719",
+  "schema": "durable-workflow.release-plan/v1"
+}

@@ -1,0 +1,121 @@
+{
+  "components": {
+    "cli": {
+      "release_notes": {
+        "format": "text/markdown",
+        "heading": "## [0.1.93] - 2026-07-19",
+        "markdown": "## [0.1.93] - 2026-07-19\n\nTD-GCP-003: Prepare versioned changelogs without guessing release tags\n",
+        "release_date": "2026-07-19",
+        "sha256": "849ee3bd8c9b060f66f06e9a481363151a0f1e4f9169855eb16d69659eefca95",
+        "source": {
+          "kind": "source-commit-message",
+          "sha256": "04ffb0c6345535e0bd2968fb87e67dd275446ecf3a76c91f29ae61deadffb8be",
+          "url": "https://github.com/durable-workflow/cli/commit/3fcc580722d0e1e9f5d3da21472d811697f3d3e9"
+        }
+      },
+      "source_commit": "3fcc580722d0e1e9f5d3da21472d811697f3d3e9",
+      "version": "0.1.93"
+    },
+    "sdk-php": {
+      "release_notes": {
+        "format": "text/markdown",
+        "heading": "## [0.1.13] - 2026-07-19",
+        "markdown": "## [0.1.13] - 2026-07-19\n\n### Fixed\n\n- Managed workers retry the server's fenced registration lock-pressure\n  response with bounded backoff before entering the poll loop, while other\n  registration failures remain terminal.\n",
+        "release_date": "2026-07-19",
+        "sha256": "d0d1b955ff72ca699ca25e942b106cfa1a78af65d95484bfe84a36e7ade879ec",
+        "source": {
+          "kind": "changelog-unreleased",
+          "sha256": "0d27cd48f3fafc66b886e504d296bd5e1c65ab94e46f69b996568ce20e2e8bf9",
+          "url": "https://github.com/durable-workflow/sdk-php/blob/4863f4d8ce4ac935f6187d87bfb435918cdf8653/CHANGELOG.md"
+        }
+      },
+      "source_commit": "4863f4d8ce4ac935f6187d87bfb435918cdf8653",
+      "version": "0.1.13"
+    },
+    "sdk-python": {
+      "release_notes": {
+        "format": "text/markdown",
+        "heading": "## [0.4.102] - 2026-07-19",
+        "markdown": "## [0.4.102] - 2026-07-19\n\n### Added\n- Schedule listing now exposes server-side status, workflow-type, visibility-\n  query, page-size, and continuation-token filters on async and sync clients.\n  `ScheduleListError` preserves typed filter and cursor refusal evidence.\n- `durable-workflow-python-conformance --compose` now accepts nested host\n  runner evidence tables, resolved artifact/source aliases, boolean `passed`\n  result cells, nested protocol trace planes, and no-PHP audit check aliases\n  when composing full published-artifact Python conformance results.\n- `durable-workflow-python-conformance --compose` now normalizes runbook-style\n  scenario and capability identifiers such as `server-up` and\n  `result-returned`, plus common status, trace-plane, and no-PHP audit aliases,\n  before evaluating host evidence.\n- `durable-workflow-python-conformance --compose` now accepts runner-native\n  host evidence aliases such as `scenarioEvidence`, `capabilityResults`,\n  `officialCli`, `firstUserFlow`, `traces`, and `languageNeutralityAudit`,\n  so full published-artifact runs are not marked uncovered just because the\n  runner records observations under natural collection names.\n- `durable-workflow-python-conformance` now exposes a host-evidence\n  composition contract and `--compose` mode so published-artifact runners can\n  turn raw observations into a complete Python parity result document before\n  evaluation.\n- `durable-workflow-python-conformance` now exposes the Python SDK\n  published-artifact parity contract and evaluates host result documents,\n  rejecting smoke-only evidence unless the official CLI path, cold first-user\n  setup, protocol traces, no-PHP-assumption audit, concrete artifact versions,\n  and complete capability table are all present.\n- `Client.delete_namespace()` now exercises the namespace lifecycle cleanup\n  control-plane surface and returns the server's per-table cleanup counts on\n  `NamespaceDescription.deleted`.\n\n### Fixed\n- Synchronous clients now keep their async HTTP connection pool, returned\n  handles, and cleanup on one client-owned event loop for the client's lifetime.\n- Worker-routed queries now replay signal-woken condition waits that reopen the\n  same logical wait until all recorded signals have been applied, so long-lived\n  queryable workflows report the latest signal-mutated state.\n- Python conformance CLI evidence now accepts terminal stdout/JSON captured on\n  nested CLI command records while still rejecting generic scenario outputs as\n  proof of the public CLI result path.\n- Python conformance source-policy evidence now accepts the explicit\n  `local_product_source_checkouts_used=false` published-artifact runner alias.\n- `durable-workflow-python-conformance --compose` now accepts actual CLI\n  terminal-result evidence from `workflow:start --wait`, `workflow:describe`,\n  and `workflow:show-run --follow` instead of only generic result aliases.\n- `durable-workflow-replay-conformance` now declares `outcome: pass` when\n  every required Python replay shard scenario passes, so full replay evidence\n  is no longer reported as non-passing.\n- Worker query tasks now treat null or empty compact history payload fields as\n  missing when a history export carries the durable activity result or signal\n  arguments, so cold replay after worker restart does not answer queries from\n  an unmodified workflow instance.\n- Worker query tasks now replay from the bundled history export when the\n  inline task history is empty or truncated, so cold query replay reconstructs\n  activity-derived state instead of answering from a fresh workflow instance.\n- Python parent workflows now decode successful child workflow completions from\n  the server's documented `ChildRunCompleted.output` history payload, while\n  still accepting the older `result` alias. This prevents completed child\n  workflow returns from replaying as `None`.\n- Condition-wait replay now binds signals that arrive during a leased\n  workflow task to the next recorded wait when the server history records\n  those signals before the task's `ConditionWaitOpened` row. This avoids\n  applying rapid signal batches to the previous wait and prevents replay from\n  completing with a later wait/timer history step left unconsumed.\n- Condition-wait replay now prefers the recorded event-order wait binding over\n  a signal's stored `workflow_sequence` when several signals arrive before a\n  reopened wait. This handles server histories where later signals are accepted\n  while the previous wait is still open but must replay against the next\n  physical wait.\n- Condition-wait replay now lets a true predicate finish the current wait\n  before any following same-key wait is considered stale terminal history.\n  This keeps query and signal replay aligned with histories that include\n  unresolved `ConditionWaitOpened` plus condition-timeout `TimerScheduled`\n  rows after a replayed false reopen, while preserving pending sequential\n  same-key waits and resolved reopens that must remain replay history.\n- Workflow workers now report unhandled workflow-task execution errors back to\n  the server instead of leaving the leased task pending until the lease or CLI\n  wait times out. This lets the server observe and retry or fail the task\n  promptly when command serialization or interceptor code raises after a task\n  has been claimed.\n- Workflow-task completion now retries transient transport failures and server\n  throttling/5xx rejections before preserving emitted commands or reporting a\n  definite task failure, reducing stuck waiting runs when a signal-satisfied\n  wait completes immediately after replay-driven query activity.\n- Ambiguous workflow-task completion failures no longer get reported back as\n  durable task failures after commands have been produced. Definite server\n  rejections are still treated as failed workflow tasks even when the\n  best-effort failure report cannot be sent, but transport/ownership ambiguity\n  preserves the emitted commands so replay-driven signal completion is not\n  converted into a stuck failed task.\n- Repeated condition-wait openings for the same logical wait now replay through\n  every matching signal before deciding whether the wait is still pending, so\n  long-running signal/query workflows do not get stuck on the first signal.\n- Signal and update receivers recorded while a condition wait is open now\n  replay at that specific wait, so later signal-driven waits are not satisfied\n  or consumed too early when no activity or timer result separates them.\n- Signal and update receivers recorded after an activity result now replay after\n  the workflow consumes that activity result, so receiver-mutated state is not\n  overwritten by deterministic post-activity setup before a `wait_condition`.\n- Python workflow replay now throws terminal `ActivityFailed` history events\n  into the generator as a typed `ActivityFailed` exception, including the\n  recorded activity and failure metadata. Activity-only saga workflows can\n  catch the exception and schedule compensation instead of replaying the\n  original activity command again.\n- Worker heartbeat `process_metrics` now report instantaneous values\n  instead of process-lifetime aggregates. `cpu_percent` is the share of\n  wall time the worker spent on CPU during the interval since the\n  previous heartbeat (previously the lifetime average, which converged\n  to a fixed value within minutes and stopped tracking live load), and\n  `memory_bytes` is the current resident set size sampled from\n  `/proc/self/statm` on Linux (previously `ru_maxrss`, which is the\n  process-lifetime high-water mark and never decreased after a startup\n  spike). Platforms without `/proc` no longer report `memory_bytes`\n  rather than reporting a misleading peak. The heartbeat protocol shape\n  is unchanged; the server records whatever the worker sends, so the\n  Worker Status surface starts showing accurate live numbers as soon as\n  workers upgrade.\n\n### Changed\n- `tests/test_client.py` now closes the `schedule.history` polyglot\n  parity slice. `test_get_schedule_history_matches_polyglot_fixture`\n  asserts the full decoded payload envelope per event (`id`,\n  `recorded_at`, `payload`, plus the workflow attribution fields)\n  so the Python parity check covers the same wire content the CLI\n  parity check covers when it asserts the printed JSON envelope\n  matches the shared fixture's `response_body`. A companion\n  `test_iter_schedule_history_walks_polyglot_fixture` exercises\n  `Client.iter_schedule_history` against the shared fixture to lock\n  in the cursor-advance semantics across pages.\n\n### Notes\n- Production-readiness validation is in progress for the first\n  `1.0.0` release candidate. The 0.4.x line is feature-complete for\n  the documented Durable Workflow v2 surface and is being exercised\n  end-to-end by external-user walkthroughs against the published\n  Python SDK guide and the `examples/order_processing` Docker Compose\n  sample.\n- Remaining v2 follow-ups tracked for this line: server-routed Python\n  query execution and pre-accept update validator routing. These are\n  server-side capabilities; the SDK already records the receiver\n  metadata required to participate when the server advertises support.\n",
+        "release_date": "2026-07-19",
+        "sha256": "3802d3de4ed44ba68b86540b608eb36334a3e71fdfc0a0f2b7effe097d479bab",
+        "source": {
+          "kind": "changelog-unreleased",
+          "sha256": "b1d6d7955adc67bbb95f61b4ec545d08d084fb3ce6c604bc3f5a4ef12429578f",
+          "url": "https://github.com/durable-workflow/sdk-python/blob/0c7ea1b18a754191a72d4c4884ea83b087f27ff9/CHANGELOG.md"
+        }
+      },
+      "source_commit": "0c7ea1b18a754191a72d4c4884ea83b087f27ff9",
+      "version": "0.4.102"
+    },
+    "sdk-rust": {
+      "release_notes": {
+        "format": "text/markdown",
+        "heading": "## [0.1.17] - 2026-07-19",
+        "markdown": "## [0.1.17] - 2026-07-19\n\nEmit typed signal waits from Rust wait_signal\n",
+        "release_date": "2026-07-19",
+        "sha256": "87db6b02807322e2086b6e5adecbab37de9c6c29d2ff73deac5869e071126862",
+        "source": {
+          "kind": "source-commit-message",
+          "sha256": "d66bf1e862c0bded050c322462c5cc1e96ecae52ad9e37338a5605e3d1743cfd",
+          "url": "https://github.com/durable-workflow/sdk-rust/commit/68f1adf24939885bb6779918c1cc197f7f0565d7"
+        }
+      },
+      "source_commit": "68f1adf24939885bb6779918c1cc197f7f0565d7",
+      "version": "0.1.17"
+    },
+    "server": {
+      "release_notes": {
+        "format": "text/markdown",
+        "heading": "## [0.2.689] - 2026-07-19",
+        "markdown": "## [0.2.689] - 2026-07-19\n\nEmit canonical distribution artifact ordering from the activities runner\n",
+        "release_date": "2026-07-19",
+        "sha256": "ea0dd90a96dbfccabee0b60d17dae8db44c94f409f92ab0a95b4488b4c9a3183",
+        "source": {
+          "kind": "source-commit-message",
+          "sha256": "5253c70f0ea481e5eb941a839926b8b7e7a41a5e030138c81788381945693c4b",
+          "url": "https://github.com/durable-workflow/server/commit/5772b22c81c20b2d3b49fe539fe1244f69b3e66d"
+        }
+      },
+      "source_commit": "5772b22c81c20b2d3b49fe539fe1244f69b3e66d",
+      "version": "0.2.689"
+    },
+    "waterline": {
+      "release_notes": {
+        "format": "text/markdown",
+        "heading": "## [2.0.0-alpha.137] - 2026-07-19",
+        "markdown": "## [2.0.0-alpha.137] - 2026-07-19\n\nWaterline keeps the Durable Workflow 2.0 conformance claim aligned to\nplatform conformance suite version 17 and the current published artifact\ntuple: server 0.2.238, CLI 0.1.75, Workflow 2.0.0-alpha.189, Python SDK\n0.4.84, and Waterline 2.0.0-alpha.76. The focused\n`waterline:principal-attribution-conformance` shard now documents\noperator-visible command and timeline principal attribution alongside the\nnamespace and search-attribute Waterline shards. Migration runtime and\nskew refusal matrix evidence remain load-bearing Waterline release\ncategories.\n\nThe package now exports a focused published-artifact worker-status runner.\nIt compares live Waterline list and task-queue worker projections with the\nstandalone server API and CLI through two heartbeats, real workflow work, and\na bounded stale transition. Published-port readiness requests have per-attempt\ntimeouts and retries, and all outcomes remove the package host plus labeled\nCompose containers, volumes, networks, and scratch state. Published observer\nhosts can align Waterline's freshness classification with the server through\n`WATERLINE_WORKER_STALE_AFTER_SECONDS`. Standalone worker execution now uses\nthe exact published PHP SDK package while Workflow remains the embedded engine;\nnormal and early-failure evidence retain the canonical PHP SDK version and\nPackagist provenance. Worker-status projections now derive the advertised PHP\nSDK identity and worker protocol from the installed SDK runtime contract.\n",
+        "release_date": "2026-07-19",
+        "sha256": "d8575271edbd26860c36f93e47e20461be0b8105b213aa35947d6f442b0c1bc4",
+        "source": {
+          "kind": "changelog-unreleased",
+          "sha256": "ab29a6b9f43a28bb7420ab326c457edd734278a2671d3b1393fc178322414115",
+          "url": "https://github.com/durable-workflow/waterline/blob/4c90258f077724fd1267fd8a2d6e902162a835bf/CHANGELOG.md"
+        }
+      },
+      "source_commit": "4c90258f077724fd1267fd8a2d6e902162a835bf",
+      "version": "2.0.0-alpha.137"
+    },
+    "workflow": {
+      "release_notes": {
+        "format": "text/markdown",
+        "heading": "## [2.0.0-alpha.291] - 2026-07-19",
+        "markdown": "## [2.0.0-alpha.291] - 2026-07-19\n\n- Standalone workers now receive accepted declared signals even when the host\n  has no embedded workflow definition or local wait projection. Signal tasks\n  retain command order ahead of queued updates, and QueueFake update completion\n  uses the configured workflow-run model query. Accepted signal inputs are also\n  persisted on their history event so public-history consumers observe the same\n  values as workers and query replay.\n- Workflow-task claims and renewals now resolve\n  `workflows.v2.workflow_task_lease_seconds` at runtime across remote,\n  queued, timer, local-activity, and repair-driven execution paths. Embedded\n  Laravel hosts retain an explicit 300-second default and may set\n  `DW_V2_WORKFLOW_TASK_LEASE_SECONDS` before caching configuration.\n",
+        "release_date": "2026-07-19",
+        "sha256": "ef64f5443684e989d9bb10870f565af4fa5ce5dc5a7351454cd62a550a61f2d0",
+        "source": {
+          "kind": "changelog-unreleased",
+          "sha256": "2e4fb38ee952f0b8a65b365ee86ca882a2403866d2c6c7a82049dac68991203b",
+          "url": "https://github.com/durable-workflow/workflow/blob/518a27492d38bd92bca3e2bb91b9ccf82da9589b/CHANGELOG.md"
+        }
+      },
+      "source_commit": "518a27492d38bd92bca3e2bb91b9ccf82da9589b",
+      "version": "2.0.0-alpha.291"
+    }
+  },
+  "release_plan": {
+    "sha256": "9c0a5879652a2d5f4806a9167399687328c1764fa10dbc8d76215b43ac83b9d6",
+    "tag": "release-plan/alpha-release-preparation-proof-20260719"
+  },
+  "schema": "durable-workflow.release-preparation/v1"
+}
