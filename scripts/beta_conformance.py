@@ -323,6 +323,17 @@ def load_contract(path: Path) -> dict[str, Any]:
     return contract
 
 
+def runner_required_artifact_versions(
+    runner: dict[str, Any], required_distributions: list[str] | None = None
+) -> list[str]:
+    """Return executed distributions plus candidate artifacts required by the runtime."""
+    required = list(required_distributions or runner["required_distributions"])
+    runtime = runner.get("runtime")
+    if isinstance(runtime, dict) and runtime.get("kind") == "standalone-server" and "server" not in required:
+        required.append("server")
+    return required
+
+
 def git(repository: Path, *arguments: str) -> bytes:
     process = subprocess.run(
         ["git", "-C", str(repository), *arguments],
@@ -759,13 +770,16 @@ def native_result_completeness_error(
         return "published runner result does not declare an outcome"
     if "runner_blocked" in required_fields and not isinstance(native["runner_blocked"], bool):
         return "published runner result does not declare a boolean runner_blocked value"
+    required_artifact_versions = set(
+        runner_required_artifact_versions(runner, required_distributions)
+    )
     versions = native.get("artifact_versions", native.get("artifactVersions"))
     if not isinstance(versions, dict) or any(
         name not in versions or not isinstance(versions[name], str) or not versions[name]
-        for name in required_distributions
+        for name in required_artifact_versions
     ):
         return "published runner result does not retain every required artifact version"
-    extra_versions = set(versions) - set(required_distributions)
+    extra_versions = set(versions) - required_artifact_versions
     if extra_versions:
         return (
             "published runner result retains artifact versions outside its required distributions: "
@@ -1756,8 +1770,9 @@ def validate_retained_runner_summary(
             )
         return
     required_distributions = set(runner["required_distributions"])
+    required_artifact_versions = set(runner_required_artifact_versions(runner))
     reported_versions = set(summary["artifact_versions"])
-    if reported_versions - required_distributions:
+    if reported_versions - required_artifact_versions:
         raise ConformanceError(
             f"runner {runner['id']} retains artifact versions outside its exact assignment"
         )
@@ -1767,7 +1782,7 @@ def validate_retained_runner_summary(
             f"runner {runner['id']} retains distribution identities outside its exact assignment"
         )
     if require_contract_summary and (
-        reported_versions != required_distributions or reported_identities != required_distributions
+        reported_versions != required_artifact_versions or reported_identities != required_distributions
     ):
         raise ConformanceError(f"runner {runner['id']} does not retain its exact distribution assignment")
     if not require_contract_summary:

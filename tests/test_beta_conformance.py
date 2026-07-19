@@ -33,6 +33,7 @@ from scripts.beta_conformance import (
     native_result_completeness_error,
     prepare_plan,
     run_experiment,
+    runner_required_artifact_versions,
     runner_runtime_environment,
     sha256_bytes,
     sha256_file,
@@ -127,11 +128,13 @@ def successful_diagnostic(
     plan: dict[str, object],
     required_distributions: list[str] | None = None,
     *,
+    required_artifact_versions: list[str] | None = None,
     runner_id: str = "fixture",
     schema: str = "fixture.result/v1",
     scenario_ids: list[str] | None = None,
 ) -> dict[str, object]:
     selected = required_distributions or list(COMPONENTS)
+    selected_versions = required_artifact_versions or selected
     selected_scenarios = scenario_ids or ["fixture"]
     artifact_tuple = plan["artifact_tuple"]
     distribution_identities = plan["distribution_identities"]
@@ -155,7 +158,9 @@ def successful_diagnostic(
         "native_result_prefix_bytes": None,
         "native_summary": {
             "schema": schema,
-            "artifact_versions": {name: artifact_tuple[name]["version"] for name in selected},
+            "artifact_versions": {
+                name: artifact_tuple[name]["version"] for name in selected_versions
+            },
             "executed_distribution_identities": {
                 name: json.loads(canonical_json(distribution_identities[name])) for name in selected
             },
@@ -175,6 +180,7 @@ def successful_runner_diagnostics(
         successful_diagnostic(
             plan,
             runner["required_distributions"],
+            required_artifact_versions=runner_required_artifact_versions(runner),
             runner_id=runner["id"],
             schema=runner.get("result_schema", "fixture.result/v1"),
             scenario_ids=runner.get("required_scenarios", ["fixture"]),
@@ -184,17 +190,21 @@ def successful_runner_diagnostics(
 
 
 def successful_native_result(
-    plan: dict[str, object], required_distributions: list[str]
+    plan: dict[str, object],
+    required_distributions: list[str],
+    *,
+    required_artifact_versions: list[str] | None = None,
 ) -> dict[str, object]:
     artifact_tuple = plan["artifact_tuple"]
     distribution_identities = plan["distribution_identities"]
     assert isinstance(artifact_tuple, dict)
     assert isinstance(distribution_identities, dict)
+    selected_versions = required_artifact_versions or required_distributions
     return {
         "schema": "fixture.result/v1",
         "outcome": "pass",
         "artifact_versions": {
-            name: artifact_tuple[name]["version"] for name in required_distributions
+            name: artifact_tuple[name]["version"] for name in selected_versions
         },
         "executed_distribution_identities": {
             name: json.loads(canonical_json(distribution_identities[name]))
@@ -296,6 +306,14 @@ class ContractTest(unittest.TestCase):
                 "token_environment": "DW_PHP_SDK_CONFORMANCE_TOKEN",
             },
             php_runner["runtime"],
+        )
+        self.assertEqual(
+            ["sdk-php"],
+            php_runner["required_distributions"],
+        )
+        self.assertEqual(
+            ["sdk-php", "server"],
+            runner_required_artifact_versions(php_runner),
         )
         signals_runner = contract["experiments"]["signals-queries"]["runners"][0]
         self.assertEqual("durable-workflow.v2.signal-query-runtime.result", signals_runner["result_schema"])
@@ -1450,6 +1468,63 @@ class MultiRunnerExperimentTest(unittest.TestCase):
             ),
         )
 
+    def test_declared_runtime_version_is_separate_from_executed_identity_assignment(self) -> None:
+        specification = self.contract["experiments"]["polyglot"]
+        runner = next(item for item in specification["runners"] if item["id"] == "php-sdk")
+        native = successful_native_result(
+            self.plan,
+            runner["required_distributions"],
+            required_artifact_versions=runner_required_artifact_versions(runner),
+        )
+
+        self.assertEqual({"sdk-php", "server"}, set(native["artifact_versions"]))
+        self.assertEqual({"sdk-php"}, set(native["executed_distribution_identities"]))
+        self.assertEqual(
+            "",
+            native_result_completeness_error(
+                native,
+                runner["required_distributions"],
+                runner,
+            ),
+        )
+
+        missing_runtime_version = json.loads(canonical_json(native))
+        missing_runtime_version["artifact_versions"].pop("server")
+        self.assertIn(
+            "every required artifact version",
+            native_result_completeness_error(
+                missing_runtime_version,
+                runner["required_distributions"],
+                runner,
+            ),
+        )
+
+        peer_version = json.loads(canonical_json(native))
+        peer_version["artifact_versions"]["sdk-python"] = self.plan["artifact_tuple"][
+            "sdk-python"
+        ]["version"]
+        self.assertIn(
+            "outside its required distributions: sdk-python",
+            native_result_completeness_error(
+                peer_version,
+                runner["required_distributions"],
+                runner,
+            ),
+        )
+
+        runtime_identity = json.loads(canonical_json(native))
+        runtime_identity["executed_distribution_identities"]["server"] = json.loads(
+            canonical_json(self.plan["distribution_identities"]["server"])
+        )
+        self.assertIn(
+            "distribution identities outside its required distributions: server",
+            native_result_completeness_error(
+                runtime_identity,
+                runner["required_distributions"],
+                runner,
+            ),
+        )
+
     def test_valid_partial_php_python_and_rust_shards_form_a_passing_aggregate(self) -> None:
         executed, result = self.execute_shards()
 
@@ -1792,6 +1867,67 @@ class EvidenceTest(unittest.TestCase):
                     run_id=12345,
                     run_attempt=1,
                 )
+
+    def test_retained_runtime_version_is_bound_without_a_runtime_execution_identity(self) -> None:
+        specification = self.contract["experiments"]["polyglot"]
+        result = experiment_result(
+            self.plan,
+            "polyglot",
+            specification["owning_contract"],
+            specification["required_clients"],
+            specification["required_distributions"],
+            "2026-07-17T00:00:00Z",
+            "passed",
+            1,
+            successful_runner_diagnostics(self.plan, specification),
+        )
+        php_summary = next(
+            diagnostic["native_summary"]
+            for diagnostic in result["diagnostics"]
+            if diagnostic["runner"] == "php-sdk"
+        )
+
+        self.assertEqual({"sdk-php", "server"}, set(php_summary["artifact_versions"]))
+        self.assertEqual({"sdk-php"}, set(php_summary["executed_distribution_identities"]))
+        validate_experiment_result(result, self.plan, self.contract)
+
+        missing_runtime_version = json.loads(canonical_json(result))
+        next(
+            diagnostic["native_summary"]
+            for diagnostic in missing_runtime_version["diagnostics"]
+            if diagnostic["runner"] == "php-sdk"
+        )["artifact_versions"].pop("server")
+        with self.assertRaisesRegex(ConformanceError, "exact distribution assignment"):
+            validate_experiment_result(missing_runtime_version, self.plan, self.contract)
+
+        mismatched_runtime_version = json.loads(canonical_json(result))
+        next(
+            diagnostic["native_summary"]
+            for diagnostic in mismatched_runtime_version["diagnostics"]
+            if diagnostic["runner"] == "php-sdk"
+        )["artifact_versions"]["server"] = "0.0.0-wrong"
+        with self.assertRaisesRegex(ConformanceError, "mismatched native artifact evidence"):
+            validate_experiment_result(mismatched_runtime_version, self.plan, self.contract)
+
+        runtime_identity = json.loads(canonical_json(result))
+        next(
+            diagnostic["native_summary"]
+            for diagnostic in runtime_identity["diagnostics"]
+            if diagnostic["runner"] == "php-sdk"
+        )["executed_distribution_identities"]["server"] = json.loads(
+            canonical_json(self.plan["distribution_identities"]["server"])
+        )
+        with self.assertRaisesRegex(ConformanceError, "identities outside its exact assignment"):
+            validate_experiment_result(runtime_identity, self.plan, self.contract)
+
+        peer_version = json.loads(canonical_json(result))
+        next(
+            diagnostic["native_summary"]
+            for diagnostic in peer_version["diagnostics"]
+            if diagnostic["runner"] == "php-sdk"
+        )["artifact_versions"]["sdk-python"] = self.plan["artifact_tuple"]["sdk-python"]["version"]
+        with self.assertRaisesRegex(ConformanceError, "versions outside its exact assignment"):
+            validate_experiment_result(peer_version, self.plan, self.contract)
 
     def test_aggregate_rejects_an_exact_peer_only_runner_claim(self) -> None:
         specification = self.contract["experiments"]["heartbeats"]
