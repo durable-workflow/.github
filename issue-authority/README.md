@@ -23,10 +23,14 @@ work ID identifies exactly one issue. Migration first searches open and closed
 issues across the complete public inventory. One match preserves its current
 title, maintainer-authored body, labels, and lifecycle state. The only
 source-owned body field reconciled on replay is the bounded unblock-condition
-section for a blocked migration. A repeated identity across issues or multiple
-distinct identities on one issue receives `authority:conflict` and makes the
-workflow fail. Replaying migration therefore cannot alias lifecycle or blocker
-state, duplicate an issue, or make completed GitHub work pending again.
+section for a blocked migration. When review advances a dependency-free item
+from blocked to ready, migration consumes that bounded section as transition
+proof, removes it, and replaces `status:blocked` with `status:ready` on the same
+open issue. Once the section is gone, later replays preserve GitHub lifecycle
+changes. A repeated identity across issues or multiple distinct identities on
+one issue receives `authority:conflict` and makes the workflow fail. Replaying
+migration therefore cannot alias lifecycle or blocker state, duplicate an
+issue, or make completed GitHub work pending again.
 
 A blocked migration must name either an earlier migrated dependency or an
 explicit public-safe unblock condition. The renderer links migrated dependencies

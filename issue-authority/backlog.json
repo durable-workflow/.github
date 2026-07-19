@@ -9,9 +9,8 @@
       "kind": "cross-repository",
       "priority": "P2",
       "repository": ".github",
-      "status": "blocked",
-      "title": "Prepare versioned changelogs without guessing release tags",
-      "unblock_condition": "Unblocks when the GitHub release-plan contract defines a non-recursive source-preparation commit, or equivalent structured release-note authority, that durably binds the planned version and source identity before publication."
+      "status": "ready",
+      "title": "Prepare versioned changelogs without guessing release tags"
     },
     {
       "body": "## Classification\n\nBeta-compatible public-contract defect owned by `durable-workflow/durable-workflow.github.io`.\n\n## Evidence\n\nThe live [PHP SDK conformance contract](https://durable-workflow.com/platform-conformance/php-sdk-conformance.json) exposes repository-relative runner paths, an image-local path, and internal evidence filenames. The [source contract](https://github.com/durable-workflow/durable-workflow.github.io/blob/main/static/platform-conformance/php-sdk-conformance.json) is also not registered by the public suite discovery surface, so external consumers cannot resolve its authority relationship.\n\n## Acceptance criteria\n\n- If normative, the contract is registered by public URL and schema identity from the platform-conformance suite and discovery pages.\n- Runner and evidence requirements use public identifiers, schemas, or resolvable URLs. Validation-only paths and filenames are not published.\n- The public-boundary validator rejects absolute filesystem references, local URLs, repository paths, and internal harness artifacts while accepting public API routes and public URLs.\n- Validation considers every path candidate in mixed text independently, so an allowed API route cannot hide a later filesystem reference.\n\n## Completion\n\nThe live contract is consumer-resolvable or is removed from public publication, and GitHub qualification rejects reintroduction of validation-only paths.",

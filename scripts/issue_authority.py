@@ -455,11 +455,18 @@ def _reconcile_unblock_context(item: dict[str, Any], issue: dict[str, Any]) -> s
         raise AuthorityError(f"GitHub issue for {item['id']} has no text body")
     context_span = _unblock_context_span(item, body)
     desired = _render_unblock_context(item)
-    if not desired:
+    if context_span is None and not desired:
         return None
     if context_span is not None:
         start, end = context_span
-        updated = body[:start] + desired + body[end:]
+        if desired:
+            updated = body[:start] + desired + body[end:]
+        else:
+            if body[max(0, start - 4) : start] == "\r\n\r\n":
+                start -= 4
+            elif body[max(0, start - 2) : start] == "\n\n":
+                start -= 2
+            updated = body[:start] + body[end:]
     else:
         marker = f"<!-- beta-work-id: {item['id']} -->"
         updated = body.replace(marker, f"{desired}\n\n{marker}", 1)
@@ -475,6 +482,37 @@ def _plan_unblock_context_updates(
         for item in backlog["items"]
         if item["id"] in resolved
     }
+
+
+def _plan_ready_transition_updates(
+    backlog: dict[str, Any],
+    resolved: Mapping[str, tuple[str, dict[str, Any]]],
+) -> dict[str, list[str] | None]:
+    updates: dict[str, list[str] | None] = {}
+    for item in backlog["items"]:
+        match = resolved.get(item["id"])
+        if match is None:
+            continue
+        issue = match[1]
+        body = issue.get("body")
+        labels = _label_names(issue)
+        is_reviewed_ready_transition = (
+            item["status"] == "ready"
+            and not item["depends_on"]
+            and not item.get("unblock_condition")
+            and isinstance(body, str)
+            and _unblock_context_span(item, body) is not None
+        )
+        if (
+            is_reviewed_ready_transition
+            and issue.get("state") == "open"
+            and labels & STATUS_LABELS == {"status:blocked"}
+        ):
+            replacement = labels - STATUS_LABELS | {"status:ready"}
+            updates[item["id"]] = sorted(replacement)
+        else:
+            updates[item["id"]] = None
+    return updates
 
 
 def _preflight_unblock_context_layouts(
@@ -657,6 +695,7 @@ def apply_backlog(policy: dict[str, Any], backlog: dict[str, Any], client: Any) 
     milestone_numbers, metadata_evidence = sync_metadata(policy, client)
     resolved = _preflight_markers(policy, backlog, client, inventory, allow_missing=True)
     planned_body_updates = _plan_unblock_context_updates(backlog, resolved)
+    planned_ready_transitions = _plan_ready_transition_updates(backlog, resolved)
     dependency_urls = {
         work_id: _issue_url(issue, organization, repository) for work_id, (repository, issue) in resolved.items()
     }
@@ -667,6 +706,15 @@ def apply_backlog(policy: dict[str, Any], backlog: dict[str, Any], client: Any) 
         if item["id"] in resolved:
             repository, issue = resolved[item["id"]]
             updated_body = planned_body_updates[item["id"]]
+            updated_labels = planned_ready_transitions[item["id"]]
+            if updated_labels is not None:
+                client.replace_issue_labels(
+                    organization,
+                    repository,
+                    int(issue["number"]),
+                    updated_labels,
+                )
+                issue["labels"] = [{"name": label} for label in updated_labels]
             if updated_body is not None:
                 client.update_issue_body(
                     organization,
@@ -676,7 +724,13 @@ def apply_backlog(policy: dict[str, Any], backlog: dict[str, Any], client: Any) 
                 )
                 issue["body"] = updated_body
             issue_evidence[item["id"]] = {
-                "action": "updated-blocker-context" if updated_body is not None else "preserved",
+                "action": (
+                    "transitioned-to-ready"
+                    if updated_labels is not None
+                    else "updated-blocker-context"
+                    if updated_body is not None
+                    else "preserved"
+                ),
                 "state": issue.get("state"),
                 "url": _issue_url(issue, organization, repository),
             }

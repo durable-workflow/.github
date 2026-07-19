@@ -33,6 +33,7 @@ concurrency:
 jobs:
   validate:
     name: Validate public intake and selective migration
+    if: ${{ github.event_name != 'issues' || github.server_url == 'https://github.com' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -56,7 +57,10 @@ jobs:
 
   apply:
     name: Apply reviewed beta backlog to GitHub
-    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'apply') }}
+    if: >-
+      ${{ github.server_url == 'https://github.com' &&
+          (github.event_name == 'push' ||
+           (github.event_name == 'workflow_dispatch' && inputs.mode == 'apply')) }}
     needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -91,8 +95,9 @@ jobs:
   audit:
     name: Audit GitHub lifecycle authority
     if: >-
-      ${{ github.event_name == 'schedule' || github.event_name == 'issues' ||
-          (github.event_name == 'workflow_dispatch' && inputs.mode == 'audit') }}
+      ${{ github.server_url == 'https://github.com' &&
+          (github.event_name == 'schedule' || github.event_name == 'issues' ||
+           (github.event_name == 'workflow_dispatch' && inputs.mode == 'audit')) }}
     needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 15

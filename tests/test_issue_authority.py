@@ -24,6 +24,14 @@ from scripts.issue_authority import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+REVIEWED_BLOCK_CONDITION = "A separately owned public release gate must complete."
+
+
+def mark_release_item_blocked(backlog: dict[str, Any]) -> dict[str, Any]:
+    item = next(item for item in backlog["items"] if item["id"] == "release-plan-versioned-changelogs")
+    item["status"] = "blocked"
+    item["unblock_condition"] = REVIEWED_BLOCK_CONDITION
+    return item
 
 
 class FakeResponse:
@@ -181,6 +189,7 @@ class ContractValidationTest(unittest.TestCase):
 
     def test_blocked_item_must_name_dependency_or_unblock_condition(self) -> None:
         policy, backlog, policy_schema, backlog_schema = contract_fixture()
+        mark_release_item_blocked(backlog)
         backlog["items"][0].pop("unblock_condition")
 
         with self.assertRaisesRegex(AuthorityError, "must name a dependency or explicit unblock condition"):
@@ -188,6 +197,7 @@ class ContractValidationTest(unittest.TestCase):
 
     def test_unblock_condition_must_be_public_safe(self) -> None:
         policy, backlog, policy_schema, backlog_schema = contract_fixture()
+        mark_release_item_blocked(backlog)
         backlog["items"][0]["unblock_condition"] = "Wait for /var/private-state."
 
         with self.assertRaisesRegex(AuthorityError, "non-public context"):
@@ -235,6 +245,30 @@ class ContractValidationTest(unittest.TestCase):
             self.assertTrue(set(form["labels"]) <= policy_labels)
             self.assertIn("authority:github", form["labels"])
             self.assertIn("priority:untriaged", form["labels"])
+
+    def test_authority_jobs_are_limited_to_the_canonical_github_host(self) -> None:
+        workflow = yaml.safe_load(
+            (ROOT / ".github" / "workflows" / "issue-authority.yml").read_text(encoding="utf-8")
+        )
+        conditions = {
+            job: " ".join(workflow["jobs"][job]["if"].split()) for job in ("validate", "apply", "audit")
+        }
+
+        self.assertEqual(
+            "${{ github.event_name != 'issues' || github.server_url == 'https://github.com' }}",
+            conditions["validate"],
+        )
+        self.assertEqual(
+            "${{ github.server_url == 'https://github.com' && (github.event_name == 'push' || "
+            "(github.event_name == 'workflow_dispatch' && inputs.mode == 'apply')) }}",
+            conditions["apply"],
+        )
+        self.assertEqual(
+            "${{ github.server_url == 'https://github.com' && (github.event_name == 'schedule' || "
+            "github.event_name == 'issues' || "
+            "(github.event_name == 'workflow_dispatch' && inputs.mode == 'audit')) }}",
+            conditions["audit"],
+        )
 
 
 class GitHubApiTest(unittest.TestCase):
@@ -292,10 +326,45 @@ class MigrationTest(unittest.TestCase):
         _drill_repository, drill = find_work_item(self.client, "github-only-beta-continuity-drill")
         _release_repository, release = find_work_item(self.client, "release-plan-versioned-changelogs")
         self.assertIn(drill["html_url"], authorization["body"])
-        self.assertIn("## Unblock condition", release["body"])
-        self.assertIn(self.backlog["items"][0]["unblock_condition"], release["body"])
+        self.assertNotIn(UNBLOCK_CONTEXT_START, release["body"])
+        self.assertNotIn("## Unblock condition", release["body"])
+        self.assertEqual({"status:ready"}, label_names(release) & STATUS_LABELS)
+
+    def test_apply_advances_the_existing_dependency_free_issue_without_duplication(self) -> None:
+        blocked_backlog = copy.deepcopy(self.backlog)
+        blocked_item = mark_release_item_blocked(blocked_backlog)
+        apply_backlog(self.policy, blocked_backlog, self.client)
+        repository, issue = find_work_item(self.client, blocked_item["id"])
+        issue["body"] = issue["body"].replace("## Problem", "Maintainer context.\n\n## Problem")
+        blocker_context = (
+            f"{UNBLOCK_CONTEXT_START}\n## Unblock condition\n\n"
+            f"{REVIEWED_BLOCK_CONDITION}\n{UNBLOCK_CONTEXT_END}"
+        )
+        expected_body = issue["body"].replace(f"\n\n{blocker_context}", "")
+        issue_number = issue["number"]
+
+        evidence = apply_backlog(self.policy, self.backlog, self.client)
+
+        self.assertEqual("transitioned-to-ready", evidence["issues"][blocked_item["id"]]["action"])
+        self.assertEqual(issue_number, issue["number"])
+        self.assertEqual(4, sum(len(issues) for issues in self.client.issues.values()))
+        self.assertEqual({"status:ready"}, label_names(issue) & STATUS_LABELS)
+        self.assertEqual(expected_body, issue["body"])
+        self.assertNotIn(UNBLOCK_CONTEXT_START, issue["body"])
+        self.assertIn("## Dependencies\n\nNone.", issue["body"])
+        self.assertIn((repository, issue_number, sorted(label_names(issue))), self.client.replacements)
+
+        replacement_count = len(self.client.replacements)
+        body_update_count = len(self.client.body_updates)
+        replay_evidence = apply_backlog(self.policy, self.backlog, self.client)
+
+        self.assertEqual("preserved", replay_evidence["issues"][blocked_item["id"]]["action"])
+        self.assertEqual(replacement_count, len(self.client.replacements))
+        self.assertEqual(body_update_count, len(self.client.body_updates))
+        self.assertEqual(4, sum(len(issues) for issues in self.client.issues.values()))
 
     def test_replay_restores_machine_owned_unblock_context_without_losing_edits(self) -> None:
+        mark_release_item_blocked(self.backlog)
         apply_backlog(self.policy, self.backlog, self.client)
         repository, issue = find_work_item(self.client, "release-plan-versioned-changelogs")
         replace_unblock_context(issue, "")
@@ -321,6 +390,7 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual(1, len(self.client.body_updates))
 
     def test_replay_replaces_one_valid_unblock_context_without_losing_edits(self) -> None:
+        mark_release_item_blocked(self.backlog)
         apply_backlog(self.policy, self.backlog, self.client)
         _repository, issue = find_work_item(self.client, "release-plan-versioned-changelogs")
         stale_context = (
@@ -350,6 +420,7 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual(1, len(self.client.body_updates))
 
     def test_apply_rejects_malformed_unblock_context_before_issue_mutation(self) -> None:
+        mark_release_item_blocked(self.backlog)
         valid_context = f"{UNBLOCK_CONTEXT_START}\n## Unblock condition\n\nReviewed condition.\n{UNBLOCK_CONTEXT_END}"
         malformed_contexts = {
             "reversed": f"{UNBLOCK_CONTEXT_END}\nReviewed condition.\n{UNBLOCK_CONTEXT_START}",
@@ -383,6 +454,7 @@ class MigrationTest(unittest.TestCase):
                 self.assertEqual([], client.replacements)
 
     def test_audit_rejects_malformed_unblock_context_before_issue_mutation(self) -> None:
+        mark_release_item_blocked(self.backlog)
         apply_backlog(self.policy, self.backlog, self.client)
         _repository, issue = find_work_item(self.client, "release-plan-versioned-changelogs")
         replace_unblock_context(
