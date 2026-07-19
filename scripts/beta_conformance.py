@@ -208,6 +208,7 @@ def validate_contract(contract: Any) -> None:
                         "id",
                         "path",
                         "result",
+                        "required_distributions",
                         "result_schema",
                         "required_result_fields",
                         "required_scenarios",
@@ -224,6 +225,16 @@ def validate_contract(contract: Any) -> None:
             ):
                 raise ConformanceError(f"experiment {name} has an invalid or duplicate runner id")
             runner_ids.add(runner_id)
+            runner_required_distributions = runner.get("required_distributions")
+            if (
+                not isinstance(runner_required_distributions, list)
+                or not runner_required_distributions
+                or len(runner_required_distributions) != len(set(runner_required_distributions))
+                or not set(runner_required_distributions).issubset(required_distributions)
+            ):
+                raise ConformanceError(
+                    f"experiment {name} runner has invalid required distributions"
+                )
             path = safe_relative_path(runner["path"])
             if not path.startswith("scripts/conformance/") or not path.endswith((".sh", ".mjs", ".py")):
                 raise ConformanceError(f"experiment {name} runner is outside the published conformance surface")
@@ -288,6 +299,15 @@ def validate_contract(contract: Any) -> None:
                     for value in environment_names
                 ):
                     raise ConformanceError(f"experiment {name} runner has invalid runtime environment bindings")
+        runner_distributions = {
+            distribution
+            for runner in runners
+            for distribution in runner["required_distributions"]
+        }
+        if runner_distributions != set(required_distributions):
+            raise ConformanceError(
+                f"experiment {name} runners do not cover its required distributions"
+            )
     covered_distributions = {
         distribution
         for specification in experiments.values()
@@ -745,14 +765,24 @@ def native_result_completeness_error(
         for name in required_distributions
     ):
         return "published runner result does not retain every required artifact version"
+    extra_versions = set(versions) - set(required_distributions)
+    if extra_versions:
+        return (
+            "published runner result retains artifact versions outside its required distributions: "
+            f"{', '.join(sorted(extra_versions))}"
+        )
     identities = native.get(
         "executed_distribution_identities",
         native.get("executedDistributionIdentities"),
     )
     if not isinstance(identities, dict) or any(name not in identities for name in required_distributions):
         return "published runner result does not retain every required distribution identity"
-    if not set(identities).issubset(COMPONENTS):
-        return "published runner result retains an unknown distribution identity"
+    extra_identities = set(identities) - set(required_distributions)
+    if extra_identities:
+        return (
+            "published runner result retains distribution identities outside its required distributions: "
+            f"{', '.join(sorted(extra_identities))}"
+        )
     for name, identity in identities.items():
         identity_error = native_distribution_identity_structure_error(name, identity)
         if identity_error:
@@ -1500,7 +1530,7 @@ def run_experiment(
                     native_outcome, _, _ = native_state(native)
                     native_result_error = native_result_completeness_error(
                         native,
-                        specification["required_distributions"],
+                        runner["required_distributions"],
                         runner,
                     )
                     native_result_rejected = bool(native_result_error)
@@ -1517,7 +1547,7 @@ def run_experiment(
                         and native_outcome in PASS_OUTCOMES
                     ):
                         injected_identity = inject_distribution_identity_mismatch(
-                            native, plan, specification["required_distributions"]
+                            native, plan, runner["required_distributions"]
                         )
                         write_json(native_path, native)
                         identity_failure_injected = True

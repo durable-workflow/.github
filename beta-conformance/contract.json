@@ -19,17 +19,32 @@
         {
           "id": "php",
           "path": "scripts/conformance/heartbeats-published-artifacts.sh",
-          "result": "php-sdk-heartbeat-loop-evidence.json"
+          "result": "php-sdk-heartbeat-loop-evidence.json",
+          "required_distributions": [
+            "server",
+            "cli",
+            "sdk-php"
+          ]
         },
         {
           "id": "python",
           "path": "scripts/conformance/heartbeats-python-published-artifacts.sh",
-          "result": "python-sdk-heartbeat-loop-evidence.json"
+          "result": "python-sdk-heartbeat-loop-evidence.json",
+          "required_distributions": [
+            "server",
+            "cli",
+            "sdk-python"
+          ]
         },
         {
           "id": "rust",
           "path": "scripts/conformance/heartbeats-rust-published-artifacts.sh",
-          "result": "rust-sdk-heartbeat-loop-evidence.json"
+          "result": "rust-sdk-heartbeat-loop-evidence.json",
+          "required_distributions": [
+            "server",
+            "cli",
+            "sdk-rust"
+          ]
         }
       ],
       "timeout_seconds": 3600
@@ -52,12 +67,22 @@
         {
           "id": "python-parity",
           "path": "scripts/conformance/python-published-artifacts.sh",
-          "result": "python-conformance-result.json"
+          "result": "python-conformance-result.json",
+          "required_distributions": [
+            "workflow",
+            "waterline",
+            "server",
+            "cli",
+            "sdk-python"
+          ]
         },
         {
           "id": "php-sdk",
           "path": "scripts/conformance/php-sdk-published-artifacts.sh",
           "result": "php-sdk-conformance-result.json",
+          "required_distributions": [
+            "sdk-php"
+          ],
           "runtime": {
             "kind": "standalone-server",
             "namespace_environment": "DW_PHP_SDK_CONFORMANCE_NAMESPACE",
@@ -68,7 +93,14 @@
         {
           "id": "activities-cross-language",
           "path": "scripts/conformance/activities-published-artifacts.sh",
-          "result": "activities-result.json"
+          "result": "activities-result.json",
+          "required_distributions": [
+            "workflow",
+            "waterline",
+            "server",
+            "cli",
+            "sdk-python"
+          ]
         }
       ],
       "timeout_seconds": 3600
@@ -93,7 +125,16 @@
         {
           "id": "replay-matrix",
           "path": "scripts/conformance/replay-published-artifacts.sh",
-          "result": "replay-conformance-result.json"
+          "result": "replay-conformance-result.json",
+          "required_distributions": [
+            "workflow",
+            "waterline",
+            "server",
+            "cli",
+            "sdk-php",
+            "sdk-python",
+            "sdk-rust"
+          ]
         }
       ],
       "timeout_seconds": 3600
@@ -119,6 +160,15 @@
           "id": "signals-queries-matrix",
           "path": "scripts/conformance/signals-queries-published-artifacts.sh",
           "result": "signals-queries-result.json",
+          "required_distributions": [
+            "workflow",
+            "waterline",
+            "server",
+            "cli",
+            "sdk-php",
+            "sdk-python",
+            "sdk-rust"
+          ],
           "result_schema": "durable-workflow.v2.signal-query-runtime.result",
           "required_result_fields": [
             "schema",

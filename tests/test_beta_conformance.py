@@ -6,7 +6,9 @@ import re
 import subprocess
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 from jsonschema import Draft202012Validator
@@ -34,6 +36,7 @@ from scripts.beta_conformance import (
     runner_runtime_environment,
     sha256_bytes,
     sha256_file,
+    validate_contract,
     validate_experiment_result,
     validate_plan,
     write_json,
@@ -157,6 +160,29 @@ def successful_diagnostic(
     }
 
 
+def successful_native_result(
+    plan: dict[str, object], required_distributions: list[str]
+) -> dict[str, object]:
+    artifact_tuple = plan["artifact_tuple"]
+    distribution_identities = plan["distribution_identities"]
+    assert isinstance(artifact_tuple, dict)
+    assert isinstance(distribution_identities, dict)
+    return {
+        "schema": "fixture.result/v1",
+        "outcome": "pass",
+        "artifact_versions": {
+            name: artifact_tuple[name]["version"] for name in required_distributions
+        },
+        "executed_distribution_identities": {
+            name: json.loads(canonical_json(distribution_identities[name]))
+            for name in required_distributions
+        },
+        "local_product_source_checkout_used": False,
+        "scenario_results": {"fixture": "pass"},
+        "findings": [],
+    }
+
+
 class CandidateRecordFixture:
     def __init__(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -225,6 +251,17 @@ class ContractTest(unittest.TestCase):
         self.assertNotIn("../", encoded)
         self.assertNotIn(":latest", encoded)
 
+        for experiment, specification in contract["experiments"].items():
+            with self.subTest(experiment=experiment):
+                self.assertEqual(
+                    set(specification["required_distributions"]),
+                    {
+                        distribution
+                        for runner in specification["runners"]
+                        for distribution in runner["required_distributions"]
+                    },
+                )
+
         php_runner = next(
             runner for runner in contract["experiments"]["polyglot"]["runners"] if runner["id"] == "php-sdk"
         )
@@ -259,6 +296,15 @@ class ContractTest(unittest.TestCase):
         self.assertIn("published_artifact_install_only", signals_runner["required_scenarios"])
         self.assertIn("waterline_operator_visibility", signals_runner["required_scenarios"])
 
+    def test_contract_rejects_a_multi_runner_distribution_gap(self) -> None:
+        contract = load_contract(CONTRACT_PATH)
+        contract["experiments"]["heartbeats"]["runners"][2]["required_distributions"].remove(
+            "sdk-rust"
+        )
+
+        with self.assertRaisesRegex(ConformanceError, "do not cover"):
+            validate_contract(contract)
+
     def test_every_schema_is_parseable_draft_2020_12(self) -> None:
         for path in sorted((ROOT / "beta-conformance").glob("*schema.json")):
             schema = json.loads(path.read_bytes())
@@ -275,6 +321,7 @@ class ContractTest(unittest.TestCase):
             }.issubset(diagnostic["required"])
         )
         self.assertEqual(4, len(diagnostic["oneOf"]))
+        beta_schema_validator("contract-schema.json").validate(load_contract(CONTRACT_PATH))
 
 
 class PlanTest(unittest.TestCase):
@@ -1267,6 +1314,181 @@ class ExperimentRetryTest(unittest.TestCase):
         binding = result["diagnostics"][-1]
         self.assertEqual("artifact-binding", binding["runner"])
         self.assertIn("does not match the candidate digest", binding["findings"][0]["summary"])
+
+
+class MultiRunnerExperimentTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.fixture = CandidateRecordFixture()
+        self.contract = load_contract(CONTRACT_PATH)
+        self.plan = prepare_plan(
+            self.fixture.repository,
+            self.fixture.manifest,
+            self.contract,
+            self.fixture.commit,
+        )
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.artifact_root = self.root / "published-server"
+        self.result_dir = self.root / "result"
+        self.specification = self.contract["experiments"]["heartbeats"]
+        for runner in self.specification["runners"]:
+            runner_path = self.artifact_root / runner["path"]
+            runner_path.parent.mkdir(parents=True, exist_ok=True)
+            runner_path.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+        self.fixture.close()
+
+    def execute_shards(
+        self,
+        mutate: Callable[[str, dict[str, object]], None] | None = None,
+    ) -> tuple[list[str], dict[str, Any]]:
+        executed: list[str] = []
+        runners = {runner["id"]: runner for runner in self.specification["runners"]}
+
+        def execute(command: list[str], **arguments: object) -> tuple[int, bool]:
+            stdout_path = arguments["stdout_path"]
+            stderr_path = arguments["stderr_path"]
+            assert isinstance(stdout_path, Path)
+            assert isinstance(stderr_path, Path)
+            stdout_path.write_text("", encoding="utf-8")
+            stderr_path.write_text("", encoding="utf-8")
+            native_dir = Path(command[-1])
+            runner_id = native_dir.name
+            runner = runners[runner_id]
+            native = successful_native_result(self.plan, runner["required_distributions"])
+            if callable(mutate):
+                mutate(runner_id, native)
+            (native_dir / runner["result"]).write_bytes(canonical_json(native))
+            executed.append(runner_id)
+            return 0, False
+
+        with mock.patch("scripts.beta_conformance.execute_command", side_effect=execute):
+            result = run_experiment(
+                self.plan,
+                self.contract,
+                "heartbeats",
+                self.artifact_root,
+                self.result_dir,
+            )
+        return executed, result
+
+    def test_polyglot_python_shard_is_complete_without_the_peer_php_identity(self) -> None:
+        specification = self.contract["experiments"]["polyglot"]
+        runner = specification["runners"][0]
+        native = successful_native_result(self.plan, runner["required_distributions"])
+
+        self.assertEqual(
+            "",
+            native_result_completeness_error(
+                native,
+                runner["required_distributions"],
+                runner,
+            ),
+        )
+        self.assertIn(
+            "every required artifact version",
+            native_result_completeness_error(
+                native,
+                specification["required_distributions"],
+                runner,
+            ),
+        )
+
+    def test_valid_partial_php_python_and_rust_shards_form_a_passing_aggregate(self) -> None:
+        executed, result = self.execute_shards()
+
+        self.assertEqual(["php", "python", "rust"], executed)
+        self.assertEqual("pass", result["outcome"])
+        self.assertEqual("passed", result["classification"])
+        self.assertEqual(1, result["retry"]["attempts"])
+        self.assertEqual(
+            [set(runner["required_distributions"]) for runner in self.specification["runners"]],
+            [
+                set(diagnostic["native_summary"]["executed_distribution_identities"])
+                for diagnostic in result["diagnostics"]
+            ],
+        )
+
+    def test_exact_peer_only_claim_fails_closed_at_the_reporting_shard(self) -> None:
+        def add_python_claim(runner_id: str, native: dict[str, object]) -> None:
+            if runner_id == "php":
+                versions = native["artifact_versions"]
+                identities = native["executed_distribution_identities"]
+                artifact_tuple = self.plan["artifact_tuple"]
+                distribution_identities = self.plan["distribution_identities"]
+                assert isinstance(versions, dict)
+                assert isinstance(identities, dict)
+                assert isinstance(artifact_tuple, dict)
+                assert isinstance(distribution_identities, dict)
+                versions["sdk-python"] = artifact_tuple["sdk-python"]["version"]
+                identities["sdk-python"] = json.loads(
+                    canonical_json(distribution_identities["sdk-python"])
+                )
+
+        executed, result = self.execute_shards(add_python_claim)
+
+        self.assertEqual(["php"], executed)
+        self.assertEqual("fail", result["outcome"])
+        self.assertEqual("infrastructure_failure", result["classification"])
+        self.assertEqual(1, result["retry"]["attempts"])
+        self.assertTrue(result["diagnostics"][0]["runner_blocked"])
+        self.assertIn(
+            "artifact versions outside its required distributions: sdk-python",
+            result["diagnostics"][0]["stderr_tail"],
+        )
+
+    def test_exact_peer_only_identity_is_rejected_without_an_extra_version(self) -> None:
+        runner = self.specification["runners"][0]
+        native = successful_native_result(self.plan, runner["required_distributions"])
+        distribution_identities = self.plan["distribution_identities"]
+        assert isinstance(distribution_identities, dict)
+        identities = native["executed_distribution_identities"]
+        assert isinstance(identities, dict)
+        identities["sdk-python"] = json.loads(canonical_json(distribution_identities["sdk-python"]))
+
+        self.assertIn(
+            "distribution identities outside its required distributions: sdk-python",
+            native_result_completeness_error(
+                native,
+                runner["required_distributions"],
+                runner,
+            ),
+        )
+
+    def test_missing_consumed_identity_fails_closed_after_one_attempt(self) -> None:
+        def remove_php_identity(runner_id: str, native: dict[str, object]) -> None:
+            if runner_id == "php":
+                identities = native["executed_distribution_identities"]
+                assert isinstance(identities, dict)
+                identities.pop("sdk-php")
+
+        executed, result = self.execute_shards(remove_php_identity)
+
+        self.assertEqual(["php"], executed)
+        self.assertEqual("fail", result["outcome"])
+        self.assertEqual("infrastructure_failure", result["classification"])
+        self.assertEqual(1, result["retry"]["attempts"])
+        self.assertTrue(result["diagnostics"][0]["runner_blocked"])
+        self.assertIn("every required distribution identity", result["diagnostics"][0]["stderr_tail"])
+
+    def test_mismatched_consumed_identity_runs_all_shards_then_fails_the_aggregate(self) -> None:
+        def mismatch_php_identity(runner_id: str, native: dict[str, object]) -> None:
+            if runner_id == "php":
+                identities = native["executed_distribution_identities"]
+                assert isinstance(identities, dict)
+                artifacts = identities["sdk-php"]["artifacts"]
+                artifacts[0]["sha256"] = "f" * 64
+
+        executed, result = self.execute_shards(mismatch_php_identity)
+
+        self.assertEqual(["php", "python", "rust"], executed)
+        self.assertEqual("fail", result["outcome"])
+        self.assertEqual("product_failure", result["classification"])
+        self.assertEqual(1, result["retry"]["attempts"])
+        self.assertEqual("artifact-binding", result["diagnostics"][-1]["runner"])
+        self.assertIn("does not match the candidate digest", result["diagnostics"][-1]["stderr_tail"])
 
 
 class EvidenceTest(unittest.TestCase):

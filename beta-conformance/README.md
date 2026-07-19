@@ -16,8 +16,10 @@ Packagist, Python SDK from PyPI, Rust SDK from crates.io, CLI release assets,
 and Composer packages by exact version. Product checkouts and mutable package
 selectors are not inputs to this workflow.
 
-Runner entries also declare any runtime they need from the candidate. The direct
-PHP SDK runner declares a standalone server dependency, so the portable wrapper
+Runner entries declare the distributions they consume and any runtime they need
+from the candidate. The union of the runner distribution sets must equal the
+experiment's complete required set. The direct PHP SDK runner declares a
+standalone server dependency, so the portable wrapper
 bootstraps the digest-pinned candidate image and starts its HTTP, queue-worker,
 and scheduler processes on isolated Docker state. The wrapper waits for the
 published readiness endpoint before injecting the loopback URL, namespace, and
@@ -74,12 +76,15 @@ The wrapper recognizes only a small allowlist of registry and connection
 transients. Those failures may run twice. A native non-passing result, timeout,
 missing published runner, or injected distribution identity mismatch is never
 retried.
-Detached registry snapshots are not accepted as execution evidence. A runner
-must report identities derived from its executed downloads, and every artifact
-required by its experiment contract must match the immutable candidate record.
-Missing evidence or a digest change is a non-retryable product failure under the
-experiment's owning contract; matching version strings cannot satisfy the
-check. A passing retained suite covers all seven distributions.
+Detached registry snapshots are not accepted as execution evidence. Each runner
+must report identities derived from its own executed downloads for exactly the
+distributions assigned to that runner. The experiment-wide check then requires
+the complete distribution set declared by the experiment and matches every
+reported identity to the immutable candidate record. Missing native evidence is
+a non-retryable infrastructure failure; an exact-version or digest mismatch is
+a non-retryable product failure under the experiment's owning contract.
+Matching version strings cannot satisfy the identity check. A passing retained
+suite covers all seven distributions.
 Experiments run in separate GitHub matrix jobs, have explicit deadlines, use
 unique scratch and Docker state, and prune Docker resources on every exit path.
 
