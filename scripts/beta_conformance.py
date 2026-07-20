@@ -43,6 +43,10 @@ CONTRACT_SCHEMA = "durable-workflow.beta-conformance.contract/v1"
 PLAN_SCHEMA = "durable-workflow.beta-conformance.plan/v1"
 EXPERIMENT_RESULT_SCHEMA = "durable-workflow.beta-conformance.experiment-result/v1"
 SUITE_RESULT_SCHEMA = "durable-workflow.beta-conformance.suite-result/v1"
+CONTROL_REPOSITORY = "durable-workflow/.github"
+CONFORMANCE_WORKFLOW_NAME = "Beta conformance"
+CONFORMANCE_WORKFLOW_PATH = ".github/workflows/beta-conformance.yml"
+CONFORMANCE_WORKFLOW_PATHS = {CONFORMANCE_WORKFLOW_PATH, f"{CONFORMANCE_WORKFLOW_PATH}@main"}
 EXPERIMENTS = ("heartbeats", "polyglot", "replay", "signals-queries")
 PASS_OUTCOMES = {"pass", "passed", "success", "successful", "completed", "verified"}
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
@@ -75,6 +79,77 @@ class ConformanceError(RuntimeError):
 
 def now() -> str:
     return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def github_timestamp(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise ConformanceError(f"{label} is not a UTC GitHub timestamp")
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ConformanceError(f"{label} is not a UTC GitHub timestamp") from error
+    if parsed.tzinfo != dt.UTC:
+        raise ConformanceError(f"{label} is not a UTC GitHub timestamp")
+    return value
+
+
+def validate_retention_source(
+    run: Any,
+    workflow: Any,
+    *,
+    expected_run_id: int,
+    expected_run_attempt: int | None = None,
+) -> dict[str, int | str]:
+    """Bind retention to a completed default-branch conformance execution."""
+    if not isinstance(run, dict):
+        raise ConformanceError("conformance retention source must be a GitHub workflow run")
+    run_id = run.get("id")
+    run_attempt = run.get("run_attempt")
+    repository = run.get("repository")
+    head_repository = run.get("head_repository")
+    if (
+        not isinstance(workflow, dict)
+        or type(workflow.get("id")) is not int
+        or workflow["id"] < 1
+        or workflow.get("name") != CONFORMANCE_WORKFLOW_NAME
+        or workflow.get("path") != CONFORMANCE_WORKFLOW_PATH
+        or workflow.get("state") != "active"
+    ):
+        raise ConformanceError("trusted conformance workflow metadata is invalid")
+    if type(run_id) is not int or run_id < 1 or run_id != expected_run_id:
+        raise ConformanceError("conformance retention source has a mismatched run identity")
+    if type(run_attempt) is not int or run_attempt < 1:
+        raise ConformanceError("conformance retention source has an invalid run attempt")
+    if expected_run_attempt is not None and run_attempt != expected_run_attempt:
+        raise ConformanceError("conformance retention source has a mismatched run attempt")
+    if (
+        not isinstance(repository, dict)
+        or repository.get("full_name") != CONTROL_REPOSITORY
+        or not isinstance(head_repository, dict)
+        or head_repository.get("full_name") != CONTROL_REPOSITORY
+    ):
+        raise ConformanceError("conformance retention source is not owned by the control repository")
+    if (
+        run.get("workflow_id") != workflow["id"]
+        or run.get("path") not in CONFORMANCE_WORKFLOW_PATHS
+        or run.get("event") != "workflow_dispatch"
+    ):
+        raise ConformanceError("conformance retention source is not the dispatched conformance workflow")
+    if run.get("head_branch") != "main" or not COMMIT_PATTERN.fullmatch(str(run.get("head_sha", ""))):
+        raise ConformanceError("conformance retention source is not bound to the default branch")
+    if run.get("status") != "completed" or not isinstance(run.get("conclusion"), str):
+        raise ConformanceError("conformance retention source is not completed")
+    display_title = run.get("display_title")
+    candidate = display_title.removeprefix("Conformance ") if isinstance(display_title, str) else ""
+    if not CANDIDATE_PATTERN.fullmatch(candidate):
+        raise ConformanceError("conformance retention source has no candidate identity")
+    return {
+        "source_candidate": candidate,
+        "source_completed_at": github_timestamp(run.get("updated_at"), "conformance completion"),
+        "source_head_sha": run["head_sha"],
+        "source_run_id": run_id,
+        "source_run_attempt": run_attempt,
+    }
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -2182,6 +2257,7 @@ def aggregate_results(
     *,
     run_id: int,
     run_attempt: int,
+    generated_at: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Path]]:
     validate_plan(plan)
     validate_contract(contract)
@@ -2258,7 +2334,7 @@ def aggregate_results(
             "run_attempt": run_attempt,
             "evidence_tag": evidence_tag,
         },
-        "generated_at": now(),
+        "generated_at": github_timestamp(generated_at, "suite generation") if generated_at is not None else now(),
         "outcome": outcome,
         "experiments": summaries,
     }
@@ -2314,7 +2390,15 @@ def parser() -> argparse.ArgumentParser:
     aggregate.add_argument("--contract", type=Path, required=True)
     aggregate.add_argument("--run-id", type=int, required=True)
     aggregate.add_argument("--run-attempt", type=int, required=True)
+    aggregate.add_argument("--generated-at")
     aggregate.add_argument("--github-output", type=Path)
+
+    retention = commands.add_parser("retention-source", help="validate a completed conformance run")
+    retention.add_argument("run", type=Path)
+    retention.add_argument("workflow", type=Path)
+    retention.add_argument("--expected-run-id", type=int, required=True)
+    retention.add_argument("--expected-run-attempt", type=int)
+    retention.add_argument("--github-output", type=Path)
     return arguments
 
 
@@ -2369,6 +2453,7 @@ def main(argv: list[str] | None = None) -> int:
                 arguments.result_root,
                 run_id=arguments.run_id,
                 run_attempt=arguments.run_attempt,
+                generated_at=arguments.generated_at,
             )
             write_json(arguments.output, suite)
             arguments.asset_dir.mkdir(parents=True, exist_ok=True)
@@ -2384,6 +2469,19 @@ def main(argv: list[str] | None = None) -> int:
                 },
             )
             print(json.dumps({"evidence_tag": suite["github_run"]["evidence_tag"], "outcome": suite["outcome"]}))
+            return 0
+        if arguments.command == "retention-source":
+            source = validate_retention_source(
+                load_json(arguments.run),
+                load_json(arguments.workflow),
+                expected_run_id=arguments.expected_run_id,
+                expected_run_attempt=arguments.expected_run_attempt,
+            )
+            write_github_output(
+                arguments.github_output,
+                {name: str(value) for name, value in source.items()},
+            )
+            print(json.dumps(source, sort_keys=True))
             return 0
     except (CandidateError, ConformanceError, OSError) as error:
         print(f"beta conformance error: {error}", file=sys.stderr)

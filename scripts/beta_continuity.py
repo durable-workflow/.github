@@ -58,6 +58,7 @@ CONTINUITY_WORKFLOW = "beta-continuity.yml"
 OBSERVER_WORKFLOW = "release-plan-observer.yml"
 CANDIDATE_WORKFLOW = "beta-candidate.yml"
 CONFORMANCE_WORKFLOW = "beta-conformance.yml"
+CONFORMANCE_RETENTION_WORKFLOW = "beta-conformance-retention.yml"
 WORK_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,79}$")
 BETA_WORK_ID_MARKER_PREFIX = "<!-- beta-work-id: "
 BETA_WORK_ID_MARKER = re.compile(r"<!-- beta-work-id: (?P<work_id>[a-z0-9][a-z0-9._-]{0,79}) -->")
@@ -1059,6 +1060,99 @@ def ensure_dispatch(
     return existing
 
 
+def conformance_run_reference(run: dict[str, Any] | None) -> dict[str, Any] | None:
+    if run is None:
+        return None
+    return {
+        "conclusion": run.get("conclusion"),
+        "id": run.get("id"),
+        "run_attempt": run.get("run_attempt"),
+        "status": run.get("status"),
+        "url": run.get("html_url"),
+    }
+
+
+def retention_workflow_runs(
+    writer: GitHubWriter,
+    source_run_id: int,
+    source_run_attempt: int,
+) -> list[dict[str, Any]]:
+    encoded = urllib.parse.quote(CONFORMANCE_RETENTION_WORKFLOW, safe="")
+    payload = writer.get(f"/repos/{CONTROL_REPOSITORY}/actions/workflows/{encoded}/runs?per_page=100")
+    runs = payload.get("workflow_runs", []) if isinstance(payload, dict) else []
+    display_title = f"Retain conformance {source_run_id}.{source_run_attempt}"
+    matching = [
+        run
+        for run in runs
+        if isinstance(run, dict)
+        and run.get("display_title") == display_title
+        and type(run.get("id")) is int
+        and run["id"] > 0
+    ]
+    return sorted(matching, key=lambda run: run["id"])
+
+
+def ensure_conformance_execution_or_retention(
+    writer: GitHubWriter,
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    """Run conformance once, then recover only its retained artifacts."""
+    candidate_name = candidate.get("candidate")
+    if not isinstance(candidate_name, str) or not candidate_name:
+        raise ContinuityError("immutable candidate has no conformance identity")
+    source_run = workflow_run(writer, CONTROL_REPOSITORY, CONFORMANCE_WORKFLOW, candidate_name)
+    if source_run is None:
+        writer.dispatch(
+            CONTROL_REPOSITORY,
+            CONFORMANCE_WORKFLOW,
+            "main",
+            {
+                "candidate_manifest": canonical_json(candidate).decode().strip(),
+                "injected_failure_experiment": "none",
+            },
+        )
+        return {
+            "outcome": "conformance-execution-requested",
+            "retention_runs": [],
+            "source_run": None,
+        }
+    if source_run.get("status") != "completed":
+        return {
+            "outcome": "waiting-for-conformance-execution",
+            "retention_runs": [],
+            "source_run": conformance_run_reference(source_run),
+        }
+    run_id = source_run.get("id")
+    run_attempt = source_run.get("run_attempt")
+    if type(run_id) is not int or run_id < 1 or type(run_attempt) is not int or run_attempt < 1:
+        raise ContinuityError("completed conformance run has no recoverable run identity")
+    retention_runs = retention_workflow_runs(writer, run_id, run_attempt)
+    retained_references = [conformance_run_reference(run) for run in retention_runs[-2:]]
+    if any(run_prevents_redispatch(run) for run in retention_runs):
+        return {
+            "outcome": "waiting-for-conformance-retention",
+            "retention_runs": retained_references,
+            "source_run": conformance_run_reference(source_run),
+        }
+    if len(retention_runs) >= 2:
+        return {
+            "outcome": "conformance-retention-terminal-failure",
+            "retention_runs": retained_references,
+            "source_run": conformance_run_reference(source_run),
+        }
+    writer.dispatch(
+        CONTROL_REPOSITORY,
+        CONFORMANCE_RETENTION_WORKFLOW,
+        "main",
+        {"source_run_id": str(run_id), "source_run_attempt": str(run_attempt)},
+    )
+    return {
+        "outcome": "conformance-retention-requested",
+        "retention_runs": retained_references,
+        "source_run": conformance_run_reference(source_run),
+    }
+
+
 def dispatch_accepted_continuity(plan_path: Path, output: Path | None) -> None:
     plan = load_json(plan_path, "release plan")
     validate_plan(plan)
@@ -1779,6 +1873,7 @@ def advance_command(
     authority_token = os.environ.get("BETA_PRODUCT_WORK_TOKEN")
     client = PublicClient(github_token)
     writer = GitHubWriter(authority_token or "", os.environ.get("GITHUB_API_URL", "https://api.github.com"))
+    dispatcher = GitHubWriter(github_token or "", os.environ.get("GITHUB_API_URL", "https://api.github.com"))
     issue = authority_issue(config, client, allow_completed=True)
     run = {
         "id": os.environ.get("GITHUB_RUN_ID", "local"),
@@ -2044,7 +2139,7 @@ def advance_command(
         candidate_commit = resolve_tag(client, CONTROL_REPOSITORY, candidate_tag)
         if candidate_commit is None:
             ensure_dispatch(
-                writer,
+                dispatcher,
                 CONTROL_REPOSITORY,
                 CANDIDATE_WORKFLOW,
                 "main",
@@ -2062,17 +2157,7 @@ def advance_command(
             state_path.write_bytes(canonical_json(state))
             write_github_output(output, {"phase": "candidate-verification", "plan_tag": record["tag"]})
             return
-        existing_run = ensure_dispatch(
-            writer,
-            CONTROL_REPOSITORY,
-            CONFORMANCE_WORKFLOW,
-            "main",
-            {
-                "candidate_manifest": canonical_json(candidate).decode().strip(),
-                "injected_failure_experiment": "none",
-            },
-            candidate["candidate"],
-        )
+        progress = ensure_conformance_execution_or_retention(dispatcher, candidate)
         if requested_commit is None:
             evidence = base_evidence(config, issue, plan, "conformance-requested", run)
             evidence.update(
@@ -2080,9 +2165,7 @@ def advance_command(
                     "outcome": "requested-clean-github-runner-conformance",
                     "candidate": {"manifest": candidate, "tag": candidate_tag, "commit": candidate_commit},
                     "public_verification": {"tag": completion_tag, "commit": completion_commit},
-                    "existing_run": (
-                        {"id": existing_run.get("id"), "url": existing_run.get("html_url")} if existing_run else None
-                    ),
+                    "conformance_progress": progress,
                 }
             )
             phase_record = record_phase(Path.cwd(), plan, "conformance-requested", evidence)
@@ -2092,12 +2175,17 @@ def advance_command(
                 plan,
                 "conformance-requested",
                 phase_record,
-                "Public verification passed and exact-tuple conformance was requested on clean GitHub runners.",
+                "Public verification passed and exact-tuple conformance execution or retention was requested.",
             )
             state_path.write_bytes(canonical_json(evidence))
         else:
             state = base_evidence(config, issue, plan, "conformance-requested", run)
-            state.update({"outcome": "waiting-for-conformance"})
+            state.update(
+                {
+                    "outcome": progress["outcome"],
+                    "conformance_progress": progress,
+                }
+            )
             state_path.write_bytes(canonical_json(state))
         write_github_output(output, {"phase": "conformance-requested", "plan_tag": record["tag"]})
         return

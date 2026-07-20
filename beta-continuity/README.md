@@ -36,7 +36,17 @@ The selection tag contains `continuity-selection.json`. Every phase contains
 evidence. The authoritative issue receives links to these records. Completion
 requires the immutable release candidate record, seven public component
 releases, and a passing clean-runner conformance Release for the same tuple. The
-authority issue remains open after completion until a later scheduled run
+controller dispatches conformance only when no matching execution exists. Once
+a matching run is complete, it requests the retention-only workflow with that
+exact run ID and attempt; a failed publication step therefore cannot cause the
+experiment matrix to run again. The repository-scoped `GITHUB_TOKEN` performs
+these same-repository dispatches, while cross-repository product authority
+remains confined to the protected environment.
+Automatic completion-triggered and manual recovery runs are deduplicated by
+that source identity. After one failed retention retry, the controller reports
+terminal publication failure in its retained observation instead of looping.
+
+The authority issue remains open after completion until a later scheduled run
 retains a successful no-op phase. At that terminal boundary, the controller
 revalidates the exact plan, source releases, public verification, protected
 qualification, conformance, and no-op records before changing issue state. It

@@ -88,8 +88,20 @@ suite covers all seven distributions.
 Experiments run in separate GitHub matrix jobs, have explicit deadlines, use
 unique scratch and Docker state, and prune Docker resources on every exit path.
 
-After all matrix jobs finish, even when one is red, the retention job creates a
-GitHub Release tagged
+The execution workflow keeps `contents: read` for every job. After its matrix
+finishes, even when one cell is red, the separate `Beta conformance retention`
+workflow runs from the trusted default branch with only `actions: read` and
+`contents: write`. It validates that the source is a completed, same-repository
+`Beta conformance` run on `main`, binds the execution plan to that run's exact
+commit, and aggregates its retained JSON artifacts from the trusted default-
+branch retention controller without executing artifact content.
+The retention workflow can also be dispatched with an existing run ID and
+attempt, allowing a completed matrix to be recovered without running it again.
+Release creation tolerates a bounded transient API denial; a later recovery
+attempt still consumes the same source run and attempt and produces the same
+evidence tag.
+
+Retention creates a GitHub Release tagged
 `beta-conformance/<candidate>/<run-id>.<run-attempt>`. Its canonical suite and
 experiment JSON assets are durable, immutable-by-comparison mirrors. They can
 be queried later through the GitHub Releases API, independently of the Actions

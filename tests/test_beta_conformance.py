@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import yaml
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 from referencing import Registry, Resource
@@ -40,6 +41,7 @@ from scripts.beta_conformance import (
     validate_contract,
     validate_experiment_result,
     validate_plan,
+    validate_retention_source,
     write_json,
 )
 
@@ -214,6 +216,132 @@ def successful_native_result(
         "scenario_results": {"fixture": "pass"},
         "findings": [],
     }
+
+
+class RetentionSourceTest(unittest.TestCase):
+    @staticmethod
+    def workflow() -> dict[str, object]:
+        return {
+            "id": 314998157,
+            "name": "Beta conformance",
+            "path": ".github/workflows/beta-conformance.yml",
+            "state": "active",
+        }
+
+    @staticmethod
+    def completed_run() -> dict[str, object]:
+        return {
+            "conclusion": "failure",
+            "display_title": "Conformance alpha-workspace-unavailable-recovery-f46818553161",
+            "event": "workflow_dispatch",
+            "head_branch": "main",
+            "head_repository": {"full_name": "durable-workflow/.github"},
+            "head_sha": "1fd9296396bb8fc57f50362323e40ab9008bbc9f",
+            "id": 29775218461,
+            "name": "Conformance alpha-workspace-unavailable-recovery-f46818553161",
+            "path": ".github/workflows/beta-conformance.yml",
+            "repository": {"full_name": "durable-workflow/.github"},
+            "run_attempt": 1,
+            "status": "completed",
+            "updated_at": "2026-07-20T20:20:06Z",
+            "workflow_id": 314998157,
+        }
+
+    def test_completed_default_branch_run_is_bound_for_retention(self) -> None:
+        source = validate_retention_source(
+            self.completed_run(),
+            self.workflow(),
+            expected_run_id=29775218461,
+            expected_run_attempt=1,
+        )
+
+        self.assertEqual(
+            {
+                "source_candidate": "alpha-workspace-unavailable-recovery-f46818553161",
+                "source_completed_at": "2026-07-20T20:20:06Z",
+                "source_head_sha": "1fd9296396bb8fc57f50362323e40ab9008bbc9f",
+                "source_run_attempt": 1,
+                "source_run_id": 29775218461,
+            },
+            source,
+        )
+
+    def test_retention_rejects_a_different_execution_authority(self) -> None:
+        mutations = {
+            "display_title": "Unbound retention source",
+            "event": "pull_request",
+            "head_branch": "feature",
+            "head_repository": {"full_name": "someone/fork"},
+            "head_sha": "short",
+            "path": ".github/workflows/another.yml",
+            "repository": {"full_name": "someone/fork"},
+            "status": "in_progress",
+        }
+        for field, value in mutations.items():
+            with self.subTest(field=field):
+                run = self.completed_run()
+                run[field] = value
+                with self.assertRaises(ConformanceError):
+                    validate_retention_source(run, self.workflow(), expected_run_id=29775218461)
+
+        with self.assertRaisesRegex(ConformanceError, "mismatched run identity"):
+            validate_retention_source(self.completed_run(), self.workflow(), expected_run_id=1)
+        with self.assertRaisesRegex(ConformanceError, "mismatched run attempt"):
+            validate_retention_source(
+                self.completed_run(),
+                self.workflow(),
+                expected_run_id=29775218461,
+                expected_run_attempt=2,
+            )
+        feature_run = self.completed_run()
+        feature_run["path"] = ".github/workflows/beta-conformance.yml@feature"
+        with self.assertRaisesRegex(ConformanceError, "dispatched conformance workflow"):
+            validate_retention_source(feature_run, self.workflow(), expected_run_id=29775218461)
+
+        mismatched_workflow = self.workflow()
+        mismatched_workflow["id"] = 1
+        with self.assertRaisesRegex(ConformanceError, "dispatched conformance workflow"):
+            validate_retention_source(
+                self.completed_run(),
+                mismatched_workflow,
+                expected_run_id=29775218461,
+            )
+        untrusted_workflow = self.workflow()
+        untrusted_workflow["name"] = "Another workflow"
+        with self.assertRaisesRegex(ConformanceError, "workflow metadata is invalid"):
+            validate_retention_source(
+                self.completed_run(),
+                untrusted_workflow,
+                expected_run_id=29775218461,
+            )
+
+    def test_workflows_separate_execution_and_retention_permissions(self) -> None:
+        workflows = ROOT / ".github" / "workflows"
+        execution = yaml.load((workflows / "beta-conformance.yml").read_text(), Loader=yaml.BaseLoader)
+        retention = yaml.load(
+            (workflows / "beta-conformance-retention.yml").read_text(),
+            Loader=yaml.BaseLoader,
+        )
+
+        self.assertEqual({"contents": "read"}, execution["permissions"])
+        self.assertEqual({"prepare", "conformance"}, set(execution["jobs"]))
+        self.assertEqual(["Beta conformance"], retention["on"]["workflow_run"]["workflows"])
+        self.assertIn("workflow_dispatch", retention["on"])
+        self.assertEqual(
+            {"actions": "read", "contents": "read"},
+            retention["jobs"]["bind"]["permissions"],
+        )
+        self.assertEqual(
+            {"actions": "read", "contents": "write"},
+            retention["jobs"]["retain"]["permissions"],
+        )
+        self.assertEqual("beta-conformance", retention["jobs"]["retain"]["environment"])
+        retention_scripts = "\n".join(
+            step.get("run", "") for step in retention["jobs"]["retain"]["steps"]
+        )
+        self.assertIn('runner.get("revision") != os.environ["SOURCE_HEAD_SHA"]', retention_scripts)
+        self.assertIn('candidate.get("name") != os.environ["SOURCE_CANDIDATE"]', retention_scripts)
+        self.assertIn("for attempt in 1 2 3", retention_scripts)
 
 
 class CandidateRecordFixture:
@@ -1784,11 +1912,13 @@ class EvidenceTest(unittest.TestCase):
                 root,
                 run_id=12345,
                 run_attempt=2,
+                generated_at="2026-07-20T20:20:06Z",
             )
 
         self.assertEqual("fail", suite["outcome"])
         self.assertEqual(set(EXPERIMENTS), set(retained))
         self.assertEqual("product_failure", suite["experiments"]["signals-queries"]["classification"])
+        self.assertEqual("2026-07-20T20:20:06Z", suite["generated_at"])
         self.assertEqual(
             "beta-conformance/portable-beta-test/12345.2",
             suite["github_run"]["evidence_tag"],

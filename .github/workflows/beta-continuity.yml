@@ -8,6 +8,7 @@ on:
     paths:
       - .github/workflows/beta-continuity.yml
       - .github/workflows/beta-conformance.yml
+      - .github/workflows/beta-conformance-retention.yml
       - beta-continuity/**
       - qualification/**
       - scripts/beta_continuity.py

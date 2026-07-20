@@ -22,6 +22,7 @@ from scripts.beta_continuity import (
     close_authority_issue,
     dispatch_accepted_continuity,
     dispatch_recovery,
+    ensure_conformance_execution_or_retention,
     exact_completion_authority,
     load_config,
     next_version,
@@ -1296,6 +1297,100 @@ class BetaContinuityTest(unittest.TestCase):
             {"workflow": {"version": "2.0.0-alpha.292"}},
             [name for name in COMPONENTS if name != "workflow"],
         )
+
+    def test_completed_conformance_recovers_artifacts_without_rerunning_the_matrix(self) -> None:
+        candidate = candidate_manifest(continuity_plan("workspace-unavailable-recovery-test"))
+
+        class ConformanceWriter:
+            def __init__(self) -> None:
+                self.source_runs: list[dict[str, object]] = []
+                self.retention_runs: list[dict[str, object]] = []
+                self.dispatches: list[tuple[str, str, str, dict[str, str]]] = []
+
+            def get(self, path: str) -> dict[str, object]:
+                if "beta-conformance-retention.yml" in path:
+                    return {"workflow_runs": self.retention_runs}
+                if "beta-conformance.yml" in path:
+                    return {"workflow_runs": self.source_runs}
+                raise AssertionError(path)
+
+            def dispatch(self, repository: str, workflow: str, ref: str, inputs: dict[str, str]) -> None:
+                self.dispatches.append((repository, workflow, ref, inputs))
+
+        writer = ConformanceWriter()
+        progress = ensure_conformance_execution_or_retention(writer, candidate)  # type: ignore[arg-type]
+        self.assertEqual("conformance-execution-requested", progress["outcome"])
+        self.assertEqual("beta-conformance.yml", writer.dispatches[-1][1])
+
+        writer.dispatches.clear()
+        writer.source_runs.append(
+            {
+                "conclusion": "failure",
+                "display_title": f"Conformance {candidate['candidate']}",
+                "html_url": "https://github.com/durable-workflow/.github/actions/runs/29775218461",
+                "id": 29775218461,
+                "run_attempt": 1,
+                "status": "completed",
+            }
+        )
+        progress = ensure_conformance_execution_or_retention(writer, candidate)  # type: ignore[arg-type]
+
+        self.assertEqual("conformance-retention-requested", progress["outcome"])
+        self.assertEqual(
+            [
+                (
+                    "durable-workflow/.github",
+                    "beta-conformance-retention.yml",
+                    "main",
+                    {"source_run_attempt": "1", "source_run_id": "29775218461"},
+                )
+            ],
+            writer.dispatches,
+        )
+
+        writer.retention_runs.append(
+            {
+                "conclusion": "success",
+                "display_title": "Retain conformance 29775218461.1",
+                "event": "workflow_run",
+                "id": 29780000000,
+                "run_attempt": 1,
+                "status": "completed",
+            }
+        )
+        ensure_conformance_execution_or_retention(writer, candidate)  # type: ignore[arg-type]
+        self.assertEqual(1, len(writer.dispatches))
+
+        writer.dispatches.clear()
+        writer.retention_runs = [
+            {
+                "conclusion": "failure",
+                "display_title": "Retain conformance 29775218461.1",
+                "event": "workflow_run",
+                "id": 29780000001,
+                "run_attempt": 1,
+                "status": "completed",
+            }
+        ]
+        progress = ensure_conformance_execution_or_retention(writer, candidate)  # type: ignore[arg-type]
+        self.assertEqual("conformance-retention-requested", progress["outcome"])
+        self.assertEqual(1, len(writer.dispatches))
+        self.assertEqual("beta-conformance-retention.yml", writer.dispatches[0][1])
+
+        writer.retention_runs.append(
+            {
+                "conclusion": "failure",
+                "display_title": "Retain conformance 29775218461.1",
+                "event": "workflow_dispatch",
+                "id": 29780000002,
+                "run_attempt": 1,
+                "status": "completed",
+            }
+        )
+        writer.dispatches.clear()
+        progress = ensure_conformance_execution_or_retention(writer, candidate)  # type: ignore[arg-type]
+        self.assertEqual("conformance-retention-terminal-failure", progress["outcome"])
+        self.assertEqual([], writer.dispatches)
 
     def test_phase_records_are_append_only_and_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
