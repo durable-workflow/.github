@@ -11,7 +11,8 @@
     "drill",
     "first_component",
     "plan_prefix",
-    "required_issue_labels"
+    "required_issue_labels",
+    "superseded_interruption"
   ],
   "properties": {
     "$schema": { "const": "./schema.json" },
@@ -42,6 +43,19 @@
       "minItems": 1,
       "uniqueItems": true,
       "items": { "type": "string", "minLength": 1 }
+    },
+    "superseded_interruption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason", "tag"],
+      "properties": {
+        "reason": {
+          "const": "missing-post-acceptance-publication-trigger"
+        },
+        "tag": {
+          "const": "beta-continuity/workspace-unavailable-0b191da0d140/interrupted"
+        }
+      }
     }
   }
 }

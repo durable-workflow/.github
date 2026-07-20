@@ -14,6 +14,8 @@ from scripts.beta_continuity import (
     EVIDENCE_SCHEMA,
     ContinuityError,
     PlanBlocked,
+    accepted_publication_state,
+    advance_command,
     authority_issue,
     build_plan,
     dispatch_recovery,
@@ -22,9 +24,11 @@ from scripts.beta_continuity import (
     phase_tag,
     plan_command,
     record_phase,
+    recovery_publication_triggers,
     require_partial_publication,
     route_blockers,
     select_versions,
+    validate_interrupted_evidence,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -97,6 +101,28 @@ def run(command: list[str], directory: Path) -> str:
     return subprocess.run(command, cwd=directory, check=True, text=True, capture_output=True).stdout.strip()
 
 
+def continuity_plan(name: str = "continuity-test") -> dict[str, object]:
+    return {
+        "schema": "durable-workflow.release-plan/v1",
+        "plan": name,
+        "channel": "alpha",
+        "foundation": {
+            "tag": "beta-candidate/beta-continuity-foundation",
+            "commit": "4995052410bd4301c5796ffba54e0b6d2f490ed1",
+        },
+        "components": {
+            component: {
+                "commit": f"{index + 1:040x}",
+                "version": (
+                    f"2.0.0-alpha.{index + 1}" if component in {"workflow", "waterline"} else f"0.1.{index + 1}"
+                ),
+            }
+            for index, component in enumerate(COMPONENTS)
+        },
+        "beta_authorization": None,
+    }
+
+
 class BetaContinuityTest(unittest.TestCase):
     def test_completed_authority_is_a_valid_scheduled_no_op_boundary(self) -> None:
         config = load_config(ROOT / "beta-continuity" / "config.json")
@@ -125,9 +151,14 @@ class BetaContinuityTest(unittest.TestCase):
     def test_config_is_machine_validated(self) -> None:
         config = load_config(ROOT / "beta-continuity" / "config.json")
 
-        self.assertEqual("workspace-unavailable-beta-continuity", config["drill"])
+        self.assertEqual("workspace-unavailable-beta-continuity-recovery", config["drill"])
         self.assertEqual("durable-workflow/.github", config["authority_issue"]["repository"])
         self.assertEqual("workflow", config["first_component"])
+        self.assertEqual("workspace-unavailable-recovery", config["plan_prefix"])
+        self.assertEqual(
+            "beta-continuity/workspace-unavailable-0b191da0d140/interrupted",
+            config["superseded_interruption"]["tag"],
+        )
 
     def test_version_allocation_uses_the_next_numeric_public_identity(self) -> None:
         self.assertEqual(
@@ -173,7 +204,7 @@ class BetaContinuityTest(unittest.TestCase):
         }
         selection_record = {
             "status": "created",
-            "tag": "beta-continuity-selection/workspace-unavailable-beta-continuity",
+            "tag": "beta-continuity-selection/workspace-unavailable-beta-continuity-recovery",
             "commit": "f" * 40,
         }
         with tempfile.TemporaryDirectory() as temporary:
@@ -245,10 +276,7 @@ class BetaContinuityTest(unittest.TestCase):
             pull_request: bool = False,
         ) -> dict[str, object]:
             value: dict[str, object] = {
-                "body": (
-                    f"{parent}\n\n"
-                    f"<!-- beta-continuity-blocker: {marker_component}-source-version-{version} -->"
-                ),
+                "body": (f"{parent}\n\n<!-- beta-continuity-blocker: {marker_component}-source-version-{version} -->"),
                 "labels": labels,
                 "number": number,
             }
@@ -303,7 +331,7 @@ class BetaContinuityTest(unittest.TestCase):
 
         state = {
             "outcome": "blocked",
-            "selection": {"tag": "beta-continuity-selection/workspace-unavailable-beta-continuity"},
+            "selection": {"tag": "beta-continuity-selection/workspace-unavailable-beta-continuity-recovery"},
             "blockers": [
                 {
                     "component": "sdk-python",
@@ -331,6 +359,181 @@ class BetaContinuityTest(unittest.TestCase):
             require_partial_publication({name: {} for name in COMPONENTS}, [])
         with self.assertRaises(ContinuityError):
             require_partial_publication({}, list(COMPONENTS))
+
+    def test_acceptance_baseline_partitions_the_exact_plan(self) -> None:
+        plan = continuity_plan()
+        python_identity = plan["components"]["sdk-python"]
+        evidence = {
+            "phase": "accepted",
+            "observed_at": "2026-07-20T10:00:00Z",
+            "public_components_at_acceptance": {"sdk-python": python_identity},
+            "pending_components_at_acceptance": [name for name in COMPONENTS if name != "sdk-python"],
+        }
+        with patch("scripts.beta_continuity.read_public_json_file", return_value=evidence):
+            baseline = accepted_publication_state(object(), plan, "a" * 40)  # type: ignore[arg-type]
+
+        self.assertEqual({"sdk-python"}, set(baseline["public_components"]))
+        self.assertNotIn("sdk-python", baseline["pending_components"])
+
+        evidence.pop("pending_components_at_acceptance")
+        with (
+            patch("scripts.beta_continuity.read_public_json_file", return_value=evidence),
+            self.assertRaisesRegex(ContinuityError, "complete publication baseline"),
+        ):
+            accepted_publication_state(object(), plan, "a" * 40)  # type: ignore[arg-type]
+
+    def test_only_post_acceptance_exact_plan_recovery_can_trigger_interruption(self) -> None:
+        plan_tag = "release-plan/workspace-unavailable-recovery-test"
+        acceptance = {
+            "observed_at": "2026-07-20T10:00:00Z",
+            "pending_components": [name for name in COMPONENTS if name != "sdk-python"],
+            "public_components": {"sdk-python": {"version": "0.4.103"}},
+        }
+        published = {
+            "sdk-python": {
+                "published_at": "2026-07-20T09:00:00Z",
+                "version": "0.4.103",
+            },
+            "workflow": {
+                "published_at": "2026-07-20T10:05:00Z",
+                "version": "2.0.0-alpha.292",
+            },
+        }
+
+        class RecoveryWriter:
+            created_at = "2026-07-20T10:01:00Z"
+
+            def get(self, _path: str) -> dict[str, object]:
+                return {
+                    "workflow_runs": [
+                        {
+                            "conclusion": "success",
+                            "created_at": self.created_at,
+                            "display_title": f"Recover {plan_tag}",
+                            "event": "workflow_dispatch",
+                            "html_url": "https://github.com/durable-workflow/workflow/actions/runs/123",
+                            "id": 123,
+                            "status": "completed",
+                        }
+                    ]
+                }
+
+        writer = RecoveryWriter()
+        triggers = recovery_publication_triggers(writer, plan_tag, acceptance, published)  # type: ignore[arg-type]
+        self.assertEqual({"workflow"}, set(triggers))
+        self.assertNotIn("sdk-python", triggers)
+
+        writer.created_at = "2026-07-20T10:06:00Z"
+        self.assertEqual(
+            {},
+            recovery_publication_triggers(writer, plan_tag, acceptance, published),  # type: ignore[arg-type]
+        )
+
+    def test_invalid_immutable_interruption_requires_a_new_identity(self) -> None:
+        plan = continuity_plan()
+        acceptance = {
+            "commit": "a" * 40,
+            "observed_at": "2026-07-20T10:00:00Z",
+            "pending_components": ["workflow"],
+            "tag": "beta-continuity/continuity-test/accepted",
+        }
+        invalid = {
+            "accepted_phase": {"tag": acceptance["tag"], "commit": acceptance["commit"]},
+            "phase": "interrupted",
+        }
+        with (
+            patch(
+                "scripts.beta_continuity.read_public_json_file",
+                side_effect=[invalid, plan],
+            ),
+            self.assertRaisesRegex(ContinuityError, "new continuity identity"),
+        ):
+            validate_interrupted_evidence(
+                object(),  # type: ignore[arg-type]
+                plan,
+                "b" * 40,
+                acceptance,
+            )
+
+    def test_completion_waits_for_a_later_scheduled_no_op_before_closing(self) -> None:
+        plan = continuity_plan("workspace-unavailable-recovery-test")
+        issue = {
+            "number": 2,
+            "repository": "durable-workflow/.github",
+            "state": "open",
+            "work_id": "github-only-beta-continuity-drill",
+        }
+        completion = {
+            "phase": "complete",
+            "observed_at": "2026-07-20T10:00:00Z",
+            "github_run": {"id": "100"},
+        }
+
+        def phase_commit(_client: object, _plan: object, phase: str) -> str | None:
+            return {"accepted": "a" * 40, "complete": "c" * 40}.get(phase)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            plan_path = root / "release-plan.json"
+            state_path = root / "state.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+
+            class NoopWriter:
+                @staticmethod
+                def get(_path: str) -> dict[str, object]:
+                    return {
+                        "workflow_runs": [
+                            {
+                                "conclusion": "success",
+                                "created_at": "2026-07-20T10:10:00Z",
+                                "event": "schedule",
+                                "html_url": "https://github.com/durable-workflow/.github/actions/runs/102",
+                                "id": 102,
+                                "status": "completed",
+                            }
+                        ]
+                    }
+
+            with (
+                patch("scripts.beta_continuity.PublicClient"),
+                patch("scripts.beta_continuity.GitHubWriter", return_value=NoopWriter()),
+                patch("scripts.beta_continuity.authority_issue", return_value=issue),
+                patch("scripts.beta_continuity.public_phase_commit", side_effect=phase_commit),
+                patch("scripts.beta_continuity.read_public_json_file", return_value=completion),
+                patch("scripts.beta_continuity.close_authority_issue") as close,
+                patch.dict(
+                    os.environ,
+                    {"GITHUB_EVENT_NAME": "push", "GITHUB_RUN_ID": "101"},
+                    clear=False,
+                ),
+            ):
+                advance_command(ROOT / "beta-continuity" / "config.json", plan_path, state_path, None, None)
+
+            self.assertEqual("waiting-for-subsequent-scheduled-no-op", json.loads(state_path.read_bytes())["outcome"])
+            close.assert_not_called()
+
+            with (
+                patch("scripts.beta_continuity.PublicClient"),
+                patch("scripts.beta_continuity.GitHubWriter", return_value=NoopWriter()),
+                patch("scripts.beta_continuity.authority_issue", return_value=issue),
+                patch("scripts.beta_continuity.public_phase_commit", side_effect=phase_commit),
+                patch("scripts.beta_continuity.read_public_json_file", return_value=completion),
+                patch(
+                    "scripts.beta_continuity.record_phase",
+                    return_value={"tag": "beta-continuity/test/no-op-confirmed", "commit": "d" * 40},
+                ) as record,
+                patch("scripts.beta_continuity.ensure_issue_comment"),
+                patch("scripts.beta_continuity.close_authority_issue") as close,
+                patch.dict(
+                    os.environ,
+                    {"GITHUB_EVENT_NAME": "schedule", "GITHUB_RUN_ID": "103"},
+                    clear=False,
+                ),
+            ):
+                advance_command(ROOT / "beta-continuity" / "config.json", plan_path, state_path, None, None)
+
+            self.assertEqual("no-op-confirmed", record.call_args.args[2])
+            close.assert_called_once()
 
     def test_failed_first_recovery_is_retried_once_without_duplicate_active_or_successful_runs(self) -> None:
         plan_tag = "release-plan/workspace-unavailable-20260720"
@@ -389,25 +592,7 @@ class BetaContinuityTest(unittest.TestCase):
             checkout = root / "checkout"
             run(["git", "init", "--bare", str(remote)], root)
             run(["git", "clone", str(remote), str(checkout)], root)
-            plan = {
-                "schema": "durable-workflow.release-plan/v1",
-                "plan": "continuity-test",
-                "channel": "alpha",
-                "foundation": {
-                    "tag": "beta-candidate/beta-continuity-foundation",
-                    "commit": "4995052410bd4301c5796ffba54e0b6d2f490ed1",
-                },
-                "components": {
-                    name: {
-                        "commit": f"{index + 1:040x}",
-                        "version": (
-                            f"2.0.0-alpha.{index + 1}" if name in {"workflow", "waterline"} else f"0.1.{index + 1}"
-                        ),
-                    }
-                    for index, name in enumerate(COMPONENTS)
-                },
-                "beta_authorization": None,
-            }
+            plan = continuity_plan()
             evidence = {
                 "schema": EVIDENCE_SCHEMA,
                 "drill": "continuity-test",

@@ -65,7 +65,14 @@ SOURCE_MANIFESTS = {
     "sdk-python": ("pyproject.toml", "project", "durable-workflow"),
     "sdk-rust": ("Cargo.toml", "package", "durable-workflow"),
 }
-PHASES = ("accepted", "interrupted", "resumed", "conformance-requested", "complete")
+PHASES = (
+    "accepted",
+    "interrupted",
+    "resumed",
+    "conformance-requested",
+    "complete",
+    "no-op-confirmed",
+)
 ROUTED_BLOCKER_LABELS = (
     "authority:github",
     "beta:blocker",
@@ -169,6 +176,7 @@ def load_config(path: Path) -> dict[str, Any]:
         "first_component",
         "plan_prefix",
         "required_issue_labels",
+        "superseded_interruption",
     }:
         raise ContinuityError("continuity config has an invalid top-level shape")
     if value.get("$schema") != "./schema.json" or value.get("channel") != "alpha":
@@ -193,6 +201,17 @@ def load_config(path: Path) -> dict[str, Any]:
     labels = value.get("required_issue_labels")
     if not isinstance(labels, list) or not labels or not all(isinstance(label, str) and label for label in labels):
         raise ContinuityError("continuity required issue labels are invalid")
+    superseded = value.get("superseded_interruption")
+    if (
+        not isinstance(superseded, dict)
+        or set(superseded) != {"reason", "tag"}
+        or not isinstance(superseded.get("reason"), str)
+        or not WORK_ID_PATTERN.fullmatch(superseded["reason"])
+        or not isinstance(superseded.get("tag"), str)
+        or not superseded["tag"].startswith(PHASE_TAG_PREFIX)
+        or not superseded["tag"].endswith("/interrupted")
+    ):
+        raise ContinuityError("superseded continuity interruption is invalid")
     return value
 
 
@@ -437,6 +456,26 @@ def read_public_json_file(client: PublicClient, commit: str, filename: str) -> A
         return json.loads(raw)
     except json.JSONDecodeError as error:
         raise ContinuityError(f"{CONTROL_REPOSITORY}@{commit}:{filename} is not valid JSON") from error
+
+
+def superseded_interruption(config: dict[str, Any], client: PublicClient) -> dict[str, str]:
+    specification = config["superseded_interruption"]
+    tag = specification["tag"]
+    commit = resolve_tag(client, CONTROL_REPOSITORY, tag)
+    if commit is None:
+        raise ContinuityError(f"superseded interruption {tag} is not retained")
+    evidence = read_public_json_file(client, commit, "continuity-evidence.json")
+    plan = read_public_json_file(client, commit, "release-plan.json")
+    validate_plan(plan)
+    if evidence.get("phase") != "interrupted" or phase_tag(plan, "interrupted") != tag:
+        raise ContinuityError(f"superseded interruption {tag} has invalid diagnostic evidence")
+    return {
+        "commit": commit,
+        "evidence_sha256": manifest_digest(evidence),
+        "plan_sha256": manifest_digest(plan),
+        "reason": specification["reason"],
+        "tag": tag,
+    }
 
 
 def accepted_plan(config: dict[str, Any], client: PublicClient) -> dict[str, Any] | None:
@@ -695,11 +734,160 @@ def component_publications(client: PublicClient, plan: dict[str, Any]) -> tuple[
             )
         published[name] = {
             "commit": identity["commit"],
+            "published_at": release.get("published_at"),
             "release_id": release.get("id"),
             "url": release.get("html_url"),
             "version": identity["version"],
         }
     return published, pending
+
+
+def accepted_publication_state(
+    client: PublicClient,
+    plan: dict[str, Any],
+    accepted_commit: str,
+) -> dict[str, Any]:
+    evidence = read_public_json_file(client, accepted_commit, "continuity-evidence.json")
+    published = evidence.get("public_components_at_acceptance")
+    pending = evidence.get("pending_components_at_acceptance")
+    if (
+        evidence.get("phase") != "accepted"
+        or not isinstance(evidence.get("observed_at"), str)
+        or not isinstance(published, dict)
+        or not isinstance(pending, list)
+        or not all(isinstance(name, str) for name in pending)
+        or set(published) & set(pending)
+        or set(published) | set(pending) != set(COMPONENTS)
+    ):
+        raise ContinuityError("accepted continuity evidence lacks a complete publication baseline")
+    for name, publication in published.items():
+        identity = plan["components"].get(name)
+        if (
+            not isinstance(publication, dict)
+            or not isinstance(identity, dict)
+            or publication.get("commit") != identity.get("commit")
+            or publication.get("version") != identity.get("version")
+        ):
+            raise ContinuityError(f"accepted publication baseline for {name} differs from the exact plan")
+    return {
+        "observed_at": evidence["observed_at"],
+        "pending_components": pending,
+        "public_components": published,
+        "tag": phase_tag(plan, "accepted"),
+        "commit": accepted_commit,
+    }
+
+
+def parse_github_timestamp(value: Any, label: str) -> dt.datetime:
+    if not isinstance(value, str):
+        raise ContinuityError(f"{label} has no public timestamp")
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ContinuityError(f"{label} has an invalid public timestamp") from error
+    if parsed.tzinfo is None:
+        raise ContinuityError(f"{label} has no timezone")
+    return parsed
+
+
+def recovery_publication_triggers(
+    writer: GitHubWriter,
+    plan_tag_value: str,
+    acceptance: dict[str, Any],
+    published: dict[str, Any],
+) -> dict[str, Any]:
+    accepted_at = parse_github_timestamp(acceptance["observed_at"], "continuity acceptance")
+    triggers: dict[str, Any] = {}
+    for name in acceptance["pending_components"]:
+        publication = published.get(name)
+        if not isinstance(publication, dict):
+            continue
+        component = COMPONENTS[name]
+        encoded = urllib.parse.quote("release-plan-recovery.yml", safe="")
+        payload = writer.get(
+            f"/repos/{component.repository}/actions/workflows/{encoded}/runs?event=workflow_dispatch&per_page=100"
+        )
+        runs = payload.get("workflow_runs", []) if isinstance(payload, dict) else []
+        published_at = parse_github_timestamp(publication.get("published_at"), f"{name} publication")
+        qualifying = []
+        for run in runs:
+            if (
+                run.get("event") != "workflow_dispatch"
+                or run.get("status") != "completed"
+                or run.get("conclusion") != "success"
+                or plan_tag_value not in str(run.get("display_title", ""))
+            ):
+                continue
+            created_at = parse_github_timestamp(run.get("created_at"), f"{name} recovery run")
+            if accepted_at <= created_at <= published_at:
+                qualifying.append((created_at, run))
+        if not qualifying:
+            continue
+        _created_at, recovery = max(qualifying, key=lambda item: (item[0], int(item[1].get("id", 0))))
+        triggers[name] = {
+            "publication": publication,
+            "repository_recovery_run": {
+                "conclusion": recovery.get("conclusion"),
+                "created_at": recovery.get("created_at"),
+                "display_title": recovery.get("display_title"),
+                "event": recovery.get("event"),
+                "id": recovery.get("id"),
+                "status": recovery.get("status"),
+                "url": recovery.get("html_url"),
+                "workflow": f"https://github.com/{component.repository}/actions/workflows/release-plan-recovery.yml",
+            },
+        }
+    return triggers
+
+
+def validate_interrupted_evidence(
+    client: PublicClient,
+    plan: dict[str, Any],
+    interrupted_commit: str,
+    acceptance: dict[str, Any],
+) -> dict[str, Any]:
+    evidence = read_public_json_file(client, interrupted_commit, "continuity-evidence.json")
+    recorded_plan = read_public_json_file(client, interrupted_commit, "release-plan.json")
+    validate_plan(recorded_plan)
+    triggers = evidence.get("interruption_triggers")
+    accepted_phase = evidence.get("accepted_phase")
+    if (
+        evidence.get("phase") != "interrupted"
+        or canonical_json(recorded_plan) != canonical_json(plan)
+        or not isinstance(triggers, dict)
+        or not triggers
+        or not set(triggers) <= set(acceptance["pending_components"])
+        or accepted_phase != {"tag": acceptance["tag"], "commit": acceptance["commit"]}
+    ):
+        raise ContinuityError(
+            "immutable interrupted continuity evidence has no valid post-acceptance recovery trigger; "
+            "a new continuity identity must supersede it"
+        )
+    accepted_at = parse_github_timestamp(acceptance["observed_at"], "continuity acceptance")
+    plan_tag_value = f"{PLAN_TAG_PREFIX}{plan['plan']}"
+    for name, trigger in triggers.items():
+        publication = trigger.get("publication") if isinstance(trigger, dict) else None
+        recovery = trigger.get("repository_recovery_run") if isinstance(trigger, dict) else None
+        component = COMPONENTS[name]
+        identity = plan["components"][name]
+        if (
+            not isinstance(publication, dict)
+            or publication.get("commit") != identity["commit"]
+            or publication.get("version") != identity["version"]
+            or not isinstance(recovery, dict)
+            or recovery.get("event") != "workflow_dispatch"
+            or recovery.get("status") != "completed"
+            or recovery.get("conclusion") != "success"
+            or plan_tag_value not in str(recovery.get("display_title", ""))
+            or recovery.get("workflow")
+            != f"https://github.com/{component.repository}/actions/workflows/release-plan-recovery.yml"
+        ):
+            raise ContinuityError("immutable interrupted continuity evidence has an invalid recovery trigger")
+        created_at = parse_github_timestamp(recovery.get("created_at"), f"{name} recovery run")
+        published_at = parse_github_timestamp(publication.get("published_at"), f"{name} publication")
+        if not accepted_at <= created_at <= published_at:
+            raise ContinuityError("immutable interrupted continuity evidence has an invalid recovery chronology")
+    return triggers
 
 
 def require_partial_publication(published: dict[str, Any], pending: list[str]) -> None:
@@ -751,6 +939,41 @@ def ensure_dispatch(
     if existing is None or not run_prevents_redispatch(existing):
         writer.dispatch(repository, workflow, ref, inputs)
     return existing
+
+
+def successful_scheduled_noop_run(
+    writer: GitHubWriter,
+    completion: dict[str, Any],
+    current_run: dict[str, str],
+) -> dict[str, Any] | None:
+    completed_at = parse_github_timestamp(completion.get("observed_at"), "continuity completion")
+    complete_run = completion.get("github_run")
+    complete_run_id = complete_run.get("id") if isinstance(complete_run, dict) else None
+    encoded = urllib.parse.quote("beta-continuity.yml", safe="")
+    payload = writer.get(f"/repos/{CONTROL_REPOSITORY}/actions/workflows/{encoded}/runs?event=schedule&per_page=100")
+    runs = payload.get("workflow_runs", []) if isinstance(payload, dict) else []
+    qualifying = []
+    for run in runs:
+        run_id = str(run.get("id"))
+        if (
+            run.get("event") != "schedule"
+            or run.get("status") != "completed"
+            or run.get("conclusion") != "success"
+            or run_id in {str(complete_run_id), current_run["id"]}
+        ):
+            continue
+        created_at = parse_github_timestamp(run.get("created_at"), "scheduled continuity run")
+        if created_at >= completed_at:
+            qualifying.append((created_at, run))
+    if not qualifying:
+        return None
+    _created_at, successful = max(qualifying, key=lambda item: (item[0], int(item[1].get("id", 0))))
+    return {
+        "conclusion": successful.get("conclusion"),
+        "created_at": successful.get("created_at"),
+        "id": successful.get("id"),
+        "url": successful.get("html_url"),
+    }
 
 
 def issue_phase_marker(config: dict[str, Any], phase: str) -> str:
@@ -859,13 +1082,16 @@ def advance_command(
 
     if issue["state"] == "closed":
         complete_commit = public_phase_commit(client, plan, "complete")
-        if complete_commit is None:
-            raise ContinuityError("authority issue closed without an immutable complete continuity phase")
-        evidence = read_public_json_file(client, complete_commit, "continuity-evidence.json")
+        noop_commit = public_phase_commit(client, plan, "no-op-confirmed")
+        if complete_commit is None or noop_commit is None:
+            raise ContinuityError(
+                "authority issue closed without immutable complete and scheduled no-op continuity phases"
+            )
+        evidence = read_public_json_file(client, noop_commit, "continuity-evidence.json")
         state_path.write_bytes(canonical_json(evidence))
         write_github_output(
             output,
-            {"phase": "complete", "plan_tag": f"{PLAN_TAG_PREFIX}{plan['plan']}"},
+            {"phase": "no-op-confirmed", "plan_tag": f"{PLAN_TAG_PREFIX}{plan['plan']}"},
         )
         return
 
@@ -873,12 +1099,18 @@ def advance_command(
     if accepted_commit is None:
         if qualification_path is None or not qualification_path.exists():
             raise ContinuityError("first continuity acceptance requires exact target qualification evidence")
+        public_at_acceptance, pending_at_acceptance = component_publications(client, plan)
+        if not pending_at_acceptance:
+            raise ContinuityError("continuity acceptance requires at least one component pending publication")
         evidence = base_evidence(config, issue, plan, "accepted", run)
         evidence.update(
             {
                 "outcome": "accepted",
                 "candidate_identity": {"components": plan["components"], "plan_sha256": manifest_digest(plan)},
                 "credential_boundary": "GitHub protected beta product work environment",
+                "pending_components_at_acceptance": pending_at_acceptance,
+                "public_components_at_acceptance": public_at_acceptance,
+                "superseded_interruption": superseded_interruption(config, client),
             }
         )
         record = record_phase(Path.cwd(), plan, "accepted", evidence, qualification_path=qualification_path)
@@ -900,6 +1132,55 @@ def advance_command(
         write_github_output(output, {"phase": "accepted", "plan_tag": f"{PLAN_TAG_PREFIX}{plan['plan']}"})
         return
 
+    complete_commit = public_phase_commit(client, plan, "complete")
+    if complete_commit is not None:
+        completion = read_public_json_file(client, complete_commit, "continuity-evidence.json")
+        event = os.environ.get("GITHUB_EVENT_NAME", "local")
+        noop_commit = public_phase_commit(client, plan, "no-op-confirmed")
+        successful_noop = (
+            successful_scheduled_noop_run(writer, completion, run)
+            if event == "schedule" and noop_commit is None
+            else None
+        )
+        if noop_commit is None and successful_noop is None:
+            state = base_evidence(config, issue, plan, "complete", run)
+            state.update(
+                {
+                    "outcome": "waiting-for-subsequent-scheduled-no-op",
+                    "complete_phase": {"tag": phase_tag(plan, "complete"), "commit": complete_commit},
+                }
+            )
+            state_path.write_bytes(canonical_json(state))
+            write_github_output(output, {"phase": "complete", "plan_tag": f"{PLAN_TAG_PREFIX}{plan['plan']}"})
+            return
+        if noop_commit is None:
+            evidence = base_evidence(config, issue, plan, "no-op-confirmed", run)
+            evidence.update(
+                {
+                    "outcome": "successful-scheduled-no-op-confirmed",
+                    "complete_phase": {"tag": phase_tag(plan, "complete"), "commit": complete_commit},
+                    "successful_no_op_run": successful_noop,
+                }
+            )
+            noop_record = record_phase(Path.cwd(), plan, "no-op-confirmed", evidence)
+            ensure_issue_comment(
+                writer,
+                config,
+                plan,
+                "no-op-confirmed",
+                noop_record,
+                "A later scheduled controller run found the completed exact plan and performed no release work.",
+            )
+        else:
+            evidence = read_public_json_file(client, noop_commit, "continuity-evidence.json")
+        close_authority_issue(writer, config, evidence)
+        state_path.write_bytes(canonical_json(evidence))
+        write_github_output(
+            output,
+            {"phase": "no-op-confirmed", "plan_tag": f"{PLAN_TAG_PREFIX}{plan['plan']}"},
+        )
+        return
+
     record = plan_record(client, plan)
     if record is None:
         ensure_dispatch(
@@ -916,12 +1197,40 @@ def advance_command(
         write_github_output(output, {"phase": "accepted", "plan_tag": f"{PLAN_TAG_PREFIX}{plan['plan']}"})
         return
 
+    acceptance = accepted_publication_state(client, plan, accepted_commit)
     published, pending = component_publications(client, plan)
     interrupted_commit = public_phase_commit(client, plan, "interrupted")
-    if not published:
-        dispatch_recovery(writer, config["first_component"], record["tag"])
+    if interrupted_commit is None:
+        interruption_triggers = recovery_publication_triggers(writer, record["tag"], acceptance, published)
+    else:
+        interruption_triggers = validate_interrupted_evidence(
+            client,
+            plan,
+            interrupted_commit,
+            acceptance,
+        )
+
+    if interrupted_commit is None and not interruption_triggers:
+        recovery_candidates = [name for name in acceptance["pending_components"] if name in pending]
+        if not recovery_candidates:
+            raise ContinuityError(
+                "all acceptance-pending components became public without a qualifying exact-plan recovery; "
+                "a new continuity identity must supersede this plan"
+            )
+        first_component = config["first_component"]
+        recovery_component = first_component if first_component in recovery_candidates else recovery_candidates[0]
+        dispatch_recovery(writer, recovery_component, record["tag"])
         state = base_evidence(config, issue, plan, "publication-started", run)
-        state.update({"outcome": "waiting-for-first-publication", "plan_record": record})
+        state.update(
+            {
+                "outcome": "waiting-for-post-acceptance-recovery-publication",
+                "acceptance_publication_state": acceptance,
+                "plan_record": record,
+                "published_components": published,
+                "pending_components": pending,
+                "recovery_component": recovery_component,
+            }
+        )
         state_path.write_bytes(canonical_json(state))
         write_github_output(output, {"phase": "publication-started", "plan_tag": record["tag"]})
         return
@@ -932,6 +1241,8 @@ def advance_command(
         evidence.update(
             {
                 "outcome": "intentionally-interrupted",
+                "accepted_phase": {"tag": acceptance["tag"], "commit": acceptance["commit"]},
+                "interruption_triggers": interruption_triggers,
                 "plan_record": record,
                 "published_components": published,
                 "pending_components": pending,
@@ -945,7 +1256,10 @@ def advance_command(
             plan,
             "interrupted",
             phase_record,
-            f"The controller yielded after {len(published)} public component(s); {len(pending)} remain.",
+            (
+                f"The controller yielded after {len(interruption_triggers)} acceptance-pending component(s) "
+                f"became public through exact-plan repository recovery; {len(pending)} remain."
+            ),
         )
         state_path.write_bytes(canonical_json(evidence))
         write_github_output(output, {"phase": "interrupted", "plan_tag": record["tag"]})
@@ -1099,13 +1413,14 @@ def advance_command(
             plan,
             "complete",
             phase_record,
-            "The interrupted seven-artifact release, public verification, and exact-tuple conformance all passed.",
+            (
+                "The interrupted seven-artifact release, public verification, and exact-tuple conformance all "
+                "passed. The authority remains open for a later scheduled no-op confirmation."
+            ),
         )
-        close_authority_issue(writer, config, evidence)
         state_path.write_bytes(canonical_json(evidence))
     else:
         evidence = read_public_json_file(client, complete_commit, "continuity-evidence.json")
-        close_authority_issue(writer, config, evidence)
         state_path.write_bytes(canonical_json(evidence))
     write_github_output(output, {"phase": "complete", "plan_tag": record["tag"]})
 

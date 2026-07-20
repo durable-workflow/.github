@@ -6,13 +6,17 @@
     "work_id": "github-only-beta-continuity-drill"
   },
   "channel": "alpha",
-  "drill": "workspace-unavailable-beta-continuity",
+  "drill": "workspace-unavailable-beta-continuity-recovery",
   "first_component": "workflow",
-  "plan_prefix": "workspace-unavailable",
+  "plan_prefix": "workspace-unavailable-recovery",
   "required_issue_labels": [
     "authority:github",
     "beta:blocker",
     "completion:evidence-required",
     "status:ready"
-  ]
+  ],
+  "superseded_interruption": {
+    "reason": "missing-post-acceptance-publication-trigger",
+    "tag": "beta-continuity/workspace-unavailable-0b191da0d140/interrupted"
+  }
 }
