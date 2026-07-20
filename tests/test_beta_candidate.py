@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import http.client
 import io
 import shutil
 import subprocess
 import tarfile
 import tempfile
 import unittest
+import urllib.error
 import zipfile
 from pathlib import Path
 from unittest import mock
@@ -19,6 +21,7 @@ from scripts.beta_candidate import (
     VERIFICATION_SCHEMA,
     CandidateError,
     PublicClient,
+    PublicInfrastructureError,
     canonical_json,
     check_candidate_compatibility,
     manifest_digest,
@@ -28,6 +31,16 @@ from scripts.beta_candidate import (
     verify_github_release,
     verify_python_archive_identity,
 )
+
+
+def http_error(status: int, body: bytes = b"error", **headers: str) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        "https://api.github.com/repos/durable-workflow/.github/releases",
+        status,
+        "request failed",
+        headers,
+        io.BytesIO(body),
+    )
 
 
 def manifest() -> dict[str, object]:
@@ -73,6 +86,151 @@ class ManifestTest(unittest.TestCase):
         request = open_url.call_args.args[0]
         self.assertEqual("2026-03-10", request.get_header("X-github-api-version"))
         self.assertEqual("Bearer fixture-token", request.get_header("Authorization"))
+
+    def test_public_client_retries_github_service_and_body_read_interruptions(self) -> None:
+        class InterruptedResponse(io.BytesIO):
+            def read(self, _size: int = -1) -> bytes:
+                raise http.client.IncompleteRead(b"partial")
+
+        sleeps: list[float] = []
+        client = PublicClient(max_attempts=4, retry_base_seconds=1, sleep=sleeps.append)
+        responses = [
+            http_error(503, b"service unavailable", **{"Retry-After": "3"}),
+            InterruptedResponse(),
+            io.BytesIO(b'{"tag_name":"release-plan/current"}'),
+        ]
+
+        with mock.patch("scripts.beta_candidate.urllib.request.urlopen", side_effect=responses) as open_url:
+            result = client.json("https://api.github.com/repos/durable-workflow/.github/releases?per_page=100")
+
+        self.assertEqual({"tag_name": "release-plan/current"}, result)
+        self.assertEqual([3, 2], sleeps)
+        self.assertEqual(3, open_url.call_count)
+
+    def test_public_client_honors_explicit_rate_limit_guidance(self) -> None:
+        sleeps: list[float] = []
+        client = PublicClient(
+            max_attempts=3,
+            retry_base_seconds=1,
+            sleep=sleeps.append,
+            now=lambda: 100,
+        )
+        responses = [
+            http_error(
+                403,
+                b"API rate limit exceeded",
+                **{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "112"},
+            ),
+            http_error(429, **{"Retry-After": "20"}),
+            io.BytesIO(b"[]"),
+        ]
+
+        with mock.patch("scripts.beta_candidate.urllib.request.urlopen", side_effect=responses):
+            self.assertEqual(
+                [],
+                client.json("https://api.github.com/repos/durable-workflow/.github/releases?per_page=100"),
+            )
+
+        self.assertEqual([12, 20], sleeps)
+
+    def test_public_client_reports_bounded_transient_infrastructure_without_url_or_token(self) -> None:
+        client = PublicClient(
+            "fixture-secret",
+            max_attempts=3,
+            retry_base_seconds=1,
+            sleep=lambda _delay: None,
+        )
+
+        with (
+            mock.patch(
+                "scripts.beta_candidate.urllib.request.urlopen",
+                side_effect=[http_error(503), http_error(502), http_error(503)],
+            ) as open_url,
+            self.assertRaisesRegex(
+                PublicInfrastructureError,
+                r"classification=github-read-transient, endpoint_class=releases-api, "
+                r"attempts=3, reason=retry-exhausted, status=503",
+            ) as raised,
+        ):
+            client.json("https://api.github.com/repos/durable-workflow/.github/releases?per_page=100")
+
+        self.assertEqual(3, open_url.call_count)
+        self.assertNotIn("fixture-secret", str(raised.exception))
+        self.assertNotIn("api.github.com", str(raised.exception))
+
+    def test_public_client_stops_before_retry_guidance_exceeds_the_workflow_budget(self) -> None:
+        clock = [0.0]
+        sleeps: list[float] = []
+
+        def sleep(delay: float) -> None:
+            sleeps.append(delay)
+            clock[0] += delay
+
+        client = PublicClient(
+            max_attempts=5,
+            retry_base_seconds=2,
+            deadline_seconds=5,
+            sleep=sleep,
+            monotonic=lambda: clock[0],
+        )
+        responses = [
+            http_error(503),
+            http_error(503, **{"Retry-After": "10"}),
+        ]
+
+        with (
+            mock.patch("scripts.beta_candidate.urllib.request.urlopen", side_effect=responses) as open_url,
+            self.assertRaisesRegex(
+                PublicInfrastructureError,
+                r"endpoint_class=releases-api, attempts=2, reason=workflow-deadline, status=503",
+            ),
+        ):
+            client.json("https://api.github.com/repos/durable-workflow/.github/releases?per_page=100")
+
+        self.assertEqual([2], sleeps)
+        self.assertEqual(2, open_url.call_count)
+
+    def test_public_client_does_not_retry_deterministic_http_or_data_failures(self) -> None:
+        client = PublicClient(max_attempts=3, sleep=lambda _delay: self.fail("deterministic failure was retried"))
+        for status in (401, 403, 404):
+            with self.subTest(status=status):
+                with (
+                    mock.patch(
+                        "scripts.beta_candidate.urllib.request.urlopen",
+                        side_effect=http_error(status, b"Resource not accessible"),
+                    ) as open_url,
+                    self.assertRaisesRegex(CandidateError, rf"public request failed \({status}\)"),
+                ):
+                    client.json("https://api.github.com/repos/durable-workflow/.github/releases?per_page=100")
+                self.assertEqual(1, open_url.call_count)
+
+        with (
+            mock.patch(
+                "scripts.beta_candidate.urllib.request.urlopen",
+                return_value=io.BytesIO(b"<html>not JSON</html>"),
+            ) as open_url,
+            self.assertRaisesRegex(CandidateError, "did not return valid JSON"),
+        ):
+            client.json("https://api.github.com/repos/durable-workflow/.github/releases?per_page=100")
+        self.assertEqual(1, open_url.call_count)
+
+    def test_public_client_does_not_retry_non_github_service_failures(self) -> None:
+        client = PublicClient(max_attempts=3, sleep=lambda _delay: self.fail("registry failure was retried"))
+        error = urllib.error.HTTPError(
+            "https://pypi.org/pypi/durable-workflow/json",
+            503,
+            "request failed",
+            {},
+            io.BytesIO(b"service unavailable"),
+        )
+
+        with (
+            mock.patch("scripts.beta_candidate.urllib.request.urlopen", side_effect=error) as open_url,
+            self.assertRaisesRegex(CandidateError, r"public request failed \(503\)"),
+        ):
+            client.json("https://pypi.org/pypi/durable-workflow/json")
+
+        self.assertEqual(1, open_url.call_count)
 
     def test_manifest_is_canonical_and_stable(self) -> None:
         candidate = manifest()

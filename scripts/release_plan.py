@@ -25,9 +25,11 @@ if __package__ in {None, ""}:
 
 from scripts.beta_candidate import (
     COMPONENTS,
+    INFRASTRUCTURE_EXIT_CODE,
     VERIFIERS,
     CandidateError,
     PublicClient,
+    PublicInfrastructureError,
     canonical_json,
     fetch_existing_record,
     manifest_digest,
@@ -2555,6 +2557,9 @@ def main() -> int:
             )
             write_github_output(args.github_output, result)
             print(json.dumps(result, sort_keys=True))
+    except PublicInfrastructureError as error:
+        print(f"release plan infrastructure failed: {error}", file=sys.stderr)
+        return INFRASTRUCTURE_EXIT_CODE
     except CandidateError as error:
         print(f"release plan error: {error}", file=sys.stderr)
         return 1

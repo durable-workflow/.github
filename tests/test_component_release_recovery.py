@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -17,6 +19,8 @@ from scripts.component_release_recovery import (
     PREPARATION_SCHEMA,
     SCHEMA,
     NotFound,
+    PublicClient,
+    PublicInfrastructureError,
     RecoveryError,
     canonical_json,
     discover_plan,
@@ -29,6 +33,16 @@ from scripts.component_release_recovery import (
     verify_cli,
     verify_recovery_workflow_source,
 )
+
+
+def github_http_error(status: int, body: bytes = b"error", **headers: str) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        "https://api.github.com/repos/durable-workflow/.github/releases",
+        status,
+        "request failed",
+        headers,
+        io.BytesIO(body),
+    )
 
 
 def plan(channel: str = "alpha") -> dict[str, object]:
@@ -90,6 +104,50 @@ def preparation(candidate: dict[str, object]) -> dict[str, object]:
 
 
 class ComponentRecoveryContractTest(unittest.TestCase):
+    def test_recovery_public_client_retries_transient_github_reads(self) -> None:
+        sleeps: list[float] = []
+        client = PublicClient(max_attempts=3, retry_base_seconds=1, sleep=sleeps.append)
+        responses = [
+            github_http_error(503, **{"Retry-After": "4"}),
+            urllib.error.URLError(ConnectionResetError("connection reset")),
+            io.BytesIO(b"[]"),
+        ]
+
+        with mock.patch(
+            "scripts.component_release_recovery.urllib.request.urlopen",
+            side_effect=responses,
+        ) as open_url:
+            result = client.json("https://api.github.com/repos/durable-workflow/.github/releases?per_page=100")
+
+        self.assertEqual([], result)
+        self.assertEqual([4, 2], sleeps)
+        self.assertEqual(3, open_url.call_count)
+
+    def test_recovery_public_client_separates_exhausted_infrastructure_from_missing_resources(self) -> None:
+        client = PublicClient(max_attempts=2, retry_base_seconds=1, sleep=lambda _delay: None)
+        with (
+            mock.patch(
+                "scripts.component_release_recovery.urllib.request.urlopen",
+                side_effect=[github_http_error(503), github_http_error(502)],
+            ) as open_url,
+            self.assertRaisesRegex(
+                PublicInfrastructureError,
+                r"endpoint_class=releases-api, attempts=2, reason=retry-exhausted, status=502",
+            ),
+        ):
+            client.json("https://api.github.com/repos/durable-workflow/.github/releases?per_page=100")
+        self.assertEqual(2, open_url.call_count)
+
+        with (
+            mock.patch(
+                "scripts.component_release_recovery.urllib.request.urlopen",
+                side_effect=github_http_error(404),
+            ) as open_url,
+            self.assertRaisesRegex(NotFound, "public resource is absent"),
+        ):
+            client.json("https://api.github.com/repos/durable-workflow/.github/releases/tags/missing")
+        self.assertEqual(1, open_url.call_count)
+
     def test_discovery_rejects_missing_preparation_for_an_incomplete_release(self) -> None:
         candidate = plan()
         tag = f"release-plan/{candidate['plan']}"
