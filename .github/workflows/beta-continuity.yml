@@ -86,10 +86,6 @@ jobs:
           python scripts/beta_continuity.py route-blockers \
             beta-continuity/config.json continuity-state.json
 
-      - name: Keep planning and routed blockers visible
-        if: ${{ steps.plan.outcome == 'failure' }}
-        run: exit 1
-
       - name: Qualify the exact seven target commits before acceptance
         if: ${{ steps.plan.outputs.needs_qualification == 'true' }}
         env:
@@ -101,6 +97,7 @@ jobs:
 
       - name: Advance one durable continuity phase
         id: advance
+        if: ${{ steps.plan.outcome == 'success' }}
         env:
           BETA_PRODUCT_WORK_TOKEN: ${{ secrets.BETA_PRODUCT_WORK_TOKEN }}
           GITHUB_TOKEN: ${{ github.token }}

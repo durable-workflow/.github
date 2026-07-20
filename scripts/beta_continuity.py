@@ -24,6 +24,7 @@ if __package__ in {None, ""}:
 
 from scripts.beta_candidate import (
     COMPONENTS,
+    VERSION_PATTERN,
     CandidateError,
     PublicClient,
     canonical_json,
@@ -47,8 +48,10 @@ from scripts.release_plan import (
 
 SCHEMA = "durable-workflow.beta-continuity.config/v1"
 EVIDENCE_SCHEMA = "durable-workflow.beta-continuity.evidence/v1"
+SELECTION_SCHEMA = "durable-workflow.beta-continuity.selection/v1"
 CONTROL_REPOSITORY = "durable-workflow/.github"
 PHASE_TAG_PREFIX = "beta-continuity/"
+SELECTION_TAG_PREFIX = "beta-continuity-selection/"
 RELEASE_WORKFLOW = "release-plan.yml"
 OBSERVER_WORKFLOW = "release-plan-observer.yml"
 CANDIDATE_WORKFLOW = "beta-candidate.yml"
@@ -195,25 +198,19 @@ def optional_public_json(client: PublicClient, url: str) -> Any | None:
         raise
 
 
-def authority_issue(
-    config: dict[str, Any], client: PublicClient, *, allow_completed: bool = False
-) -> dict[str, Any]:
+def authority_issue(config: dict[str, Any], client: PublicClient, *, allow_completed: bool = False) -> dict[str, Any]:
     specification = config["authority_issue"]
-    issue = client.json(
-        f"https://api.github.com/repos/{specification['repository']}/issues/{specification['number']}"
-    )
-    labels = {
-        label.get("name") for label in issue.get("labels", []) if isinstance(label, dict) and label.get("name")
-    }
+    issue = client.json(f"https://api.github.com/repos/{specification['repository']}/issues/{specification['number']}")
+    labels = {label.get("name") for label in issue.get("labels", []) if isinstance(label, dict) and label.get("name")}
     missing = set(config["required_issue_labels"]) - labels
     marker = f"<!-- beta-work-id: {specification['work_id']} -->"
     completed = (
-        allow_completed
-        and issue.get("state") == "closed"
-        and {"status:done", "completion:evidence-verified"} <= labels
+        allow_completed and issue.get("state") == "closed" and {"status:done", "completion:evidence-verified"} <= labels
     )
-    if (issue.get("state") != "open" and not completed) or (missing and not completed) or marker not in str(
-        issue.get("body", "")
+    if (
+        (issue.get("state") != "open" and not completed)
+        or (missing and not completed)
+        or marker not in str(issue.get("body", ""))
     ):
         raise ContinuityError(
             f"authority issue is not ready: state={issue.get('state')}, missing_labels={sorted(missing)}, "
@@ -261,19 +258,112 @@ def public_release_tags(client: PublicClient, repository: str) -> list[str]:
     return [str(release["tag_name"]) for release in releases if not release.get("draft") and release.get("tag_name")]
 
 
-def build_plan(config: dict[str, Any], client: PublicClient) -> tuple[dict[str, Any], dict[str, str]]:
+def routed_blocker_version(config: dict[str, Any], client: PublicClient, component_name: str) -> str | None:
+    repository = COMPONENTS[component_name].repository
+    issues = client.json(f"https://api.github.com/repos/{repository}/issues?state=all&per_page=100")
+    if not isinstance(issues, list):
+        raise ContinuityError(f"{repository} issues response is invalid")
+    authority = config["authority_issue"]
+    dependency = f"Blocks https://github.com/{authority['repository']}/issues/{authority['number']}."
+    marker = re.compile(
+        rf"<!-- beta-continuity-blocker: {re.escape(component_name)}-"
+        r"(?:source-version|occupied-version)-(?P<version>[^ ]+) -->"
+    )
+    candidates: list[tuple[int, str]] = []
+    for issue in issues:
+        if not isinstance(issue, dict) or "pull_request" in issue:
+            continue
+        body = str(issue.get("body", ""))
+        match = marker.search(body)
+        version = match.group("version") if match else None
+        number = issue.get("number")
+        if (
+            dependency in body
+            and isinstance(number, int)
+            and isinstance(version, str)
+            and VERSION_PATTERN.fullmatch(version)
+        ):
+            candidates.append((number, version))
+    return min(candidates)[1] if candidates else None
+
+
+def selection_plan_name(config: dict[str, Any], versions: dict[str, str]) -> str:
+    digest = hashlib.sha256(canonical_json(versions)).hexdigest()[:12]
+    return f"{config['plan_prefix']}-{digest}"
+
+
+def validate_selection(config: dict[str, Any], selection: Any) -> None:
+    expected_keys = {"schema", "drill", "plan", "channel", "versions"}
+    if not isinstance(selection, dict) or set(selection) != expected_keys:
+        raise ContinuityError("continuity selection has an invalid top-level shape")
+    if (
+        selection.get("schema") != SELECTION_SCHEMA
+        or selection.get("drill") != config["drill"]
+        or selection.get("channel") != config["channel"]
+    ):
+        raise ContinuityError("continuity selection does not match this drill")
+    versions = selection.get("versions")
+    if not isinstance(versions, dict) or set(versions) != set(COMPONENTS):
+        raise ContinuityError(f"continuity selection versions must be exactly {sorted(COMPONENTS)}")
+    for name, version in versions.items():
+        pattern = ALPHA_VERSION_PATTERN if name in {"workflow", "waterline"} else STABLE_VERSION_PATTERN
+        if not isinstance(version, str) or not pattern.fullmatch(version):
+            raise ContinuityError(f"continuity selection version for {name} is invalid")
+    if selection.get("plan") != selection_plan_name(config, versions):
+        raise ContinuityError("continuity selection plan identity does not match its version tuple")
+
+
+def select_versions(config: dict[str, Any], client: PublicClient) -> dict[str, Any]:
+    versions: dict[str, str] = {}
+    for name, component in COMPONENTS.items():
+        previously_routed = routed_blocker_version(config, client, name)
+        versions[name] = previously_routed or next_version(name, public_release_tags(client, component.repository))
+    selection = {
+        "schema": SELECTION_SCHEMA,
+        "drill": config["drill"],
+        "plan": selection_plan_name(config, versions),
+        "channel": config["channel"],
+        "versions": versions,
+    }
+    validate_selection(config, selection)
+    return selection
+
+
+def selection_tag(config: dict[str, Any]) -> str:
+    return f"{SELECTION_TAG_PREFIX}{config['drill']}"
+
+
+def public_selection(config: dict[str, Any], client: PublicClient) -> tuple[dict[str, Any], dict[str, str]] | None:
+    tag = selection_tag(config)
+    commit = resolve_tag(client, CONTROL_REPOSITORY, tag)
+    if commit is None:
+        return None
+    selection = read_public_json_file(client, commit, "continuity-selection.json")
+    validate_selection(config, selection)
+    return selection, {"tag": tag, "commit": commit, "sha256": manifest_digest(selection)}
+
+
+def build_plan(
+    config: dict[str, Any],
+    client: PublicClient,
+    selection: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    selection = selection or select_versions(config, client)
+    validate_selection(config, selection)
     components: dict[str, dict[str, str]] = {}
     expected_commits: dict[str, str] = {}
     blockers: list[dict[str, str]] = []
     for name, component in COMPONENTS.items():
-        branch = EXPECTED_DEFAULT_BRANCHES[name]
-        branch_record = client.json(
-            f"https://api.github.com/repos/{component.repository}/branches/{urllib.parse.quote(branch, safe='')}"
-        )
-        commit = branch_record.get("commit", {}).get("sha")
+        version = selection["versions"][name]
+        commit = resolve_tag(client, component.repository, version)
+        if commit is None:
+            branch = EXPECTED_DEFAULT_BRANCHES[name]
+            branch_record = client.json(
+                f"https://api.github.com/repos/{component.repository}/branches/{urllib.parse.quote(branch, safe='')}"
+            )
+            commit = branch_record.get("commit", {}).get("sha")
         if not isinstance(commit, str) or not COMMIT_PATTERN.fullmatch(commit):
-            raise ContinuityError(f"{component.repository}@{branch} did not resolve to an exact commit")
-        version = next_version(name, public_release_tags(client, component.repository))
+            raise ContinuityError(f"{component.repository}@{version} did not resolve to an exact source commit")
         if name in SOURCE_MANIFESTS:
             path, _table, _package = SOURCE_MANIFESTS[name]
             encoded_path = urllib.parse.quote(path, safe="/")
@@ -288,31 +378,20 @@ def build_plan(config: dict[str, Any], client: PublicClient) -> tuple[dict[str, 
                         "component": name,
                         "reason": (
                             f"{component.repository}@{commit} declares {declared} in {path}; "
-                            f"the next unoccupied public version is {version}"
+                            f"the retained continuity version is {version}"
                         ),
                         "repository": component.repository,
                         "slug": f"{name}-source-version-{version}",
                         "version": version,
                     }
                 )
-        if resolve_tag(client, component.repository, version) is not None:
-            blockers.append(
-                {
-                    "component": name,
-                    "reason": f"{component.repository}@{version} is already occupied before the drill",
-                    "repository": component.repository,
-                    "slug": f"{name}-occupied-version-{version}",
-                    "version": version,
-                }
-            )
         components[name] = {"commit": commit, "version": version}
         expected_commits[name] = commit
     if blockers:
         raise PlanBlocked(blockers)
-    tuple_digest = hashlib.sha256(canonical_json(components)).hexdigest()[:12]
     plan = {
         "schema": "durable-workflow.release-plan/v1",
-        "plan": f"{config['plan_prefix']}-{tuple_digest}",
+        "plan": selection["plan"],
         "channel": config["channel"],
         "foundation": {"tag": FOUNDATION_TAG, "commit": FOUNDATION_COMMIT},
         "components": components,
@@ -368,6 +447,7 @@ def plan_command(
     client = PublicClient(os.environ.get("GITHUB_TOKEN"))
     issue = authority_issue(config, client, allow_completed=True)
     accepted = accepted_plan(config, client)
+    selected = public_selection(config, client)
     state: dict[str, Any] = {
         "schema": EVIDENCE_SCHEMA,
         "drill": config["drill"],
@@ -377,7 +457,18 @@ def plan_command(
     }
     try:
         if accepted is None:
-            plan, expected = build_plan(config, client)
+            if selected is None:
+                selection = select_versions(config, client)
+                selection_record = record_selection(Path.cwd(), config, selection)
+            else:
+                selection, selection_record = selected
+            state["selection"] = {
+                **selection_record,
+                "plan": selection["plan"],
+                "sha256": manifest_digest(selection),
+                "versions": selection["versions"],
+            }
+            plan, expected = build_plan(config, client, selection)
             controller_commit = os.environ.get("GITHUB_SHA")
             if controller_commit:
                 if not COMMIT_PATTERN.fullmatch(controller_commit):
@@ -386,6 +477,15 @@ def plan_command(
             needs_qualification = "true"
         else:
             plan = accepted
+            if selected is not None:
+                selection, selection_record = selected
+                if (
+                    plan["plan"] != selection["plan"]
+                    or {name: identity["version"] for name, identity in plan["components"].items()}
+                    != selection["versions"]
+                ):
+                    raise ContinuityError("accepted continuity plan differs from its immutable version selection")
+                state["selection"] = {**selection_record, "plan": selection["plan"]}
             expected = {name: identity["commit"] for name, identity in plan["components"].items()}
             needs_qualification = "false"
         state.update(
@@ -411,28 +511,20 @@ def plan_command(
     )
 
 
-def record_phase(
+def record_immutable_tag(
     repository: Path,
-    plan: dict[str, Any],
-    phase: str,
-    evidence: dict[str, Any],
+    tag: str,
+    files: list[tuple[str, bytes]],
+    message: str,
+    label: str,
     *,
-    qualification_path: Path | None = None,
-    remote: str = "origin",
+    remote: str,
 ) -> dict[str, str]:
-    tag = phase_tag(plan, phase)
-    files: list[tuple[str, bytes]] = [
-        ("continuity-evidence.json", canonical_json(evidence)),
-        ("release-plan.json", canonical_json(plan)),
-    ]
-    if qualification_path is not None and qualification_path.exists():
-        qualification = load_json(qualification_path, "target qualification evidence")
-        files.append(("target-qualification-evidence.json", canonical_json(qualification)))
     existing_ref = fetch_existing_record(repository, remote, tag)
     if existing_ref:
         for filename, content in files:
             if read_record_file(repository, existing_ref, filename) != content:
-                raise ContinuityError(f"immutable continuity phase {tag} differs from the requested evidence")
+                raise ContinuityError(f"immutable {label} {tag} differs from the requested record")
         return {"status": "existing", "tag": tag, "commit": run_git(["rev-parse", existing_ref], cwd=repository)}
 
     with tempfile.NamedTemporaryFile(prefix="beta-continuity-index-", delete=False) as index:
@@ -471,7 +563,7 @@ def record_phase(
             ["git", "commit-tree", tree],
             cwd=repository,
             env=commit_env,
-            input=f"Record {phase} continuity phase for {plan['plan']}\n",
+            input=f"{message}\n",
             check=True,
             text=True,
             capture_output=True,
@@ -486,15 +578,61 @@ def record_phase(
         if pushed.returncode:
             recovered = fetch_existing_record(repository, remote, tag)
             if not recovered:
-                raise ContinuityError(f"cannot publish immutable continuity phase: {pushed.stderr.strip()}")
+                raise ContinuityError(f"cannot publish immutable {label}: {pushed.stderr.strip()}")
             for filename, content in files:
                 if read_record_file(repository, recovered, filename) != content:
-                    raise ContinuityError(f"concurrent continuity phase {tag} has different evidence")
+                    raise ContinuityError(f"concurrent {label} {tag} has different evidence")
             commit = run_git(["rev-parse", recovered], cwd=repository)
             return {"status": "existing", "tag": tag, "commit": commit}
         return {"status": "created", "tag": tag, "commit": commit}
     finally:
         index_path.unlink(missing_ok=True)
+
+
+def record_selection(
+    repository: Path,
+    config: dict[str, Any],
+    selection: dict[str, Any],
+    *,
+    remote: str = "origin",
+) -> dict[str, str]:
+    validate_selection(config, selection)
+    tag = selection_tag(config)
+    return record_immutable_tag(
+        repository,
+        tag,
+        [("continuity-selection.json", canonical_json(selection))],
+        f"Select versions for continuity drill {config['drill']}",
+        "continuity selection",
+        remote=remote,
+    )
+
+
+def record_phase(
+    repository: Path,
+    plan: dict[str, Any],
+    phase: str,
+    evidence: dict[str, Any],
+    *,
+    qualification_path: Path | None = None,
+    remote: str = "origin",
+) -> dict[str, str]:
+    tag = phase_tag(plan, phase)
+    files: list[tuple[str, bytes]] = [
+        ("continuity-evidence.json", canonical_json(evidence)),
+        ("release-plan.json", canonical_json(plan)),
+    ]
+    if qualification_path is not None and qualification_path.exists():
+        qualification = load_json(qualification_path, "target qualification evidence")
+        files.append(("target-qualification-evidence.json", canonical_json(qualification)))
+    return record_immutable_tag(
+        repository,
+        tag,
+        files,
+        f"Record {phase} continuity phase for {plan['plan']}",
+        "continuity phase",
+        remote=remote,
+    )
 
 
 def public_phase_commit(client: PublicClient, plan: dict[str, Any], phase: str) -> str | None:
@@ -571,9 +709,7 @@ def dispatch_recovery(writer: GitHubWriter, component_name: str, plan_tag_value:
 
 def workflow_run(writer: GitHubWriter, repository: str, workflow: str, title_fragment: str) -> dict[str, Any] | None:
     encoded = urllib.parse.quote(workflow, safe="")
-    payload = writer.get(
-        f"/repos/{repository}/actions/workflows/{encoded}/runs?event=workflow_dispatch&per_page=100"
-    )
+    payload = writer.get(f"/repos/{repository}/actions/workflows/{encoded}/runs?event=workflow_dispatch&per_page=100")
     runs = payload.get("workflow_runs", []) if isinstance(payload, dict) else []
     matching = [run for run in runs if title_fragment in str(run.get("display_title", ""))]
     return max(matching, key=lambda run: int(run.get("id", 0)), default=None)
@@ -671,9 +807,7 @@ def close_authority_issue(writer: GitHubWriter, config: dict[str, Any], completi
     issue = config["authority_issue"]
     path = f"/repos/{issue['repository']}/issues/{issue['number']}"
     current = writer.get(path)
-    labels = {
-        label.get("name") for label in current.get("labels", []) if isinstance(label, dict) and label.get("name")
-    }
+    labels = {label.get("name") for label in current.get("labels", []) if isinstance(label, dict) and label.get("name")}
     labels.discard("status:ready")
     labels.discard("status:blocked")
     labels.discard("completion:evidence-required")
@@ -956,16 +1090,18 @@ def advance_command(
     write_github_output(output, {"phase": "complete", "plan_tag": record["tag"]})
 
 
-def blocker_body(config: dict[str, Any], blocker: dict[str, str]) -> str:
+def blocker_body(config: dict[str, Any], blocker: dict[str, str], selection: dict[str, Any]) -> str:
     issue = config["authority_issue"]
+    selection_url = f"https://github.com/{CONTROL_REPOSITORY}/tree/{selection['tag']}"
     return (
         "## Classification\n\n"
         "Beta continuity release blocker owned by this repository.\n\n"
         "## Evidence\n\n"
-        f"The GitHub-only continuity planner stopped before allocating an immutable plan: {blocker['reason']}.\n\n"
+        f"The GitHub-only continuity planner retained its version selection at {selection_url}, then paused: "
+        f"{blocker['reason']}.\n\n"
         "## Acceptance criteria\n\n"
-        f"- The default-branch source can be assigned unpublished version `{blocker['version']}` "
-        "without rewriting history.\n"
+        f"- Version `{blocker['version']}` is prepared from the default branch and published without rewriting "
+        "history.\n"
         "- The repository-owned Release plan recovery workflow accepts that exact source and prepared plan.\n"
         "- Protected target qualification is green before the continuity planner retries.\n\n"
         "## Dependency\n\n"
@@ -978,8 +1114,11 @@ def route_blockers(config_path: Path, state_path: Path) -> None:
     config = load_config(config_path)
     state = load_json(state_path, "continuity planning state")
     blockers = state.get("blockers")
+    selection = state.get("selection")
     if state.get("outcome") != "blocked" or not isinstance(blockers, list) or not blockers:
         raise ContinuityError("continuity planning state contains no routable blockers")
+    if not isinstance(selection, dict) or not isinstance(selection.get("tag"), str):
+        raise ContinuityError("continuity planning state has no immutable version selection")
     writer = GitHubWriter(
         os.environ.get("BETA_PRODUCT_WORK_TOKEN", ""),
         os.environ.get("GITHUB_API_URL", "https://api.github.com"),
@@ -996,7 +1135,7 @@ def route_blockers(config_path: Path, state_path: Path) -> None:
             f"/repos/{repository}/issues",
             {
                 "title": f"Release blocker: prepare {component} source for GitHub continuity",
-                "body": blocker_body(config, blocker),
+                "body": blocker_body(config, blocker, selection),
                 "labels": [
                     "authority:github",
                     "beta:blocker",

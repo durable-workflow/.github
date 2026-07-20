@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -19,16 +20,24 @@ from scripts.beta_continuity import (
     load_config,
     next_version,
     phase_tag,
+    plan_command,
     record_phase,
     require_partial_publication,
+    select_versions,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class PlanningClient:
-    def __init__(self, *, stale_manifests: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        stale_manifests: bool = False,
+        blocker_versions: dict[str, list[str]] | None = None,
+    ) -> None:
         self.stale_manifests = stale_manifests
+        self.blocker_versions = blocker_versions or {}
         self.commits = {name: f"{index + 1:040x}" for index, name in enumerate(COMPONENTS)}
         self.latest = {
             "workflow": "2.0.0-alpha.291",
@@ -42,6 +51,17 @@ class PlanningClient:
 
     def json(self, url: str) -> object:
         for name, component in COMPONENTS.items():
+            if url == f"https://api.github.com/repos/{component.repository}/issues?state=all&per_page=100":
+                return [
+                    {
+                        "body": (
+                            "Blocks https://github.com/durable-workflow/.github/issues/2.\n\n"
+                            f"<!-- beta-continuity-blocker: {name}-source-version-{version} -->"
+                        ),
+                        "number": index + 1,
+                    }
+                    for index, version in enumerate(self.blocker_versions.get(name, []))
+                ]
             if f"repos/{component.repository}/branches/" in url:
                 return {"commit": {"sha": self.commits[name]}}
             if url == f"https://api.github.com/repos/{component.repository}/releases?per_page=100":
@@ -133,6 +153,73 @@ class BetaContinuityTest(unittest.TestCase):
         blockers = raised.exception.blockers
         self.assertEqual({"sdk-python", "sdk-rust"}, {blocker["component"] for blocker in blockers})
         self.assertTrue(all(blocker["repository"].startswith("durable-workflow/") for blocker in blockers))
+
+    def test_planning_records_the_selection_before_routing_source_blockers(self) -> None:
+        client = PlanningClient(stale_manifests=True)
+        issue = {
+            "number": 2,
+            "repository": "durable-workflow/.github",
+            "state": "open",
+            "work_id": "github-only-beta-continuity-drill",
+        }
+        selection_record = {
+            "status": "created",
+            "tag": "beta-continuity-selection/workspace-unavailable-beta-continuity",
+            "commit": "f" * 40,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with (
+                patch("scripts.beta_continuity.PublicClient", return_value=client),
+                patch("scripts.beta_continuity.authority_issue", return_value=issue),
+                patch("scripts.beta_continuity.accepted_plan", return_value=None),
+                patch("scripts.beta_continuity.public_selection", return_value=None),
+                patch("scripts.beta_continuity.record_selection", return_value=selection_record) as record,
+                patch("scripts.beta_continuity.resolve_tag", return_value=None),
+                patch.dict(os.environ, {"GITHUB_SHA": "c" * 40}),
+                self.assertRaises(PlanBlocked),
+            ):
+                plan_command(
+                    ROOT / "beta-continuity" / "config.json",
+                    root / "release-plan.json",
+                    root / "expected.json",
+                    root / "state.json",
+                    None,
+                )
+
+            record.assert_called_once()
+            state = json.loads((root / "state.json").read_text(encoding="utf-8"))
+            self.assertEqual("blocked", state["outcome"])
+            self.assertEqual(selection_record["tag"], state["selection"]["tag"])
+            self.assertEqual("0.4.103", state["selection"]["versions"]["sdk-python"])
+
+    def test_retained_selection_reuses_published_versions_without_successor_loop(self) -> None:
+        config = load_config(ROOT / "beta-continuity" / "config.json")
+        client = PlanningClient(
+            blocker_versions={
+                "sdk-python": ["0.4.103", "0.4.104"],
+                "sdk-rust": ["0.1.18", "0.1.19"],
+            }
+        )
+        client.latest.update({"sdk-python": "0.4.104", "sdk-rust": "0.1.19"})
+        selection = select_versions(config, client)  # type: ignore[arg-type]
+        published_commits = {
+            (COMPONENTS["sdk-python"].repository, "0.4.103"): "a" * 40,
+            (COMPONENTS["sdk-rust"].repository, "0.1.18"): "b" * 40,
+        }
+
+        def resolve_selected_tag(_client: object, repository: str, version: str) -> str | None:
+            return published_commits.get((repository, version))
+
+        with patch("scripts.beta_continuity.resolve_tag", side_effect=resolve_selected_tag):
+            plan, expected = build_plan(config, client, selection)  # type: ignore[arg-type]
+
+        self.assertEqual("0.4.103", selection["versions"]["sdk-python"])
+        self.assertEqual("0.1.18", selection["versions"]["sdk-rust"])
+        self.assertEqual("0.4.103", plan["components"]["sdk-python"]["version"])
+        self.assertEqual("a" * 40, expected["sdk-python"])
+        self.assertEqual("0.1.18", plan["components"]["sdk-rust"]["version"])
+        self.assertEqual("b" * 40, expected["sdk-rust"])
 
     def test_interruption_requires_a_provably_partial_publication(self) -> None:
         require_partial_publication({"workflow": {"version": "2.0.0-alpha.292"}}, ["waterline"])
@@ -258,6 +345,8 @@ class BetaContinuityTest(unittest.TestCase):
         self.assertIn("environment: beta-product-work", source)
         self.assertIn("scripts/beta_continuity.py advance", source)
         self.assertIn("scripts/beta_continuity.py route-blockers", source)
+        self.assertIn("if: ${{ steps.plan.outcome == 'success' }}", source)
+        self.assertNotIn("run: exit 1", source)
         self.assertNotIn("/workspace", source)
 
 
