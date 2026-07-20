@@ -90,6 +90,11 @@ EVIDENCE_ASSIGNMENT_PREFIX = re.compile(
     re.IGNORECASE,
 )
 BETA_TOKEN_EVIDENCE = re.compile(r"\bbeta-[0-9a-f]{32}\b", re.IGNORECASE)
+CREDENTIAL_URL_EVIDENCE = re.compile(
+    r"https?://[^\s/@:]+:[^\s/@]+@",
+    re.IGNORECASE,
+)
+SYNTHETIC_CREDENTIAL_CANARY = "beta-00000000000000000000000000000000"
 
 
 class ConformanceError(RuntimeError):
@@ -810,7 +815,7 @@ def tail_and_digest(path: Path) -> tuple[str, str]:
         if size > DIAGNOSTIC_LIMIT:
             handle.seek(-DIAGNOSTIC_LIMIT, os.SEEK_END)
         value = handle.read(DIAGNOSTIC_LIMIT).decode(errors="replace")
-    return value, digest
+    return sanitized_evidence_text(value, DIAGNOSTIC_LIMIT), digest
 
 
 def bounded_text(value: Any, limit: int = FINDING_TEXT_LIMIT) -> str:
@@ -900,7 +905,7 @@ def redact_evidence_assignments(text: str) -> str:
 
 
 def contains_sensitive_evidence_text(value: str) -> bool:
-    if BETA_TOKEN_EVIDENCE.search(value):
+    if BETA_TOKEN_EVIDENCE.search(value) or CREDENTIAL_URL_EVIDENCE.search(value):
         return True
     return any(
         not re.fullmatch(
@@ -916,8 +921,35 @@ def sanitized_evidence_text(value: Any, limit: int = 512) -> str:
     text = str(value).replace("\x00", "")
     text = redact_evidence_assignments(text)
     text = BETA_TOKEN_EVIDENCE.sub("[REDACTED]", text)
-    text = re.sub(r"(https?://)[^\s/@:]+:[^\s/@]+@", r"\1[REDACTED]@", text, flags=re.IGNORECASE)
+    text = CREDENTIAL_URL_EVIDENCE.sub(
+        lambda match: f"{match.group(0).split('://', 1)[0]}://[REDACTED]@",
+        text,
+    )
     return bounded_text(text, limit)
+
+
+def validate_public_evidence_strings(value: Any) -> None:
+    """Reject credential-shaped text anywhere in a public JSON asset."""
+
+    def has_sensitive_string(entry: Any) -> bool:
+        if isinstance(entry, str):
+            return contains_sensitive_evidence_text(entry)
+        if isinstance(entry, list):
+            return any(has_sensitive_string(item) for item in entry)
+        if isinstance(entry, dict):
+            return any(
+                contains_sensitive_evidence_text(str(key))
+                or (
+                    SENSITIVE_EVIDENCE_KEY.search(str(key)) is not None
+                    and nested not in ("[REDACTED]", "Bearer [REDACTED]", "bearer [REDACTED]")
+                )
+                or has_sensitive_string(nested)
+                for key, nested in entry.items()
+            )
+        return False
+
+    if has_sensitive_string(value):
+        raise ConformanceError("public conformance evidence contains unsanitized sensitive text")
 
 
 def bounded_sanitized_evidence(value: Any, limit: int = NATIVE_FAILURE_COMPONENT_LIMIT) -> Any:
@@ -1132,9 +1164,9 @@ def summarize_findings(native: Any) -> list[dict[str, str]]:
             kind = "finding"
         summaries.append(
             {
-                "type": bounded_text(kind, 128),
-                "owning_contract": bounded_text(owner, 128),
-                "summary": bounded_text(summary),
+                "type": sanitized_evidence_text(kind, 128),
+                "owning_contract": sanitized_evidence_text(owner, 128),
+                "summary": sanitized_evidence_text(summary, FINDING_TEXT_LIMIT),
             }
         )
     return summaries
@@ -1144,7 +1176,7 @@ def native_state(native: Any) -> tuple[str | None, bool, list[dict[str, str]]]:
     if not isinstance(native, dict):
         return None, False, []
     raw_outcome = native.get("outcome", native.get("status"))
-    outcome = str(raw_outcome).lower() if raw_outcome is not None else None
+    outcome = sanitized_evidence_text(str(raw_outcome).lower(), 128) if raw_outcome is not None else None
     runner_blocked = native.get("runner_blocked") is True or native.get("runnerBlocked") is True
     return outcome, runner_blocked, summarize_findings(native)
 
@@ -1304,7 +1336,9 @@ def summarize_executed_distribution_identities(native: dict[str, Any]) -> dict[s
             ):
                 normalized_artifacts = []
                 break
-            normalized_artifacts.append({"name": artifact["name"], "sha256": artifact["sha256"]})
+            normalized_artifacts.append(
+                {"name": sanitized_evidence_text(artifact["name"], 256), "sha256": artifact["sha256"]}
+            )
         normalized_artifacts.sort(key=lambda artifact: artifact["name"])
         if normalized_artifacts and len(normalized_artifacts) == len(
             {artifact["name"] for artifact in normalized_artifacts}
@@ -1323,7 +1357,7 @@ def summarize_native_result(native: Any) -> dict[str, Any] | None:
     if not isinstance(versions, dict):
         versions = {}
     bounded_versions = {
-        name: bounded_text(version, 128)
+        name: sanitized_evidence_text(version, 128)
         for name, version in versions.items()
         if name in COMPONENTS and isinstance(version, str)
     }
@@ -1358,7 +1392,7 @@ def summarize_native_result(native: Any) -> dict[str, Any] | None:
         source_values.append(source_policy.get("local_product_sources_used"))
     local_source_used = True if True in source_values else (False if False in source_values else None)
     return {
-        "schema": bounded_text(schema, 256) if isinstance(schema, str) else None,
+        "schema": sanitized_evidence_text(schema, 256) if isinstance(schema, str) else None,
         "artifact_versions": bounded_versions,
         "executed_distribution_identities": summarize_executed_distribution_identities(native),
         "scenario_statuses": scenarios,
@@ -1832,6 +1866,10 @@ def injected_failure_result(
     required_distributions: list[str],
     started_at: str,
 ) -> dict[str, Any]:
+    raw_stderr = (
+        "deterministic synthetic sanitizer canary: "
+        f"Authorization: Bearer {SYNTHETIC_CREDENTIAL_CANARY}"
+    )
     diagnostic = {
         "runner": "injected-product-failure",
         "attempt": 1,
@@ -1841,8 +1879,8 @@ def injected_failure_result(
         "runner_blocked": False,
         "stdout_tail": "",
         "stdout_sha256": sha256_bytes(b""),
-        "stderr_tail": "deterministic product-failure injection requested by workflow input",
-        "stderr_sha256": sha256_bytes(b"deterministic product-failure injection requested by workflow input"),
+        "stderr_tail": sanitized_evidence_text(raw_stderr, DIAGNOSTIC_LIMIT),
+        "stderr_sha256": sha256_bytes(raw_stderr.encode()),
         "native_result_size_bytes": None,
         "native_result_sha256": None,
         "native_result_prefix_sha256": None,
@@ -2058,7 +2096,7 @@ def run_experiment(
                     )
             except ConformanceError as error:
                 runtime_blocked = True
-                runtime_error = bounded_text(str(error), DIAGNOSTIC_LIMIT)
+                runtime_error = sanitized_evidence_text(error, DIAGNOSTIC_LIMIT)
                 stdout_path.write_text("", encoding="utf-8")
                 stderr_path.write_text(runtime_error, encoding="utf-8")
                 returncode = 1
@@ -2095,7 +2133,10 @@ def run_experiment(
                 elif native_result_status == "unreadable":
                     native_result_error = "published runner result could not be read"
                 if native_result_error:
-                    stderr_tail = bounded_text(f"{stderr_tail}\n{native_result_error}", DIAGNOSTIC_LIMIT)
+                    stderr_tail = sanitized_evidence_text(
+                        f"{stderr_tail}\n{native_result_error}",
+                        DIAGNOSTIC_LIMIT,
+                    )
                 else:
                     native_outcome, _, _ = native_state(native)
                     native_result_error = native_result_completeness_error(
@@ -2105,7 +2146,7 @@ def run_experiment(
                     )
                     native_result_rejected = bool(native_result_error)
                     if native_result_error:
-                        stderr_tail = bounded_text(
+                        stderr_tail = sanitized_evidence_text(
                             f"{stderr_tail}\n{native_result_error}",
                             DIAGNOSTIC_LIMIT,
                         )
@@ -2141,11 +2182,14 @@ def run_experiment(
                         elif rewritten_native_status == "unreadable":
                             native_result_error = "published runner result could not be read"
                         if native_result_error:
-                            stderr_tail = bounded_text(f"{stderr_tail}\n{native_result_error}", DIAGNOSTIC_LIMIT)
+                            stderr_tail = sanitized_evidence_text(
+                                f"{stderr_tail}\n{native_result_error}",
+                                DIAGNOSTIC_LIMIT,
+                            )
             else:
                 if not runtime_blocked:
                     native_result_error = "published runner did not emit its declared native result"
-                    stderr_tail = bounded_text(
+                    stderr_tail = sanitized_evidence_text(
                         f"{stderr_tail}\n{native_result_error}",
                         DIAGNOSTIC_LIMIT,
                     )
@@ -2157,8 +2201,9 @@ def run_experiment(
                     {
                         "type": "declared_runtime_unavailable",
                         "owning_contract": owner,
-                        "summary": bounded_text(
-                            f"Published runner {runner['id']} could not start its declared runtime: {runtime_error}"
+                        "summary": sanitized_evidence_text(
+                            f"Published runner {runner['id']} could not start its declared runtime: {runtime_error}",
+                            FINDING_TEXT_LIMIT,
                         ),
                     },
                 )
@@ -2169,9 +2214,10 @@ def run_experiment(
                     {
                         "type": "native_result_unreadable",
                         "owning_contract": owner,
-                        "summary": bounded_text(
+                        "summary": sanitized_evidence_text(
                             f"Published runner {runner['id']} emitted evidence the portable wrapper could not read: "
-                            f"{native_result_error}."
+                            f"{native_result_error}.",
+                            FINDING_TEXT_LIMIT,
                         ),
                     },
                 )
@@ -2183,8 +2229,9 @@ def run_experiment(
                     {
                         "type": "injected_distribution_identity_mismatch",
                         "owning_contract": owner,
-                        "summary": bounded_text(
-                            f"Injected a same-version digest mismatch for {component} artifact {artifact_name}."
+                        "summary": sanitized_evidence_text(
+                            f"Injected a same-version digest mismatch for {component} artifact {artifact_name}.",
+                            FINDING_TEXT_LIMIT,
                         ),
                     },
                 )
@@ -2202,10 +2249,11 @@ def run_experiment(
                     {
                         "type": "experiment_execution_failure",
                         "owning_contract": owner,
-                        "summary": bounded_text(
+                        "summary": sanitized_evidence_text(
                             "Experiment timed out."
                             if timed_out
-                            else f"Published runner {runner['id']} exited with status {returncode}."
+                            else f"Published runner {runner['id']} exited with status {returncode}.",
+                            FINDING_TEXT_LIMIT,
                         ),
                     }
                 ]
@@ -2253,7 +2301,7 @@ def run_experiment(
                     "runner_blocked": False,
                     "stdout_tail": "",
                     "stdout_sha256": sha256_bytes(b""),
-                    "stderr_tail": bounded_text(message, DIAGNOSTIC_LIMIT),
+                    "stderr_tail": sanitized_evidence_text(message, DIAGNOSTIC_LIMIT),
                     "stderr_sha256": sha256_bytes(message.encode()),
                     "native_result_size_bytes": None,
                     "native_result_sha256": None,
@@ -2264,7 +2312,7 @@ def run_experiment(
                         {
                             "type": "exact_artifact_binding_failure",
                             "owning_contract": owner,
-                            "summary": bounded_text(failure),
+                            "summary": sanitized_evidence_text(failure, FINDING_TEXT_LIMIT),
                         }
                         for failure in binding_failures[:FINDING_LIMIT]
                     ],
@@ -2697,6 +2745,7 @@ def validate_experiment_result(
             projection_error = native_failure_projection_error(native_summary["failure_projection"])
             if projection_error:
                 raise ConformanceError(projection_error)
+    validate_public_evidence_strings(result)
     if classification == "passed" and artifact_binding_failures(plan, required_distributions, diagnostics):
         raise ConformanceError("passing experiment result has incomplete or mismatched native artifact evidence")
     if contract is not None:

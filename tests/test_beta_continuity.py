@@ -20,6 +20,7 @@ from scripts.beta_continuity import (
     authority_issue,
     build_plan,
     close_authority_issue,
+    conformance_evidence,
     dispatch_accepted_continuity,
     dispatch_recovery,
     ensure_conformance_execution_or_retention,
@@ -1321,6 +1322,7 @@ class BetaContinuityTest(unittest.TestCase):
         progress = ensure_conformance_execution_or_retention(writer, candidate)  # type: ignore[arg-type]
         self.assertEqual("conformance-execution-requested", progress["outcome"])
         self.assertEqual("beta-conformance.yml", writer.dispatches[-1][1])
+        self.assertEqual("none", writer.dispatches[-1][3]["injected_canary_failure_experiment"])
 
         writer.dispatches.clear()
         writer.source_runs.append(
@@ -1391,6 +1393,72 @@ class BetaContinuityTest(unittest.TestCase):
         progress = ensure_conformance_execution_or_retention(writer, candidate)  # type: ignore[arg-type]
         self.assertEqual("conformance-retention-terminal-failure", progress["outcome"])
         self.assertEqual([], writer.dispatches)
+
+    def test_existing_conformance_release_with_sensitive_experiment_asset_is_not_reused(self) -> None:
+        plan = continuity_plan("existing-release-safety-test")
+        candidate = candidate_manifest(plan)
+        experiments = ("heartbeats", "polyglot", "replay", "signals-queries")
+        payloads = {
+            name: json.dumps(
+                {
+                    "classification": "passed",
+                    "experiment": name,
+                    "outcome": "pass",
+                    "stdout_tail": "password=published-secret" if name == "replay" else "",
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+            for name in experiments
+        }
+        suite = {
+            "schema": "durable-workflow.beta-conformance.suite-result/v1",
+            "candidate": {"name": candidate["candidate"]},
+            "artifact_tuple": plan["components"],
+            "source_identities": {},
+            "distribution_identities": {},
+            "runner": {},
+            "server_runner": {},
+            "github_run": {"run_id": 12345},
+            "outcome": "pass",
+            "experiments": {
+                name: {
+                    "classification": "passed",
+                    "outcome": "pass",
+                    "result_sha256": hashlib.sha256(payloads[name]).hexdigest(),
+                }
+                for name in experiments
+            },
+        }
+        payloads["suite-result"] = json.dumps(suite, sort_keys=True, separators=(",", ":")).encode()
+
+        class ExistingReleaseClient:
+            @staticmethod
+            def json(_url: str) -> list[dict[str, object]]:
+                return [
+                    {
+                        "assets": [
+                            {
+                                "browser_download_url": f"https://downloads.example/{name}",
+                                "name": f"{name}.json" if name != "suite-result" else "suite-result.json",
+                            }
+                            for name in payloads
+                        ],
+                        "draft": False,
+                        "html_url": "https://github.com/durable-workflow/.github/releases/tag/example",
+                        "tag_name": f"beta-conformance/{candidate['candidate']}/12345.1",
+                    }
+                ]
+
+            @staticmethod
+            def bytes(url: str) -> bytes:
+                return payloads[url.rsplit("/", 1)[-1]]
+
+        with (
+            patch("scripts.beta_continuity.validate_conformance_plan"),
+            patch("scripts.beta_continuity.validate_experiment_result"),
+        ):
+            self.assertIsNone(conformance_evidence(ExistingReleaseClient(), plan))  # type: ignore[arg-type]
 
     def test_phase_records_are_append_only_and_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

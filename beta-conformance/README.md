@@ -29,10 +29,13 @@ after every attempt.
 ## Independent execution
 
 Dispatch `.github/workflows/beta-conformance.yml` with the complete canonical
-candidate JSON. An optional `injected_failure_experiment` proves that a
+candidate JSON. The optional `injected_failure_experiment` proves that a
 same-version distribution digest mismatch is recorded, retained, and left red.
-The injected mismatch is never passed through the infrastructure retry
-classifier.
+The optional `injected_canary_failure_experiment` selects a deterministic
+failure containing a fixed, synthetic credential-shaped canary. Its retained
+diagnostic contains `[REDACTED]`, preserves the digest of the raw output, and
+does not retain the canary itself. Neither injection is passed through the
+infrastructure retry classifier.
 
 The same entry point can be exercised on any clean runner with Git, Python,
 and Docker after checking out this repository at a full commit and fetching

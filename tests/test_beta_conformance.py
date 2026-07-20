@@ -26,6 +26,7 @@ from scripts.beta_conformance import (
     NATIVE_RESULT_LIMIT,
     NATIVE_RESULT_PREFIX_LIMIT,
     REDIS_RUNTIME_IMAGE,
+    SYNTHETIC_CREDENTIAL_CANARY,
     ConformanceError,
     aggregate_results,
     artifact_binding_failures,
@@ -338,6 +339,22 @@ class RetentionSourceTest(unittest.TestCase):
 
         self.assertEqual({"contents": "read"}, execution["permissions"])
         self.assertEqual({"prepare", "conformance"}, set(execution["jobs"]))
+        canary_input = execution["on"]["workflow_dispatch"]["inputs"]["injected_canary_failure_experiment"]
+        self.assertEqual("none", canary_input["default"])
+        self.assertEqual("none", canary_input["options"][0])
+        self.assertEqual({"none", *EXPERIMENTS}, set(canary_input["options"]))
+        execute_step = next(
+            step for step in execution["jobs"]["conformance"]["steps"] if step.get("id") == "execute"
+        )
+        self.assertEqual(
+            "${{ inputs.injected_canary_failure_experiment }}",
+            execute_step["env"]["INJECTED_CANARY_FAILURE_EXPERIMENT"],
+        )
+        execution_scripts = "\n".join(
+            step.get("run", "") for step in execution["jobs"]["conformance"]["steps"]
+        )
+        self.assertIn('INJECTED_CANARY_FAILURE_EXPERIMENT" = "$EXPERIMENT', execution_scripts)
+        self.assertIn("injection+=(--inject-product-failure)", execution_scripts)
         self.assertEqual(["Beta conformance"], retention["on"]["workflow_run"]["workflows"])
         self.assertIn("workflow_dispatch", retention["on"])
         self.assertEqual(
@@ -948,6 +965,127 @@ class ExperimentRetryTest(unittest.TestCase):
                 ]
             ),
         }
+
+    def test_injected_canary_failure_asset_is_redacted_and_preserves_the_raw_digest(self) -> None:
+        result = run_experiment(
+            self.plan,
+            self.contract,
+            "replay",
+            self.artifact_root,
+            self.result_dir,
+            inject_product_failure=True,
+        )
+
+        raw_stderr = (
+            "deterministic synthetic sanitizer canary: "
+            f"Authorization: Bearer {SYNTHETIC_CREDENTIAL_CANARY}"
+        )
+        diagnostic = result["diagnostics"][0]
+        asset = (self.result_dir / "experiment-result.json").read_bytes()
+        self.assertEqual(canonical_json(result), asset)
+        self.assertIn(b"[REDACTED]", asset)
+        self.assertEqual(sha256_bytes(raw_stderr.encode()), diagnostic["stderr_sha256"])
+        self.assertNotIn(SYNTHETIC_CREDENTIAL_CANARY.encode(), asset)
+        validate_experiment_result(result, self.plan, self.contract)
+
+    def test_failed_runner_asset_sanitizes_every_public_diagnostic_and_preserves_raw_identities(self) -> None:
+        stdout = "runner password=stdout-secret"
+        stderr = "Authorization: Bearer stderr-secret"
+        beta_token = "beta-0123456789abcdef0123456789abcdef"
+        credential_url = "https://runner:summary-secret@example.test/failure"
+        native = self.native_result("fail api_token=outcome-secret")
+        native["schema"] = f"fixture.{beta_token}"
+        first_distribution = self.specification["required_distributions"][0]
+        native["artifact_versions"][first_distribution] = (
+            f"{native['artifact_versions'][first_distribution]} db_password=version-secret"
+        )
+        native["findings"] = [
+            {
+                "type": "password=type-secret",
+                "owning_contract": "Authorization: Bearer owner-secret",
+                "summary": credential_url,
+            }
+        ]
+        native_payload = canonical_json(native)
+
+        def execute(command: list[str], **arguments: object) -> tuple[int, bool]:
+            stdout_path = arguments["stdout_path"]
+            stderr_path = arguments["stderr_path"]
+            assert isinstance(stdout_path, Path)
+            assert isinstance(stderr_path, Path)
+            stdout_path.write_text(stdout, encoding="utf-8")
+            stderr_path.write_text(stderr, encoding="utf-8")
+            native_dir = Path(command[-1])
+            (native_dir / self.runner["result"]).write_bytes(native_payload)
+            return 1, False
+
+        with mock.patch("scripts.beta_conformance.execute_command", side_effect=execute):
+            result = run_experiment(
+                self.plan,
+                self.contract,
+                "replay",
+                self.artifact_root,
+                self.result_dir,
+            )
+
+        diagnostic = result["diagnostics"][0]
+        rendered = canonical_json(result).decode()
+        self.assertEqual(sha256_bytes(stdout.encode()), diagnostic["stdout_sha256"])
+        self.assertEqual(sha256_bytes(stderr.encode()), diagnostic["stderr_sha256"])
+        self.assertEqual(sha256_bytes(native_payload), diagnostic["native_result_sha256"])
+        self.assertIn("[REDACTED]", rendered)
+        for fragment in (
+            "stdout-secret",
+            "stderr-secret",
+            "outcome-secret",
+            beta_token,
+            "version-secret",
+            "type-secret",
+            "owner-secret",
+            "summary-secret",
+        ):
+            self.assertNotIn(fragment, rendered)
+        validate_experiment_result(result, self.plan, self.contract)
+
+    def test_retention_rejects_sensitive_text_in_every_public_diagnostic_surface(self) -> None:
+        result = experiment_result(
+            self.plan,
+            "replay",
+            self.specification["owning_contract"],
+            self.specification["required_clients"],
+            self.specification["required_distributions"],
+            "2026-07-19T00:00:00Z",
+            "passed",
+            1,
+            successful_runner_diagnostics(self.plan, self.specification),
+        )
+        leaks = {
+            "stdout": ("stdout_tail", "password=stdout-secret"),
+            "stderr": ("stderr_tail", "Authorization: Bearer stderr-secret"),
+            "native outcome": ("native_outcome", "fail beta-0123456789abcdef0123456789abcdef"),
+        }
+        for label, (field, value) in leaks.items():
+            with self.subTest(surface=label):
+                leaking = json.loads(canonical_json(result))
+                leaking["diagnostics"][0][field] = value
+                with self.assertRaisesRegex(ConformanceError, "unsanitized sensitive text"):
+                    validate_experiment_result(leaking, self.plan)
+
+        finding_leak = json.loads(canonical_json(result))
+        finding_leak["diagnostics"][0]["findings"] = [
+            {
+                "type": "password=type-secret",
+                "owning_contract": "Authorization: Bearer owner-secret",
+                "summary": "https://runner:summary-secret@example.test/failure",
+            }
+        ]
+        with self.assertRaisesRegex(ConformanceError, "unsanitized sensitive text"):
+            validate_experiment_result(finding_leak, self.plan)
+
+        summary_leak = json.loads(canonical_json(result))
+        summary_leak["diagnostics"][0]["native_summary"]["schema"] = "password=schema-secret"
+        with self.assertRaisesRegex(ConformanceError, "unsanitized sensitive text"):
+            validate_experiment_result(summary_leak, self.plan)
 
     def test_native_failure_projection_retains_attribution_and_sanitized_companion_evidence(self) -> None:
         private_token = "beta-0123456789abcdef0123456789abcdef"

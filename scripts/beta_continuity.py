@@ -36,6 +36,20 @@ from scripts.beta_candidate import (
     validate_verification,
     write_github_output,
 )
+from scripts.beta_conformance import (
+    EXPERIMENTS as CONFORMANCE_EXPERIMENTS,
+)
+from scripts.beta_conformance import (
+    PLAN_SCHEMA as CONFORMANCE_PLAN_SCHEMA,
+)
+from scripts.beta_conformance import (
+    ConformanceError,
+    validate_experiment_result,
+    validate_public_evidence_strings,
+)
+from scripts.beta_conformance import (
+    validate_plan as validate_conformance_plan,
+)
 from scripts.release_plan import (
     EXPECTED_DEFAULT_BRANCHES,
     FOUNDATION_COMMIT,
@@ -1108,6 +1122,7 @@ def ensure_conformance_execution_or_retention(
             "main",
             {
                 "candidate_manifest": canonical_json(candidate).decode().strip(),
+                "injected_canary_failure_experiment": "none",
                 "injected_failure_experiment": "none",
             },
         )
@@ -1272,22 +1287,82 @@ def conformance_evidence(client: PublicClient, plan: dict[str, Any]) -> dict[str
     for release in releases:
         if release.get("draft") or not str(release.get("tag_name", "")).startswith(prefix):
             continue
-        asset = next((item for item in release.get("assets", []) if item.get("name") == "suite-result.json"), None)
-        if not isinstance(asset, dict) or not isinstance(asset.get("browser_download_url"), str):
+        assets = {
+            item.get("name"): item
+            for item in release.get("assets", [])
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        }
+        suite_asset = assets.get("suite-result.json")
+        if not isinstance(suite_asset, dict):
             continue
-        suite = client.json(asset["browser_download_url"])
+        try:
+            suite, _suite_payload = validated_conformance_asset(client, suite_asset)
+        except ConformanceError:
+            continue
         if (
-            suite.get("schema") == "durable-workflow.beta-conformance.suite-result/v1"
-            and suite.get("outcome") == "pass"
-            and suite.get("candidate", {}).get("name") == candidate["candidate"]
-            and suite.get("artifact_tuple") == plan["components"]
+            not isinstance(suite, dict)
+            or suite.get("schema") != "durable-workflow.beta-conformance.suite-result/v1"
         ):
-            return {
-                "release": release.get("html_url"),
-                "run": suite.get("github_run"),
-                "tag": release.get("tag_name"),
-            }
+            continue
+        if (
+            suite.get("outcome") != "pass"
+            or not isinstance(suite.get("candidate"), dict)
+            or suite["candidate"].get("name") != candidate["candidate"]
+            or suite.get("artifact_tuple") != plan["components"]
+        ):
+            continue
+        conformance_plan = {
+            "schema": CONFORMANCE_PLAN_SCHEMA,
+            "candidate": suite.get("candidate"),
+            "artifact_tuple": suite.get("artifact_tuple"),
+            "source_identities": suite.get("source_identities"),
+            "distribution_identities": suite.get("distribution_identities"),
+            "runner": suite.get("runner"),
+            "server_runner": suite.get("server_runner"),
+            "experiments": list(CONFORMANCE_EXPERIMENTS),
+        }
+        try:
+            validate_conformance_plan(conformance_plan)
+            summaries = suite.get("experiments")
+            if not isinstance(summaries, dict) or set(summaries) != set(CONFORMANCE_EXPERIMENTS):
+                continue
+            for experiment in CONFORMANCE_EXPERIMENTS:
+                experiment_asset = assets.get(f"{experiment}.json")
+                if not isinstance(experiment_asset, dict):
+                    raise ConformanceError("durable conformance release is missing an experiment asset")
+                result, payload = validated_conformance_asset(client, experiment_asset)
+                validate_experiment_result(result, conformance_plan)
+                summary = summaries[experiment]
+                if (
+                    not isinstance(result, dict)
+                    or result.get("experiment") != experiment
+                    or not isinstance(summary, dict)
+                    or summary.get("result_sha256") != hashlib.sha256(payload).hexdigest()
+                    or summary.get("outcome") != result.get("outcome")
+                    or summary.get("classification") != result.get("classification")
+                ):
+                    raise ConformanceError("durable conformance release has mismatched experiment evidence")
+        except ConformanceError:
+            continue
+        return {
+            "release": release.get("html_url"),
+            "run": suite.get("github_run"),
+            "tag": release.get("tag_name"),
+        }
     return None
+
+
+def validated_conformance_asset(client: PublicClient, asset: dict[str, Any]) -> tuple[Any, bytes]:
+    url = asset.get("browser_download_url")
+    if not isinstance(url, str):
+        raise ConformanceError("durable conformance release asset has no download URL")
+    payload = client.bytes(url)
+    try:
+        value = json.loads(payload.decode())
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ConformanceError("durable conformance release asset is not valid JSON") from error
+    validate_public_evidence_strings(value)
+    return value, payload
 
 
 def accepted_qualification_evidence(
