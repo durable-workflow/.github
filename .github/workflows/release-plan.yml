@@ -126,6 +126,37 @@ jobs:
         with:
           name: release-plan-preflight
           path: |
+            authoritative-release-plan.json
             release-plan-preflight.json
             release-preparation.json
           if-no-files-found: error
+
+  dispatch-accepted-continuity:
+    name: Continue an accepted exact plan
+    needs: validate-and-record
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Check out the public control plane
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Download the recorded plan
+        uses: actions/download-artifact@v8
+        with:
+          name: release-plan-preflight
+          path: recorded-plan
+
+      - name: Dispatch continuity for an exact public acceptance
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/beta_continuity.py dispatch-accepted \
+            recorded-plan/authoritative-release-plan.json

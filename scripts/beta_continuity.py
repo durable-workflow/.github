@@ -53,6 +53,7 @@ CONTROL_REPOSITORY = "durable-workflow/.github"
 PHASE_TAG_PREFIX = "beta-continuity/"
 SELECTION_TAG_PREFIX = "beta-continuity-selection/"
 RELEASE_WORKFLOW = "release-plan.yml"
+CONTINUITY_WORKFLOW = "beta-continuity.yml"
 OBSERVER_WORKFLOW = "release-plan-observer.yml"
 CANDIDATE_WORKFLOW = "beta-candidate.yml"
 CONFORMANCE_WORKFLOW = "beta-conformance.yml"
@@ -510,11 +511,19 @@ def plan_command(
     expected_path: Path,
     state_path: Path,
     output: Path | None,
+    expected_plan_tag: str | None = None,
 ) -> None:
     config = load_config(config_path)
     client = PublicClient(os.environ.get("GITHUB_TOKEN"))
     issue = authority_issue(config, client, allow_completed=True)
     accepted = accepted_plan(config, client)
+    if expected_plan_tag:
+        actual_plan_tag = f"{PLAN_TAG_PREFIX}{accepted['plan']}" if accepted is not None else None
+        if actual_plan_tag != expected_plan_tag:
+            raise ContinuityError(
+                f"continuity callback requested {expected_plan_tag}, but exact accepted plan is "
+                f"{actual_plan_tag or 'unavailable'}"
+            )
     selected = public_selection(config, client)
     state: dict[str, Any] = {
         "schema": EVIDENCE_SCHEMA,
@@ -759,8 +768,17 @@ def accepted_publication_state(
     evidence = read_public_json_file(client, accepted_commit, "continuity-evidence.json")
     published = evidence.get("public_components_at_acceptance")
     pending = evidence.get("pending_components_at_acceptance")
+    expected_plan = {
+        "tag": f"{PLAN_TAG_PREFIX}{plan['plan']}",
+        "sha256": manifest_digest(plan),
+    }
     if (
-        evidence.get("phase") != "accepted"
+        evidence.get("schema") != EVIDENCE_SCHEMA
+        or evidence.get("phase") != "accepted"
+        or evidence.get("outcome") != "accepted"
+        or evidence.get("release_plan") != expected_plan
+        or evidence.get("candidate_identity")
+        != {"components": plan["components"], "plan_sha256": expected_plan["sha256"]}
         or not isinstance(evidence.get("observed_at"), str)
         or not isinstance(published, dict)
         or not isinstance(pending, list)
@@ -785,6 +803,21 @@ def accepted_publication_state(
         "tag": phase_tag(plan, "accepted"),
         "commit": accepted_commit,
     }
+
+
+def accepted_plan_authority(client: PublicClient, plan: dict[str, Any]) -> dict[str, Any] | None:
+    tag = phase_tag(plan, "accepted")
+    commit = resolve_tag(client, CONTROL_REPOSITORY, tag)
+    if commit is None:
+        return None
+    recorded_plan = read_public_json_file(client, commit, "release-plan.json")
+    validate_plan(recorded_plan)
+    if canonical_json(recorded_plan) != canonical_json(plan):
+        raise ContinuityError(f"accepted continuity record {tag} differs from the recorded release plan")
+    acceptance = accepted_publication_state(client, plan, commit)
+    if resolve_tag(client, CONTROL_REPOSITORY, tag) != commit:
+        raise ContinuityError(f"accepted continuity record {tag} moved while the callback was validated")
+    return acceptance
 
 
 def parse_github_timestamp(value: Any, label: str) -> dt.datetime:
@@ -948,6 +981,38 @@ def ensure_dispatch(
     if existing is None or not run_prevents_redispatch(existing):
         writer.dispatch(repository, workflow, ref, inputs)
     return existing
+
+
+def dispatch_accepted_continuity(plan_path: Path, output: Path | None) -> None:
+    plan = load_json(plan_path, "release plan")
+    validate_plan(plan)
+    token = os.environ.get("GITHUB_TOKEN")
+    client = PublicClient(token)
+    acceptance = accepted_plan_authority(client, plan)
+    if acceptance is None:
+        write_github_output(output, {"dispatched": "false", "plan_tag": f"{PLAN_TAG_PREFIX}{plan['plan']}"})
+        return
+
+    writer = GitHubWriter(token or "", os.environ.get("GITHUB_API_URL", "https://api.github.com"))
+    plan_tag_value = f"{PLAN_TAG_PREFIX}{plan['plan']}"
+    existing = ensure_dispatch(
+        writer,
+        CONTROL_REPOSITORY,
+        CONTINUITY_WORKFLOW,
+        "main",
+        {"plan_tag": plan_tag_value},
+        plan_tag_value,
+    )
+    should_dispatch = existing is None or not run_prevents_redispatch(existing)
+    write_github_output(
+        output,
+        {
+            "accepted_commit": acceptance["commit"],
+            "accepted_tag": acceptance["tag"],
+            "dispatched": str(should_dispatch).lower(),
+            "plan_tag": plan_tag_value,
+        },
+    )
 
 
 def successful_scheduled_noop_run(
@@ -1514,6 +1579,11 @@ def main() -> int:
     plan.add_argument("expected_commits", type=Path)
     plan.add_argument("state", type=Path)
     plan.add_argument("--github-output", type=Path)
+    plan.add_argument("--expected-plan-tag")
+
+    callback = commands.add_parser("dispatch-accepted")
+    callback.add_argument("release_plan", type=Path)
+    callback.add_argument("--github-output", type=Path)
 
     advance = commands.add_parser("advance")
     advance.add_argument("config", type=Path)
@@ -1535,7 +1605,10 @@ def main() -> int:
                 args.expected_commits,
                 args.state,
                 args.github_output,
+                args.expected_plan_tag,
             )
+        elif args.command == "dispatch-accepted":
+            dispatch_accepted_continuity(args.release_plan, args.github_output)
         elif args.command == "advance":
             advance_command(
                 args.config,

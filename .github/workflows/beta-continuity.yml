@@ -1,6 +1,6 @@
 name: Beta continuity
 
-run-name: Continue workspace-unavailable beta drill
+run-name: Continue ${{ inputs.plan_tag || 'scheduled workspace-unavailable beta drill' }}
 
 on:
   push:
@@ -17,6 +17,11 @@ on:
   schedule:
     - cron: '7,17,27,37,47,57 * * * *'
   workflow_dispatch:
+    inputs:
+      plan_tag:
+        description: Exact immutable release plan accepted by this continuity drill
+        required: false
+        type: string
 
 permissions:
   actions: write
@@ -61,13 +66,19 @@ jobs:
         id: plan
         continue-on-error: true
         env:
+          CALLBACK_PLAN_TAG: ${{ inputs.plan_tag }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
+          callback_plan=()
+          if [ -n "$CALLBACK_PLAN_TAG" ]; then
+            callback_plan+=(--expected-plan-tag "$CALLBACK_PLAN_TAG")
+          fi
           python scripts/beta_continuity.py plan \
             beta-continuity/config.json \
             release-plan.json \
             expected-qualification-commits.json \
             continuity-state.json \
+            "${callback_plan[@]}" \
             --github-output "$GITHUB_OUTPUT"
 
       - name: Route discovered release dependencies to their owning repositories

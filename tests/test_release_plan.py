@@ -411,6 +411,13 @@ class ReleasePlanEntryPointTest(unittest.TestCase):
             self.assertIn("concurrency:\n  group: release-plan-registry\n", source)
             self.assertIn("  actions: read\n", source)
 
+    def test_recorded_accepted_plan_dispatches_continuity_with_scoped_permission(self) -> None:
+        source = (REPOSITORY_ROOT / ".github" / "workflows" / "release-plan.yml").read_text(encoding="utf-8")
+
+        self.assertIn("needs: validate-and-record", source)
+        self.assertIn("python scripts/beta_continuity.py dispatch-accepted", source)
+        self.assertIn("permissions:\n      actions: write\n      contents: read", source)
+
 
 class ReleasePlanValidationTest(unittest.TestCase):
     def test_preparation_derives_exact_notes_from_immutable_sources(self) -> None:

@@ -9,15 +9,17 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.beta_candidate import COMPONENTS
+from scripts.beta_candidate import COMPONENTS, manifest_digest
 from scripts.beta_continuity import (
     EVIDENCE_SCHEMA,
     ContinuityError,
     PlanBlocked,
+    accepted_plan_authority,
     accepted_publication_state,
     advance_command,
     authority_issue,
     build_plan,
+    dispatch_accepted_continuity,
     dispatch_recovery,
     load_config,
     next_version,
@@ -476,8 +478,18 @@ class BetaContinuityTest(unittest.TestCase):
         plan = continuity_plan()
         python_identity = plan["components"]["sdk-python"]
         evidence = {
+            "schema": EVIDENCE_SCHEMA,
             "phase": "accepted",
+            "outcome": "accepted",
             "observed_at": "2026-07-20T10:00:00Z",
+            "release_plan": {
+                "tag": f"release-plan/{plan['plan']}",
+                "sha256": manifest_digest(plan),
+            },
+            "candidate_identity": {
+                "components": plan["components"],
+                "plan_sha256": manifest_digest(plan),
+            },
             "public_components_at_acceptance": {"sdk-python": python_identity},
             "pending_components_at_acceptance": [name for name in COMPONENTS if name != "sdk-python"],
         }
@@ -493,6 +505,157 @@ class BetaContinuityTest(unittest.TestCase):
             self.assertRaisesRegex(ContinuityError, "complete publication baseline"),
         ):
             accepted_publication_state(object(), plan, "a" * 40)  # type: ignore[arg-type]
+
+    def test_release_plan_callback_requires_and_dispatches_the_exact_public_acceptance(self) -> None:
+        plan = continuity_plan("workspace-unavailable-recovery-test")
+        acceptance = {
+            "commit": "a" * 40,
+            "pending_components": ["workflow"],
+            "public_components": {name: {} for name in COMPONENTS if name != "workflow"},
+            "tag": f"beta-continuity/{plan['plan']}/accepted",
+        }
+
+        class CallbackWriter:
+            def __init__(self) -> None:
+                self.runs: list[dict[str, object]] = []
+                self.dispatches: list[tuple[str, str, str, dict[str, str]]] = []
+                self.dispatch_error: ContinuityError | None = None
+
+            def get(self, _path: str) -> dict[str, object]:
+                return {"workflow_runs": self.runs}
+
+            def dispatch(self, repository: str, workflow: str, ref: str, inputs: dict[str, str]) -> None:
+                if self.dispatch_error is not None:
+                    raise self.dispatch_error
+                self.dispatches.append((repository, workflow, ref, inputs))
+
+        writer = CallbackWriter()
+        with tempfile.TemporaryDirectory() as temporary:
+            plan_path = Path(temporary) / "release-plan.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            with (
+                patch("scripts.beta_continuity.PublicClient"),
+                patch("scripts.beta_continuity.accepted_plan_authority", return_value=acceptance),
+                patch("scripts.beta_continuity.GitHubWriter", return_value=writer),
+                patch.dict(os.environ, {"GITHUB_TOKEN": "token"}),
+            ):
+                dispatch_accepted_continuity(plan_path, None)
+
+            expected_tag = f"release-plan/{plan['plan']}"
+            self.assertEqual(
+                [("durable-workflow/.github", "beta-continuity.yml", "main", {"plan_tag": expected_tag})],
+                writer.dispatches,
+            )
+
+            writer.runs.append(
+                {
+                    "conclusion": None,
+                    "display_title": f"Continue {expected_tag}",
+                    "id": 101,
+                    "status": "in_progress",
+                }
+            )
+            with (
+                patch("scripts.beta_continuity.PublicClient"),
+                patch("scripts.beta_continuity.accepted_plan_authority", return_value=acceptance),
+                patch("scripts.beta_continuity.GitHubWriter", return_value=writer),
+                patch.dict(os.environ, {"GITHUB_TOKEN": "token"}),
+            ):
+                dispatch_accepted_continuity(plan_path, None)
+            self.assertEqual(1, len(writer.dispatches))
+
+            writer.runs[-1].update({"conclusion": "success", "status": "completed"})
+            with (
+                patch("scripts.beta_continuity.PublicClient"),
+                patch("scripts.beta_continuity.accepted_plan_authority", return_value=acceptance),
+                patch("scripts.beta_continuity.GitHubWriter", return_value=writer),
+                patch.dict(os.environ, {"GITHUB_TOKEN": "token"}),
+            ):
+                dispatch_accepted_continuity(plan_path, None)
+            self.assertEqual(1, len(writer.dispatches))
+
+            writer.runs[-1].update({"conclusion": "failure", "status": "completed"})
+            writer.dispatch_error = ContinuityError("GitHub dispatch failed (500)")
+            with (
+                patch("scripts.beta_continuity.PublicClient"),
+                patch("scripts.beta_continuity.accepted_plan_authority", return_value=acceptance),
+                patch("scripts.beta_continuity.GitHubWriter", return_value=writer),
+                patch.dict(os.environ, {"GITHUB_TOKEN": "token"}),
+                self.assertRaisesRegex(ContinuityError, "dispatch failed"),
+            ):
+                dispatch_accepted_continuity(plan_path, None)
+
+            with (
+                patch("scripts.beta_continuity.PublicClient"),
+                patch("scripts.beta_continuity.accepted_plan_authority", return_value=None),
+                patch("scripts.beta_continuity.GitHubWriter") as writer_factory,
+                patch.dict(os.environ, {"GITHUB_TOKEN": "token"}),
+            ):
+                dispatch_accepted_continuity(plan_path, None)
+            writer_factory.assert_not_called()
+
+    def test_public_acceptance_binds_the_callback_to_the_recorded_plan(self) -> None:
+        plan = continuity_plan("workspace-unavailable-recovery-test")
+        mutated = continuity_plan("workspace-unavailable-recovery-test")
+        mutated["components"]["workflow"]["commit"] = "f" * 40
+        with (
+            patch("scripts.beta_continuity.resolve_tag", return_value="a" * 40),
+            patch("scripts.beta_continuity.read_public_json_file", return_value=mutated),
+            self.assertRaisesRegex(ContinuityError, "differs from the recorded release plan"),
+        ):
+            accepted_plan_authority(object(), plan)  # type: ignore[arg-type]
+
+    def test_public_acceptance_rejects_a_tag_that_moves_during_callback_validation(self) -> None:
+        plan = continuity_plan("workspace-unavailable-recovery-test")
+        evidence = {
+            "schema": EVIDENCE_SCHEMA,
+            "phase": "accepted",
+            "outcome": "accepted",
+            "observed_at": "2026-07-20T10:00:00Z",
+            "release_plan": {
+                "tag": f"release-plan/{plan['plan']}",
+                "sha256": manifest_digest(plan),
+            },
+            "candidate_identity": {
+                "components": plan["components"],
+                "plan_sha256": manifest_digest(plan),
+            },
+            "public_components_at_acceptance": {},
+            "pending_components_at_acceptance": list(COMPONENTS),
+        }
+        with (
+            patch("scripts.beta_continuity.resolve_tag", side_effect=["a" * 40, "b" * 40]) as resolve,
+            patch("scripts.beta_continuity.read_public_json_file", side_effect=[plan, evidence]),
+            self.assertRaisesRegex(ContinuityError, "moved while the callback was validated"),
+        ):
+            accepted_plan_authority(object(), plan)  # type: ignore[arg-type]
+
+        self.assertEqual(2, resolve.call_count)
+
+    def test_callback_plan_input_must_match_the_exact_accepted_identity(self) -> None:
+        plan = continuity_plan("workspace-unavailable-recovery-test")
+        issue = {
+            "number": 2,
+            "repository": "durable-workflow/.github",
+            "state": "open",
+            "work_id": "github-only-beta-continuity-drill",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with (
+                patch("scripts.beta_continuity.PublicClient"),
+                patch("scripts.beta_continuity.authority_issue", return_value=issue),
+                patch("scripts.beta_continuity.accepted_plan", return_value=plan),
+                self.assertRaisesRegex(ContinuityError, "but exact accepted plan is"),
+            ):
+                plan_command(
+                    ROOT / "beta-continuity" / "config.json",
+                    root / "release-plan.json",
+                    root / "expected.json",
+                    root / "state.json",
+                    None,
+                    "release-plan/unrelated",
+                )
 
     def test_only_post_acceptance_exact_plan_recovery_can_trigger_interruption(self) -> None:
         plan_tag = "release-plan/workspace-unavailable-recovery-test"
@@ -615,7 +778,7 @@ class BetaContinuityTest(unittest.TestCase):
                 patch("scripts.beta_continuity.close_authority_issue") as close,
                 patch.dict(
                     os.environ,
-                    {"GITHUB_EVENT_NAME": "push", "GITHUB_RUN_ID": "101"},
+                    {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_RUN_ID": "101"},
                     clear=False,
                 ),
             ):
@@ -743,7 +906,9 @@ class BetaContinuityTest(unittest.TestCase):
         source = (ROOT / ".github" / "workflows" / "beta-continuity.yml").read_text(encoding="utf-8")
 
         self.assertIn("schedule:", source)
+        self.assertIn("plan_tag:", source)
         self.assertIn("environment: beta-product-work", source)
+        self.assertIn("--expected-plan-tag", source)
         self.assertIn("scripts/beta_continuity.py advance", source)
         self.assertIn("scripts/beta_continuity.py route-blockers", source)
         self.assertIn("if: ${{ steps.plan.outcome == 'success' }}", source)
