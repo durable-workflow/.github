@@ -10,6 +10,8 @@ from pathlib import Path
 from types import ModuleType
 from unittest import mock
 
+import yaml
+
 from scripts import beta_candidate, component_release_recovery
 from scripts.beta_candidate import CLI_ASSETS, CandidateError
 from scripts.component_release_recovery import RecoveryError
@@ -19,6 +21,7 @@ VERIFIERS = (
     (beta_candidate, CandidateError),
     (component_release_recovery, RecoveryError),
 )
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
 class CliReleaseFixtureClient:
@@ -144,6 +147,60 @@ class CliReleaseAuthorityTest(unittest.TestCase):
                 )
                 self.assertEqual(commit, evidence["package_source"]["commit"])
                 self.assertEqual({"PATH": allowed_path}, calls[-1][1]["env"])
+                self.assertEqual(Path(calls[-1][0][1]).parent, calls[-1][1]["cwd"])
+
+    def test_control_plane_artifact_jobs_do_not_persist_checkout_credentials(self) -> None:
+        workflows = (
+            (
+                "beta-candidate.yml",
+                "python scripts/beta_candidate.py verify",
+                "python scripts/beta_candidate.py record",
+                False,
+            ),
+            (
+                "release-plan-observer.yml",
+                "python scripts/release_plan.py observe",
+                "python scripts/release_plan.py complete",
+                False,
+            ),
+            (
+                "release-plan-supersession.yml",
+                "python scripts/release_plan.py prepare-supersession",
+                "python scripts/release_plan.py record-supersession",
+                True,
+            ),
+        )
+
+        for filename, verification_command, mutation_command, token_free_verifier in workflows:
+            with self.subTest(workflow=filename):
+                source = (REPOSITORY_ROOT / ".github" / "workflows" / filename).read_text(
+                    encoding="utf-8"
+                )
+                workflow = yaml.safe_load(source)
+                steps = next(iter(workflow["jobs"].values()))["steps"]
+                checkout = next(
+                    step for step in steps if step.get("uses") == "actions/checkout@v6"
+                )
+                verification = next(
+                    step for step in steps if verification_command in step.get("run", "")
+                )
+                mutation = next(
+                    step for step in steps if mutation_command in step.get("run", "")
+                )
+
+                self.assertIs(checkout["with"]["persist-credentials"], False)
+                self.assertIn(
+                    "GIT_CONFIG_KEY_0=http.https://github.com/.extraheader",
+                    mutation["run"],
+                )
+                self.assertIn(
+                    'GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $git_authorization"',
+                    mutation["run"],
+                )
+                self.assertEqual("${{ github.token }}", mutation["env"]["GITHUB_TOKEN"])
+                if token_free_verifier:
+                    self.assertNotIn("GITHUB_TOKEN", verification.get("env", {}))
+                    self.assertNotIn("GH_TOKEN", verification.get("env", {}))
 
     def test_verifiers_accept_exact_tag_authority_for_the_planned_package_source(self) -> None:
         version = "0.1.95"

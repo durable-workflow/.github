@@ -1080,6 +1080,7 @@ def verify_cli(client: PublicClient, component: Component, version: str, commit:
             raise RecoveryError("PHP is required to verify CLI release source metadata", "registry-publication")
         phar_version = subprocess.run(
             ["php", str(directory / "dw.phar"), "--version"],
+            cwd=directory,
             check=False,
             text=True,
             capture_output=True,

@@ -563,6 +563,7 @@ def verify_github_release(
         raise CandidateError("PHP is required to verify CLI release source metadata")
     phar_version = subprocess.run(
         ["php", str(directory / "dw.phar"), "--version"],
+        cwd=directory,
         check=False,
         text=True,
         capture_output=True,

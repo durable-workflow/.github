@@ -37,6 +37,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -70,7 +71,6 @@ jobs:
         env:
           CONFLICTING_COMPONENTS: ${{ inputs.conflicting_components }}
           FAILED_PLAN_TAG: ${{ inputs.failed_plan_tag }}
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           python scripts/release_plan.py prepare-supersession \
             "$FAILED_PLAN_TAG" "$CONFLICTING_COMPONENTS" successor-release-plan.json \
@@ -86,11 +86,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          python scripts/release_plan.py record-supersession \
-            release-plan-failure.json authoritative-successor-release-plan.json \
-            --authoritative-record authoritative-release-plan-failure.json \
-            --authoritative-successor durable-successor-release-plan.json \
-            --github-output "$GITHUB_OUTPUT"
+          set -euo pipefail
+          git_authorization="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::$git_authorization"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $git_authorization" \
+            python scripts/release_plan.py record-supersession \
+              release-plan-failure.json authoritative-successor-release-plan.json \
+              --authoritative-record authoritative-release-plan-failure.json \
+              --authoritative-successor durable-successor-release-plan.json \
+              --github-output "$GITHUB_OUTPUT"
 
       - name: Create or repair durable GitHub Release mirror
         env:
