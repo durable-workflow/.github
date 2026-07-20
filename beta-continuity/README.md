@@ -37,7 +37,13 @@ evidence. The authoritative issue receives links to these records. Completion
 requires the immutable release candidate record, seven public component
 releases, and a passing clean-runner conformance Release for the same tuple. The
 authority issue remains open after completion until a later scheduled run
-retains a successful no-op phase.
+retains a successful no-op phase. At that terminal boundary, the controller
+revalidates the exact plan, source releases, public verification, protected
+qualification, conformance, and no-op records before changing issue state. It
+then comments and closes trusted component blockers, followed by the configured
+evidence work items, and only then comments and closes the parent authority.
+Each closure comment links the same immutable evidence, and retries reuse the
+exact existing report instead of duplicating it.
 
 An earlier interruption that did not distinguish baseline artifacts from new
 repository recovery remains available as immutable diagnostic evidence. The

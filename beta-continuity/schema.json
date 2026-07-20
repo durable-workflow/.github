@@ -9,6 +9,7 @@
     "authority_issue",
     "channel",
     "drill",
+    "evidence_work_items",
     "first_component",
     "plan_prefix",
     "required_issue_labels",
@@ -30,6 +31,38 @@
     "drill": {
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$"
+    },
+    "evidence_work_items": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["number", "repository", "required_labels", "work_id"],
+        "properties": {
+          "number": { "type": "integer", "minimum": 1 },
+          "repository": {
+            "type": "string",
+            "pattern": "^durable-workflow/[A-Za-z0-9._-]+$"
+          },
+          "required_labels": {
+            "type": "array",
+            "minItems": 4,
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1 },
+            "allOf": [
+              { "contains": { "const": "authority:github" } },
+              { "contains": { "const": "beta:blocker" } },
+              { "contains": { "const": "completion:evidence-required" } },
+              { "contains": { "const": "status:ready" } }
+            ]
+          },
+          "work_id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$"
+          }
+        }
+      }
     },
     "first_component": {
       "enum": ["workflow", "waterline", "server", "cli", "sdk-php", "sdk-python", "sdk-rust"]

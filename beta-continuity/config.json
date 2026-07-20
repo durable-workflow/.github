@@ -7,6 +7,30 @@
   },
   "channel": "alpha",
   "drill": "workspace-unavailable-beta-continuity-recovery",
+  "evidence_work_items": [
+    {
+      "number": 10,
+      "repository": "durable-workflow/.github",
+      "required_labels": [
+        "authority:github",
+        "beta:blocker",
+        "completion:evidence-required",
+        "status:ready"
+      ],
+      "work_id": "beta-continuity-post-acceptance-publication"
+    },
+    {
+      "number": 11,
+      "repository": "durable-workflow/.github",
+      "required_labels": [
+        "authority:github",
+        "beta:blocker",
+        "completion:evidence-required",
+        "status:ready"
+      ],
+      "work_id": "continuity-converges-routed-release-blockers"
+    }
+  ],
   "first_component": "workflow",
   "plan_prefix": "workspace-unavailable-recovery",
   "required_issue_labels": [

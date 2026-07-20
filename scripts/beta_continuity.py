@@ -33,6 +33,7 @@ from scripts.beta_candidate import (
     read_record_file,
     resolve_github_tag,
     run_git,
+    validate_verification,
     write_github_output,
 )
 from scripts.release_plan import (
@@ -58,8 +59,13 @@ OBSERVER_WORKFLOW = "release-plan-observer.yml"
 CANDIDATE_WORKFLOW = "beta-candidate.yml"
 CONFORMANCE_WORKFLOW = "beta-conformance.yml"
 WORK_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,79}$")
+BETA_WORK_ID_MARKER_PREFIX = "<!-- beta-work-id: "
+BETA_WORK_ID_MARKER = re.compile(r"<!-- beta-work-id: (?P<work_id>[a-z0-9][a-z0-9._-]{0,79}) -->")
+DURABLE_WORK_ID_MARKER_PREFIX = "<!-- durable-workflow-work-id: "
+DURABLE_WORK_ID_MARKER = re.compile(r"<!-- durable-workflow-work-id: (?P<work_id>[a-z0-9][a-z0-9._-]{0,79}) -->")
 PLAN_PREFIX_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,35}$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+PUBLIC_REPOSITORY_PATTERN = re.compile(r"^durable-workflow/[A-Za-z0-9._-]+$")
 STABLE_VERSION_PATTERN = re.compile(r"^(0\.[0-9]+\.)([0-9]+)$")
 ALPHA_VERSION_PATTERN = re.compile(r"^(2\.0\.0-alpha\.)([1-9][0-9]*)$")
 SOURCE_MANIFESTS = {
@@ -85,6 +91,13 @@ ROUTED_BLOCKER_LABELS = (
     *ROUTED_BLOCKER_AUTHORITY_LABELS,
     "status:ready",
 )
+ROUTED_BLOCKER_MARKER = re.compile(
+    r"<!-- beta-continuity-blocker: "
+    r"(?P<component>[a-z0-9][a-z0-9-]*)-(?P<reason>source-version|occupied-version)-"
+    r"(?P<version>[^ ]+) -->"
+)
+ROUTED_BLOCKER_MARKER_PREFIX = "<!-- beta-continuity-blocker: "
+QUALIFICATION_EVIDENCE_SCHEMA = "durable-workflow.github-target-qualification/v1"
 
 
 class ContinuityError(RuntimeError):
@@ -178,6 +191,7 @@ def load_config(path: Path) -> dict[str, Any]:
         "authority_issue",
         "channel",
         "drill",
+        "evidence_work_items",
         "first_component",
         "plan_prefix",
         "required_issue_labels",
@@ -188,10 +202,6 @@ def load_config(path: Path) -> dict[str, Any]:
         raise ContinuityError("continuity config must select the alpha prerelease channel and local schema")
     if not isinstance(value.get("drill"), str) or not WORK_ID_PATTERN.fullmatch(value["drill"]):
         raise ContinuityError("continuity drill has an invalid identity")
-    if not isinstance(value.get("plan_prefix"), str) or not PLAN_PREFIX_PATTERN.fullmatch(value["plan_prefix"]):
-        raise ContinuityError("continuity plan prefix has an invalid identity")
-    if value.get("first_component") not in COMPONENTS:
-        raise ContinuityError("continuity first component is unknown")
     issue = value.get("authority_issue")
     if not isinstance(issue, dict) or set(issue) != {"number", "repository", "work_id"}:
         raise ContinuityError("continuity authority issue has an invalid shape")
@@ -203,6 +213,40 @@ def load_config(path: Path) -> dict[str, Any]:
         or not WORK_ID_PATTERN.fullmatch(issue["work_id"])
     ):
         raise ContinuityError("continuity authority issue is invalid")
+    work_items = value.get("evidence_work_items")
+    if not isinstance(work_items, list) or not work_items:
+        raise ContinuityError("continuity evidence work items are invalid")
+    work_item_locations: set[tuple[str, int]] = set()
+    for work_item in work_items:
+        if (
+            not isinstance(work_item, dict)
+            or set(work_item) != {"number", "repository", "required_labels", "work_id"}
+            or not isinstance(work_item.get("repository"), str)
+            or not PUBLIC_REPOSITORY_PATTERN.fullmatch(work_item["repository"])
+            or type(work_item.get("number")) is not int
+            or work_item["number"] < 1
+            or not isinstance(work_item.get("work_id"), str)
+            or not WORK_ID_PATTERN.fullmatch(work_item["work_id"])
+            or not isinstance(work_item.get("required_labels"), list)
+            or not all(isinstance(label, str) and label for label in work_item["required_labels"])
+            or len(set(work_item["required_labels"])) != len(work_item["required_labels"])
+            or not {
+                "authority:github",
+                "beta:blocker",
+                "completion:evidence-required",
+                "status:ready",
+            }
+            <= set(work_item["required_labels"])
+        ):
+            raise ContinuityError("continuity evidence work item authority is invalid")
+        location = (work_item["repository"], work_item["number"])
+        if location in work_item_locations or location == (issue["repository"], issue["number"]):
+            raise ContinuityError("continuity evidence work item inventory contains a duplicate authority")
+        work_item_locations.add(location)
+    if not isinstance(value.get("plan_prefix"), str) or not PLAN_PREFIX_PATTERN.fullmatch(value["plan_prefix"]):
+        raise ContinuityError("continuity plan prefix has an invalid identity")
+    if value.get("first_component") not in COMPONENTS:
+        raise ContinuityError("continuity first component is unknown")
     labels = value.get("required_issue_labels")
     if not isinstance(labels, list) or not labels or not all(isinstance(label, str) and label for label in labels):
         raise ContinuityError("continuity required issue labels are invalid")
@@ -229,23 +273,37 @@ def optional_public_json(client: PublicClient, url: str) -> Any | None:
         raise
 
 
+def has_exact_work_id(issue: dict[str, Any], work_id: str) -> bool:
+    body = str(issue.get("body", ""))
+    return body.count(BETA_WORK_ID_MARKER_PREFIX) == 1 and BETA_WORK_ID_MARKER.findall(body) == [work_id]
+
+
+def has_exact_durable_work_id(issue: dict[str, Any], work_id: str) -> bool:
+    body = str(issue.get("body", ""))
+    return body.count(DURABLE_WORK_ID_MARKER_PREFIX) == 1 and DURABLE_WORK_ID_MARKER.findall(body) == [work_id]
+
+
 def authority_issue(config: dict[str, Any], client: PublicClient, *, allow_completed: bool = False) -> dict[str, Any]:
     specification = config["authority_issue"]
     issue = client.json(f"https://api.github.com/repos/{specification['repository']}/issues/{specification['number']}")
     labels = {label.get("name") for label in issue.get("labels", []) if isinstance(label, dict) and label.get("name")}
     missing = set(config["required_issue_labels"]) - labels
-    marker = f"<!-- beta-work-id: {specification['work_id']} -->"
+    exact_work_id = has_exact_work_id(issue, specification["work_id"])
+    required_authority = {
+        label
+        for label in config["required_issue_labels"]
+        if not label.startswith("status:") and not label.startswith("completion:")
+    }
     completed = (
-        allow_completed and issue.get("state") == "closed" and {"status:done", "completion:evidence-verified"} <= labels
+        allow_completed
+        and issue.get("state") == "closed"
+        and required_authority <= labels
+        and {"status:done", "completion:evidence-verified"} <= labels
     )
-    if (
-        (issue.get("state") != "open" and not completed)
-        or (missing and not completed)
-        or marker not in str(issue.get("body", ""))
-    ):
+    if (issue.get("state") != "open" and not completed) or (missing and not completed) or not exact_work_id:
         raise ContinuityError(
             f"authority issue is not ready: state={issue.get('state')}, missing_labels={sorted(missing)}, "
-            f"work_id_marker={marker in str(issue.get('body', ''))}"
+            f"work_id_marker={exact_work_id}"
         )
     return {
         "number": specification["number"],
@@ -306,31 +364,49 @@ def has_routed_blocker_authority(issue: dict[str, Any]) -> bool:
     )
 
 
+def is_exact_routed_blocker(
+    config: dict[str, Any],
+    issue: dict[str, Any],
+    component_name: str,
+    version: str,
+) -> bool:
+    body = issue.get("body")
+    if not isinstance(body, str) or not has_routed_blocker_dependency(config, issue):
+        return False
+    markers = list(ROUTED_BLOCKER_MARKER.finditer(body))
+    return (
+        body.count(ROUTED_BLOCKER_MARKER_PREFIX) == 1
+        and len(markers) == 1
+        and markers[0].group("component") == component_name
+        and markers[0].group("version") == version
+        and VERSION_PATTERN.fullmatch(version) is not None
+    )
+
+
+def has_routed_blocker_dependency(config: dict[str, Any], issue: dict[str, Any]) -> bool:
+    authority = config["authority_issue"]
+    dependency = f"Blocks https://github.com/{authority['repository']}/issues/{authority['number']}."
+    return dependency in str(issue.get("body", ""))
+
+
 def routed_blocker_version(config: dict[str, Any], client: PublicClient, component_name: str) -> str | None:
     repository = COMPONENTS[component_name].repository
     issues = client.json(f"https://api.github.com/repos/{repository}/issues?state=all&per_page=100")
     if not isinstance(issues, list):
         raise ContinuityError(f"{repository} issues response is invalid")
-    authority = config["authority_issue"]
-    dependency = f"Blocks https://github.com/{authority['repository']}/issues/{authority['number']}."
-    marker = re.compile(
-        rf"<!-- beta-continuity-blocker: {re.escape(component_name)}-"
-        r"(?:source-version|occupied-version)-(?P<version>[^ ]+) -->"
-    )
     candidates: list[tuple[int, str]] = []
     for issue in issues:
         if not isinstance(issue, dict) or "pull_request" in issue:
             continue
         body = str(issue.get("body", ""))
-        match = marker.search(body)
-        version = match.group("version") if match else None
+        markers = list(ROUTED_BLOCKER_MARKER.finditer(body))
+        version = markers[0].group("version") if len(markers) == 1 else None
         number = issue.get("number")
         if (
-            dependency in body
+            isinstance(version, str)
+            and is_exact_routed_blocker(config, issue, component_name, version)
             and has_routed_blocker_authority(issue)
             and isinstance(number, int)
-            and isinstance(version, str)
-            and VERSION_PATTERN.fullmatch(version)
         ):
             candidates.append((number, version))
     return min(candidates)[1] if candidates else None
@@ -1120,16 +1196,573 @@ def conformance_evidence(client: PublicClient, plan: dict[str, Any]) -> dict[str
     return None
 
 
-def close_authority_issue(writer: GitHubWriter, config: dict[str, Any], completion: dict[str, Any]) -> None:
+def accepted_qualification_evidence(
+    client: PublicClient,
+    plan: dict[str, Any],
+    accepted_commit: str,
+) -> dict[str, Any]:
+    acceptance = read_public_json_file(client, accepted_commit, "continuity-evidence.json")
+    qualification = read_public_json_file(client, accepted_commit, "target-qualification-evidence.json")
+    targets = qualification.get("targets") if isinstance(qualification, dict) else None
+    controller_run = acceptance.get("github_run") if isinstance(acceptance, dict) else None
+    controller_commit = controller_run.get("sha") if isinstance(controller_run, dict) else None
+    required_targets = set(COMPONENTS) | {"github-control-plane"}
+    if (
+        not isinstance(qualification, dict)
+        or set(qualification) != {"schema", "targets"}
+        or qualification.get("schema") != QUALIFICATION_EVIDENCE_SCHEMA
+        or not isinstance(targets, dict)
+        or not required_targets <= set(targets)
+        or not isinstance(controller_commit, str)
+        or not COMMIT_PATTERN.fullmatch(controller_commit)
+    ):
+        raise ContinuityError("accepted continuity record lacks exact target qualification evidence")
+
+    expected_commits = {name: identity["commit"] for name, identity in plan["components"].items()}
+    expected_commits["github-control-plane"] = controller_commit
+    for name, expected_commit in expected_commits.items():
+        target = targets.get(name)
+        protected = target.get("protected_checks") if isinstance(target, dict) else None
+        successful = target.get("successful_check_runs") if isinstance(target, dict) else None
+        expected_branch = "main" if name == "github-control-plane" else EXPECTED_DEFAULT_BRANCHES[name]
+        if (
+            not isinstance(target, dict)
+            or target.get("branch") != expected_branch
+            or target.get("commit") != expected_commit
+            or not isinstance(protected, list)
+            or not protected
+            or not all(isinstance(check, str) and check for check in protected)
+            or not isinstance(successful, dict)
+            or set(successful) != set(protected)
+            or not all(type(run_id) is int and run_id > 0 for run_id in successful.values())
+        ):
+            raise ContinuityError(f"target qualification evidence for {name} does not prove the exact plan source")
+    return {
+        "commit": accepted_commit,
+        "sha256": manifest_digest(qualification),
+        "tag": phase_tag(plan, "accepted"),
+    }
+
+
+def exact_completion_authority(
+    client: PublicClient,
+    config: dict[str, Any],
+    plan: dict[str, Any],
+    complete_commit: str,
+    noop_commit: str,
+) -> dict[str, Any]:
+    plan_digest = manifest_digest(plan)
+    plan_tag_value = f"{PLAN_TAG_PREFIX}{plan['plan']}"
+    public_plan_record = plan_record(client, plan)
+    if public_plan_record is None:
+        raise ContinuityError("completed continuity plan has no immutable plan artifact")
+    plan_commit = public_plan_record["commit"]
+    recorded_plan = read_public_json_file(client, plan_commit, "release-plan.json")
+    validate_plan(recorded_plan)
+    if canonical_json(recorded_plan) != canonical_json(plan):
+        raise ContinuityError("completed continuity plan artifact differs from the exact accepted plan")
+    plan_record_value = {"tag": plan_tag_value, "commit": plan_commit, "sha256": plan_digest}
+    if public_plan_record != plan_record_value:
+        raise ContinuityError("completed continuity plan record has an invalid public identity")
+
+    accepted_commit = public_phase_commit(client, plan, "accepted")
+    if accepted_commit is None:
+        raise ContinuityError("completed continuity plan has no immutable acceptance artifact")
+    acceptance = accepted_plan_authority(client, plan)
+    if acceptance is None or acceptance["commit"] != accepted_commit:
+        raise ContinuityError("completed continuity acceptance does not match the exact plan")
+    qualification = accepted_qualification_evidence(client, plan, accepted_commit)
+
+    completion_tag = f"release-candidate/{plan['channel']}/{plan['plan']}"
+    completion_commit = resolve_tag(client, CONTROL_REPOSITORY, completion_tag)
+    if completion_commit is None:
+        raise ContinuityError("completed continuity plan has no public verification artifact")
+    completion_artifact = read_public_json_file(client, completion_commit, "release-candidate.json")
+    completion_verification = read_public_json_file(client, completion_commit, "verification.json")
+    expected_release_plan = {"tag": plan_tag_value, "commit": plan_commit, "sha256": plan_digest}
+    completion_keys = {"schema", "candidate", "channel", "release_plan", "components"}
+    if not isinstance(completion_artifact, dict) or (
+        frozenset(completion_artifact)
+        not in {frozenset(completion_keys), frozenset(completion_keys | {"release_preparation_sha256"})}
+        or completion_artifact.get("schema") != "durable-workflow.release-candidate/v1"
+        or completion_artifact.get("candidate") != plan["plan"]
+        or completion_artifact.get("channel") != plan["channel"]
+        or completion_artifact.get("release_plan") != expected_release_plan
+        or completion_artifact.get("components") != plan["components"]
+    ):
+        raise ContinuityError("public completion artifact differs from the exact plan")
+    public_verification = (
+        completion_verification.get("public_verification") if isinstance(completion_verification, dict) else None
+    )
+    completion_verification_keys = {
+        "schema",
+        "candidate",
+        "channel",
+        "release_plan_sha256",
+        "public_verification",
+    }
+    if (
+        not isinstance(completion_verification, dict)
+        or frozenset(completion_verification)
+        not in {
+            frozenset(completion_verification_keys),
+            frozenset(completion_verification_keys | {"release_preparation_sha256"}),
+        }
+        or completion_verification.get("schema") != "durable-workflow.release-candidate-verification/v1"
+        or completion_verification.get("candidate") != plan["plan"]
+        or completion_verification.get("channel") != plan["channel"]
+        or completion_verification.get("release_plan_sha256") != plan_digest
+        or completion_verification.get("release_preparation_sha256")
+        != completion_artifact.get("release_preparation_sha256")
+        or not isinstance(public_verification, dict)
+    ):
+        raise ContinuityError("public completion verification differs from the exact plan")
+    try:
+        validate_verification(public_verification, candidate_manifest(plan))
+    except CandidateError as error:
+        raise ContinuityError(f"public completion verification does not prove exact sources: {error}") from error
+
+    published, pending = component_publications(client, plan)
+    if pending or set(published) != set(COMPONENTS):
+        raise ContinuityError(f"completed continuity sources are not all public: pending={sorted(pending)}")
+    live_conformance = conformance_evidence(client, plan)
+    if live_conformance is None:
+        raise ContinuityError("completed continuity plan has no live exact-tuple conformance evidence")
+
+    complete_evidence = read_public_json_file(client, complete_commit, "continuity-evidence.json")
+    complete_plan = read_public_json_file(client, complete_commit, "release-plan.json")
+    expected_phase_record = {"tag": completion_tag, "commit": completion_commit}
+    if (
+        canonical_json(complete_plan) != canonical_json(plan)
+        or complete_evidence.get("schema") != EVIDENCE_SCHEMA
+        or complete_evidence.get("drill") != config["drill"]
+        or complete_evidence.get("phase") != "complete"
+        or complete_evidence.get("outcome") != "passed"
+        or complete_evidence.get("release_plan") != {"tag": plan_tag_value, "sha256": plan_digest}
+        or complete_evidence.get("accepted_phase") != phase_tag(plan, "accepted")
+        or complete_evidence.get("interrupted_phase") != phase_tag(plan, "interrupted")
+        or complete_evidence.get("resumed_phase") != phase_tag(plan, "resumed")
+        or complete_evidence.get("plan_record") != plan_record_value
+        or complete_evidence.get("public_verification") != expected_phase_record
+        or complete_evidence.get("conformance") != live_conformance
+        or complete_evidence.get("published_components") != published
+    ):
+        raise ContinuityError("immutable completion phase does not prove exact plan artifacts and sources")
+
+    noop_evidence = read_public_json_file(client, noop_commit, "continuity-evidence.json")
+    noop_plan = read_public_json_file(client, noop_commit, "release-plan.json")
+    successful_noop = noop_evidence.get("successful_no_op_run") if isinstance(noop_evidence, dict) else None
+    if (
+        canonical_json(noop_plan) != canonical_json(plan)
+        or noop_evidence.get("schema") != EVIDENCE_SCHEMA
+        or noop_evidence.get("drill") != config["drill"]
+        or noop_evidence.get("phase") != "no-op-confirmed"
+        or noop_evidence.get("outcome") != "successful-scheduled-no-op-confirmed"
+        or noop_evidence.get("release_plan") != {"tag": plan_tag_value, "sha256": plan_digest}
+        or noop_evidence.get("complete_phase") != {"tag": phase_tag(plan, "complete"), "commit": complete_commit}
+        or not isinstance(successful_noop, dict)
+        or successful_noop.get("conclusion") != "success"
+        or type(successful_noop.get("id")) is not int
+        or not isinstance(successful_noop.get("url"), str)
+    ):
+        raise ContinuityError("scheduled no-op evidence does not prove the exact completed continuity plan")
+
+    stable_tags = {
+        plan_tag_value: plan_commit,
+        phase_tag(plan, "accepted"): accepted_commit,
+        phase_tag(plan, "complete"): complete_commit,
+        phase_tag(plan, "no-op-confirmed"): noop_commit,
+        completion_tag: completion_commit,
+    }
+    for tag, expected_commit in stable_tags.items():
+        if resolve_tag(client, CONTROL_REPOSITORY, tag) != expected_commit:
+            raise ContinuityError(f"public evidence tag {tag} moved during completion validation")
+    return {
+        "complete_phase": {"tag": phase_tag(plan, "complete"), "commit": complete_commit},
+        "no_op_phase": {"tag": phase_tag(plan, "no-op-confirmed"), "commit": noop_commit},
+        "plan": plan,
+        "plan_record": plan_record_value,
+        "public_verification": expected_phase_record,
+        "qualification": qualification,
+        "sources": published,
+    }
+
+
+def completion_evidence_report(marker: str, completion: dict[str, Any], closing_lines: list[str]) -> str:
+    plan = completion["plan"]
+    plan_record_value = completion["plan_record"]
+    verification = completion["public_verification"]
+    qualification = completion["qualification"]
+    versions = ", ".join(f"{name} `{identity['version']}`" for name, identity in sorted(plan["components"].items()))
+    lines = [
+        marker,
+        "Exact GitHub continuity evidence is verified and live.",
+        "",
+        (
+            f"- Plan: [`{plan_record_value['tag']}`](https://github.com/{CONTROL_REPOSITORY}/tree/"
+            f"{urllib.parse.quote(plan_record_value['tag'], safe='/')}) at `{plan_record_value['commit']}`."
+        ),
+        (
+            f"- Public verification: [`{verification['tag']}`](https://github.com/{CONTROL_REPOSITORY}/tree/"
+            f"{urllib.parse.quote(verification['tag'], safe='/')}) at `{verification['commit']}`."
+        ),
+        (
+            f"- Qualification: [`{qualification['tag']}`](https://github.com/{CONTROL_REPOSITORY}/tree/"
+            f"{urllib.parse.quote(qualification['tag'], safe='/')}) at `{qualification['commit']}` with SHA-256 "
+            f"`{qualification['sha256']}`."
+        ),
+        f"- Published versions: {versions}.",
+        *closing_lines,
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def blocker_completion_report_body(
+    config: dict[str, Any],
+    completion: dict[str, Any],
+    component_name: str,
+    repository: str,
+    number: int,
+) -> str:
+    plan = completion["plan"]
+    identity = plan["components"][component_name]
+    marker = (
+        f"<!-- beta-continuity-blocker-closure: {config['drill']}:{repository}:{number}:"
+        f"{plan['plan']}:{manifest_digest(plan)} -->"
+    )
+    return completion_evidence_report(
+        marker,
+        completion,
+        [
+            (
+                f"- This routed blocker proves {component_name} `{identity['version']}` from exact source "
+                f"`{identity['commit']}`."
+            )
+        ],
+    )
+
+
+def work_item_completion_report_body(
+    config: dict[str, Any],
+    completion: dict[str, Any],
+    specification: dict[str, Any],
+) -> str:
+    plan = completion["plan"]
+    marker = (
+        f"<!-- beta-continuity-work-item-closure: {specification['work_id']}:{plan['plan']}:{manifest_digest(plan)} -->"
+    )
+    return completion_evidence_report(
+        marker,
+        completion,
+        [f"- Trusted work item `{specification['work_id']}` is complete from this exact evidence."],
+    )
+
+
+def completion_report_body(
+    config: dict[str, Any],
+    completion: dict[str, Any],
+    blockers: list[dict[str, Any]],
+    work_items: list[dict[str, Any]],
+) -> str:
+    plan = completion["plan"]
+    marker = f"<!-- beta-continuity-closure: {config['drill']}:{plan['plan']}:{manifest_digest(plan)} -->"
+    blocker_summary = (
+        ", ".join(f"[{item['repository']}#{item['number']}]({item['url']})" for item in blockers)
+        if blockers
+        else "No exact routed blocker issues were present."
+    )
+    work_item_summary = ", ".join(f"[{item['repository']}#{item['number']}]({item['url']})" for item in work_items)
+    return completion_evidence_report(
+        marker,
+        completion,
+        [
+            f"- Routed blockers completed before this parent: {blocker_summary}",
+            f"- Evidence work items completed before this parent: {work_item_summary}",
+        ],
+    )
+
+
+def ensure_exact_completion_comment(writer: GitHubWriter, path: str, body: str) -> None:
+    comments = writer.list(path)
+    if not any(comment.get("body") == body for comment in comments if isinstance(comment, dict)):
+        writer.request("POST", path, {"body": body})
+
+
+def require_exact_completion_comment(writer: GitHubWriter, path: str, body: str) -> None:
+    comments = writer.list(path)
+    if not any(comment.get("body") == body for comment in comments if isinstance(comment, dict)):
+        raise ContinuityError(f"GitHub issue evidence comment did not persist at {path}")
+
+
+def converge_routed_blockers(
+    writer: GitHubWriter,
+    config: dict[str, Any],
+    completion: dict[str, Any],
+) -> list[dict[str, Any]]:
+    plan = completion.get("plan")
+    if not isinstance(plan, dict) or plan.get("components") is None:
+        raise ContinuityError("verified completion evidence has no exact plan")
+    routed: list[tuple[str, str, dict[str, Any]]] = []
+    for component_name, identity in plan["components"].items():
+        repository = COMPONENTS[component_name].repository
+        issues = writer.list(f"/repos/{repository}/issues?state=all")
+        for issue in issues:
+            if (
+                not isinstance(issue, dict)
+                or "pull_request" in issue
+                or not isinstance(issue.get("number"), int)
+                or not has_routed_blocker_authority(issue)
+                or not has_routed_blocker_dependency(config, issue)
+            ):
+                continue
+            if is_exact_routed_blocker(config, issue, component_name, identity["version"]):
+                routed.append((component_name, repository, issue))
+                continue
+            labels = {label["name"] for label in issue["labels"]}
+            if issue.get("state") != "closed" or "status:ready" in labels:
+                raise ContinuityError(
+                    f"active routed blocker {repository}#{issue['number']} differs from the exact completed plan"
+                )
+
+    result: list[dict[str, Any]] = []
+    for component_name, repository, issue in sorted(routed, key=lambda item: (item[1], item[2]["number"])):
+        number = issue["number"]
+        path = f"/repos/{repository}/issues/{number}"
+        comment_path = f"{path}/comments"
+        current = writer.get(path)
+        if (
+            not isinstance(current, dict)
+            or not has_routed_blocker_authority(current)
+            or not is_exact_routed_blocker(
+                config,
+                current,
+                component_name,
+                plan["components"][component_name]["version"],
+            )
+        ):
+            raise ContinuityError(f"routed blocker {repository}#{number} lost its trusted exact authority")
+        report = blocker_completion_report_body(config, completion, component_name, repository, number)
+        ensure_exact_completion_comment(writer, comment_path, report)
+        labels = {label["name"] for label in current["labels"]}
+        desired_labels = {label for label in labels if not label.startswith("status:")}
+        desired_labels.discard("completion:evidence-required")
+        desired_labels.update({"completion:evidence-verified", "status:done"})
+        if current.get("state") != "closed" or labels != desired_labels:
+            writer.request(
+                "PATCH",
+                path,
+                {"labels": sorted(desired_labels), "state": "closed"},
+            )
+        live = writer.get(path)
+        live_labels = {
+            label.get("name") for label in live.get("labels", []) if isinstance(label, dict) and label.get("name")
+        }
+        if (
+            live.get("state") != "closed"
+            or not {"completion:evidence-verified", "status:done"} <= live_labels
+            or not has_routed_blocker_authority(live)
+            or not is_exact_routed_blocker(config, live, component_name, plan["components"][component_name]["version"])
+        ):
+            raise ContinuityError(f"routed blocker {repository}#{number} did not converge to verified completion")
+        require_exact_completion_comment(writer, comment_path, report)
+        result.append(
+            {
+                "component": component_name,
+                "labels": sorted(live_labels),
+                "number": number,
+                "repository": repository,
+                "state": "closed",
+                "url": live.get("html_url") or f"https://github.com/{repository}/issues/{number}",
+                "version": plan["components"][component_name]["version"],
+            }
+        )
+    return result
+
+
+def validate_evidence_work_item(
+    specification: dict[str, Any],
+    issue: dict[str, Any],
+    *,
+    require_completed: bool = False,
+) -> set[str]:
+    labels = {label.get("name") for label in issue.get("labels", []) if isinstance(label, dict) and label.get("name")}
+    required = set(specification["required_labels"])
+    authority = {label for label in required if not label.startswith("status:") and not label.startswith("completion:")}
+    statuses = {label for label in labels if label.startswith("status:")}
+    completions = {label for label in labels if label.startswith("completion:")}
+    ready = (
+        issue.get("state") == "open"
+        and required <= labels
+        and statuses == {"status:ready"}
+        and completions == {"completion:evidence-required"}
+    )
+    completed = (
+        issue.get("state") == "closed"
+        and authority <= labels
+        and statuses == {"status:done"}
+        and completions == {"completion:evidence-verified"}
+    )
+    if not has_exact_durable_work_id(issue, specification["work_id"]) or (
+        not completed if require_completed else not (ready or completed)
+    ):
+        raise ContinuityError(
+            f"trusted evidence work item {specification['repository']}#{specification['number']} "
+            "does not match its configured work-id, labels, and lifecycle"
+        )
+    return labels
+
+
+def load_evidence_work_items(
+    writer: GitHubWriter,
+    config: dict[str, Any],
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    work_items: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for specification in config["evidence_work_items"]:
+        path = f"/repos/{specification['repository']}/issues/{specification['number']}"
+        issue = writer.get(path)
+        if not isinstance(issue, dict):
+            raise ContinuityError(f"trusted evidence work item {path} has an invalid GitHub response")
+        validate_evidence_work_item(specification, issue)
+        work_items.append((specification, issue))
+    return work_items
+
+
+def converge_evidence_work_items(
+    writer: GitHubWriter,
+    config: dict[str, Any],
+    completion: dict[str, Any],
+    work_items: list[tuple[dict[str, Any], dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for specification, _issue in work_items:
+        repository = specification["repository"]
+        number = specification["number"]
+        path = f"/repos/{repository}/issues/{number}"
+        comment_path = f"{path}/comments"
+        current = writer.get(path)
+        if not isinstance(current, dict):
+            raise ContinuityError(f"trusted evidence work item {path} has an invalid GitHub response")
+        labels = validate_evidence_work_item(specification, current)
+        report = work_item_completion_report_body(config, completion, specification)
+        ensure_exact_completion_comment(writer, comment_path, report)
+        desired_labels = {
+            label for label in labels if not label.startswith("status:") and not label.startswith("completion:")
+        }
+        desired_labels.update({"completion:evidence-verified", "status:done"})
+        if current.get("state") != "closed" or labels != desired_labels:
+            writer.request("PATCH", path, {"labels": sorted(desired_labels), "state": "closed"})
+        live = writer.get(path)
+        live_labels = validate_evidence_work_item(specification, live, require_completed=True)
+        require_exact_completion_comment(writer, comment_path, report)
+        result.append(
+            {
+                "labels": sorted(live_labels),
+                "number": number,
+                "repository": repository,
+                "state": "closed",
+                "url": live.get("html_url") or f"https://github.com/{repository}/issues/{number}",
+                "work_id": specification["work_id"],
+            }
+        )
+    return result
+
+
+def close_authority_issue(
+    writer: GitHubWriter,
+    config: dict[str, Any],
+    completion: dict[str, Any],
+) -> dict[str, Any]:
     issue = config["authority_issue"]
     path = f"/repos/{issue['repository']}/issues/{issue['number']}"
     current = writer.get(path)
+    if not isinstance(current, dict):
+        raise ContinuityError("parent continuity issue has an invalid GitHub response")
+    current_labels = {
+        label.get("name") for label in current.get("labels", []) if isinstance(label, dict) and label.get("name")
+    }
+    required_parent_labels = set(config["required_issue_labels"])
+    authority_labels = {
+        label
+        for label in required_parent_labels
+        if not label.startswith("status:") and not label.startswith("completion:")
+    }
+    parent_statuses = {label for label in current_labels if label.startswith("status:")}
+    parent_completions = {label for label in current_labels if label.startswith("completion:")}
+    parent_ready = (
+        current.get("state") == "open"
+        and required_parent_labels <= current_labels
+        and parent_statuses == {"status:ready"}
+        and parent_completions == {"completion:evidence-required"}
+    )
+    parent_completed = (
+        current.get("state") == "closed"
+        and authority_labels <= current_labels
+        and parent_statuses == {"status:done"}
+        and parent_completions == {"completion:evidence-verified"}
+    )
+    if not has_exact_work_id(current, issue["work_id"]) or not (parent_ready or parent_completed):
+        raise ContinuityError("parent continuity issue lost its protected authority before completion")
+
+    evidence_work_items = load_evidence_work_items(writer, config)
+    blockers = converge_routed_blockers(writer, config, completion)
+    completed_work_items = converge_evidence_work_items(writer, config, completion, evidence_work_items)
+    current = writer.get(path)
+    if not isinstance(current, dict):
+        raise ContinuityError("parent continuity issue has an invalid GitHub response")
+    current_labels = {
+        label.get("name") for label in current.get("labels", []) if isinstance(label, dict) and label.get("name")
+    }
+    parent_statuses = {label for label in current_labels if label.startswith("status:")}
+    parent_completions = {label for label in current_labels if label.startswith("completion:")}
+    parent_ready = (
+        current.get("state") == "open"
+        and required_parent_labels <= current_labels
+        and parent_statuses == {"status:ready"}
+        and parent_completions == {"completion:evidence-required"}
+    )
+    parent_completed = (
+        current.get("state") == "closed"
+        and authority_labels <= current_labels
+        and parent_statuses == {"status:done"}
+        and parent_completions == {"completion:evidence-verified"}
+    )
+    if not has_exact_work_id(current, issue["work_id"]) or not (parent_ready or parent_completed):
+        raise ContinuityError("parent continuity issue lost its protected authority before completion")
+    comment_path = f"{path}/comments"
+    report = completion_report_body(config, completion, blockers, completed_work_items)
+    ensure_exact_completion_comment(writer, comment_path, report)
+
     labels = {label.get("name") for label in current.get("labels", []) if isinstance(label, dict) and label.get("name")}
     labels.discard("status:ready")
     labels.discard("status:blocked")
     labels.discard("completion:evidence-required")
     labels.update({"status:done", "completion:evidence-verified"})
-    writer.request("PATCH", path, {"labels": sorted(labels), "state": "closed"})
+    if current.get("state") != "closed" or labels != current_labels:
+        writer.request("PATCH", path, {"labels": sorted(labels), "state": "closed"})
+    live_parent = writer.get(path)
+    live_labels = {
+        label.get("name") for label in live_parent.get("labels", []) if isinstance(label, dict) and label.get("name")
+    }
+    if (
+        live_parent.get("state") != "closed"
+        or authority_labels - live_labels
+        or {label for label in live_labels if label.startswith("status:")} != {"status:done"}
+        or {label for label in live_labels if label.startswith("completion:")} != {"completion:evidence-verified"}
+        or not has_exact_work_id(live_parent, issue["work_id"])
+    ):
+        raise ContinuityError("parent continuity issue did not converge to verified completion")
+    require_exact_completion_comment(writer, comment_path, report)
+    return {
+        "blockers": blockers,
+        "evidence_work_items": completed_work_items,
+        "parent": {
+            "labels": sorted(live_labels),
+            "number": issue["number"],
+            "repository": issue["repository"],
+            "state": "closed",
+            "url": live_parent.get("html_url") or f"https://github.com/{issue['repository']}/issues/{issue['number']}",
+        },
+    }
 
 
 def advance_command(
@@ -1162,6 +1795,8 @@ def advance_command(
                 "authority issue closed without immutable complete and scheduled no-op continuity phases"
             )
         evidence = read_public_json_file(client, noop_commit, "continuity-evidence.json")
+        completion_authority = exact_completion_authority(client, config, plan, complete_commit, noop_commit)
+        close_authority_issue(writer, config, completion_authority)
         state_path.write_bytes(canonical_json(evidence))
         write_github_output(
             output,
@@ -1245,9 +1880,11 @@ def advance_command(
                 noop_record,
                 "A later scheduled controller run found the completed exact plan and performed no release work.",
             )
+            noop_commit = noop_record["commit"]
         else:
             evidence = read_public_json_file(client, noop_commit, "continuity-evidence.json")
-        close_authority_issue(writer, config, evidence)
+        completion_authority = exact_completion_authority(client, config, plan, complete_commit, noop_commit)
+        close_authority_issue(writer, config, completion_authority)
         state_path.write_bytes(canonical_json(evidence))
         write_github_output(
             output,
@@ -1534,27 +2171,33 @@ def route_blockers(config_path: Path, state_path: Path) -> None:
     )
     for blocker in blockers:
         repository = blocker["repository"]
-        marker = f"<!-- beta-continuity-blocker: {blocker['slug']} -->"
         issues = writer.list(f"/repos/{repository}/issues?state=all")
         routed = [
             (issue["number"], issue)
             for issue in issues
             if isinstance(issue, dict)
             and "pull_request" not in issue
-            and marker in str(issue.get("body", ""))
+            and is_exact_routed_blocker(
+                config,
+                issue,
+                blocker["component"],
+                blocker["version"],
+            )
             and has_routed_blocker_authority(issue)
             and isinstance(issue.get("number"), int)
         ]
         if routed:
             number, issue = min(routed, key=lambda item: item[0])
             labels = {label["name"] for label in issue["labels"]}
-            if issue.get("state") != "open" or "status:ready" not in labels:
-                labels = {label for label in labels if not label.startswith("status:")}
-                labels.add("status:ready")
+            desired_labels = {
+                label for label in labels if not label.startswith("status:") and not label.startswith("completion:")
+            }
+            desired_labels.add("status:ready")
+            if issue.get("state") != "open" or labels != desired_labels:
                 writer.request(
                     "PATCH",
                     f"/repos/{repository}/issues/{number}",
-                    {"state": "open", "labels": sorted(labels)},
+                    {"state": "open", "labels": sorted(desired_labels)},
                 )
             continue
         component = blocker["component"]

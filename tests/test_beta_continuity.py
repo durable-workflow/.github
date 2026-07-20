@@ -19,8 +19,10 @@ from scripts.beta_continuity import (
     advance_command,
     authority_issue,
     build_plan,
+    close_authority_issue,
     dispatch_accepted_continuity,
     dispatch_recovery,
+    exact_completion_authority,
     load_config,
     next_version,
     phase_tag,
@@ -32,6 +34,7 @@ from scripts.beta_continuity import (
     select_versions,
     validate_interrupted_evidence,
 )
+from scripts.release_plan import candidate_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 ROUTED_BLOCKER_LABELS = (
@@ -155,12 +158,43 @@ class BetaContinuityTest(unittest.TestCase):
 
         self.assertEqual("workspace-unavailable-beta-continuity-recovery", config["drill"])
         self.assertEqual("durable-workflow/.github", config["authority_issue"]["repository"])
+        self.assertEqual(
+            {
+                10: "beta-continuity-post-acceptance-publication",
+                11: "continuity-converges-routed-release-blockers",
+            },
+            {item["number"]: item["work_id"] for item in config["evidence_work_items"]},
+        )
         self.assertEqual("workflow", config["first_component"])
         self.assertEqual("workspace-unavailable-recovery", config["plan_prefix"])
         self.assertEqual(
             "beta-continuity/workspace-unavailable-0b191da0d140/interrupted",
             config["superseded_interruption"]["tag"],
         )
+
+    def test_evidence_work_item_inventory_is_declarative_and_unique(self) -> None:
+        config = load_config(ROOT / "beta-continuity" / "config.json")
+        future = {
+            "number": 12,
+            "repository": "durable-workflow/.github",
+            "required_labels": [
+                "authority:github",
+                "beta:blocker",
+                "completion:evidence-required",
+                "status:ready",
+            ],
+            "work_id": "future-evidence-required-correction",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "config.json"
+            config["evidence_work_items"].append(future)
+            path.write_text(json.dumps(config), encoding="utf-8")
+            self.assertEqual(3, len(load_config(path)["evidence_work_items"]))
+
+            config["evidence_work_items"].append({**future, "work_id": "duplicate-location"})
+            path.write_text(json.dumps(config), encoding="utf-8")
+            with self.assertRaisesRegex(ContinuityError, "duplicate authority"):
+                load_config(path)
 
     def test_version_allocation_uses_the_next_numeric_public_identity(self) -> None:
         self.assertEqual(
@@ -287,12 +321,8 @@ class BetaContinuityTest(unittest.TestCase):
             return value
 
         valid_labels = [{"name": label} for label in ROUTED_BLOCKER_LABELS]
-        completed_labels = [
-            {"name": label} for label in (*ROUTED_BLOCKER_LABELS[:-1], "status:done")
-        ]
-        blocked_labels = [
-            {"name": label} for label in (*ROUTED_BLOCKER_LABELS[:-1], "status:blocked")
-        ]
+        completed_labels = [{"name": label} for label in (*ROUTED_BLOCKER_LABELS[:-1], "status:done")]
+        blocked_labels = [{"name": label} for label in (*ROUTED_BLOCKER_LABELS[:-1], "status:blocked")]
         adversarial_issues = [
             issue(1, "0.4.900", labels=[]),
             issue(2, "0.4.901", labels=valid_labels, pull_request=True),
@@ -335,10 +365,7 @@ class BetaContinuityTest(unittest.TestCase):
                     },
                     {
                         "body": marker,
-                        "labels": [
-                            {"name": label}
-                            for label in (*ROUTED_BLOCKER_LABELS[:-1], "status:blocked")
-                        ],
+                        "labels": [{"name": label} for label in (*ROUTED_BLOCKER_LABELS[:-1], "status:blocked")],
                         "number": 2,
                     },
                     {
@@ -395,7 +422,10 @@ class BetaContinuityTest(unittest.TestCase):
         self.assertEqual(list(ROUTED_BLOCKER_LABELS), writer.created[0]["labels"])
 
     def test_completed_protected_blocker_is_reopened_and_reactivated(self) -> None:
-        marker = "<!-- beta-continuity-blocker: sdk-python-source-version-0.4.103 -->"
+        marker = (
+            "Blocks https://github.com/durable-workflow/.github/issues/2.\n\n"
+            "<!-- beta-continuity-blocker: sdk-python-source-version-0.4.103 -->"
+        )
 
         class RoutingWriter:
             def __init__(self) -> None:
@@ -505,6 +535,412 @@ class BetaContinuityTest(unittest.TestCase):
             self.assertRaisesRegex(ContinuityError, "complete publication baseline"),
         ):
             accepted_publication_state(object(), plan, "a" * 40)  # type: ignore[arg-type]
+
+    def test_terminal_authority_binds_plan_source_and_qualification_artifacts(self) -> None:
+        config = load_config(ROOT / "beta-continuity" / "config.json")
+        plan = continuity_plan("workspace-unavailable-recovery-test")
+        plan_commit = "1" * 40
+        accepted_commit = "2" * 40
+        completion_commit = "3" * 40
+        complete_commit = "4" * 40
+        noop_commit = "5" * 40
+        controller_commit = "6" * 40
+        plan_tag = f"release-plan/{plan['plan']}"
+        completion_tag = f"release-candidate/{plan['channel']}/{plan['plan']}"
+        published = {
+            name: {
+                "commit": identity["commit"],
+                "published_at": "2026-07-20T10:10:00Z",
+                "release_id": index + 1,
+                "url": f"https://github.com/{COMPONENTS[name].repository}/releases/tag/{identity['version']}",
+                "version": identity["version"],
+            }
+            for index, (name, identity) in enumerate(plan["components"].items())
+        }
+        candidate = candidate_manifest(plan)
+        public_verification = {
+            "schema": "durable-workflow.beta-candidate-verification/v1",
+            "candidate": candidate["candidate"],
+            "manifest_sha256": manifest_digest(candidate),
+            "verified_at": "2026-07-20T10:20:00Z",
+            "outcome": "verified",
+            "components": {
+                name: {"commit": identity["commit"], "outcome": "verified", "version": identity["version"]}
+                for name, identity in plan["components"].items()
+            },
+        }
+        qualification_targets = {
+            name: {
+                "branch": "v2" if name in {"workflow", "waterline"} else "main",
+                "commit": identity["commit"],
+                "protected_checks": ["qualification"],
+                "successful_check_runs": {"qualification": index + 10},
+            }
+            for index, (name, identity) in enumerate(plan["components"].items())
+        }
+        qualification_targets["github-control-plane"] = {
+            "branch": "main",
+            "commit": controller_commit,
+            "protected_checks": ["qualification"],
+            "successful_check_runs": {"qualification": 99},
+        }
+        qualification = {
+            "schema": "durable-workflow.github-target-qualification/v1",
+            "targets": qualification_targets,
+        }
+        conformance = {
+            "release": "https://github.com/durable-workflow/.github/releases/tag/conformance",
+            "run": {"id": 300},
+            "tag": "beta-conformance/alpha-workspace-unavailable-recovery-test/pass",
+        }
+        plan_record = {"tag": plan_tag, "commit": plan_commit, "sha256": manifest_digest(plan)}
+        acceptance = {
+            "schema": EVIDENCE_SCHEMA,
+            "github_run": {"sha": controller_commit},
+        }
+        completion_artifact = {
+            "schema": "durable-workflow.release-candidate/v1",
+            "candidate": plan["plan"],
+            "channel": plan["channel"],
+            "release_plan": {"tag": plan_tag, "commit": plan_commit, "sha256": manifest_digest(plan)},
+            "components": plan["components"],
+        }
+        completion_verification = {
+            "schema": "durable-workflow.release-candidate-verification/v1",
+            "candidate": plan["plan"],
+            "channel": plan["channel"],
+            "release_plan_sha256": manifest_digest(plan),
+            "public_verification": public_verification,
+        }
+        complete_evidence = {
+            "schema": EVIDENCE_SCHEMA,
+            "drill": config["drill"],
+            "phase": "complete",
+            "outcome": "passed",
+            "release_plan": {"tag": plan_tag, "sha256": manifest_digest(plan)},
+            "accepted_phase": f"beta-continuity/{plan['plan']}/accepted",
+            "interrupted_phase": f"beta-continuity/{plan['plan']}/interrupted",
+            "resumed_phase": f"beta-continuity/{plan['plan']}/resumed",
+            "plan_record": plan_record,
+            "public_verification": {"tag": completion_tag, "commit": completion_commit},
+            "conformance": conformance,
+            "published_components": published,
+        }
+        noop_evidence = {
+            "schema": EVIDENCE_SCHEMA,
+            "drill": config["drill"],
+            "phase": "no-op-confirmed",
+            "outcome": "successful-scheduled-no-op-confirmed",
+            "release_plan": {"tag": plan_tag, "sha256": manifest_digest(plan)},
+            "complete_phase": {
+                "tag": f"beta-continuity/{plan['plan']}/complete",
+                "commit": complete_commit,
+            },
+            "successful_no_op_run": {
+                "conclusion": "success",
+                "created_at": "2026-07-20T10:30:00Z",
+                "id": 301,
+                "url": "https://github.com/durable-workflow/.github/actions/runs/301",
+            },
+        }
+        records = {
+            (plan_commit, "release-plan.json"): plan,
+            (accepted_commit, "continuity-evidence.json"): acceptance,
+            (accepted_commit, "target-qualification-evidence.json"): qualification,
+            (completion_commit, "release-candidate.json"): completion_artifact,
+            (completion_commit, "verification.json"): completion_verification,
+            (complete_commit, "continuity-evidence.json"): complete_evidence,
+            (complete_commit, "release-plan.json"): plan,
+            (noop_commit, "continuity-evidence.json"): noop_evidence,
+            (noop_commit, "release-plan.json"): plan,
+        }
+        tags = {
+            plan_tag: plan_commit,
+            f"beta-continuity/{plan['plan']}/accepted": accepted_commit,
+            f"beta-continuity/{plan['plan']}/complete": complete_commit,
+            f"beta-continuity/{plan['plan']}/no-op-confirmed": noop_commit,
+            completion_tag: completion_commit,
+        }
+
+        def read_record(_client: object, commit: str, filename: str) -> object:
+            return records[(commit, filename)]
+
+        with (
+            patch("scripts.beta_continuity.resolve_tag", side_effect=lambda _client, _repo, tag: tags.get(tag)),
+            patch("scripts.beta_continuity.plan_record", return_value=plan_record),
+            patch(
+                "scripts.beta_continuity.public_phase_commit",
+                side_effect=lambda _client, _plan, phase: tags.get(f"beta-continuity/{plan['plan']}/{phase}"),
+            ),
+            patch(
+                "scripts.beta_continuity.accepted_plan_authority",
+                return_value={"commit": accepted_commit},
+            ),
+            patch("scripts.beta_continuity.read_public_json_file", side_effect=read_record),
+            patch("scripts.beta_continuity.component_publications", return_value=(published, [])),
+            patch("scripts.beta_continuity.conformance_evidence", return_value=conformance),
+        ):
+            authority = exact_completion_authority(
+                object(),  # type: ignore[arg-type]
+                config,
+                plan,
+                complete_commit,
+                noop_commit,
+            )
+            self.assertEqual(plan_record, authority["plan_record"])
+            self.assertEqual(manifest_digest(qualification), authority["qualification"]["sha256"])
+
+            qualification_targets["sdk-python"]["commit"] = "f" * 40
+            with self.assertRaisesRegex(ContinuityError, "sdk-python.*exact plan source"):
+                exact_completion_authority(
+                    object(),  # type: ignore[arg-type]
+                    config,
+                    plan,
+                    complete_commit,
+                    noop_commit,
+                )
+
+    def test_terminal_authority_fails_closed_without_public_artifact_evidence(self) -> None:
+        config = load_config(ROOT / "beta-continuity" / "config.json")
+        plan = continuity_plan("workspace-unavailable-recovery-test")
+        plan_record = {
+            "tag": f"release-plan/{plan['plan']}",
+            "commit": "1" * 40,
+            "sha256": manifest_digest(plan),
+        }
+
+        with (
+            patch("scripts.beta_continuity.plan_record", return_value=plan_record),
+            patch("scripts.beta_continuity.read_public_json_file", side_effect=[plan, None, {}]),
+            patch("scripts.beta_continuity.public_phase_commit", return_value="2" * 40),
+            patch("scripts.beta_continuity.accepted_plan_authority", return_value={"commit": "2" * 40}),
+            patch("scripts.beta_continuity.accepted_qualification_evidence", return_value={}),
+            patch("scripts.beta_continuity.resolve_tag", return_value="3" * 40),
+            self.assertRaisesRegex(ContinuityError, "public completion artifact differs from the exact plan"),
+        ):
+            exact_completion_authority(
+                object(),  # type: ignore[arg-type]
+                config,
+                plan,
+                "4" * 40,
+                "5" * 40,
+            )
+
+    def test_completion_fails_closed_when_a_configured_evidence_work_item_is_missing(self) -> None:
+        config = load_config(ROOT / "beta-continuity" / "config.json")
+        parent_specification = config["authority_issue"]
+        parent = {
+            "body": f"<!-- beta-work-id: {parent_specification['work_id']} -->",
+            "labels": [{"name": label} for label in config["required_issue_labels"]],
+            "number": parent_specification["number"],
+            "state": "open",
+        }
+        present_specification = config["evidence_work_items"][0]
+        present = {
+            "body": "<!-- durable-workflow-work-id: beta-continuity-post-acceptance-publication -->",
+            "labels": [{"name": label} for label in present_specification["required_labels"]],
+            "number": present_specification["number"],
+            "state": "open",
+        }
+        missing_specification = config["evidence_work_items"][1]
+        parent_path = (
+            f"/repos/{parent_specification['repository']}/issues/{parent_specification['number']}"
+        )
+        present_path = (
+            f"/repos/{present_specification['repository']}/issues/{present_specification['number']}"
+        )
+        missing_path = (
+            f"/repos/{missing_specification['repository']}/issues/{missing_specification['number']}"
+        )
+
+        class MissingWorkItemWriter:
+            def __init__(self) -> None:
+                self.requests: list[tuple[str, str]] = []
+
+            @staticmethod
+            def get(path: str) -> dict[str, object] | None:
+                if path == parent_path:
+                    return parent
+                if path == present_path:
+                    return present
+                if path == missing_path:
+                    return None
+                raise AssertionError(f"unexpected GET path: {path}")
+
+            def request(self, method: str, path: str, _payload: dict[str, object]) -> None:
+                self.requests.append((method, path))
+
+        writer = MissingWorkItemWriter()
+        with self.assertRaises(ContinuityError) as raised:
+            close_authority_issue(writer, config, {})  # type: ignore[arg-type]
+
+        self.assertIn(
+            f"trusted evidence work item {missing_path} has an invalid GitHub response",
+            str(raised.exception),
+        )
+        self.assertEqual([], writer.requests)
+        self.assertEqual("open", parent["state"])
+
+    def test_routed_blockers_close_before_parent_and_ignore_untrusted_markers(self) -> None:
+        config = load_config(ROOT / "beta-continuity" / "config.json")
+        plan = continuity_plan("workspace-unavailable-recovery-test")
+        component = "sdk-python"
+        repository = COMPONENTS[component].repository
+        version = plan["components"][component]["version"]
+        dependency = "Blocks https://github.com/durable-workflow/.github/issues/2."
+        marker = f"<!-- beta-continuity-blocker: {component}-source-version-{version} -->"
+        trusted = {
+            "body": f"{dependency}\n\n{marker}",
+            "html_url": f"https://github.com/{repository}/issues/5",
+            "labels": [{"name": label} for label in (*ROUTED_BLOCKER_LABELS, f"component:{component}")],
+            "number": 5,
+            "state": "open",
+        }
+        untrusted = {
+            "body": f"{dependency}\n\n{marker}",
+            "html_url": f"https://github.com/{repository}/issues/1",
+            "labels": [],
+            "number": 1,
+            "state": "open",
+        }
+        mismatched = {
+            "body": (f"{dependency}\n\n<!-- beta-continuity-blocker: {component}-source-version-9.9.9 -->"),
+            "labels": [{"name": label} for label in ROUTED_BLOCKER_LABELS],
+            "number": 2,
+            "state": "open",
+        }
+        parent = {
+            "body": "<!-- beta-work-id: github-only-beta-continuity-drill -->",
+            "html_url": "https://github.com/durable-workflow/.github/issues/2",
+            "labels": [{"name": label} for label in config["required_issue_labels"]],
+            "number": 2,
+            "state": "open",
+        }
+        live_work_item_bodies = {
+            10: ("<!-- durable-workflow-work-id: beta-continuity-post-acceptance-publication -->"),
+            11: ("<!-- durable-workflow-work-id: continuity-converges-routed-release-blockers -->"),
+        }
+        evidence_work_items = {
+            specification["number"]: {
+                "body": live_work_item_bodies[specification["number"]],
+                "html_url": (f"https://github.com/{specification['repository']}/issues/{specification['number']}"),
+                "labels": [{"name": label} for label in specification["required_labels"]],
+                "number": specification["number"],
+                "state": "open",
+            }
+            for specification in config["evidence_work_items"]
+        }
+
+        class ClosureWriter:
+            def __init__(self) -> None:
+                self.issues = {repository: [untrusted, mismatched, trusted]}
+                self.parent = parent
+                self.evidence_work_items = evidence_work_items
+                self.comments: dict[str, list[dict[str, object]]] = {}
+                self.requests: list[tuple[str, str]] = []
+                self.fail_blocker_patch_once = False
+
+            def list(self, path: str) -> list[dict[str, object]]:
+                if path.endswith("/comments"):
+                    return self.comments.setdefault(path, [])
+                for slug, issues in self.issues.items():
+                    if path.startswith(f"/repos/{slug}/issues?"):
+                        return issues
+                return []
+
+            def get(self, path: str) -> dict[str, object]:
+                if path == "/repos/durable-workflow/.github/issues/2":
+                    return self.parent
+                for number, work_item in self.evidence_work_items.items():
+                    if path == f"/repos/durable-workflow/.github/issues/{number}":
+                        return work_item
+                for slug, issues in self.issues.items():
+                    prefix = f"/repos/{slug}/issues/"
+                    if path.startswith(prefix):
+                        number = int(path.removeprefix(prefix))
+                        return next(issue for issue in issues if issue["number"] == number)
+                raise AssertionError(f"unexpected GET path: {path}")
+
+            def request(self, method: str, path: str, payload: dict[str, object]) -> None:
+                self.requests.append((method, path))
+                if method == "POST":
+                    self.comments.setdefault(path, []).append(payload)
+                    return
+                if path == f"/repos/{repository}/issues/5" and self.fail_blocker_patch_once:
+                    self.fail_blocker_patch_once = False
+                    raise ContinuityError("injected blocker close interruption")
+                issue = self.get(path)
+                issue["state"] = payload["state"]
+                issue["labels"] = [{"name": label} for label in payload["labels"]]
+
+        completion = {
+            "plan": plan,
+            "plan_record": {
+                "tag": f"release-plan/{plan['plan']}",
+                "commit": "a" * 40,
+                "sha256": manifest_digest(plan),
+            },
+            "public_verification": {
+                "tag": f"release-candidate/{plan['channel']}/{plan['plan']}",
+                "commit": "b" * 40,
+            },
+            "qualification": {
+                "tag": f"beta-continuity/{plan['plan']}/accepted",
+                "commit": "c" * 40,
+                "sha256": "d" * 64,
+            },
+        }
+        writer = ClosureWriter()
+        with self.assertRaisesRegex(ContinuityError, "active routed blocker.*differs"):
+            close_authority_issue(writer, config, completion)  # type: ignore[arg-type]
+        self.assertEqual([], writer.requests)
+        mismatched["state"] = "closed"
+        mismatched["labels"] = [{"name": label} for label in (*ROUTED_BLOCKER_LABELS[:-1], "status:done")]
+        expected_work_item_body = evidence_work_items[11]["body"]
+        evidence_work_items[11]["body"] = (
+            f"{expected_work_item_body}\n<!-- durable-workflow-work-id: UNTRUSTED-ALIAS -->"
+        )
+        with self.assertRaisesRegex(ContinuityError, "does not match its configured work-id"):
+            close_authority_issue(writer, config, completion)  # type: ignore[arg-type]
+        evidence_work_items[11]["body"] = expected_work_item_body
+        expected_work_item_labels = evidence_work_items[11]["labels"]
+        evidence_work_items[11]["labels"] = [
+            label for label in expected_work_item_labels if label["name"] != "beta:blocker"
+        ]
+        with self.assertRaisesRegex(ContinuityError, "does not match its configured work-id"):
+            close_authority_issue(writer, config, completion)  # type: ignore[arg-type]
+        evidence_work_items[11]["labels"] = expected_work_item_labels
+        self.assertEqual([], writer.requests)
+        writer.fail_blocker_patch_once = True
+        with self.assertRaisesRegex(ContinuityError, "injected blocker close interruption"):
+            close_authority_issue(writer, config, completion)  # type: ignore[arg-type]
+        first = close_authority_issue(writer, config, completion)  # type: ignore[arg-type]
+        first_requests = list(writer.requests)
+        second = close_authority_issue(writer, config, completion)  # type: ignore[arg-type]
+
+        self.assertEqual(first, second)
+        self.assertEqual(
+            [
+                ("POST", f"/repos/{repository}/issues/5/comments"),
+                ("PATCH", f"/repos/{repository}/issues/5"),
+                ("PATCH", f"/repos/{repository}/issues/5"),
+                ("POST", "/repos/durable-workflow/.github/issues/10/comments"),
+                ("PATCH", "/repos/durable-workflow/.github/issues/10"),
+                ("POST", "/repos/durable-workflow/.github/issues/11/comments"),
+                ("PATCH", "/repos/durable-workflow/.github/issues/11"),
+                ("POST", "/repos/durable-workflow/.github/issues/2/comments"),
+                ("PATCH", "/repos/durable-workflow/.github/issues/2"),
+            ],
+            first_requests,
+        )
+        self.assertEqual(first_requests, writer.requests)
+        self.assertEqual("open", untrusted["state"])
+        self.assertEqual("closed", mismatched["state"])
+        self.assertEqual("closed", trusted["state"])
+        self.assertTrue(all(item["state"] == "closed" for item in evidence_work_items.values()))
+        self.assertEqual("closed", parent["state"])
+        self.assertEqual([5], [item["number"] for item in first["blockers"]])
+        self.assertEqual([10, 11], [item["number"] for item in first["evidence_work_items"]])
 
     def test_release_plan_callback_requires_and_dispatches_the_exact_public_acceptance(self) -> None:
         plan = continuity_plan("workspace-unavailable-recovery-test")
@@ -798,6 +1234,7 @@ class BetaContinuityTest(unittest.TestCase):
                     return_value={"tag": "beta-continuity/test/no-op-confirmed", "commit": "d" * 40},
                 ) as record,
                 patch("scripts.beta_continuity.ensure_issue_comment"),
+                patch("scripts.beta_continuity.exact_completion_authority", return_value={}),
                 patch("scripts.beta_continuity.close_authority_issue") as close,
                 patch.dict(
                     os.environ,
