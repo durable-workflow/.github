@@ -1012,7 +1012,20 @@ def verify_cli(client: PublicClient, component: Component, version: str, commit:
         )
 
     verified_assets: list[dict[str, Any]] = []
-    source_ref = f"refs/tags/{version}"
+    signer_workflow = f"{component.repository}/.github/workflows/release.yml"
+    attestation_modes = [
+        (
+            "exact-tag",
+            ["--source-ref", f"refs/tags/{version}", "--source-digest", commit],
+            {"mode": "exact-tag", "ref": f"refs/tags/{version}", "commit": commit},
+        ),
+        (
+            "qualified-main-workflow",
+            ["--source-ref", "refs/heads/main", "--signer-workflow", signer_workflow],
+            {"mode": "qualified-main-workflow", "ref": "refs/heads/main", "workflow": signer_workflow},
+        ),
+    ]
+    selected_attestation_mode: tuple[str, list[str], dict[str, str]] | None = None
     with tempfile.TemporaryDirectory(prefix="release-recovery-cli-") as temporary:
         directory = Path(temporary)
         downloaded_paths: list[Path] = []
@@ -1047,35 +1060,44 @@ def verify_cli(client: PublicClient, component: Component, version: str, commit:
                 "registry-publication",
             )
         for asset_path in downloaded_paths:
-            process = subprocess.run(
-                [
-                    "gh",
-                    "attestation",
-                    "verify",
-                    str(asset_path),
-                    "--repo",
-                    component.repository,
-                    "--source-digest",
-                    commit,
-                    "--source-ref",
-                    source_ref,
-                ],
-                check=False,
-                text=True,
-                capture_output=True,
-            )
-            if process.returncode:
+            base_arguments = ["gh", "attestation", "verify", str(asset_path), "--repo", component.repository]
+            candidates = attestation_modes if selected_attestation_mode is None else [selected_attestation_mode]
+            failures: list[str] = []
+            for mode in candidates:
+                process = subprocess.run([*base_arguments, *mode[1]], check=False, text=True, capture_output=True)
+                if process.returncode == 0:
+                    selected_attestation_mode = mode
+                    break
+                failures.append(f"{mode[0]}: {process.stderr.strip()}")
+            else:
                 raise RecoveryError(
-                    f"CLI build attestation failed for {asset_path.name}: {process.stderr.strip()}",
+                    f"CLI build attestation failed for {asset_path.name}: {'; '.join(failures)}",
                     "registry-publication",
                 )
+
+        assert selected_attestation_mode is not None
+        if shutil.which("php") is None:
+            raise RecoveryError("PHP is required to verify CLI release source metadata", "registry-publication")
+        phar_version = subprocess.run(
+            ["php", str(directory / "dw.phar"), "--version"],
+            check=False,
+            text=True,
+            capture_output=True,
+            env={"PATH": os.environ.get("PATH", os.defpath)},
+        )
+        expected_identity = f"{version} (commit {commit[:12]},"
+        if phar_version.returncode or expected_identity not in phar_version.stdout:
+            raise RecoveryError(
+                f"CLI PHAR for {version} does not embed planned source commit {commit}", "registry-publication"
+            )
 
     return {
         "kind": "github-release",
         "id": release.get("id"),
         "url": release.get("html_url"),
         "build_attestations_verified": True,
-        "build_attestation_source": {"commit": commit, "ref": source_ref},
+        "build_attestation_authority": selected_attestation_mode[2],
+        "package_source": {"commit": commit, "embedded_phar_identity": phar_version.stdout.strip()},
         "assets": verified_assets,
     }
 

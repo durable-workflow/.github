@@ -764,7 +764,12 @@ def validate_conflict_record(
             or distribution.get("kind") != COMPONENTS[component_name].distribution
         ):
             raise CandidateError("release plan failure lacks matching distribution evidence")
-        require_distribution_identity(distribution, component_name, conflict["observed_commit"])
+        require_distribution_identity(
+            distribution,
+            component_name,
+            conflict["version"],
+            conflict["observed_commit"],
+        )
     elif reason == SOURCE_MANIFEST_REASON:
         expected_keys = {
             "component",
@@ -890,7 +895,9 @@ def validate_supersession_record(
     validate_environment_approval_evidence(authorization["environment_approval"], authorization)
 
 
-def require_distribution_identity(distribution: dict[str, Any], component_name: str, observed_commit: str) -> None:
+def require_distribution_identity(
+    distribution: dict[str, Any], component_name: str, version: str, observed_commit: str
+) -> None:
     component = COMPONENTS[component_name]
     if distribution.get("kind") != component.distribution:
         raise CandidateError("public distribution evidence has the wrong kind")
@@ -900,8 +907,33 @@ def require_distribution_identity(distribution: dict[str, Any], component_name: 
             and distribution.get("dist_reference") == observed_commit
         )
     elif component.distribution == "github-release":
-        source = distribution.get("build_attestation_source")
-        matches = isinstance(source, dict) and source.get("commit") == observed_commit
+        package_source = distribution.get("package_source")
+        embedded_identity = (
+            package_source.get("embedded_phar_identity") if isinstance(package_source, dict) else None
+        )
+        matches = (
+            isinstance(package_source, dict)
+            and set(package_source) == {"commit", "embedded_phar_identity"}
+            and package_source.get("commit") == observed_commit
+            and isinstance(embedded_identity, str)
+            and f"{version} (commit {observed_commit[:12]}," in embedded_identity
+        )
+        authority = distribution.get("build_attestation_authority")
+        exact_tag_authority = {
+            "mode": "exact-tag",
+            "ref": f"refs/tags/{version}",
+            "commit": observed_commit,
+        }
+        qualified_main_authority = {
+            "mode": "qualified-main-workflow",
+            "ref": "refs/heads/main",
+            "workflow": f"{component.repository}/.github/workflows/release.yml",
+        }
+        if (
+            distribution.get("build_attestations_verified") is not True
+            or authority not in (exact_tag_authority, qualified_main_authority)
+        ):
+            raise CandidateError("public distribution evidence has an untrusted build attestation authority")
     elif component.distribution == "pypi":
         source = distribution.get("source_identity")
         matches = isinstance(source, dict) and source.get("source_commit") == observed_commit
@@ -1045,6 +1077,7 @@ def revalidate_conflict_public_evidence(
             require_distribution_identity(
                 live_distribution,
                 component_name,
+                conflict["version"],
                 conflict["observed_commit"],
             )
         except CandidateError as error:
@@ -1894,7 +1927,12 @@ def prepare_conflict_evidence(
                 observed_commit,
                 Path(temporary),
             )
-        require_distribution_identity(distribution, conflict_component, observed_commit)
+        require_distribution_identity(
+            distribution,
+            conflict_component,
+            identity["version"],
+            observed_commit,
+        )
         conflict = {
             "component": conflict_component,
             "version": identity["version"],

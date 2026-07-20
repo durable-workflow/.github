@@ -426,6 +426,13 @@ jobs:
 
         def verify_attestation(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
             self.assertEqual("durable-workflow/cli", command[command.index("--repo") + 1])
+            if "--source-digest" not in command:
+                return subprocess.CompletedProcess(
+                    command,
+                    1,
+                    stdout="",
+                    stderr="workflow authority does not match the declared release",
+                )
             source_digest = command[command.index("--source-digest") + 1]
             source_ref = command[command.index("--source-ref") + 1]
             valid = source_digest == attested_commit and source_ref == attested_ref

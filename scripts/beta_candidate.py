@@ -529,34 +529,61 @@ def verify_github_release(
     downloaded_paths.append(checksum_path)
     if shutil.which("gh") is None:
         raise CandidateError("GitHub CLI is required to verify CLI release attestations")
-    source_ref = f"refs/tags/{version}"
+    signer_workflow = f"{component.repository}/.github/workflows/release.yml"
+    attestation_modes = [
+        (
+            "exact-tag",
+            ["--source-ref", f"refs/tags/{version}", "--source-digest", expected_commit],
+            {"mode": "exact-tag", "ref": f"refs/tags/{version}", "commit": expected_commit},
+        ),
+        (
+            "qualified-main-workflow",
+            ["--source-ref", "refs/heads/main", "--signer-workflow", signer_workflow],
+            {"mode": "qualified-main-workflow", "ref": "refs/heads/main", "workflow": signer_workflow},
+        ),
+    ]
+    selected_attestation_mode: tuple[str, list[str], dict[str, str]] | None = None
     for asset_path in downloaded_paths:
-        process = subprocess.run(
-            [
-                "gh",
-                "attestation",
-                "verify",
-                str(asset_path),
-                "--repo",
-                component.repository,
-                "--source-digest",
-                expected_commit,
-                "--source-ref",
-                source_ref,
-            ],
-            check=False,
-            text=True,
-            capture_output=True,
+        base_arguments = ["gh", "attestation", "verify", str(asset_path), "--repo", component.repository]
+        candidates = attestation_modes if selected_attestation_mode is None else [selected_attestation_mode]
+        failures: list[str] = []
+        for mode in candidates:
+            process = subprocess.run([*base_arguments, *mode[1]], check=False, text=True, capture_output=True)
+            if process.returncode == 0:
+                selected_attestation_mode = mode
+                break
+            failures.append(f"{mode[0]}: {process.stderr.strip()}")
+        else:
+            raise CandidateError(
+                f"CLI build attestation failed for {asset_path.name}: {'; '.join(failures)}"
+            )
+
+    assert selected_attestation_mode is not None
+    if shutil.which("php") is None:
+        raise CandidateError("PHP is required to verify CLI release source metadata")
+    phar_version = subprocess.run(
+        ["php", str(directory / "dw.phar"), "--version"],
+        check=False,
+        text=True,
+        capture_output=True,
+        env={"PATH": os.environ.get("PATH", os.defpath)},
+    )
+    expected_identity = f"{version} (commit {expected_commit[:12]},"
+    if phar_version.returncode or expected_identity not in phar_version.stdout:
+        raise CandidateError(
+            f"CLI PHAR for {version} does not embed planned source commit {expected_commit}"
         )
-        if process.returncode:
-            raise CandidateError(f"CLI build attestation failed for {asset_path.name}: {process.stderr.strip()}")
     return {
         "kind": "github-release",
         "repository": component.repository,
         "release_id": release.get("id"),
         "release_url": release.get("html_url"),
         "build_attestations_verified": True,
-        "build_attestation_source": {"commit": expected_commit, "ref": source_ref},
+        "build_attestation_authority": selected_attestation_mode[2],
+        "package_source": {
+            "commit": expected_commit,
+            "embedded_phar_identity": phar_version.stdout.strip(),
+        },
         "assets": verified_assets,
     }
 

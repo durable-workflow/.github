@@ -319,7 +319,10 @@ class ManifestTest(unittest.TestCase):
 
         def verify_attestation(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
             self.assertEqual("durable-workflow/cli", command[command.index("--repo") + 1])
-            self.assertEqual(f"refs/tags/{version}", command[command.index("--source-ref") + 1])
+            if "--source-digest" not in command:
+                return subprocess.CompletedProcess(
+                    command, 1, stdout="", stderr="workflow authority does not match"
+                )
             source_digest = command[command.index("--source-digest") + 1]
             return subprocess.CompletedProcess(
                 command,
