@@ -15,7 +15,7 @@ on:
       - tests/test_beta_continuity.py
       - tests/test_qualification_policy.py
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '7,17,27,37,47,57 * * * *'
   workflow_dispatch:
 
 permissions:
