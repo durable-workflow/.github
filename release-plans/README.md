@@ -62,6 +62,12 @@ different plan fails closed until every earlier `release-plan/*` Git tag has
 either its matching immutable `release-candidate/<channel>/*` completion record
 or a protected `release-plan-failure/*` terminal record. Ordinary interrupted
 plans remain blocking and continue through their repository recovery actions.
+The only continuity-drill exception is an exact successor whose immutable
+`beta-continuity/<successor>/accepted` record identifies the prior diagnostic
+interruption by tag, commit, evidence digest, and plan digest. Preflight reads
+both immutable records and verifies the prior plan-record commit before it
+treats that invalid interruption as superseded; unrelated incomplete plans
+remain blocking.
 
 The `Release plan supersession` action is the narrow exception for allocations
 that cannot be published without mutating public history. This includes a

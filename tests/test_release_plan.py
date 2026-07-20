@@ -27,6 +27,7 @@ from scripts.release_plan import (
     check_plan_compatibility,
     completion_manifest,
     is_immediate_version_successor,
+    load_continuity_supersession,
     load_public_supersession,
     manifest_digest,
     parse_conflict_components,
@@ -165,6 +166,61 @@ def successor_plan(
             prefix, number = version.rsplit(".", 1)
             successor["components"][name]["version"] = f"{prefix}.{int(number) + 1}"
     return successor
+
+
+def continuity_supersession_records(
+    prior: dict[str, object],
+    requested: dict[str, object],
+    prior_commit: str,
+) -> dict[str, object]:
+    accepted_tag = f"beta-continuity/{requested['plan']}/accepted"
+    accepted_commit = "c" * 40
+    interruption_tag = f"beta-continuity/{prior['plan']}/interrupted"
+    interruption_commit = "d" * 40
+    prior_tag = f"release-plan/{prior['plan']}"
+    prior_digest = manifest_digest(prior)
+    requested_digest = manifest_digest(requested)
+    interruption_evidence = {
+        "schema": "durable-workflow.beta-continuity.evidence/v1",
+        "phase": "interrupted",
+        "outcome": "intentionally-interrupted",
+        "release_plan": {"tag": prior_tag, "sha256": prior_digest},
+        "plan_record": {
+            "tag": prior_tag,
+            "commit": prior_commit,
+            "sha256": prior_digest,
+        },
+    }
+    accepted_evidence = {
+        "schema": "durable-workflow.beta-continuity.evidence/v1",
+        "phase": "accepted",
+        "outcome": "accepted",
+        "release_plan": {
+            "tag": f"release-plan/{requested['plan']}",
+            "sha256": requested_digest,
+        },
+        "candidate_identity": {
+            "components": requested["components"],
+            "plan_sha256": requested_digest,
+        },
+        "superseded_interruption": {
+            "commit": interruption_commit,
+            "evidence_sha256": manifest_digest(interruption_evidence),
+            "plan_sha256": prior_digest,
+            "reason": "missing-post-acceptance-publication-trigger",
+            "tag": interruption_tag,
+        },
+    }
+    return {
+        "accepted_commit": accepted_commit,
+        "accepted_evidence": accepted_evidence,
+        "accepted_plan": copy.deepcopy(requested),
+        "accepted_tag": accepted_tag,
+        "interruption_commit": interruption_commit,
+        "interruption_evidence": interruption_evidence,
+        "interruption_plan": copy.deepcopy(prior),
+        "interruption_tag": interruption_tag,
+    }
 
 
 def environment_protection_evidence() -> dict[str, object]:
@@ -499,12 +555,208 @@ class ReleasePlanValidationTest(unittest.TestCase):
                 return [{"ref": "refs/tags/release-plan/plan-a"}]
 
         with (
-            mock.patch("scripts.release_plan.resolve_tag", side_effect=["a" * 40, None]),
+            mock.patch("scripts.release_plan.resolve_tag", side_effect=["a" * 40, None, None]),
             mock.patch("scripts.release_plan.read_public_record", return_value=prior),
             mock.patch("scripts.release_plan.load_public_supersession", return_value=None),
             self.assertRaisesRegex(CandidateError, "prior plan release-plan/plan-a is incomplete"),
         ):
             require_prior_plans_completed(requested, FixtureClient())
+
+    def test_exact_continuity_successor_can_retain_a_diagnostic_interruption(self) -> None:
+        prior = release_plan()
+        prior["plan"] = "plan-a"
+        requested = release_plan()
+        requested["plan"] = "plan-b"
+        prior_commit = "a" * 40
+        records = continuity_supersession_records(prior, requested, prior_commit)
+
+        class FixtureClient:
+            def json(self, _url: str) -> list[dict[str, str]]:
+                return [{"ref": "refs/tags/release-plan/plan-a"}]
+
+        def resolve(_client: object, _repository: str, tag: str) -> str | None:
+            return {
+                "release-plan/plan-a": prior_commit,
+                "release-candidate/alpha/plan-a": None,
+                records["accepted_tag"]: records["accepted_commit"],
+                records["interruption_tag"]: records["interruption_commit"],
+            }.get(tag)
+
+        def read_record(_client: object, tag: str, _commit: str, filename: str) -> dict[str, object]:
+            if tag == "release-plan/plan-a":
+                return prior
+            if tag == records["accepted_tag"]:
+                return records["accepted_evidence"] if filename == "continuity-evidence.json" else requested
+            if tag == records["interruption_tag"]:
+                return records["interruption_evidence"] if filename == "continuity-evidence.json" else prior
+            raise AssertionError(f"unexpected public record {tag}:{filename}")
+
+        with (
+            mock.patch("scripts.release_plan.resolve_tag", side_effect=resolve),
+            mock.patch("scripts.release_plan.read_public_record", side_effect=read_record),
+            mock.patch("scripts.release_plan.load_public_supersession", return_value=None),
+        ):
+            evidence = require_prior_plans_completed(requested, FixtureClient())
+
+        self.assertEqual(
+            "superseded-diagnostic-interruption",
+            evidence["release-plan/plan-a"]["outcome"],
+        )
+        self.assertEqual(records["accepted_commit"], evidence["release-plan/plan-a"]["accepted_commit"])
+
+    def test_one_continuity_acceptance_cannot_clear_an_unrelated_incomplete_plan(self) -> None:
+        prior = release_plan()
+        prior["plan"] = "plan-a"
+        unrelated = release_plan()
+        unrelated["plan"] = "plan-x"
+        requested = release_plan()
+        requested["plan"] = "plan-b"
+        prior_commit = "a" * 40
+        unrelated_commit = "b" * 40
+        records = continuity_supersession_records(prior, requested, prior_commit)
+
+        class FixtureClient:
+            def json(self, _url: str) -> list[dict[str, str]]:
+                return [
+                    {"ref": "refs/tags/release-plan/plan-a"},
+                    {"ref": "refs/tags/release-plan/plan-x"},
+                ]
+
+        def resolve(_client: object, _repository: str, tag: str) -> str | None:
+            return {
+                "release-plan/plan-a": prior_commit,
+                "release-plan/plan-x": unrelated_commit,
+                "release-candidate/alpha/plan-a": None,
+                "release-candidate/alpha/plan-x": None,
+                records["accepted_tag"]: records["accepted_commit"],
+                records["interruption_tag"]: records["interruption_commit"],
+            }.get(tag)
+
+        def read_record(_client: object, tag: str, _commit: str, filename: str) -> dict[str, object]:
+            if tag == "release-plan/plan-a":
+                return prior
+            if tag == "release-plan/plan-x":
+                return unrelated
+            if tag == records["accepted_tag"]:
+                return records["accepted_evidence"] if filename == "continuity-evidence.json" else requested
+            if tag == records["interruption_tag"]:
+                return records["interruption_evidence"] if filename == "continuity-evidence.json" else prior
+            raise AssertionError(f"unexpected public record {tag}:{filename}")
+
+        with (
+            mock.patch("scripts.release_plan.resolve_tag", side_effect=resolve),
+            mock.patch("scripts.release_plan.read_public_record", side_effect=read_record),
+            mock.patch("scripts.release_plan.load_public_supersession", return_value=None),
+            self.assertRaisesRegex(CandidateError, "invalid superseded interruption identity"),
+        ):
+            require_prior_plans_completed(requested, FixtureClient())
+
+    def test_continuity_supersession_rejects_forged_or_stale_evidence(self) -> None:
+        prior = release_plan()
+        prior["plan"] = "plan-a"
+        requested = release_plan()
+        requested["plan"] = "plan-b"
+        prior_commit = "a" * 40
+
+        def accepted_plan_mismatch(records: dict[str, object]) -> None:
+            records["accepted_plan"]["components"]["server"]["commit"] = "e" * 40
+
+        def accepted_outcome_mismatch(records: dict[str, object]) -> None:
+            records["accepted_evidence"]["outcome"] = "waiting"
+
+        def missing_identity(records: dict[str, object]) -> None:
+            records["accepted_evidence"].pop("superseded_interruption")
+
+        def forged_interruption_tag(records: dict[str, object]) -> None:
+            records["accepted_evidence"]["superseded_interruption"]["tag"] = "beta-continuity/unrelated/interrupted"
+
+        def mismatched_interruption_commit(records: dict[str, object]) -> None:
+            records["accepted_evidence"]["superseded_interruption"]["commit"] = "e" * 40
+
+        def mismatched_evidence_digest(records: dict[str, object]) -> None:
+            records["accepted_evidence"]["superseded_interruption"]["evidence_sha256"] = "e" * 64
+
+        def stale_plan_record(records: dict[str, object]) -> None:
+            records["interruption_evidence"]["plan_record"]["commit"] = "e" * 40
+            records["accepted_evidence"]["superseded_interruption"]["evidence_sha256"] = manifest_digest(
+                records["interruption_evidence"]
+            )
+
+        def interruption_outcome_mismatch(records: dict[str, object]) -> None:
+            records["interruption_evidence"]["outcome"] = "complete"
+            records["accepted_evidence"]["superseded_interruption"]["evidence_sha256"] = manifest_digest(
+                records["interruption_evidence"]
+            )
+
+        cases = (
+            ("accepted plan mismatch", accepted_plan_mismatch, "does not prove exact requested plan"),
+            ("accepted outcome mismatch", accepted_outcome_mismatch, "does not prove exact requested plan"),
+            ("missing supersession identity", missing_identity, "invalid superseded interruption identity"),
+            ("forged interruption tag", forged_interruption_tag, "invalid superseded interruption identity"),
+            ("mismatched interruption commit", mismatched_interruption_commit, "resolves to"),
+            ("mismatched evidence digest", mismatched_evidence_digest, "does not prove prior plan"),
+            ("stale plan record", stale_plan_record, "does not prove prior plan"),
+            ("interruption outcome mismatch", interruption_outcome_mismatch, "does not prove prior plan"),
+        )
+        for name, mutate, message in cases:
+            with self.subTest(name=name):
+                records = continuity_supersession_records(prior, requested, prior_commit)
+                mutate(records)
+
+                def resolve(
+                    _client: object,
+                    _repository: str,
+                    tag: str,
+                    current_records: dict[str, object] = records,
+                ) -> str | None:
+                    return {
+                        current_records["accepted_tag"]: current_records["accepted_commit"],
+                        current_records["interruption_tag"]: current_records["interruption_commit"],
+                    }.get(tag)
+
+                def read_record(
+                    _client: object,
+                    tag: str,
+                    _commit: str,
+                    filename: str,
+                    current_records: dict[str, object] = records,
+                ) -> dict[str, object]:
+                    if tag == current_records["accepted_tag"]:
+                        return (
+                            current_records["accepted_evidence"]
+                            if filename == "continuity-evidence.json"
+                            else current_records["accepted_plan"]
+                        )
+                    if tag == current_records["interruption_tag"]:
+                        return (
+                            current_records["interruption_evidence"]
+                            if filename == "continuity-evidence.json"
+                            else current_records["interruption_plan"]
+                        )
+                    raise AssertionError(f"unexpected public record {tag}:{filename}")
+
+                with (
+                    mock.patch("scripts.release_plan.resolve_tag", side_effect=resolve),
+                    mock.patch("scripts.release_plan.read_public_record", side_effect=read_record),
+                    self.assertRaisesRegex(CandidateError, message),
+                ):
+                    load_continuity_supersession(requested, prior, prior_commit, object())
+
+    def test_continuity_supersession_rejects_a_moved_accepted_tag(self) -> None:
+        prior = release_plan()
+        prior["plan"] = "plan-a"
+        requested = release_plan()
+        requested["plan"] = "plan-b"
+
+        with (
+            mock.patch("scripts.release_plan.resolve_tag", return_value="c" * 40),
+            mock.patch(
+                "scripts.release_plan.read_public_record",
+                side_effect=CandidateError("public record beta-continuity/plan-b/accepted resolves to a moved commit"),
+            ),
+            self.assertRaisesRegex(CandidateError, "moved commit"),
+        ):
+            load_continuity_supersession(requested, prior, "a" * 40, object())
 
     def test_new_plan_checks_all_matching_refs_when_registry_exceeds_one_hundred(self) -> None:
         requested = release_plan()
@@ -544,6 +796,7 @@ class ReleasePlanValidationTest(unittest.TestCase):
             mock.patch("scripts.release_plan.resolve_tag", side_effect=resolve),
             mock.patch("scripts.release_plan.read_public_record", side_effect=read_record),
             mock.patch("scripts.release_plan.load_public_supersession", return_value=None),
+            mock.patch("scripts.release_plan.load_continuity_supersession", return_value=None),
             self.assertRaisesRegex(CandidateError, "prior plan release-plan/plan-a is incomplete"),
         ):
             require_prior_plans_completed(requested, FixtureClient())

@@ -51,6 +51,9 @@ BETA_VERSION_PATTERN = re.compile(r"^2\.0\.0-beta\.[1-9][0-9]*$")
 PLAN_TAG_PREFIX = "release-plan/"
 COMPLETION_TAG_PREFIX = "release-candidate/"
 FAILURE_TAG_PREFIX = "release-plan-failure/"
+CONTINUITY_TAG_PREFIX = "beta-continuity/"
+CONTINUITY_EVIDENCE_SCHEMA = "durable-workflow.beta-continuity.evidence/v1"
+CONTINUITY_SUPERSESSION_REASON = "missing-post-acceptance-publication-trigger"
 FOUNDATION_TAG = "beta-candidate/beta-continuity-foundation"
 FOUNDATION_COMMIT = "4995052410bd4301c5796ffba54e0b6d2f490ed1"
 CONTROL_REPOSITORY = "durable-workflow/.github"
@@ -1153,6 +1156,102 @@ def load_public_supersession(
     return tag, commit, record, successor
 
 
+def load_continuity_supersession(
+    requested_plan: dict[str, Any],
+    prior_plan: dict[str, Any],
+    prior_plan_commit: str,
+    client: PublicClient,
+) -> dict[str, str] | None:
+    accepted_tag = f"{CONTINUITY_TAG_PREFIX}{requested_plan['plan']}/accepted"
+    accepted_commit = resolve_tag(client, CONTROL_REPOSITORY, accepted_tag)
+    if accepted_commit is None:
+        return None
+
+    accepted_evidence = read_public_record(
+        client,
+        accepted_tag,
+        accepted_commit,
+        "continuity-evidence.json",
+    )
+    accepted_plan = read_public_record(
+        client,
+        accepted_tag,
+        accepted_commit,
+        "release-plan.json",
+    )
+    validate_plan(accepted_plan)
+    requested_tag = f"{PLAN_TAG_PREFIX}{requested_plan['plan']}"
+    requested_digest = manifest_digest(requested_plan)
+    if (
+        not isinstance(accepted_evidence, dict)
+        or canonical_json(accepted_plan) != canonical_json(requested_plan)
+        or accepted_evidence.get("schema") != CONTINUITY_EVIDENCE_SCHEMA
+        or accepted_evidence.get("phase") != "accepted"
+        or accepted_evidence.get("outcome") != "accepted"
+        or accepted_evidence.get("release_plan") != {"tag": requested_tag, "sha256": requested_digest}
+        or accepted_evidence.get("candidate_identity")
+        != {"components": requested_plan["components"], "plan_sha256": requested_digest}
+    ):
+        raise CandidateError(
+            f"accepted continuity record {accepted_tag} does not prove exact requested plan {requested_tag}"
+        )
+
+    prior_tag = f"{PLAN_TAG_PREFIX}{prior_plan['plan']}"
+    prior_digest = manifest_digest(prior_plan)
+    interruption_tag = f"{CONTINUITY_TAG_PREFIX}{prior_plan['plan']}/interrupted"
+    superseded = accepted_evidence.get("superseded_interruption")
+    if (
+        not isinstance(superseded, dict)
+        or set(superseded) != {"commit", "evidence_sha256", "plan_sha256", "reason", "tag"}
+        or superseded.get("tag") != interruption_tag
+        or superseded.get("reason") != CONTINUITY_SUPERSESSION_REASON
+        or not COMMIT_PATTERN.fullmatch(str(superseded.get("commit", "")))
+        or not re.fullmatch(r"[0-9a-f]{64}", str(superseded.get("evidence_sha256", "")))
+        or superseded.get("plan_sha256") != prior_digest
+    ):
+        raise CandidateError(f"accepted continuity record {accepted_tag} has invalid superseded interruption identity")
+
+    interruption_commit = resolve_tag(client, CONTROL_REPOSITORY, interruption_tag)
+    if interruption_commit != superseded["commit"]:
+        raise CandidateError(
+            f"superseded interruption {interruption_tag} resolves to "
+            f"{interruption_commit or 'no commit'}, not {superseded['commit']}"
+        )
+    interruption_evidence = read_public_record(
+        client,
+        interruption_tag,
+        interruption_commit,
+        "continuity-evidence.json",
+    )
+    interruption_plan = read_public_record(
+        client,
+        interruption_tag,
+        interruption_commit,
+        "release-plan.json",
+    )
+    validate_plan(interruption_plan)
+    if (
+        not isinstance(interruption_evidence, dict)
+        or canonical_json(interruption_plan) != canonical_json(prior_plan)
+        or manifest_digest(interruption_plan) != superseded["plan_sha256"]
+        or manifest_digest(interruption_evidence) != superseded["evidence_sha256"]
+        or interruption_evidence.get("schema") != CONTINUITY_EVIDENCE_SCHEMA
+        or interruption_evidence.get("phase") != "interrupted"
+        or interruption_evidence.get("outcome") != "intentionally-interrupted"
+        or interruption_evidence.get("release_plan") != {"tag": prior_tag, "sha256": prior_digest}
+        or interruption_evidence.get("plan_record")
+        != {"tag": prior_tag, "commit": prior_plan_commit, "sha256": prior_digest}
+    ):
+        raise CandidateError(f"superseded interruption {interruption_tag} does not prove prior plan {prior_tag}")
+    return {
+        "accepted_tag": accepted_tag,
+        "accepted_commit": accepted_commit,
+        "interruption_tag": interruption_tag,
+        "interruption_commit": interruption_commit,
+        "outcome": "superseded-diagnostic-interruption",
+    }
+
+
 def require_prior_plans_completed(plan: dict[str, Any], client: PublicClient) -> dict[str, dict[str, str]]:
     refs = client.json(f"https://api.github.com/repos/{CONTROL_REPOSITORY}/git/matching-refs/tags/{PLAN_TAG_PREFIX}")
     if not isinstance(refs, list):
@@ -1178,10 +1277,19 @@ def require_prior_plans_completed(plan: dict[str, Any], client: PublicClient) ->
         if completion_commit is None:
             supersession = load_public_supersession(prior, record_commit, client)
             if supersession is None:
-                raise CandidateError(
-                    f"cannot record {requested_tag} while prior plan {tag} is incomplete; "
-                    f"resume its repository Release plan recovery actions"
+                continuity_supersession = load_continuity_supersession(
+                    plan,
+                    prior,
+                    record_commit,
+                    client,
                 )
+                if continuity_supersession is None:
+                    raise CandidateError(
+                        f"cannot record {requested_tag} while prior plan {tag} is incomplete; "
+                        f"resume its repository Release plan recovery actions"
+                    )
+                completed[tag] = continuity_supersession
+                continue
             failure_tag, failure_commit, failure, successor = supersession
             successor_tag = failure["successor_plan"]["tag"]
             successor_commit = resolve_tag(client, CONTROL_REPOSITORY, successor_tag)
