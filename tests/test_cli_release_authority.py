@@ -15,7 +15,10 @@ import yaml
 from scripts import beta_candidate, component_release_recovery
 from scripts.beta_candidate import CLI_ASSETS, CandidateError
 from scripts.component_release_recovery import RecoveryError
-from scripts.release_plan import require_distribution_identity
+from scripts.release_plan import (
+    require_distribution_identity,
+    revalidate_conflict_public_evidence,
+)
 
 VERIFIERS = (
     (beta_candidate, CandidateError),
@@ -149,46 +152,121 @@ class CliReleaseAuthorityTest(unittest.TestCase):
                 self.assertEqual({"PATH": allowed_path}, calls[-1][1]["env"])
                 self.assertEqual(Path(calls[-1][0][1]).parent, calls[-1][1]["cwd"])
 
-    def test_control_plane_artifact_jobs_do_not_persist_checkout_credentials(self) -> None:
-        workflows = (
-            (
-                "beta-candidate.yml",
-                "python scripts/beta_candidate.py verify",
-                "python scripts/beta_candidate.py record",
-                False,
-            ),
-            (
-                "release-plan-observer.yml",
-                "python scripts/release_plan.py observe",
-                "python scripts/release_plan.py complete",
-                False,
-            ),
-            (
-                "release-plan-supersession.yml",
-                "python scripts/release_plan.py prepare-supersession",
-                "python scripts/release_plan.py record-supersession",
-                True,
-            ),
-        )
+    def test_control_plane_cli_verifiers_are_isolated_from_write_authority(self) -> None:
+        workflows = {
+            "beta-candidate.yml": {
+                "verification": "python scripts/beta_candidate.py verify",
+                "mutation": "python scripts/beta_candidate.py record",
+                "handoff": {
+                    "candidate.json",
+                    "verification.json",
+                },
+            },
+            "release-plan-observer.yml": {
+                "verification": "python scripts/release_plan.py observe",
+                "mutation": "python scripts/release_plan.py complete",
+                "handoff": {
+                    "release-plan.json",
+                    "release-preparation.json",
+                    "candidate-verifier-input.json",
+                    "release-state.json",
+                    "verification.json",
+                },
+            },
+            "release-plan-supersession.yml": {
+                "verification": "python scripts/release_plan.py prepare-supersession",
+                "mutation": "python scripts/release_plan.py record-supersession",
+                "handoff": {
+                    "release-plan-failure.json",
+                    "authoritative-successor-release-plan.json",
+                },
+            },
+        }
 
-        for filename, verification_command, mutation_command, token_free_verifier in workflows:
+        self.assertEqual(
+            {
+                "beta-candidate.yml",
+                "release-plan-observer.yml",
+                "release-plan-supersession.yml",
+            },
+            set(workflows),
+        )
+        for filename, contract in workflows.items():
             with self.subTest(workflow=filename):
                 source = (REPOSITORY_ROOT / ".github" / "workflows" / filename).read_text(
                     encoding="utf-8"
                 )
                 workflow = yaml.safe_load(source)
-                steps = next(iter(workflow["jobs"].values()))["steps"]
-                checkout = next(
-                    step for step in steps if step.get("uses") == "actions/checkout@v6"
+                self.assertEqual({}, workflow["permissions"])
+                jobs = workflow["jobs"]
+                verification_name, verification_job = next(
+                    (name, job)
+                    for name, job in jobs.items()
+                    if any(
+                        contract["verification"] in step.get("run", "")
+                        for step in job["steps"]
+                    )
                 )
+                mutation_name, mutation_job = next(
+                    (name, job)
+                    for name, job in jobs.items()
+                    if any(
+                        contract["mutation"] in step.get("run", "")
+                        for step in job["steps"]
+                    )
+                )
+                self.assertNotEqual(verification_name, mutation_name)
+                self.assertEqual("read", verification_job["permissions"]["contents"])
+                self.assertNotIn("write", verification_job["permissions"].values())
+                self.assertEqual("write", mutation_job["permissions"]["contents"])
+                mutation_needs = (
+                    {mutation_job["needs"]}
+                    if isinstance(mutation_job["needs"], str)
+                    else set(mutation_job["needs"])
+                )
+                self.assertIn(verification_name, mutation_needs)
+
+                for job in (verification_job, mutation_job):
+                    checkouts = [
+                        step
+                        for step in job["steps"]
+                        if str(step.get("uses", "")).startswith("actions/checkout@")
+                    ]
+                    self.assertGreaterEqual(len(checkouts), 1)
+                    for checkout in checkouts:
+                        self.assertEqual("actions/checkout@v6", checkout["uses"])
+                        self.assertIs(checkout["with"]["persist-credentials"], False)
+                        self.assertEqual("${{ github.sha }}", checkout["with"]["ref"])
+
                 verification = next(
-                    step for step in steps if verification_command in step.get("run", "")
+                    step
+                    for step in verification_job["steps"]
+                    if contract["verification"] in step.get("run", "")
                 )
                 mutation = next(
-                    step for step in steps if mutation_command in step.get("run", "")
+                    step
+                    for step in mutation_job["steps"]
+                    if contract["mutation"] in step.get("run", "")
+                )
+                upload = next(
+                    step
+                    for step in verification_job["steps"]
+                    if step.get("uses") == "actions/upload-artifact@v7"
+                    and contract["handoff"].issubset(
+                        set(step["with"].get("path", "").splitlines())
+                    )
+                )
+                download = next(
+                    step
+                    for step in mutation_job["steps"]
+                    if step.get("uses") == "actions/download-artifact@v8"
                 )
 
-                self.assertIs(checkout["with"]["persist-credentials"], False)
+                self.assertEqual(upload["with"]["name"], download["with"]["name"])
+                self.assertEqual(
+                    contract["handoff"],
+                    set(upload["with"]["path"].splitlines()),
+                )
                 self.assertIn(
                     "GIT_CONFIG_KEY_0=http.https://github.com/.extraheader",
                     mutation["run"],
@@ -198,9 +276,145 @@ class CliReleaseAuthorityTest(unittest.TestCase):
                     mutation["run"],
                 )
                 self.assertEqual("${{ github.token }}", mutation["env"]["GITHUB_TOKEN"])
-                if token_free_verifier:
-                    self.assertNotIn("GITHUB_TOKEN", verification.get("env", {}))
-                    self.assertNotIn("GH_TOKEN", verification.get("env", {}))
+                for token_name in ("GITHUB_TOKEN", "GH_TOKEN"):
+                    if token_name in verification.get("env", {}):
+                        self.assertEqual("${{ github.token }}", verification["env"][token_name])
+
+    def test_observer_writer_binds_mutation_to_trusted_plan_discovery(self) -> None:
+        workflow = yaml.safe_load(
+            (REPOSITORY_ROOT / ".github/workflows/release-plan-observer.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        observe = workflow["jobs"]["observe"]
+        record = workflow["jobs"]["record"]
+        trusted_plan_tag = "${{ needs.observe.outputs.plan-tag }}"
+        trusted_plan_sha256 = "${{ needs.observe.outputs.plan-sha256 }}"
+        trusted_preparation_sha256 = "${{ needs.observe.outputs.preparation-sha256 }}"
+        self.assertEqual("${{ steps.plan.outputs.tag }}", observe["outputs"]["plan-tag"])
+        self.assertEqual("${{ steps.plan.outputs.plan_sha256 }}", observe["outputs"]["plan-sha256"])
+        self.assertEqual(
+            "${{ steps.plan.outputs.preparation_sha256 }}",
+            observe["outputs"]["preparation-sha256"],
+        )
+
+        rediscovery = next(
+            step for step in record["steps"] if "release_plan.py discover" in step.get("run", "")
+        )
+        handoff = next(
+            step
+            for step in record["steps"]
+            if "release_plan.py validate-observation-handoff" in step.get("run", "")
+        )
+        upload = next(
+            step for step in record["steps"] if "gh release upload" in step.get("run", "")
+        )
+        self.assertEqual(trusted_plan_tag, rediscovery["env"]["EXPECTED_PLAN_TAG"])
+        self.assertIn('--tag "$EXPECTED_PLAN_TAG"', rediscovery["run"])
+        self.assertEqual(trusted_plan_tag, handoff["env"]["EXPECTED_PLAN_TAG"])
+        self.assertEqual(trusted_plan_sha256, handoff["env"]["EXPECTED_PLAN_SHA256"])
+        self.assertEqual(
+            trusted_preparation_sha256,
+            handoff["env"]["EXPECTED_PREPARATION_SHA256"],
+        )
+        for argument in (
+            "--authoritative-plan",
+            "--authoritative-preparation",
+            "--expected-plan-tag",
+            "--expected-plan-sha256",
+            "--expected-preparation-sha256",
+        ):
+            self.assertIn(argument, handoff["run"])
+        self.assertEqual(trusted_plan_tag, upload["env"]["PLAN_TAG"])
+        self.assertNotIn("steps.handoff.outputs", upload["env"]["PLAN_TAG"])
+        self.assertLess(record["steps"].index(rediscovery), record["steps"].index(handoff))
+        self.assertLess(record["steps"].index(handoff), record["steps"].index(upload))
+
+    def test_supersession_writer_binds_mutation_to_dispatch_authority(self) -> None:
+        workflow = yaml.safe_load(
+            (REPOSITORY_ROOT / ".github/workflows/release-plan-supersession.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        steps = workflow["jobs"]["record"]["steps"]
+        handoff = next(
+            step
+            for step in steps
+            if "release_plan.py validate-supersession-handoff" in step.get("run", "")
+        )
+        mutation = next(
+            step for step in steps if "release_plan.py record-supersession" in step.get("run", "")
+        )
+
+        self.assertEqual("${{ inputs.failed_plan_tag }}", handoff["env"]["FAILED_PLAN_TAG"])
+        self.assertEqual(
+            "${{ inputs.conflicting_components }}",
+            handoff["env"]["CONFLICTING_COMPONENTS"],
+        )
+        self.assertNotIn("GITHUB_TOKEN", handoff.get("env", {}))
+        self.assertNotIn("GH_TOKEN", handoff.get("env", {}))
+        self.assertIn('--expected-failed-plan-tag "$FAILED_PLAN_TAG"', handoff["run"])
+        self.assertIn(
+            '--expected-conflict-components "$CONFLICTING_COMPONENTS"',
+            handoff["run"],
+        )
+        self.assertIn("authorized-release-plan-failure.json", handoff["run"])
+        self.assertIn(
+            "record-supersession \\\n    authorized-release-plan-failure.json",
+            mutation["run"],
+        )
+        self.assertNotIn("isolated-supersession/release-plan-failure.json", mutation["run"])
+        self.assertEqual("${{ github.token }}", mutation["env"]["GITHUB_TOKEN"])
+        self.assertLess(steps.index(handoff), steps.index(mutation))
+
+    def test_supersession_write_revalidation_does_not_execute_the_downloaded_phar(self) -> None:
+        version = "0.1.95"
+        observed_commit = "e" * 40
+        embedded_identity = f"dw {version} (commit {observed_commit[:12]}, built 2026-07-21)"
+        release = {
+            "id": 123,
+            "url": "https://github.com/durable-workflow/cli/releases/1",
+        }
+        distribution = {
+            "kind": "github-release",
+            "build_attestations_verified": True,
+            "build_attestation_authority": {
+                "mode": "exact-tag",
+                "ref": f"refs/tags/{version}",
+                "commit": observed_commit,
+            },
+            "package_source": {
+                "commit": observed_commit,
+                "embedded_phar_identity": embedded_identity,
+            },
+            "assets": [],
+        }
+        conflict = {
+            "component": "cli",
+            "version": version,
+            "observed_commit": observed_commit,
+            "reason": "published-version-source-conflict",
+            "github_release": release,
+            "distribution": distribution,
+        }
+        failed_plan = {
+            "components": {
+                "cli": {"version": version, "commit": "a" * 40},
+            }
+        }
+        verifier = mock.Mock(return_value=distribution)
+        with (
+            mock.patch("scripts.release_plan.resolve_tag", return_value=observed_commit),
+            mock.patch("scripts.release_plan.github_release_conflict_evidence", return_value=release),
+            mock.patch("scripts.release_plan.verify_github_release", verifier),
+        ):
+            revalidate_conflict_public_evidence(conflict, failed_plan, {}, mock.Mock())
+
+        self.assertEqual(1, verifier.call_count)
+        self.assertEqual(
+            embedded_identity,
+            verifier.call_args.kwargs["verified_embedded_identity"],
+        )
 
     def test_verifiers_accept_exact_tag_authority_for_the_planned_package_source(self) -> None:
         version = "0.1.95"

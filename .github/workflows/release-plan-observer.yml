@@ -13,10 +13,7 @@ on:
         type: string
         default: ''
 
-permissions:
-  actions: read
-  attestations: read
-  contents: write
+permissions: {}
 
 concurrency:
   group: release-plan-registry
@@ -24,14 +21,23 @@ concurrency:
 
 jobs:
   observe:
-    name: Observe real public release surfaces
+    name: Observe real public release surfaces without write authority
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      attestations: read
+      contents: read
+    outputs:
+      plan-tag: ${{ steps.plan.outputs.tag }}
+      plan-sha256: ${{ steps.plan.outputs.plan_sha256 }}
+      preparation-sha256: ${{ steps.plan.outputs.preparation_sha256 }}
+      verification-outcome: ${{ steps.verification.outcome }}
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ github.sha }}
 
       - uses: actions/setup-python@v6
         with:
@@ -60,36 +66,93 @@ jobs:
           python scripts/release_plan.py observe release-plan.json release-preparation.json \
             candidate-verifier-input.json verification.json release-state.json
 
-      - name: Retain aggregate state on the plan release
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PLAN_TAG: ${{ steps.plan.outputs.tag }}
-        run: |
-          if [ -n "$PLAN_TAG" ] && [ -f release-state.json ]; then
-            gh release upload "$PLAN_TAG" release-state.json --clobber
-          fi
-
-      - name: Upload observation evidence
+      - name: Pass only observation evidence to the recorder
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: release-plan-observation-${{ steps.plan.outputs.plan || github.run_id }}
+          name: release-plan-observation-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             release-plan.json
             release-preparation.json
+            candidate-verifier-input.json
             release-state.json
             verification.json
           if-no-files-found: warn
 
+  record:
+    name: Record observation from a fresh checkout
+    needs: observe
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check out a fresh qualified control plane
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Restore isolated observation evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: release-plan-observation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: isolated-observation
+
+      - name: Re-read the originally selected public plan
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          EXPECTED_PLAN_TAG: ${{ needs.observe.outputs.plan-tag }}
+        run: |
+          mkdir trusted-public-plan
+          python scripts/release_plan.py discover \
+            trusted-public-plan/release-plan.json \
+            --preparation trusted-public-plan/release-preparation.json \
+            --tag "$EXPECTED_PLAN_TAG"
+
+      - name: Validate and canonicalize the isolated observation handoff
+        id: handoff
+        env:
+          EXPECTED_PLAN_TAG: ${{ needs.observe.outputs.plan-tag }}
+          EXPECTED_PLAN_SHA256: ${{ needs.observe.outputs.plan-sha256 }}
+          EXPECTED_PREPARATION_SHA256: ${{ needs.observe.outputs.preparation-sha256 }}
+        run: |
+          python scripts/release_plan.py validate-observation-handoff \
+            isolated-observation/release-plan.json \
+            isolated-observation/release-preparation.json \
+            isolated-observation/candidate-verifier-input.json \
+            isolated-observation/verification.json \
+            isolated-observation/release-state.json \
+            validated-observation \
+            --authoritative-plan trusted-public-plan/release-plan.json \
+            --authoritative-preparation trusted-public-plan/release-preparation.json \
+            --expected-plan-tag "$EXPECTED_PLAN_TAG" \
+            --expected-plan-sha256 "$EXPECTED_PLAN_SHA256" \
+            --expected-preparation-sha256 "$EXPECTED_PREPARATION_SHA256" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Retain aggregate state on the plan release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLAN_TAG: ${{ needs.observe.outputs.plan-tag }}
+        run: gh release upload "$PLAN_TAG" validated-observation/release-state.json --clobber
+
       - name: Stop with an actionable recovery classification
-        if: steps.verification.outcome != 'success'
+        if: needs.observe.outputs.verification-outcome != 'success'
         run: |
           python - <<'PYTHON'
           import json
           from pathlib import Path
 
-          state = json.loads(Path("release-state.json").read_text(encoding="utf-8"))
+          state = json.loads(
+              Path("validated-observation/release-state.json").read_text(encoding="utf-8")
+          )
           print(f"::error::{state['reason']}")
           PYTHON
           exit 1
@@ -105,10 +168,12 @@ jobs:
           GIT_CONFIG_COUNT=1 \
           GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
           GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $git_authorization" \
-            python scripts/release_plan.py complete release-plan.json verification.json \
-            --authoritative-completion authoritative-release-candidate.json \
-            --authoritative-verification authoritative-verification.json \
-            --github-output "$GITHUB_OUTPUT"
+            python scripts/release_plan.py complete \
+              validated-observation/release-plan.json \
+              validated-observation/verification.json \
+              --authoritative-completion authoritative-release-candidate.json \
+              --authoritative-verification authoritative-verification.json \
+              --github-output "$GITHUB_OUTPUT"
 
       - name: Create or repair completed candidate mirror
         env:

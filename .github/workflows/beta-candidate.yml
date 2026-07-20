@@ -14,27 +14,29 @@ on:
         required: true
         type: string
 
-permissions:
-  actions: read
-  attestations: read
-  checks: read
-  contents: write
+permissions: {}
 
 concurrency:
   group: beta-candidate-registry
   cancel-in-progress: false
 
 jobs:
-  qualify-and-record:
-    name: Qualify and record immutable candidate
+  qualify:
+    name: Qualify immutable candidate without write authority
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      actions: read
+      attestations: read
+      checks: read
+      contents: read
     steps:
       - name: Check out the public control plane
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -96,6 +98,60 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: python scripts/beta_candidate.py verify candidate.json verification.json
 
+      - name: Pass only candidate verification evidence to the recorder
+        uses: actions/upload-artifact@v7
+        with:
+          name: beta-candidate-verification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            candidate.json
+            verification.json
+          if-no-files-found: error
+
+  record:
+    name: Record qualified immutable candidate from a fresh checkout
+    needs: qualify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check out a fresh qualified control plane
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Restore isolated candidate verification evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: beta-candidate-verification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: isolated-verification
+
+      - name: Rebuild and validate the authorized verification handoff
+        env:
+          DISPATCH_MANIFEST: ${{ inputs.candidate_manifest }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            python - <<'PYTHON'
+          import os
+          from pathlib import Path
+
+          Path("requested-candidate.json").write_text(os.environ["DISPATCH_MANIFEST"], encoding="utf-8")
+          PYTHON
+          else
+            cp candidates/main.json requested-candidate.json
+          fi
+          python scripts/beta_candidate.py validate requested-candidate.json candidate.json
+          python scripts/beta_candidate.py compare candidate.json isolated-verification/candidate.json
+          python scripts/beta_candidate.py validate-verification \
+            candidate.json isolated-verification/verification.json
+
       - name: Create or compare the immutable Git record
         id: record
         env:
@@ -107,9 +163,10 @@ jobs:
           GIT_CONFIG_COUNT=1 \
           GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
           GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $git_authorization" \
-            python scripts/beta_candidate.py record candidate.json verification.json \
-            --authoritative-verification authoritative-verification.json \
-            --github-output "$GITHUB_OUTPUT"
+            python scripts/beta_candidate.py record \
+              candidate.json isolated-verification/verification.json \
+              --authoritative-verification authoritative-verification.json \
+              --github-output "$GITHUB_OUTPUT"
 
       - name: Create or repair the durable GitHub Release mirror
         env:

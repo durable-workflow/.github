@@ -487,7 +487,13 @@ def parse_checksums(raw: bytes) -> dict[str, str]:
 
 
 def verify_github_release(
-    client: PublicClient, component: Component, version: str, expected_commit: str, directory: Path
+    client: PublicClient,
+    component: Component,
+    version: str,
+    expected_commit: str,
+    directory: Path,
+    *,
+    verified_embedded_identity: str | None = None,
 ) -> dict[str, Any]:
     encoded = urllib.parse.quote(version, safe="")
     api_url = f"https://api.github.com/repos/{component.repository}/releases/tags/{encoded}"
@@ -559,21 +565,29 @@ def verify_github_release(
             )
 
     assert selected_attestation_mode is not None
-    if shutil.which("php") is None:
-        raise CandidateError("PHP is required to verify CLI release source metadata")
-    phar_version = subprocess.run(
-        ["php", str(directory / "dw.phar"), "--version"],
-        cwd=directory,
-        check=False,
-        text=True,
-        capture_output=True,
-        env={"PATH": os.environ.get("PATH", os.defpath)},
-    )
     expected_identity = f"{version} (commit {expected_commit[:12]},"
-    if phar_version.returncode or expected_identity not in phar_version.stdout:
-        raise CandidateError(
-            f"CLI PHAR for {version} does not embed planned source commit {expected_commit}"
+    if verified_embedded_identity is None:
+        if shutil.which("php") is None:
+            raise CandidateError("PHP is required to verify CLI release source metadata")
+        phar_version = subprocess.run(
+            ["php", str(directory / "dw.phar"), "--version"],
+            cwd=directory,
+            check=False,
+            text=True,
+            capture_output=True,
+            env={"PATH": os.environ.get("PATH", os.defpath)},
         )
+        if phar_version.returncode or expected_identity not in phar_version.stdout:
+            raise CandidateError(
+                f"CLI PHAR for {version} does not embed planned source commit {expected_commit}"
+            )
+        embedded_identity = phar_version.stdout.strip()
+    else:
+        if expected_identity not in verified_embedded_identity:
+            raise CandidateError(
+                f"prior CLI PHAR identity for {version} does not bind source commit {expected_commit}"
+            )
+        embedded_identity = verified_embedded_identity
     return {
         "kind": "github-release",
         "repository": component.repository,
@@ -583,7 +597,7 @@ def verify_github_release(
         "build_attestation_authority": selected_attestation_mode[2],
         "package_source": {
             "commit": expected_commit,
-            "embedded_phar_identity": phar_version.stdout.strip(),
+            "embedded_phar_identity": embedded_identity,
         },
         "assets": verified_assets,
     }
@@ -1073,6 +1087,15 @@ def command_verify(arguments: argparse.Namespace) -> None:
     arguments.output.write_bytes(canonical_json(verify_candidate(manifest, client)))
 
 
+def command_validate_verification(arguments: argparse.Namespace) -> None:
+    manifest = load_manifest(arguments.manifest)
+    try:
+        verification = json.loads(arguments.verification.read_bytes())
+    except (OSError, json.JSONDecodeError) as error:
+        raise CandidateError(f"cannot read verification result: {error}") from error
+    validate_verification(verification, manifest)
+
+
 def command_check(arguments: argparse.Namespace) -> None:
     result = check_candidate_compatibility(arguments.repository, arguments.manifest, remote=arguments.remote)
     write_github_output(arguments.github_output, result)
@@ -1109,6 +1132,14 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("manifest", type=Path)
     verify.add_argument("output", type=Path)
     verify.set_defaults(handler=command_verify)
+
+    validate_verification_parser = subparsers.add_parser(
+        "validate-verification",
+        help="validate isolated verification evidence before granting mutation authority",
+    )
+    validate_verification_parser.add_argument("manifest", type=Path)
+    validate_verification_parser.add_argument("verification", type=Path)
+    validate_verification_parser.set_defaults(handler=command_validate_verification)
 
     check = subparsers.add_parser("check", help="reject mutation of an existing candidate before verification")
     check.add_argument("manifest", type=Path)

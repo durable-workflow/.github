@@ -18,26 +18,29 @@ on:
         required: true
         type: string
 
-permissions:
-  actions: read
-  contents: write
+permissions: {}
 
 concurrency:
   group: release-plan-registry
   cancel-in-progress: false
 
 jobs:
-  supersede:
-    name: Record protected terminal failure and exact successor
+  qualify:
+    name: Prove protected terminal failure without write authority
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: release-plan-supersession
+    permissions:
+      actions: read
+      attestations: read
+      contents: read
     steps:
       - name: Check out the public control plane
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -71,6 +74,7 @@ jobs:
         env:
           CONFLICTING_COMPONENTS: ${{ inputs.conflicting_components }}
           FAILED_PLAN_TAG: ${{ inputs.failed_plan_tag }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           python scripts/release_plan.py prepare-supersession \
             "$FAILED_PLAN_TAG" "$CONFLICTING_COMPONENTS" successor-release-plan.json \
@@ -80,6 +84,65 @@ jobs:
             --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --workflow-ref "$GITHUB_WORKFLOW_REF" \
             --workflow-commit "$GITHUB_SHA"
+
+      - name: Pass only protected supersession evidence to the recorder
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-plan-supersession-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            release-plan-failure.json
+            authoritative-successor-release-plan.json
+          if-no-files-found: error
+
+  record:
+    name: Record protected terminal failure from a fresh checkout
+    needs: qualify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      attestations: read
+      contents: write
+    steps:
+      - name: Check out a fresh qualified control plane
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Restore isolated supersession evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: release-plan-supersession-${{ github.run_id }}-${{ github.run_attempt }}
+          path: isolated-supersession
+
+      - name: Rebuild and validate the authorized successor handoff
+        env:
+          CONFLICTING_COMPONENTS: ${{ inputs.conflicting_components }}
+          FAILED_PLAN_TAG: ${{ inputs.failed_plan_tag }}
+          SUCCESSOR_PLAN: ${{ inputs.successor_release_plan }}
+        run: |
+          python - <<'PYTHON'
+          import os
+          from pathlib import Path
+
+          Path("requested-successor.json").write_text(os.environ["SUCCESSOR_PLAN"], encoding="utf-8")
+          PYTHON
+          python scripts/release_plan.py validate requested-successor.json successor-release-plan.json
+          cmp --silent \
+            successor-release-plan.json \
+            isolated-supersession/authoritative-successor-release-plan.json
+          python scripts/release_plan.py validate-supersession-handoff \
+            isolated-supersession/release-plan-failure.json \
+            successor-release-plan.json authorized-release-plan-failure.json \
+            --expected-failed-plan-tag "$FAILED_PLAN_TAG" \
+            --expected-conflict-components "$CONFLICTING_COMPONENTS"
 
       - name: Create or compare immutable terminal record
         id: record
@@ -93,7 +156,7 @@ jobs:
           GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
           GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $git_authorization" \
             python scripts/release_plan.py record-supersession \
-              release-plan-failure.json authoritative-successor-release-plan.json \
+              authorized-release-plan-failure.json successor-release-plan.json \
               --authoritative-record authoritative-release-plan-failure.json \
               --authoritative-successor durable-successor-release-plan.json \
               --github-output "$GITHUB_OUTPUT"
@@ -130,7 +193,7 @@ jobs:
           repair_asset authoritative-release-plan-failure.json release-plan-failure.json
           repair_asset durable-successor-release-plan.json successor-release-plan.json
 
-      - name: Upload protected supersession evidence
+      - name: Upload recorded supersession evidence
         uses: actions/upload-artifact@v7
         with:
           name: release-plan-supersession-${{ steps.record.outputs.failed_plan }}

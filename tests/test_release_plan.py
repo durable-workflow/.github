@@ -26,6 +26,7 @@ from scripts.release_plan import (
     candidate_manifest,
     check_plan_compatibility,
     completion_manifest,
+    conflict_component_names,
     is_immediate_version_successor,
     load_continuity_supersession,
     load_public_supersession,
@@ -36,13 +37,16 @@ from scripts.release_plan import (
     prepare_supersession,
     protected_environment_evidence,
     protected_run_approval_evidence,
+    record_completion,
     record_plan,
     record_supersession,
     require_prior_plans_completed,
     terminal_failure_state,
+    validate_observation_handoff,
     validate_plan,
     validate_release_preparation,
     validate_successor_transition,
+    validate_supersession_handoff,
     validate_supersession_record,
 )
 
@@ -387,8 +391,10 @@ class ReleasePlanEntryPointTest(unittest.TestCase):
             "record",
             "prepare-supersession",
             "record-supersession",
+            "validate-supersession-handoff",
             "discover",
             "observe",
+            "validate-observation-handoff",
             "complete",
         ):
             with self.subTest(command=command):
@@ -409,7 +415,6 @@ class ReleasePlanEntryPointTest(unittest.TestCase):
         ):
             source = (REPOSITORY_ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
             self.assertIn("concurrency:\n  group: release-plan-registry\n", source)
-            self.assertIn("  actions: read\n", source)
 
     def test_recorded_accepted_plan_dispatches_continuity_with_scoped_permission(self) -> None:
         source = (REPOSITORY_ROOT / ".github" / "workflows" / "release-plan.yml").read_text(encoding="utf-8")
@@ -420,6 +425,181 @@ class ReleasePlanEntryPointTest(unittest.TestCase):
 
 
 class ReleasePlanValidationTest(unittest.TestCase):
+    def test_supersession_handoff_binds_dispatch_identities(self) -> None:
+        failed = release_plan()
+        successor = successor_plan(failed)
+        record = supersession_record(failed, successor)
+        failed_tag = record["failed_plan"]["tag"]
+        conflict_components = conflict_component_names(record["conflicts"])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record_path = root / "release-plan-failure.json"
+            successor_path = root / "successor-release-plan.json"
+            authorized_path = root / "authorized-release-plan-failure.json"
+            record_path.write_bytes(canonical_json(record))
+            successor_path.write_bytes(canonical_json(successor))
+
+            validated = validate_supersession_handoff(
+                record_path,
+                successor_path,
+                authorized_path,
+                expected_failed_plan_tag=failed_tag,
+                expected_conflict_components=",".join(conflict_components),
+            )
+
+            self.assertEqual(record, validated)
+            self.assertEqual(canonical_json(record), authorized_path.read_bytes())
+
+            with self.assertRaisesRegex(CandidateError, "trusted failed plan dispatch input"):
+                validate_supersession_handoff(
+                    record_path,
+                    successor_path,
+                    authorized_path,
+                    expected_failed_plan_tag=f"{PLAN_TAG_PREFIX}different-plan",
+                    expected_conflict_components=conflict_components,
+                )
+            with self.assertRaisesRegex(CandidateError, "trusted conflict component dispatch input"):
+                validate_supersession_handoff(
+                    record_path,
+                    successor_path,
+                    authorized_path,
+                    expected_failed_plan_tag=failed_tag,
+                    expected_conflict_components="server",
+                )
+
+    def test_observation_handoff_canonicalizes_only_plan_bound_evidence(self) -> None:
+        plan = release_plan()
+        preparation = release_preparation(plan)
+        candidate = candidate_manifest(plan)
+        verification = {
+            "schema": "durable-workflow.beta-candidate-verification/v1",
+            "candidate": candidate["candidate"],
+            "manifest_sha256": manifest_digest(candidate),
+            "verified_at": "2026-07-20T21:00:00Z",
+            "outcome": "verified",
+            "components": {
+                name: {
+                    "version": identity["version"],
+                    "commit": identity["commit"],
+                    "outcome": "verified",
+                }
+                for name, identity in candidate["components"].items()
+            },
+        }
+        state = {
+            "schema": "durable-workflow.release-state/v1",
+            "plan": plan["plan"],
+            "channel": plan["channel"],
+            "plan_sha256": manifest_digest(plan),
+            "observed_at": "2026-07-20T21:00:00Z",
+            "phase": "complete",
+            "outcome": "verified",
+            "components": verification["components"],
+            "durable_evidence": {
+                "release_plan_tag": f"{PLAN_TAG_PREFIX}{plan['plan']}",
+            },
+            "resume_action": "No recovery action is required",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            inputs = root / "inputs"
+            authority = root / "authority"
+            outputs = root / "outputs"
+            inputs.mkdir()
+            authority.mkdir()
+            paths = {
+                "plan": inputs / "release-plan.json",
+                "preparation": inputs / "release-preparation.json",
+                "candidate": inputs / "candidate-verifier-input.json",
+                "verification": inputs / "verification.json",
+                "state": inputs / "release-state.json",
+            }
+            for name, value in (
+                ("plan", plan),
+                ("preparation", preparation),
+                ("candidate", candidate),
+                ("verification", verification),
+                ("state", state),
+            ):
+                paths[name].write_bytes(canonical_json(value))
+            authoritative_plan = authority / "release-plan.json"
+            authoritative_preparation = authority / "release-preparation.json"
+            authoritative_plan.write_bytes(canonical_json(plan))
+            authoritative_preparation.write_bytes(canonical_json(preparation))
+            authority_arguments = {
+                "authoritative_plan_path": authoritative_plan,
+                "authoritative_preparation_path": authoritative_preparation,
+                "expected_plan_tag": f"{PLAN_TAG_PREFIX}{plan['plan']}",
+                "expected_plan_sha256": manifest_digest(plan),
+                "expected_preparation_sha256": manifest_digest(preparation),
+            }
+
+            result = validate_observation_handoff(
+                paths["plan"],
+                paths["preparation"],
+                paths["candidate"],
+                paths["verification"],
+                paths["state"],
+                outputs,
+                **authority_arguments,
+            )
+
+            self.assertEqual(f"{PLAN_TAG_PREFIX}{plan['plan']}", result["tag"])
+            self.assertEqual(canonical_json(plan), (outputs / "release-plan.json").read_bytes())
+            changed_state = copy.deepcopy(state)
+            changed_state["plan_sha256"] = "f" * 64
+            paths["state"].write_bytes(canonical_json(changed_state))
+            with self.assertRaisesRegex(CandidateError, "does not bind"):
+                validate_observation_handoff(
+                    paths["plan"],
+                    paths["preparation"],
+                    paths["candidate"],
+                    paths["verification"],
+                    paths["state"],
+                    outputs,
+                    **authority_arguments,
+                )
+
+            paths["state"].write_bytes(canonical_json(state))
+            steered_plan = copy.deepcopy(plan)
+            steered_plan["plan"] = "credential-steered-plan"
+            paths["plan"].write_bytes(canonical_json(steered_plan))
+            with self.assertRaisesRegex(CandidateError, "originally selected plan tag"):
+                validate_observation_handoff(
+                    paths["plan"],
+                    paths["preparation"],
+                    paths["candidate"],
+                    paths["verification"],
+                    paths["state"],
+                    outputs,
+                    **authority_arguments,
+                )
+
+    def test_completion_rejects_a_handoff_for_a_different_public_plan(self) -> None:
+        plan = release_plan()
+        different = copy.deepcopy(plan)
+        different["components"]["server"]["commit"] = "e" * 40
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            plan_path = root / "release-plan.json"
+            verification_path = root / "verification.json"
+            plan_path.write_bytes(canonical_json(plan))
+            verification_path.write_text("{}", encoding="utf-8")
+            with (
+                mock.patch("scripts.release_plan.resolve_tag", return_value="a" * 40),
+                mock.patch("scripts.release_plan.read_public_record", return_value=different),
+                self.assertRaisesRegex(CandidateError, "immutable Git authority"),
+            ):
+                record_completion(
+                    root,
+                    plan_path,
+                    verification_path,
+                    remote="origin",
+                    authoritative_completion=root / "authoritative-completion.json",
+                    authoritative_verification=root / "authoritative-verification.json",
+                    client=mock.Mock(),
+                )
+
     def test_preparation_derives_exact_notes_from_immutable_sources(self) -> None:
         plan = release_plan()
 

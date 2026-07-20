@@ -32,12 +32,14 @@ from scripts.beta_candidate import (
     PublicInfrastructureError,
     canonical_json,
     fetch_existing_record,
+    load_manifest,
     manifest_digest,
     read_record_file,
     resolve_github_tag,
     run_git,
     validate_verification,
     verify_candidate,
+    verify_github_release,
     write_github_output,
 )
 
@@ -1067,13 +1069,34 @@ def revalidate_conflict_public_evidence(
             )
         try:
             with tempfile.TemporaryDirectory(prefix="release-plan-failure-revalidation-") as temporary:
-                live_distribution = VERIFIERS[component.distribution](
-                    client,
-                    component,
-                    conflict["version"],
-                    conflict["observed_commit"],
-                    Path(temporary),
-                )
+                if component.distribution == "github-release":
+                    package_source = conflict["distribution"].get("package_source")
+                    embedded_identity = (
+                        package_source.get("embedded_phar_identity")
+                        if isinstance(package_source, dict)
+                        else None
+                    )
+                    if not isinstance(embedded_identity, str):
+                        raise CandidateError(
+                            f"terminal conflict distribution evidence for {component_name} "
+                            "has no verified CLI identity"
+                        )
+                    live_distribution = verify_github_release(
+                        client,
+                        component,
+                        conflict["version"],
+                        conflict["observed_commit"],
+                        Path(temporary),
+                        verified_embedded_identity=embedded_identity,
+                    )
+                else:
+                    live_distribution = VERIFIERS[component.distribution](
+                        client,
+                        component,
+                        conflict["version"],
+                        conflict["observed_commit"],
+                        Path(temporary),
+                    )
             require_distribution_identity(
                 live_distribution,
                 component_name,
@@ -2063,6 +2086,39 @@ def load_supersession_file(path: Path) -> dict[str, Any]:
     return value
 
 
+def validate_supersession_handoff(
+    record_path: Path,
+    successor_plan_path: Path,
+    destination: Path,
+    *,
+    expected_failed_plan_tag: str,
+    expected_conflict_components: str | list[str],
+) -> dict[str, Any]:
+    record = load_supersession_file(record_path)
+    successor = load_plan(successor_plan_path)
+    failed = record.get("failed_plan")
+    if not isinstance(failed, dict) or failed.get("tag") != expected_failed_plan_tag:
+        raise CandidateError(
+            "release plan failure record does not match the trusted failed plan dispatch input"
+        )
+    expected_components = (
+        parse_conflict_components(expected_conflict_components)
+        if isinstance(expected_conflict_components, str)
+        else conflict_component_names(expected_conflict_components)
+    )
+    if conflict_component_names(record.get("conflicts")) != expected_components:
+        raise CandidateError(
+            "release plan failure record does not match the trusted conflict component dispatch input"
+        )
+    if record.get("successor_plan") != {
+        "tag": f"{PLAN_TAG_PREFIX}{successor['plan']}",
+        "sha256": manifest_digest(successor),
+    }:
+        raise CandidateError("release plan failure record does not bind the supplied successor document")
+    destination.write_bytes(canonical_json(record))
+    return record
+
+
 def record_supersession(
     repository: Path,
     record_path: Path,
@@ -2239,6 +2295,15 @@ def record_completion(
     plan_record_commit = resolve_tag(client, CONTROL_REPOSITORY, plan_tag)
     if plan_record_commit is None:
         raise CandidateError(f"release plan tag {plan_tag} is absent")
+    public_plan = read_public_record(
+        client,
+        plan_tag,
+        plan_record_commit,
+        "release-plan.json",
+    )
+    validate_plan(public_plan)
+    if canonical_json(public_plan) != canonical_json(plan):
+        raise CandidateError("observed release plan differs from immutable Git authority")
     if load_public_supersession(plan, plan_record_commit, client) is not None:
         raise CandidateError(f"terminally failed release plan {plan_tag} cannot be completed")
     try:
@@ -2466,6 +2531,107 @@ def observe_plan(
     return verification, state
 
 
+def validate_observation_handoff(
+    plan_path: Path,
+    preparation_path: Path,
+    candidate_path: Path,
+    verification_path: Path,
+    state_path: Path,
+    output_directory: Path,
+    *,
+    authoritative_plan_path: Path,
+    authoritative_preparation_path: Path,
+    expected_plan_tag: str,
+    expected_plan_sha256: str,
+    expected_preparation_sha256: str,
+) -> dict[str, str]:
+    plan = load_plan(plan_path)
+    plan_tag = f"{PLAN_TAG_PREFIX}{plan['plan']}"
+    if expected_plan_tag != plan_tag:
+        raise CandidateError("observation handoff does not match the originally selected plan tag")
+    if expected_plan_sha256 != manifest_digest(plan):
+        raise CandidateError("observation handoff does not match the originally selected release plan")
+    preparation = (
+        load_release_preparation(preparation_path, plan)
+        if preparation_path.exists()
+        else None
+    )
+    authoritative_plan = load_plan(authoritative_plan_path)
+    authoritative_preparation = (
+        load_release_preparation(authoritative_preparation_path, authoritative_plan)
+        if authoritative_preparation_path.exists()
+        else None
+    )
+    if canonical_json(plan) != canonical_json(authoritative_plan):
+        raise CandidateError("observation release plan differs from current public authority")
+    preparation_sha256 = manifest_digest(preparation) if preparation is not None else "absent"
+    authoritative_preparation_sha256 = (
+        manifest_digest(authoritative_preparation) if authoritative_preparation is not None else "absent"
+    )
+    if (
+        expected_preparation_sha256 != preparation_sha256
+        or expected_preparation_sha256 != authoritative_preparation_sha256
+    ):
+        raise CandidateError("observation handoff does not match the originally selected preparation")
+    candidate = load_manifest(candidate_path)
+    if canonical_json(candidate) != canonical_json(candidate_manifest(plan)):
+        raise CandidateError("observation candidate does not match its release plan")
+    try:
+        state = json.loads(state_path.read_bytes())
+    except (OSError, json.JSONDecodeError) as error:
+        raise CandidateError(f"cannot read release observation state: {error}") from error
+    if (
+        not isinstance(state, dict)
+        or state.get("schema") != "durable-workflow.release-state/v1"
+        or state.get("plan") != plan["plan"]
+        or state.get("channel") != plan["channel"]
+        or state.get("plan_sha256") != manifest_digest(plan)
+        or not isinstance(state.get("durable_evidence"), dict)
+    ):
+        raise CandidateError("release observation state does not bind its release plan")
+
+    outcome = state.get("outcome")
+    verification: dict[str, Any] | None = None
+    if outcome == "verified":
+        if state.get("phase") != "complete":
+            raise CandidateError("verified release observation is not complete")
+        try:
+            verification = json.loads(verification_path.read_bytes())
+        except (OSError, json.JSONDecodeError) as error:
+            raise CandidateError(f"cannot read release observation verification: {error}") from error
+        validate_verification(verification, candidate)
+        if state.get("components") != verification["components"]:
+            raise CandidateError("release observation state and verification components differ")
+    elif outcome in {"failed", "superseded"}:
+        expected_phase = "terminal-failure" if outcome == "superseded" else "public-artifact-verification"
+        reason = state.get("reason")
+        if (
+            state.get("phase") != expected_phase
+            or not isinstance(reason, str)
+            or not 0 < len(reason) <= 4096
+        ):
+            raise CandidateError("failed release observation lacks a bounded recovery reason")
+        if verification_path.exists():
+            raise CandidateError("failed release observation unexpectedly contains verification evidence")
+    else:
+        raise CandidateError("release observation state has an invalid outcome")
+
+    output_directory.mkdir(parents=True, exist_ok=True)
+    (output_directory / "release-plan.json").write_bytes(canonical_json(plan))
+    if preparation is not None:
+        (output_directory / "release-preparation.json").write_bytes(canonical_json(preparation))
+    (output_directory / "candidate-verifier-input.json").write_bytes(canonical_json(candidate))
+    (output_directory / "release-state.json").write_bytes(canonical_json(state))
+    if verification is not None:
+        (output_directory / "verification.json").write_bytes(canonical_json(verification))
+    return {
+        "channel": plan["channel"],
+        "outcome": str(outcome),
+        "plan": plan["plan"],
+        "tag": plan_tag,
+    }
+
+
 def discover_plan(
     client: PublicClient, requested_tag: str | None
 ) -> tuple[str, dict[str, Any], dict[str, Any] | None]:
@@ -2563,6 +2729,13 @@ def main() -> int:
     record_supersession_parser.add_argument("--authoritative-successor", required=True, type=Path)
     record_supersession_parser.add_argument("--github-output", type=Path)
 
+    validate_supersession = subparsers.add_parser("validate-supersession-handoff")
+    validate_supersession.add_argument("record", type=Path)
+    validate_supersession.add_argument("successor_plan", type=Path)
+    validate_supersession.add_argument("destination", type=Path)
+    validate_supersession.add_argument("--expected-failed-plan-tag", required=True)
+    validate_supersession.add_argument("--expected-conflict-components", required=True)
+
     discover = subparsers.add_parser("discover")
     discover.add_argument("destination", type=Path)
     discover.add_argument("--preparation", required=True, type=Path)
@@ -2575,6 +2748,20 @@ def main() -> int:
     observe.add_argument("candidate", type=Path)
     observe.add_argument("verification", type=Path)
     observe.add_argument("state", type=Path)
+
+    validate_observation = subparsers.add_parser("validate-observation-handoff")
+    validate_observation.add_argument("plan", type=Path)
+    validate_observation.add_argument("preparation", type=Path)
+    validate_observation.add_argument("candidate", type=Path)
+    validate_observation.add_argument("verification", type=Path)
+    validate_observation.add_argument("state", type=Path)
+    validate_observation.add_argument("output_directory", type=Path)
+    validate_observation.add_argument("--authoritative-plan", required=True, type=Path)
+    validate_observation.add_argument("--authoritative-preparation", required=True, type=Path)
+    validate_observation.add_argument("--expected-plan-tag", required=True)
+    validate_observation.add_argument("--expected-plan-sha256", required=True)
+    validate_observation.add_argument("--expected-preparation-sha256", required=True)
+    validate_observation.add_argument("--github-output", type=Path)
 
     complete = subparsers.add_parser("complete")
     complete.add_argument("plan", type=Path)
@@ -2651,12 +2838,26 @@ def main() -> int:
             )
             write_github_output(args.github_output, result)
             print(json.dumps(result, sort_keys=True))
+        elif args.command == "validate-supersession-handoff":
+            validate_supersession_handoff(
+                args.record,
+                args.successor_plan,
+                args.destination,
+                expected_failed_plan_tag=args.expected_failed_plan_tag,
+                expected_conflict_components=args.expected_conflict_components,
+            )
         elif args.command == "discover":
             tag, plan, preparation = discover_plan(PublicClient(token), args.tag)
             args.destination.write_bytes(canonical_json(plan))
             if preparation is not None:
                 args.preparation.write_bytes(canonical_json(preparation))
-            values = {"tag": tag, "plan": plan["plan"], "channel": plan["channel"]}
+            values = {
+                "tag": tag,
+                "plan": plan["plan"],
+                "channel": plan["channel"],
+                "plan_sha256": manifest_digest(plan),
+                "preparation_sha256": manifest_digest(preparation) if preparation is not None else "absent",
+            }
             write_github_output(args.github_output, values)
             print(json.dumps(values, sort_keys=True))
         elif args.command == "observe":
@@ -2707,6 +2908,22 @@ def main() -> int:
                 raise
             args.verification.write_bytes(canonical_json(verification))
             args.state.write_bytes(canonical_json(state))
+        elif args.command == "validate-observation-handoff":
+            result = validate_observation_handoff(
+                args.plan,
+                args.preparation,
+                args.candidate,
+                args.verification,
+                args.state,
+                args.output_directory,
+                authoritative_plan_path=args.authoritative_plan,
+                authoritative_preparation_path=args.authoritative_preparation,
+                expected_plan_tag=args.expected_plan_tag,
+                expected_plan_sha256=args.expected_plan_sha256,
+                expected_preparation_sha256=args.expected_preparation_sha256,
+            )
+            write_github_output(args.github_output, result)
+            print(json.dumps(result, sort_keys=True))
         elif args.command == "complete":
             result = record_completion(
                 Path.cwd(),
