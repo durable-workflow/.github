@@ -80,38 +80,16 @@ SENSITIVE_EVIDENCE_KEY = re.compile(
     re.IGNORECASE,
 )
 EVIDENCE_OPTIONAL_QUOTE = r"(?:\\?[\"'])?"
-EVIDENCE_VALUE = r"(?!\\?[\"'])[^\s,;}\]\"']+?"
-EVIDENCE_VALUE_TERMINATOR = r"(?=$|[\s,;}\]]|\\?[\"'])"
-AUTHORIZATION_EVIDENCE_PATTERN = (
-    r"("
+EVIDENCE_QUOTED_TERMINATORS = frozenset(" \t\r\n,;:)}]")
+EVIDENCE_ASSIGNMENT_PREFIX = re.compile(
+    r"(?P<prefix>(?<![\w-])"
     + EVIDENCE_OPTIONAL_QUOTE
-    + r"authorization"
+    + r"(?P<key>[a-z0-9_-]+)"
     + EVIDENCE_OPTIONAL_QUOTE
-    + r"\s*[:=]\s*"
-    + EVIDENCE_OPTIONAL_QUOTE
-    + r")(?!(?:bearer\s+)?\[REDACTED\]"
-    + EVIDENCE_VALUE_TERMINATOR
-    + r")((?:bearer\s+)?)"
-    + EVIDENCE_VALUE
-    + EVIDENCE_VALUE_TERMINATOR
-)
-SECRET_EVIDENCE_PATTERN = (
-    r"("
-    + EVIDENCE_OPTIONAL_QUOTE
-    + r"(?:credential|password|passwd|secret|api[_-]?(?:key|token)|token)"
-    + EVIDENCE_OPTIONAL_QUOTE
-    + r"\s*[:=]\s*"
-    + EVIDENCE_OPTIONAL_QUOTE
-    + r")(?!\[REDACTED\]"
-    + EVIDENCE_VALUE_TERMINATOR
-    + r")"
-    + EVIDENCE_VALUE
-    + EVIDENCE_VALUE_TERMINATOR
-)
-SENSITIVE_EVIDENCE_TEXT = re.compile(
-    r"(?:" + AUTHORIZATION_EVIDENCE_PATTERN + r"|" + SECRET_EVIDENCE_PATTERN + r"|\bbeta-[0-9a-f]{32}\b)",
+    + r"\s*[:=]\s*)",
     re.IGNORECASE,
 )
+BETA_TOKEN_EVIDENCE = re.compile(r"\bbeta-[0-9a-f]{32}\b", re.IGNORECASE)
 
 
 class ConformanceError(RuntimeError):
@@ -840,11 +818,104 @@ def bounded_text(value: Any, limit: int = FINDING_TEXT_LIMIT) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def evidence_value_parts(value: str) -> tuple[str, str, str]:
+    for quote in (r'\"', r"\'", '"', "'"):
+        if value.startswith(quote) and value.endswith(quote) and len(value) >= len(quote) * 2:
+            return quote, value[len(quote) : -len(quote)], quote
+    return "", value, ""
+
+
+def quoted_evidence_value_end(text: str, start: int) -> int | None:
+    escaped_wrapper = text.startswith((r'\"', r"\'"), start)
+    if escaped_wrapper:
+        quote = text[start + 1]
+        cursor = start + 2
+    elif start < len(text) and text[start] in {'"', "'"}:
+        quote = text[start]
+        cursor = start + 1
+    else:
+        return None
+
+    while cursor < len(text) and text[cursor] not in "\r\n":
+        if text[cursor] == quote:
+            slash_start = cursor
+            while slash_start > start and text[slash_start - 1] == "\\":
+                slash_start -= 1
+            slash_count = cursor - slash_start
+            if (escaped_wrapper and slash_count == 1) or (not escaped_wrapper and slash_count % 2 == 0):
+                end = cursor + 1
+                return end if end == len(text) or text[end] in EVIDENCE_QUOTED_TERMINATORS else len(text)
+        cursor += 1
+    return len(text)
+
+
+def evidence_value_end(text: str, start: int) -> int:
+    if "\n" in text[start:] or "\r" in text[start:]:
+        return len(text)
+    quoted_end = quoted_evidence_value_end(text, start)
+    if quoted_end is not None:
+        return quoted_end
+
+    # Whitespace and punctuation are valid secret characters in arbitrary log
+    # scalars, so an unquoted value has no trustworthy boundary. Consume its
+    # bounded remainder, including any text after a pre-redacted prefix.
+    return len(text)
+
+
+def evidence_value_spans(text: str) -> Iterator[tuple[int, int, bool]]:
+    search_from = 0
+    while match := EVIDENCE_ASSIGNMENT_PREFIX.search(text, search_from):
+        if SENSITIVE_EVIDENCE_KEY.search(match.group("key")) is None:
+            search_from = match.end()
+            continue
+        start = match.end()
+        end = evidence_value_end(text, start)
+        if end > start:
+            authorization = "authorization" in match.group("key").lower()
+            yield start, end, authorization
+            search_from = end
+        else:
+            search_from = start + 1
+
+
+def redacted_evidence_value(value: str, preserve_bearer: bool = False) -> str:
+    opening, inner, closing = evidence_value_parts(value)
+    stripped = inner.strip()
+    if re.fullmatch(r"(?:bearer\s+)?\[REDACTED\]", stripped, flags=re.IGNORECASE):
+        return value
+    bearer = re.match(r"\s*(bearer\s+)", inner, flags=re.IGNORECASE) if preserve_bearer else None
+    replacement = f"{bearer.group(1)}[REDACTED]" if bearer else "[REDACTED]"
+    return f"{opening}{replacement}{closing}"
+
+
+def redact_evidence_assignments(text: str) -> str:
+    fragments: list[str] = []
+    cursor = 0
+    for start, end, authorization in evidence_value_spans(text):
+        fragments.append(text[cursor:start])
+        fragments.append(redacted_evidence_value(text[start:end], preserve_bearer=authorization))
+        cursor = end
+    fragments.append(text[cursor:])
+    return "".join(fragments)
+
+
+def contains_sensitive_evidence_text(value: str) -> bool:
+    if BETA_TOKEN_EVIDENCE.search(value):
+        return True
+    return any(
+        not re.fullmatch(
+            r"(?:bearer\s+)?\[REDACTED\]" if authorization else r"\[REDACTED\]",
+            evidence_value_parts(value[start:end])[1].strip(),
+            flags=re.IGNORECASE,
+        )
+        for start, end, authorization in evidence_value_spans(value)
+    )
+
+
 def sanitized_evidence_text(value: Any, limit: int = 512) -> str:
     text = str(value).replace("\x00", "")
-    text = re.sub(AUTHORIZATION_EVIDENCE_PATTERN, r"\1\2[REDACTED]", text, flags=re.IGNORECASE)
-    text = re.sub(SECRET_EVIDENCE_PATTERN, r"\1[REDACTED]", text, flags=re.IGNORECASE)
-    text = re.sub(r"\bbeta-[0-9a-f]{32}\b", "[REDACTED]", text, flags=re.IGNORECASE)
+    text = redact_evidence_assignments(text)
+    text = BETA_TOKEN_EVIDENCE.sub("[REDACTED]", text)
     text = re.sub(r"(https?://)[^\s/@:]+:[^\s/@]+@", r"\1[REDACTED]@", text, flags=re.IGNORECASE)
     return bounded_text(text, limit)
 
@@ -917,26 +988,26 @@ def summarize_native_failure_projection(native: dict[str, Any]) -> dict[str, Any
             status = value
             observed = {}
             linked_findings = None
-        normalized_status = bounded_text(status, 64)
+        normalized_status = sanitized_evidence_text(status, 64)
         if normalized_status in PASS_OUTCOMES:
             continue
         if not isinstance(observed, dict):
             observed = {}
         scenario = {
-            "id": bounded_text(scenario_id, 128),
+            "id": sanitized_evidence_text(scenario_id, 128),
             "status": normalized_status,
             "failure_stage": (
-                bounded_text(observed["failure_stage"], 128)
+                sanitized_evidence_text(observed["failure_stage"], 128)
                 if isinstance(observed.get("failure_stage"), str)
                 else None
             ),
             "failure_classification": (
-                bounded_text(observed["failure_classification"], 128)
+                sanitized_evidence_text(observed["failure_classification"], 128)
                 if isinstance(observed.get("failure_classification"), str)
                 else None
             ),
             "failure_owner": (
-                bounded_text(observed["failure_owner"], 128)
+                sanitized_evidence_text(observed["failure_owner"], 128)
                 if isinstance(observed.get("failure_owner"), str)
                 else None
             ),
@@ -972,12 +1043,13 @@ def native_failure_projection_error(projection: Any) -> str:
 
     def has_secret(value: Any) -> bool:
         if isinstance(value, str):
-            return SENSITIVE_EVIDENCE_TEXT.search(value) is not None
+            return contains_sensitive_evidence_text(value)
         if isinstance(value, list):
             return any(has_secret(entry) for entry in value)
         if isinstance(value, dict):
             return any(
-                (SENSITIVE_EVIDENCE_KEY.search(str(key)) is not None and nested != "[REDACTED]")
+                contains_sensitive_evidence_text(str(key))
+                or (SENSITIVE_EVIDENCE_KEY.search(str(key)) is not None and nested != "[REDACTED]")
                 or has_secret(nested)
                 for key, nested in value.items()
             )
@@ -1013,6 +1085,17 @@ def native_failure_projection_error(projection: Any) -> str:
             )
         ):
             return "experiment result has invalid native failure attribution"
+        if any(
+            has_secret(value)
+            for value in (
+                scenario["id"],
+                scenario["status"],
+                scenario["failure_stage"],
+                scenario["failure_classification"],
+                scenario["failure_owner"],
+            )
+        ):
+            return "experiment result has unsanitized native failure attribution"
         for field in ("worker_evidence", "server_evidence", "linked_findings"):
             if len(canonical_json(scenario[field])) > NATIVE_FAILURE_COMPONENT_LIMIT:
                 return "experiment result has an unbounded native failure evidence component"

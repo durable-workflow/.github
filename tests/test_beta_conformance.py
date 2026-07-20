@@ -951,10 +951,13 @@ class ExperimentRetryTest(unittest.TestCase):
 
     def test_native_failure_projection_retains_attribution_and_sanitized_companion_evidence(self) -> None:
         private_token = "beta-0123456789abcdef0123456789abcdef"
-        quoted_password = "quoted-password-value"
-        quoted_api_token = "quoted-api-token-value"
-        escaped_password = "escaped-password-value"
-        escaped_api_token = "escaped-api-token-value"
+        quoted_password = r'two \"quoted-password-fragment\" password-tail'
+        quoted_api_token = "left,right;tail"
+        escaped_password = r'escaped \\\"escaped-password-fragment\\\" escaped-tail'
+        escaped_api_token = "escaped,left;tail"
+        quoted_bearer = "bearer token, with; delimiters"
+        multiline_password = 'line-one\nmultiline-password-secret" multiline-password-tail'
+        multiline_authorization = "line-one\nmultiline-authorization-secret multiline-authorization-tail"
         native = self.native_result("fail")
         native["scenario_results"] = {
             "php_sdk_lifecycle_surface": {
@@ -978,6 +981,9 @@ class ExperimentRetryTest(unittest.TestCase):
                                     f'{{"password":"{quoted_password}",'
                                     f'"api_token":"{quoted_api_token}"}}'
                                 ),
+                                "quoted_header": f'{{"Authorization":"Bearer {quoted_bearer}"}}',
+                                "multiline_diagnostic": f'password="{multiline_password}',
+                                "multiline_header": f"Authorization: Bearer {multiline_authorization}",
                                 "escaped_diagnostics": [
                                     rf'{{\"password\":\"{escaped_password}\"}}',
                                     rf'{{\"api_token\":\"{escaped_api_token}\"}}',
@@ -1016,10 +1022,28 @@ class ExperimentRetryTest(unittest.TestCase):
         self.assertNotIn(quoted_api_token, rendered)
         self.assertNotIn(escaped_password, rendered)
         self.assertNotIn(escaped_api_token, rendered)
+        self.assertNotIn(quoted_bearer, rendered)
+        self.assertNotIn("quoted-password-fragment", rendered)
+        self.assertNotIn("password-tail", rendered)
+        self.assertNotIn("escaped-password-fragment", rendered)
+        self.assertNotIn("escaped-tail", rendered)
+        self.assertNotIn("multiline-password-secret", rendered)
+        self.assertNotIn("multiline-password-tail", rendered)
+        self.assertNotIn("multiline-authorization-secret", rendered)
+        self.assertNotIn("multiline-authorization-tail", rendered)
         self.assertIn("[REDACTED]", rendered)
-        escaped_diagnostics = scenario["server_evidence"]["runtime_failure"]["public_error_envelope"][
-            "escaped_diagnostics"
-        ]
+        public_error_envelope = scenario["server_evidence"]["runtime_failure"]["public_error_envelope"]
+        self.assertEqual(
+            '{"password":"[REDACTED]","api_token":"[REDACTED]"}',
+            public_error_envelope["diagnostic"],
+        )
+        self.assertEqual(
+            '{"Authorization":"Bearer [REDACTED]"}',
+            public_error_envelope["quoted_header"],
+        )
+        self.assertEqual("password=[REDACTED]", public_error_envelope["multiline_diagnostic"])
+        self.assertEqual("Authorization: Bearer [REDACTED]", public_error_envelope["multiline_header"])
+        escaped_diagnostics = public_error_envelope["escaped_diagnostics"]
         self.assertEqual(
             [r'{\"password\":\"[REDACTED]\"}', r'{\"api_token\":\"[REDACTED]\"}'],
             escaped_diagnostics,
@@ -1030,12 +1054,195 @@ class ExperimentRetryTest(unittest.TestCase):
             "experiment result has unsanitized native failure evidence",
             native_failure_projection_error(projection),
         )
+        escaped_diagnostics[1] = r'{\"api_token\":\"[REDACTED]\"}'
+        public_error_envelope["multiline_diagnostic"] = f'password="{multiline_password}'
+        self.assertEqual(
+            "experiment result has unsanitized native failure evidence",
+            native_failure_projection_error(projection),
+        )
+        public_error_envelope["multiline_diagnostic"] = "password=[REDACTED]"
+        public_error_envelope["multiline_header"] = f"Authorization: Bearer {multiline_authorization}"
+        self.assertEqual(
+            "experiment result has unsanitized native failure evidence",
+            native_failure_projection_error(projection),
+        )
         escaped_diagnostics[0] = r'{\"password\":\"[REDACTED]\"}'
         escaped_diagnostics[1] = rf'{{\"api_token\":\"{escaped_api_token}\"}}'
         self.assertEqual(
             "experiment result has unsanitized native failure evidence",
             native_failure_projection_error(projection),
         )
+
+    def test_native_failure_projection_sanitizes_and_validates_attribution_strings(self) -> None:
+        sensitive_values = {
+            "id": r'password="scenario \"id-secret\" id-tail"',
+            "status": r'fail api_token="status \"status-secret\" status-tail"',
+            "failure_stage": r'client password="stage \"stage-secret\" stage-tail"',
+            "failure_classification": r'server api_token="class \"class-secret\" class-tail"',
+            "failure_owner": 'server password="owner\nnewline-owner-secret" newline-owner-tail',
+        }
+        sensitive_fragments = {
+            field: re.findall(r"[a-z]+-(?:secret|tail)", value) for field, value in sensitive_values.items()
+        }
+        native = self.native_result("fail")
+        native["scenario_results"] = {
+            "fixture": {
+                "scenario_id": sensitive_values["id"],
+                "status": sensitive_values["status"],
+                "observed_outputs": {
+                    field: sensitive_values[field]
+                    for field in ("failure_stage", "failure_classification", "failure_owner")
+                },
+            }
+        }
+
+        summary = summarize_native_result(native)
+
+        self.assertIsNotNone(summary)
+        assert summary is not None
+        projection = summary["failure_projection"]
+        scenario = projection["scenarios"][0]
+        self.assertEqual("", native_failure_projection_error(projection))
+        for field, sensitive_value in sensitive_values.items():
+            with self.subTest(field=field):
+                self.assertNotIn(sensitive_value, scenario[field])
+                self.assertIn("[REDACTED]", scenario[field])
+                for fragment in sensitive_fragments[field]:
+                    self.assertNotIn(fragment, scenario[field])
+                leaking_projection = json.loads(canonical_json(projection))
+                leaking_projection["scenarios"][0][field] = sensitive_value
+                self.assertEqual(
+                    "experiment result has unsanitized native failure attribution",
+                    native_failure_projection_error(leaking_projection),
+                )
+
+    def test_native_failure_projection_redacts_ambiguous_unquoted_scalar_suffixes(self) -> None:
+        sensitive_values = {
+            "failure_stage": "client password=two words tail",
+            "worker_evidence": "api_token=left,right;tail",
+            "server_evidence": "Authorization: Bearer [REDACTED] suffix",
+        }
+        native = self.native_result("fail")
+        native["scenario_results"] = {
+            "fixture": {
+                "scenario_id": "fixture",
+                "status": "fail",
+                "observed_outputs": {
+                    "failure_stage": sensitive_values["failure_stage"],
+                    "worker_evidence": sensitive_values["worker_evidence"],
+                    "server_evidence": sensitive_values["server_evidence"],
+                },
+            }
+        }
+
+        summary = summarize_native_result(native)
+
+        self.assertIsNotNone(summary)
+        assert summary is not None
+        projection = summary["failure_projection"]
+        scenario = projection["scenarios"][0]
+        self.assertEqual("client password=[REDACTED]", scenario["failure_stage"])
+        self.assertEqual("api_token=[REDACTED]", scenario["worker_evidence"])
+        self.assertEqual("Authorization: Bearer [REDACTED]", scenario["server_evidence"])
+        self.assertEqual("", native_failure_projection_error(projection))
+
+        for field, sensitive_value in sensitive_values.items():
+            with self.subTest(field=field):
+                leaking_projection = json.loads(canonical_json(projection))
+                leaking_projection["scenarios"][0][field] = sensitive_value
+                expected_error = (
+                    "experiment result has unsanitized native failure attribution"
+                    if field == "failure_stage"
+                    else "experiment result has unsanitized native failure evidence"
+                )
+                self.assertEqual(
+                    expected_error,
+                    native_failure_projection_error(leaking_projection),
+                )
+
+    def test_native_failure_projection_redacts_compound_sensitive_keys(self) -> None:
+        sensitive_attribution = {
+            "id": "case access_token=access token tail",
+            "status": "fail db_password=database password tail",
+            "failure_stage": "client x-api-token=x api token tail",
+            "failure_owner": "server Proxy-Authorization: Bearer proxy authorization tail",
+        }
+        sensitive_evidence = {
+            "snake": [
+                "access_token=snake access tail",
+                "db_password=snake database tail",
+                "x_api_token=snake x api tail",
+                "proxy_authorization: Bearer snake proxy tail",
+            ],
+            "kebab": [
+                "access-token=kebab access tail",
+                "db-password=kebab database tail",
+                "x-api-token=kebab x api tail",
+                "Proxy-Authorization: Bearer kebab proxy tail",
+            ],
+            "camel": [
+                "accessToken=camel access tail",
+                "dbPassword=camel database tail",
+                "xApiToken=camel x api tail",
+                "proxyAuthorization: Bearer camel proxy tail",
+            ],
+        }
+        native = self.native_result("fail")
+        native["scenario_results"] = {
+            "fixture": {
+                "scenario_id": sensitive_attribution["id"],
+                "status": sensitive_attribution["status"],
+                "observed_outputs": {
+                    "failure_stage": sensitive_attribution["failure_stage"],
+                    "failure_owner": sensitive_attribution["failure_owner"],
+                    "worker_evidence": sensitive_evidence,
+                },
+            }
+        }
+
+        summary = summarize_native_result(native)
+
+        self.assertIsNotNone(summary)
+        assert summary is not None
+        projection = summary["failure_projection"]
+        scenario = projection["scenarios"][0]
+        self.assertEqual("case access_token=[REDACTED]", scenario["id"])
+        self.assertEqual("fail db_password=[REDACTED]", scenario["status"])
+        self.assertEqual("client x-api-token=[REDACTED]", scenario["failure_stage"])
+        self.assertEqual(
+            "server Proxy-Authorization: Bearer [REDACTED]",
+            scenario["failure_owner"],
+        )
+        for style, values in sensitive_evidence.items():
+            with self.subTest(style=style):
+                self.assertEqual(
+                    [
+                        values[0].split("=", 1)[0] + "=[REDACTED]",
+                        values[1].split("=", 1)[0] + "=[REDACTED]",
+                        values[2].split("=", 1)[0] + "=[REDACTED]",
+                        values[3].split(":", 1)[0] + ": Bearer [REDACTED]",
+                    ],
+                    scenario["worker_evidence"][style],
+                )
+        self.assertEqual("", native_failure_projection_error(projection))
+
+        for field, sensitive_value in sensitive_attribution.items():
+            with self.subTest(field=field):
+                leaking_projection = json.loads(canonical_json(projection))
+                leaking_projection["scenarios"][0][field] = sensitive_value
+                self.assertEqual(
+                    "experiment result has unsanitized native failure attribution",
+                    native_failure_projection_error(leaking_projection),
+                )
+        for style, values in sensitive_evidence.items():
+            for index, sensitive_value in enumerate(values):
+                with self.subTest(style=style, index=index):
+                    leaking_projection = json.loads(canonical_json(projection))
+                    leaking_projection["scenarios"][0]["worker_evidence"][style][index] = sensitive_value
+                    self.assertEqual(
+                        "experiment result has unsanitized native failure evidence",
+                        native_failure_projection_error(leaking_projection),
+                    )
 
     def portable_signals_query_result(self) -> tuple[dict[str, object], dict[str, object]]:
         runner = self.contract["experiments"]["signals-queries"]["runners"][0]
