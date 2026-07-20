@@ -123,6 +123,27 @@ class ComponentRecoveryContractTest(unittest.TestCase):
         self.assertEqual([4, 2], sleeps)
         self.assertEqual(3, open_url.call_count)
 
+    def test_recovery_public_client_never_retries_authentication_with_rate_limit_guidance(self) -> None:
+        sleeps: list[float] = []
+        client = PublicClient(max_attempts=3, retry_base_seconds=1, sleep=sleeps.append)
+        error = github_http_error(
+            401,
+            b"Bad credentials: API rate limit exceeded",
+            **{"Retry-After": "20", "X-RateLimit-Remaining": "0"},
+        )
+
+        with (
+            mock.patch(
+                "scripts.component_release_recovery.urllib.request.urlopen",
+                side_effect=error,
+            ) as open_url,
+            self.assertRaisesRegex(RecoveryError, r"public request failed \(401\)"),
+        ):
+            client.json("https://api.github.com/repos/durable-workflow/.github/releases?per_page=100")
+
+        self.assertEqual([], sleeps)
+        self.assertEqual(1, open_url.call_count)
+
     def test_recovery_public_client_separates_exhausted_infrastructure_from_missing_resources(self) -> None:
         client = PublicClient(max_attempts=2, retry_base_seconds=1, sleep=lambda _delay: None)
         with (

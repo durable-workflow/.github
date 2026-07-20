@@ -234,7 +234,7 @@ class PublicClient:
     def _is_rate_limited(error: urllib.error.HTTPError, detail: str) -> bool:
         headers = error.headers or {}
         return error.code == 429 or (
-            error.code in {401, 403}
+            error.code == 403
             and (
                 headers.get("Retry-After") is not None
                 or headers.get("X-RateLimit-Remaining") == "0"

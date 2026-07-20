@@ -133,6 +133,24 @@ class ManifestTest(unittest.TestCase):
 
         self.assertEqual([12, 20], sleeps)
 
+    def test_public_client_never_retries_authentication_with_rate_limit_guidance(self) -> None:
+        sleeps: list[float] = []
+        client = PublicClient(max_attempts=3, retry_base_seconds=1, sleep=sleeps.append)
+        error = http_error(
+            401,
+            b"Bad credentials: API rate limit exceeded",
+            **{"Retry-After": "20", "X-RateLimit-Remaining": "0"},
+        )
+
+        with (
+            mock.patch("scripts.beta_candidate.urllib.request.urlopen", side_effect=error) as open_url,
+            self.assertRaisesRegex(CandidateError, r"public request failed \(401\)"),
+        ):
+            client.json("https://api.github.com/repos/durable-workflow/.github/releases?per_page=100")
+
+        self.assertEqual([], sleeps)
+        self.assertEqual(1, open_url.call_count)
+
     def test_public_client_reports_bounded_transient_infrastructure_without_url_or_token(self) -> None:
         client = PublicClient(
             "fixture-secret",
