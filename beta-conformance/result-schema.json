@@ -186,6 +186,7 @@
         "artifact_versions",
         "executed_distribution_identities",
         "scenario_statuses",
+        "failure_projection",
         "local_product_source_checkout_used"
       ],
       "properties": {
@@ -218,6 +219,44 @@
             "properties": {
               "id": { "type": "string", "maxLength": 128 },
               "status": { "type": "string", "maxLength": 64 }
+            }
+          }
+        },
+        "failure_projection": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["max_bytes", "component_max_bytes", "truncated", "scenarios"],
+          "properties": {
+            "max_bytes": { "const": 24576 },
+            "component_max_bytes": { "const": 6144 },
+            "truncated": { "type": "boolean" },
+            "scenarios": {
+              "type": "array",
+              "maxItems": 128,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "status",
+                  "failure_stage",
+                  "failure_classification",
+                  "failure_owner",
+                  "worker_evidence",
+                  "server_evidence",
+                  "linked_findings"
+                ],
+                "properties": {
+                  "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+                  "status": { "type": "string", "minLength": 1, "maxLength": 64 },
+                  "failure_stage": { "type": ["string", "null"], "maxLength": 128 },
+                  "failure_classification": { "type": ["string", "null"], "maxLength": 128 },
+                  "failure_owner": { "type": ["string", "null"], "maxLength": 128 },
+                  "worker_evidence": {},
+                  "server_evidence": {},
+                  "linked_findings": {}
+                }
+              }
             }
           }
         }

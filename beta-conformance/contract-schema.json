@@ -89,9 +89,22 @@
     "runtime": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "namespace_environment", "server_url_environment", "token_environment"],
+      "required": [
+        "kind",
+        "database_backend",
+        "cache_backend",
+        "queue_backend",
+        "network_scope",
+        "namespace_environment",
+        "server_url_environment",
+        "token_environment"
+      ],
       "properties": {
         "kind": { "const": "standalone-server" },
+        "database_backend": { "const": "mysql" },
+        "cache_backend": { "const": "redis" },
+        "queue_backend": { "const": "redis" },
+        "network_scope": { "const": "private" },
         "namespace_environment": { "type": "string", "pattern": "^DW_[A-Z0-9_]{1,95}$" },
         "server_url_environment": { "type": "string", "pattern": "^DW_[A-Z0-9_]{1,95}$" },
         "token_environment": { "type": "string", "pattern": "^DW_[A-Z0-9_]{1,95}$" }

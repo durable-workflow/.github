@@ -55,9 +55,13 @@ OCI_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 DIAGNOSTIC_LIMIT = 8192
 NATIVE_RESULT_LIMIT = 4 * 1024 * 1024
 NATIVE_RESULT_PREFIX_LIMIT = 64 * 1024
+NATIVE_FAILURE_PROJECTION_LIMIT = 24 * 1024
+NATIVE_FAILURE_COMPONENT_LIMIT = 6 * 1024
 FINDING_LIMIT = 20
 FINDING_TEXT_LIMIT = 2048
 MAX_INFRASTRUCTURE_ATTEMPTS = 2
+MYSQL_RUNTIME_IMAGE = "mysql:8.0"
+REDIS_RUNTIME_IMAGE = "redis:7-alpine"
 NATIVE_SCENARIO_STATUSES = {"pass", "fail", "unsupported", "not_covered", "runner_blocked"}
 TRANSIENT_PATTERNS = (
     re.compile(
@@ -70,6 +74,43 @@ TRANSIENT_PATTERNS = (
     re.compile(r"connection (?:reset|timed out)", re.IGNORECASE),
     re.compile(r"temporary failure in name resolution", re.IGNORECASE),
     re.compile(r"registry.*service unavailable", re.IGNORECASE),
+)
+SENSITIVE_EVIDENCE_KEY = re.compile(
+    r"(?:authorization|credential|password|passwd|secret|api[_-]?(?:key|token)|token)",
+    re.IGNORECASE,
+)
+EVIDENCE_OPTIONAL_QUOTE = r"(?:\\?[\"'])?"
+EVIDENCE_VALUE = r"(?!\\?[\"'])[^\s,;}\]\"']+?"
+EVIDENCE_VALUE_TERMINATOR = r"(?=$|[\s,;}\]]|\\?[\"'])"
+AUTHORIZATION_EVIDENCE_PATTERN = (
+    r"("
+    + EVIDENCE_OPTIONAL_QUOTE
+    + r"authorization"
+    + EVIDENCE_OPTIONAL_QUOTE
+    + r"\s*[:=]\s*"
+    + EVIDENCE_OPTIONAL_QUOTE
+    + r")(?!(?:bearer\s+)?\[REDACTED\]"
+    + EVIDENCE_VALUE_TERMINATOR
+    + r")((?:bearer\s+)?)"
+    + EVIDENCE_VALUE
+    + EVIDENCE_VALUE_TERMINATOR
+)
+SECRET_EVIDENCE_PATTERN = (
+    r"("
+    + EVIDENCE_OPTIONAL_QUOTE
+    + r"(?:credential|password|passwd|secret|api[_-]?(?:key|token)|token)"
+    + EVIDENCE_OPTIONAL_QUOTE
+    + r"\s*[:=]\s*"
+    + EVIDENCE_OPTIONAL_QUOTE
+    + r")(?!\[REDACTED\]"
+    + EVIDENCE_VALUE_TERMINATOR
+    + r")"
+    + EVIDENCE_VALUE
+    + EVIDENCE_VALUE_TERMINATOR
+)
+SENSITIVE_EVIDENCE_TEXT = re.compile(
+    r"(?:" + AUTHORIZATION_EVIDENCE_PATTERN + r"|" + SECRET_EVIDENCE_PATTERN + r"|\bbeta-[0-9a-f]{32}\b)",
+    re.IGNORECASE,
 )
 
 
@@ -356,14 +397,25 @@ def validate_contract(contract: Any) -> None:
             runtime = runner.get("runtime")
             if runtime is not None:
                 if not isinstance(runtime, dict) or set(runtime) != {
+                    "cache_backend",
+                    "database_backend",
                     "kind",
                     "namespace_environment",
+                    "network_scope",
+                    "queue_backend",
                     "server_url_environment",
                     "token_environment",
                 }:
                     raise ConformanceError(f"experiment {name} runner has an invalid runtime dependency")
                 if runtime["kind"] != "standalone-server":
                     raise ConformanceError(f"experiment {name} runner has an unsupported runtime dependency")
+                if (
+                    runtime["database_backend"] != "mysql"
+                    or runtime["cache_backend"] != "redis"
+                    or runtime["queue_backend"] != "redis"
+                    or runtime["network_scope"] != "private"
+                ):
+                    raise ConformanceError(f"experiment {name} runner has an unsupported runtime topology")
                 environment_names = [
                     runtime["namespace_environment"],
                     runtime["server_url_environment"],
@@ -740,6 +792,187 @@ def bounded_text(value: Any, limit: int = FINDING_TEXT_LIMIT) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def sanitized_evidence_text(value: Any, limit: int = 512) -> str:
+    text = str(value).replace("\x00", "")
+    text = re.sub(AUTHORIZATION_EVIDENCE_PATTERN, r"\1\2[REDACTED]", text, flags=re.IGNORECASE)
+    text = re.sub(SECRET_EVIDENCE_PATTERN, r"\1[REDACTED]", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bbeta-[0-9a-f]{32}\b", "[REDACTED]", text, flags=re.IGNORECASE)
+    text = re.sub(r"(https?://)[^\s/@:]+:[^\s/@]+@", r"\1[REDACTED]@", text, flags=re.IGNORECASE)
+    return bounded_text(text, limit)
+
+
+def bounded_sanitized_evidence(value: Any, limit: int = NATIVE_FAILURE_COMPONENT_LIMIT) -> Any:
+    def sanitize(entry: Any, depth: int = 0) -> Any:
+        if entry is None or isinstance(entry, bool | int | float):
+            return entry
+        if isinstance(entry, str):
+            return sanitized_evidence_text(entry)
+        if depth >= 7:
+            return "[depth limit reached]"
+        if isinstance(entry, list):
+            return [sanitize(item, depth + 1) for item in entry[:16]]
+        if isinstance(entry, dict):
+            result: dict[str, Any] = {}
+            for key, nested in list(entry.items())[:32]:
+                safe_key = sanitized_evidence_text(key, 128)
+                result[safe_key] = (
+                    "[REDACTED]" if SENSITIVE_EVIDENCE_KEY.search(safe_key) else sanitize(nested, depth + 1)
+                )
+            return result
+        return sanitized_evidence_text(entry)
+
+    sanitized = sanitize(value)
+    if len(canonical_json(sanitized)) <= limit:
+        return sanitized
+
+    serialized = json.dumps(sanitized, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+    low = 0
+    high = len(serialized)
+    bounded: dict[str, Any] = {"_truncated": True, "bounded_json_excerpt": ""}
+    while low <= high:
+        middle = (low + high) // 2
+        candidate = {
+            "_truncated": True,
+            "bounded_json_excerpt": sanitized_evidence_text(serialized[:middle], middle),
+        }
+        if len(canonical_json(candidate)) <= limit:
+            bounded = candidate
+            low = middle + 1
+        else:
+            high = middle - 1
+    return bounded
+
+
+def summarize_native_failure_projection(native: dict[str, Any]) -> dict[str, Any]:
+    projection: dict[str, Any] = {
+        "max_bytes": NATIVE_FAILURE_PROJECTION_LIMIT,
+        "component_max_bytes": NATIVE_FAILURE_COMPONENT_LIMIT,
+        "truncated": False,
+        "scenarios": [],
+    }
+    raw_scenarios = native.get("scenario_results", native.get("scenarioResults", {}))
+    if isinstance(raw_scenarios, dict):
+        items = list(raw_scenarios.items())[:128]
+    elif isinstance(raw_scenarios, list):
+        items = [(str(index), value) for index, value in enumerate(raw_scenarios[:128])]
+    else:
+        return projection
+
+    for raw_id, value in items:
+        if isinstance(value, dict):
+            scenario_id = value.get("scenario_id", value.get("id", raw_id))
+            status = value.get("status", value.get("outcome", "unknown"))
+            observed = value.get("observed_outputs", value.get("observedOutputs", {}))
+            linked_findings = value.get("linked_findings", value.get("linkedFindings"))
+        else:
+            scenario_id = raw_id
+            status = value
+            observed = {}
+            linked_findings = None
+        normalized_status = bounded_text(status, 64)
+        if normalized_status in PASS_OUTCOMES:
+            continue
+        if not isinstance(observed, dict):
+            observed = {}
+        scenario = {
+            "id": bounded_text(scenario_id, 128),
+            "status": normalized_status,
+            "failure_stage": (
+                bounded_text(observed["failure_stage"], 128)
+                if isinstance(observed.get("failure_stage"), str)
+                else None
+            ),
+            "failure_classification": (
+                bounded_text(observed["failure_classification"], 128)
+                if isinstance(observed.get("failure_classification"), str)
+                else None
+            ),
+            "failure_owner": (
+                bounded_text(observed["failure_owner"], 128)
+                if isinstance(observed.get("failure_owner"), str)
+                else None
+            ),
+            "worker_evidence": bounded_sanitized_evidence(observed.get("worker_evidence")),
+            "server_evidence": bounded_sanitized_evidence(observed.get("server_evidence")),
+            "linked_findings": bounded_sanitized_evidence(linked_findings),
+        }
+        candidate = {**projection, "scenarios": [*projection["scenarios"], scenario]}
+        if len(canonical_json(candidate)) > NATIVE_FAILURE_PROJECTION_LIMIT:
+            projection["truncated"] = True
+            break
+        projection["scenarios"].append(scenario)
+    return projection
+
+
+def native_failure_projection_error(projection: Any) -> str:
+    if not isinstance(projection, dict) or set(projection) != {
+        "max_bytes",
+        "component_max_bytes",
+        "truncated",
+        "scenarios",
+    }:
+        return "experiment result has an invalid native failure projection"
+    if (
+        projection["max_bytes"] != NATIVE_FAILURE_PROJECTION_LIMIT
+        or projection["component_max_bytes"] != NATIVE_FAILURE_COMPONENT_LIMIT
+        or not isinstance(projection["truncated"], bool)
+        or not isinstance(projection["scenarios"], list)
+        or len(projection["scenarios"]) > 128
+        or len(canonical_json(projection)) > NATIVE_FAILURE_PROJECTION_LIMIT
+    ):
+        return "experiment result has an unbounded native failure projection"
+
+    def has_secret(value: Any) -> bool:
+        if isinstance(value, str):
+            return SENSITIVE_EVIDENCE_TEXT.search(value) is not None
+        if isinstance(value, list):
+            return any(has_secret(entry) for entry in value)
+        if isinstance(value, dict):
+            return any(
+                (SENSITIVE_EVIDENCE_KEY.search(str(key)) is not None and nested != "[REDACTED]")
+                or has_secret(nested)
+                for key, nested in value.items()
+            )
+        return False
+
+    for scenario in projection["scenarios"]:
+        if not isinstance(scenario, dict) or set(scenario) != {
+            "id",
+            "status",
+            "failure_stage",
+            "failure_classification",
+            "failure_owner",
+            "worker_evidence",
+            "server_evidence",
+            "linked_findings",
+        }:
+            return "experiment result has a malformed native failure scenario"
+        if (
+            not isinstance(scenario["id"], str)
+            or not scenario["id"]
+            or len(scenario["id"]) > 128
+            or not isinstance(scenario["status"], str)
+            or not scenario["status"]
+            or len(scenario["status"]) > 64
+            or scenario["status"] in PASS_OUTCOMES
+            or any(
+                value is not None and (not isinstance(value, str) or len(value) > 128)
+                for value in (
+                    scenario["failure_stage"],
+                    scenario["failure_classification"],
+                    scenario["failure_owner"],
+                )
+            )
+        ):
+            return "experiment result has invalid native failure attribution"
+        for field in ("worker_evidence", "server_evidence", "linked_findings"):
+            if len(canonical_json(scenario[field])) > NATIVE_FAILURE_COMPONENT_LIMIT:
+                return "experiment result has an unbounded native failure evidence component"
+            if has_secret(scenario[field]):
+                return "experiment result has unsanitized native failure evidence"
+    return ""
+
+
 def summarize_findings(native: Any) -> list[dict[str, str]]:
     if not isinstance(native, dict):
         return []
@@ -993,6 +1226,7 @@ def summarize_native_result(native: Any) -> dict[str, Any] | None:
         "artifact_versions": bounded_versions,
         "executed_distribution_identities": summarize_executed_distribution_identities(native),
         "scenario_statuses": scenarios,
+        "failure_projection": summarize_native_failure_projection(native),
         "local_product_source_checkout_used": local_source_used,
     }
 
@@ -1162,6 +1396,33 @@ def require_running_container(container_name: str, *, docker: str = "docker") ->
     raise ConformanceError(f"exact candidate standalone server process {container_name} exited: {detail}")
 
 
+def wait_for_healthy_container(container_name: str, *, docker: str = "docker") -> None:
+    deadline = time.monotonic() + 120
+    last_status = "starting"
+    while time.monotonic() < deadline:
+        state = docker_runtime_command(
+            [docker, "inspect", "--format", "{{.State.Health.Status}}", container_name],
+            timeout_seconds=30,
+            check=False,
+        )
+        if state.returncode == 0:
+            last_status = state.stdout.strip()
+            if last_status == "healthy":
+                return
+            if last_status == "unhealthy":
+                break
+        else:
+            last_status = bounded_text((state.stderr or state.stdout).strip(), 512)
+        time.sleep(2)
+    logs = docker_runtime_command(
+        [docker, "logs", "--tail", "80", container_name],
+        timeout_seconds=30,
+        check=False,
+    )
+    detail = bounded_text(f"health={last_status}\n{logs.stdout}\n{logs.stderr}".strip(), DIAGNOSTIC_LIMIT)
+    raise ConformanceError(f"standalone-server dependency {container_name} did not become healthy: {detail}")
+
+
 def cleanup_docker_runtime(command: list[str]) -> None:
     with contextlib.suppress(ConformanceError):
         docker_runtime_command(command, timeout_seconds=30, check=False)
@@ -1175,14 +1436,16 @@ def standalone_server_runtime(
     identity_seed = f"{scratch.resolve()}:{os.getpid()}:{time.time_ns()}".encode()
     suffix = sha256_bytes(identity_seed)[:12]
     prefix = f"dw-beta-{runner['id']}-{suffix}"
-    volume = f"{prefix}-database"
+    network = f"{prefix}-network"
     container_names = [
         f"{prefix}-bootstrap",
         f"{prefix}-http",
         f"{prefix}-queue",
         f"{prefix}-scheduler",
+        f"{prefix}-mysql",
+        f"{prefix}-redis",
     ]
-    bootstrap_name, http_name, queue_name, scheduler_name = container_names
+    bootstrap_name, http_name, queue_name, scheduler_name, mysql_name, redis_name = container_names
     image = plan["server_runner"]["image"]
     server_version = plan["artifact_tuple"]["server"]["version"]
     manifest_digest = plan["candidate"]["manifest_sha256"]
@@ -1191,6 +1454,10 @@ def standalone_server_runtime(
         "base64:" + base64.b64encode(hashlib.sha256(f"{manifest_digest}:{runner['id']}".encode()).digest()).decode()
     )
     labels = ["--label", f"dev.durable-workflow.beta-conformance={manifest_digest}"]
+    database_name = "durable_workflow"
+    database_user = "durable_workflow"
+    database_password = sha256_bytes(f"{manifest_digest}:{runner['id']}:mysql".encode())[:32]
+    database_root_password = sha256_bytes(f"{manifest_digest}:{runner['id']}:mysql-root".encode())[:32]
     shared_environment = [
         "-e",
         f"APP_VERSION={server_version}",
@@ -1207,19 +1474,83 @@ def standalone_server_runtime(
         "-e",
         "DW_QUERY_TASK_TIMEOUT=3",
         "-e",
-        "DB_CONNECTION=sqlite",
+        "DB_CONNECTION=mysql",
         "-e",
-        "DB_DATABASE=/app/database/database.sqlite",
+        f"DB_HOST={mysql_name}",
         "-e",
-        "QUEUE_CONNECTION=database",
+        "DB_PORT=3306",
         "-e",
-        "CACHE_STORE=file",
-        "-v",
-        f"{volume}:/app/database",
+        f"DB_DATABASE={database_name}",
+        "-e",
+        f"DB_USERNAME={database_user}",
+        "-e",
+        f"DB_PASSWORD={database_password}",
+        "-e",
+        "QUEUE_CONNECTION=redis",
+        "-e",
+        "CACHE_STORE=redis",
+        "-e",
+        f"REDIS_HOST={redis_name}",
+        "-e",
+        "REDIS_PORT=6379",
     ]
 
     try:
-        docker_runtime_command([docker, "volume", "create", *labels, volume])
+        docker_runtime_command([docker, "network", "create", *labels, network])
+        docker_runtime_command(
+            [
+                docker,
+                "run",
+                "-d",
+                "--rm",
+                "--name",
+                mysql_name,
+                *labels,
+                "--network",
+                network,
+                "-e",
+                f"MYSQL_DATABASE={database_name}",
+                "-e",
+                f"MYSQL_USER={database_user}",
+                "-e",
+                f"MYSQL_PASSWORD={database_password}",
+                "-e",
+                f"MYSQL_ROOT_PASSWORD={database_root_password}",
+                "--health-cmd",
+                'mysqladmin ping -h 127.0.0.1 -uroot --password="$MYSQL_ROOT_PASSWORD"',
+                "--health-interval",
+                "2s",
+                "--health-timeout",
+                "2s",
+                "--health-retries",
+                "60",
+                MYSQL_RUNTIME_IMAGE,
+            ]
+        )
+        docker_runtime_command(
+            [
+                docker,
+                "run",
+                "-d",
+                "--rm",
+                "--name",
+                redis_name,
+                *labels,
+                "--network",
+                network,
+                "--health-cmd",
+                "redis-cli ping",
+                "--health-interval",
+                "2s",
+                "--health-timeout",
+                "2s",
+                "--health-retries",
+                "60",
+                REDIS_RUNTIME_IMAGE,
+            ]
+        )
+        wait_for_healthy_container(mysql_name, docker=docker)
+        wait_for_healthy_container(redis_name, docker=docker)
         docker_runtime_command(
             [
                 docker,
@@ -1228,6 +1559,8 @@ def standalone_server_runtime(
                 "--name",
                 bootstrap_name,
                 *labels,
+                "--network",
+                network,
                 *shared_environment,
                 image,
                 "server-bootstrap",
@@ -1244,6 +1577,8 @@ def standalone_server_runtime(
                 *labels,
                 "-p",
                 "127.0.0.1::8080",
+                "--network",
+                network,
                 *shared_environment,
                 "-e",
                 "DW_SERVER_TOPOLOGY_SHAPE=standalone_server",
@@ -1261,6 +1596,8 @@ def standalone_server_runtime(
                 "--name",
                 queue_name,
                 *labels,
+                "--network",
+                network,
                 *shared_environment,
                 "-e",
                 "DW_SERVER_TOPOLOGY_SHAPE=standalone_server",
@@ -1281,9 +1618,12 @@ def standalone_server_runtime(
                 "run",
                 "-d",
                 "--rm",
+                "--init",
                 "--name",
                 scheduler_name,
                 *labels,
+                "--network",
+                network,
                 *shared_environment,
                 "-e",
                 "DW_SERVER_TOPOLOGY_SHAPE=standalone_server",
@@ -1302,19 +1642,19 @@ def standalone_server_runtime(
             raise ConformanceError("standalone-server Docker runtime did not publish a loopback HTTP port")
         server_url = f"http://127.0.0.1:{port_match.group(1)}"
         wait_for_server_ready(server_url, http_name, docker=docker)
-        for container_name in (http_name, queue_name, scheduler_name):
+        for container_name in (mysql_name, redis_name, http_name, queue_name, scheduler_name):
             require_running_container(container_name, docker=docker)
         yield {
             runtime["server_url_environment"]: server_url,
             runtime["namespace_environment"]: "default",
             runtime["token_environment"]: runtime_token,
         }
-        for container_name in (http_name, queue_name, scheduler_name):
+        for container_name in (mysql_name, redis_name, http_name, queue_name, scheduler_name):
             require_running_container(container_name, docker=docker)
     finally:
         for container_name in reversed(container_names):
             cleanup_docker_runtime([docker, "rm", "--force", container_name])
-        cleanup_docker_runtime([docker, "volume", "rm", "--force", volume])
+        cleanup_docker_runtime([docker, "network", "rm", network])
 
 
 @contextlib.contextmanager
@@ -2176,6 +2516,7 @@ def validate_experiment_result(
                 "artifact_versions",
                 "executed_distribution_identities",
                 "scenario_statuses",
+                "failure_projection",
                 "local_product_source_checkout_used",
             }:
                 raise ConformanceError("experiment result has an invalid native summary")
@@ -2211,6 +2552,9 @@ def validate_experiment_result(
                 for cell in scenario_statuses
             ):
                 raise ConformanceError("experiment result has invalid native scenario statuses")
+            projection_error = native_failure_projection_error(native_summary["failure_projection"])
+            if projection_error:
+                raise ConformanceError(projection_error)
     if classification == "passed" and artifact_binding_failures(plan, required_distributions, diagnostics):
         raise ConformanceError("passing experiment result has incomplete or mismatched native artifact evidence")
     if contract is not None:

@@ -84,8 +84,12 @@
             "sdk-php"
           ],
           "runtime": {
+            "cache_backend": "redis",
+            "database_backend": "mysql",
             "kind": "standalone-server",
             "namespace_environment": "DW_PHP_SDK_CONFORMANCE_NAMESPACE",
+            "network_scope": "private",
+            "queue_backend": "redis",
             "server_url_environment": "DW_PHP_SDK_CONFORMANCE_SERVER_URL",
             "token_environment": "DW_PHP_SDK_CONFORMANCE_TOKEN"
           }

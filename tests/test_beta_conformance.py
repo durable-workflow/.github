@@ -20,8 +20,12 @@ from scripts.beta_candidate import CLI_ASSETS, COMPONENTS, SCHEMA, VERIFICATION_
 from scripts.beta_conformance import (
     EXPERIMENTS,
     MAX_INFRASTRUCTURE_ATTEMPTS,
+    MYSQL_RUNTIME_IMAGE,
+    NATIVE_FAILURE_COMPONENT_LIMIT,
+    NATIVE_FAILURE_PROJECTION_LIMIT,
     NATIVE_RESULT_LIMIT,
     NATIVE_RESULT_PREFIX_LIMIT,
+    REDIS_RUNTIME_IMAGE,
     ConformanceError,
     aggregate_results,
     artifact_binding_failures,
@@ -31,6 +35,7 @@ from scripts.beta_conformance import (
     inject_distribution_identity_mismatch,
     injected_failure_result,
     load_contract,
+    native_failure_projection_error,
     native_result_completeness_error,
     prepare_plan,
     run_experiment,
@@ -38,6 +43,7 @@ from scripts.beta_conformance import (
     runner_runtime_environment,
     sha256_bytes,
     sha256_file,
+    summarize_native_result,
     validate_contract,
     validate_experiment_result,
     validate_plan,
@@ -169,6 +175,12 @@ def successful_diagnostic(
             "scenario_statuses": [
                 {"id": scenario_id, "status": "pass"} for scenario_id in selected_scenarios
             ],
+            "failure_projection": {
+                "max_bytes": NATIVE_FAILURE_PROJECTION_LIMIT,
+                "component_max_bytes": NATIVE_FAILURE_COMPONENT_LIMIT,
+                "truncated": False,
+                "scenarios": [],
+            },
             "local_product_source_checkout_used": False,
         },
         "findings": [],
@@ -428,8 +440,12 @@ class ContractTest(unittest.TestCase):
         )
         self.assertEqual(
             {
+                "cache_backend": "redis",
+                "database_backend": "mysql",
                 "kind": "standalone-server",
                 "namespace_environment": "DW_PHP_SDK_CONFORMANCE_NAMESPACE",
+                "network_scope": "private",
+                "queue_backend": "redis",
                 "server_url_environment": "DW_PHP_SDK_CONFORMANCE_SERVER_URL",
                 "token_environment": "DW_PHP_SDK_CONFORMANCE_TOKEN",
             },
@@ -560,7 +576,7 @@ class StandaloneServerRuntimeTest(unittest.TestCase):
             if command[1] == "port":
                 stdout = "127.0.0.1:49152\n"
             elif command[1] == "inspect":
-                stdout = "true\n"
+                stdout = "healthy\n" if "Health.Status" in command[3] else "true\n"
             else:
                 stdout = "runtime-id\n"
             return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
@@ -576,28 +592,47 @@ class StandaloneServerRuntimeTest(unittest.TestCase):
 
         wait_for_server.assert_called_once()
         run_commands = [command for command in commands if command[1] == "run"]
-        self.assertEqual(4, len(run_commands))
-        self.assertTrue(all(self.plan["server_runner"]["image"] in command for command in run_commands))
+        self.assertEqual(6, len(run_commands))
+        server_commands = [
+            command for command in run_commands if self.plan["server_runner"]["image"] in command
+        ]
+        self.assertEqual(4, len(server_commands))
+        self.assertTrue(any(MYSQL_RUNTIME_IMAGE in command for command in run_commands))
+        self.assertTrue(any(REDIS_RUNTIME_IMAGE in command for command in run_commands))
         expected_version = self.plan["artifact_tuple"]["server"]["version"]
-        self.assertTrue(all(f"APP_VERSION={expected_version}" in command for command in run_commands))
+        self.assertTrue(all(f"APP_VERSION={expected_version}" in command for command in server_commands))
+        self.assertTrue(all("DB_CONNECTION=mysql" in command for command in server_commands))
+        self.assertTrue(all("QUEUE_CONNECTION=redis" in command for command in server_commands))
+        self.assertTrue(all("CACHE_STORE=redis" in command for command in server_commands))
+        self.assertTrue(all("DB_CONNECTION=sqlite" not in command for command in run_commands))
+        network_commands = [command for command in commands if command[1:3] == ["network", "create"]]
+        self.assertEqual(1, len(network_commands))
+        network_name = network_commands[0][-1]
+        self.assertTrue(all(network_name in command for command in run_commands))
         self.assertTrue(any("127.0.0.1::8080" in command for command in run_commands))
         self.assertTrue(any(command[-1] == "server-bootstrap" for command in run_commands))
         self.assertTrue(any("queue:work" in command for command in run_commands))
-        self.assertTrue(any("schedule:evaluate" in command[-1] for command in run_commands))
-        self.assertEqual(6, len([command for command in commands if command[1] == "inspect"]))
-        self.assertEqual(4, len([command for command in commands if command[1:3] == ["rm", "--force"]]))
-        self.assertEqual(1, len([command for command in commands if command[1:4] == ["volume", "rm", "--force"]]))
+        scheduler_commands = [command for command in run_commands if "schedule:evaluate" in command[-1]]
+        self.assertEqual(1, len(scheduler_commands))
+        self.assertIn("--init", scheduler_commands[0])
+        self.assertEqual(12, len([command for command in commands if command[1] == "inspect"]))
+        self.assertEqual(6, len([command for command in commands if command[1:3] == ["rm", "--force"]]))
+        self.assertEqual(1, len([command for command in commands if command[1:3] == ["network", "rm"]]))
+        self.assertFalse(any(command[1] == "volume" for command in commands))
 
     def test_declared_runtime_rejects_a_companion_that_exits_during_the_matrix(self) -> None:
-        inspect_count = 0
+        running_inspect_count = 0
 
         def docker(command: list[str], **arguments: object) -> subprocess.CompletedProcess[str]:
-            nonlocal inspect_count
+            nonlocal running_inspect_count
             if command[1] == "port":
                 stdout = "127.0.0.1:49152\n"
             elif command[1] == "inspect":
-                inspect_count += 1
-                stdout = "false\n" if inspect_count == 5 else "true\n"
+                if "Health.Status" in command[3]:
+                    stdout = "healthy\n"
+                else:
+                    running_inspect_count += 1
+                    stdout = "false\n" if running_inspect_count == 4 else "true\n"
             elif command[1] == "logs":
                 stdout = "queue worker stopped\n"
             else:
@@ -809,6 +844,94 @@ class ExperimentRetryTest(unittest.TestCase):
             ),
         }
 
+    def test_native_failure_projection_retains_attribution_and_sanitized_companion_evidence(self) -> None:
+        private_token = "beta-0123456789abcdef0123456789abcdef"
+        quoted_password = "quoted-password-value"
+        quoted_api_token = "quoted-api-token-value"
+        escaped_password = "escaped-password-value"
+        escaped_api_token = "escaped-api-token-value"
+        native = self.native_result("fail")
+        native["scenario_results"] = {
+            "php_sdk_lifecycle_surface": {
+                "scenario_id": "php_sdk_lifecycle_surface",
+                "status": "fail",
+                "observed_outputs": {
+                    "failure_stage": "baseline_client",
+                    "failure_classification": "server",
+                    "failure_owner": "server",
+                    "worker_evidence": {
+                        "process_state": {"state": "exited", "alive": False, "exit_code": 1},
+                        "companion": {"access_token": private_token},
+                    },
+                    "server_evidence": {
+                        "runtime_failure": {
+                            "operation": "worker.run",
+                            "status_code": 500,
+                            "public_error_envelope": {
+                                "message": f"Authorization: Bearer {private_token}",
+                                "diagnostic": (
+                                    f'{{"password":"{quoted_password}",'
+                                    f'"api_token":"{quoted_api_token}"}}'
+                                ),
+                                "escaped_diagnostics": [
+                                    rf'{{\"password\":\"{escaped_password}\"}}',
+                                    rf'{{\"api_token\":\"{escaped_api_token}\"}}',
+                                ],
+                            },
+                        },
+                    },
+                },
+                "linked_findings": [
+                    {
+                        "classification": "server",
+                        "owning_surface": "server",
+                        "summary": "The companion worker exited after a worker-protocol response.",
+                    }
+                ],
+            }
+        }
+
+        summary = summarize_native_result(native)
+
+        self.assertIsNotNone(summary)
+        assert summary is not None
+        projection = summary["failure_projection"]
+        self.assertLessEqual(len(canonical_json(projection)), NATIVE_FAILURE_PROJECTION_LIMIT)
+        self.assertFalse(projection["truncated"])
+        self.assertEqual(1, len(projection["scenarios"]))
+        scenario = projection["scenarios"][0]
+        self.assertEqual("baseline_client", scenario["failure_stage"])
+        self.assertEqual("server", scenario["failure_classification"])
+        self.assertEqual("server", scenario["failure_owner"])
+        self.assertEqual("exited", scenario["worker_evidence"]["process_state"]["state"])
+        self.assertEqual(500, scenario["server_evidence"]["runtime_failure"]["status_code"])
+        rendered = canonical_json(projection).decode()
+        self.assertNotIn(private_token, rendered)
+        self.assertNotIn(quoted_password, rendered)
+        self.assertNotIn(quoted_api_token, rendered)
+        self.assertNotIn(escaped_password, rendered)
+        self.assertNotIn(escaped_api_token, rendered)
+        self.assertIn("[REDACTED]", rendered)
+        escaped_diagnostics = scenario["server_evidence"]["runtime_failure"]["public_error_envelope"][
+            "escaped_diagnostics"
+        ]
+        self.assertEqual(
+            [r'{\"password\":\"[REDACTED]\"}', r'{\"api_token\":\"[REDACTED]\"}'],
+            escaped_diagnostics,
+        )
+        self.assertEqual("", native_failure_projection_error(projection))
+        escaped_diagnostics[0] = rf'{{\"password\":\"{escaped_password}\"}}'
+        self.assertEqual(
+            "experiment result has unsanitized native failure evidence",
+            native_failure_projection_error(projection),
+        )
+        escaped_diagnostics[0] = r'{\"password\":\"[REDACTED]\"}'
+        escaped_diagnostics[1] = rf'{{\"api_token\":\"{escaped_api_token}\"}}'
+        self.assertEqual(
+            "experiment result has unsanitized native failure evidence",
+            native_failure_projection_error(projection),
+        )
+
     def portable_signals_query_result(self) -> tuple[dict[str, object], dict[str, object]]:
         runner = self.contract["experiments"]["signals-queries"]["runners"][0]
         native = self.native_result("pass")
@@ -939,8 +1062,12 @@ class ExperimentRetryTest(unittest.TestCase):
 
     def test_declared_runtime_environment_reaches_the_published_runner(self) -> None:
         self.runner["runtime"] = {
+            "cache_backend": "redis",
+            "database_backend": "mysql",
             "kind": "standalone-server",
             "namespace_environment": "DW_PHP_SDK_CONFORMANCE_NAMESPACE",
+            "network_scope": "private",
+            "queue_backend": "redis",
             "server_url_environment": "DW_PHP_SDK_CONFORMANCE_SERVER_URL",
             "token_environment": "DW_PHP_SDK_CONFORMANCE_TOKEN",
         }
@@ -990,8 +1117,12 @@ class ExperimentRetryTest(unittest.TestCase):
 
     def test_unavailable_declared_runtime_is_retained_without_unclassified_retry(self) -> None:
         self.runner["runtime"] = {
+            "cache_backend": "redis",
+            "database_backend": "mysql",
             "kind": "standalone-server",
             "namespace_environment": "DW_PHP_SDK_CONFORMANCE_NAMESPACE",
+            "network_scope": "private",
+            "queue_backend": "redis",
             "server_url_environment": "DW_PHP_SDK_CONFORMANCE_SERVER_URL",
             "token_environment": "DW_PHP_SDK_CONFORMANCE_TOKEN",
         }
