@@ -1,0 +1,44 @@
+{
+  "authority_issue": {
+    "labels": [
+      "authority:github",
+      "beta:blocker",
+      "completion:evidence-required",
+      "kind:cross-repository",
+      "priority:P2",
+      "repo:github-control-plane",
+      "status:ready"
+    ],
+    "number": 2,
+    "repository": "durable-workflow/.github",
+    "state": "open",
+    "updated_at": "2026-07-20T21:31:39Z",
+    "url": "https://github.com/durable-workflow/.github/issues/2",
+    "work_id": "github-only-beta-continuity-drill"
+  },
+  "complete_phase": {
+    "commit": "d24b91c257414e0643ac98667ffc257451b4b478",
+    "tag": "beta-continuity/workspace-unavailable-recovery-f46818553161/complete"
+  },
+  "drill": "workspace-unavailable-beta-continuity-recovery",
+  "github_run": {
+    "attempt": "1",
+    "id": "29784221464",
+    "repository": "durable-workflow/.github",
+    "sha": "7d10dc98953f9395635afe3f1201e9e19efc0ffe"
+  },
+  "observed_at": "2026-07-20T22:32:08Z",
+  "outcome": "successful-scheduled-no-op-confirmed",
+  "phase": "no-op-confirmed",
+  "release_plan": {
+    "sha256": "295a3f654716ea8cd8dc693c1cd15a4b487737e5f01184bad7363fbde6717c40",
+    "tag": "release-plan/workspace-unavailable-recovery-f46818553161"
+  },
+  "schema": "durable-workflow.beta-continuity.evidence/v1",
+  "successful_no_op_run": {
+    "conclusion": "success",
+    "created_at": "2026-07-20T21:32:21Z",
+    "id": 29780565599,
+    "url": "https://github.com/durable-workflow/.github/actions/runs/29780565599"
+  }
+}
