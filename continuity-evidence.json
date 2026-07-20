@@ -1,0 +1,61 @@
+{
+  "authority_issue": {
+    "labels": [
+      "authority:github",
+      "beta:blocker",
+      "completion:evidence-required",
+      "kind:cross-repository",
+      "priority:P2",
+      "repo:github-control-plane",
+      "status:ready"
+    ],
+    "number": 2,
+    "repository": "durable-workflow/.github",
+    "state": "open",
+    "updated_at": "2026-07-20T08:57:41Z",
+    "url": "https://github.com/durable-workflow/.github/issues/2",
+    "work_id": "github-only-beta-continuity-drill"
+  },
+  "drill": "workspace-unavailable-beta-continuity",
+  "github_run": {
+    "attempt": "1",
+    "id": "29731266194",
+    "repository": "durable-workflow/.github",
+    "sha": "b81ad4bca9451ad2c454e01623de57bf92ba16bf"
+  },
+  "observed_at": "2026-07-20T09:23:54Z",
+  "outcome": "intentionally-interrupted",
+  "pending_components": [
+    "workflow",
+    "waterline",
+    "server",
+    "cli",
+    "sdk-php"
+  ],
+  "phase": "interrupted",
+  "plan_record": {
+    "commit": "9ba2f315431dae56a52ec1a5ba5dd29de898f5e4",
+    "sha256": "80e88698fa37b6d738d111dd2be3e3c145607973f8147c54cc25e5d91d415b17",
+    "tag": "release-plan/workspace-unavailable-0b191da0d140"
+  },
+  "published_components": {
+    "sdk-python": {
+      "commit": "439f5eafc440b30d600d8be37d5d5344688e21ad",
+      "release_id": 356563713,
+      "url": "https://github.com/durable-workflow/sdk-python/releases/tag/0.4.103",
+      "version": "0.4.103"
+    },
+    "sdk-rust": {
+      "commit": "05713ef06338ba720a65f79a6263bca19d2a9d9c",
+      "release_id": 356558897,
+      "url": "https://github.com/durable-workflow/sdk-rust/releases/tag/0.1.18",
+      "version": "0.1.18"
+    }
+  },
+  "release_plan": {
+    "sha256": "80e88698fa37b6d738d111dd2be3e3c145607973f8147c54cc25e5d91d415b17",
+    "tag": "release-plan/workspace-unavailable-0b191da0d140"
+  },
+  "resume_contract": "A later GitHub run must dispatch this exact immutable plan tag.",
+  "schema": "durable-workflow.beta-continuity.evidence/v1"
+}
