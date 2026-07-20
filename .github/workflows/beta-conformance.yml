@@ -1,5 +1,7 @@
 name: Beta conformance
 
+run-name: Conformance ${{ fromJSON(inputs.candidate_manifest).candidate }}
+
 on:
   workflow_dispatch:
     inputs:

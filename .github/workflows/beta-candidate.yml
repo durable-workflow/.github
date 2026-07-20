@@ -1,5 +1,8 @@
 name: Beta candidate
 
+run-name: >-
+  Candidate ${{ inputs.candidate_manifest && fromJSON(inputs.candidate_manifest).candidate || 'main' }}
+
 on:
   push:
     branches:

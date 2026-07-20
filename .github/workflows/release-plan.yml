@@ -1,5 +1,7 @@
 name: Release plan
 
+run-name: Record ${{ fromJSON(inputs.release_plan).plan }}
+
 on:
   workflow_dispatch:
     inputs:

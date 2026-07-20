@@ -1294,7 +1294,23 @@ def preflight_plan(
                 f"{component.repository} recovery workflow lacks prepared-plan schedule/manual dispatch "
                 f"on {expected_branch}"
             )
+        helper_path = "scripts/ci/component-release-recovery.py"
+        helper_source = client.bytes(
+            f"https://api.github.com/repos/{component.repository}/contents/{helper_path}?ref={expected_branch}",
+            accept="application/vnd.github.raw+json",
+        ).decode("utf-8")
+        if (
+            "CONTINUITY_TAG_PREFIX = \"beta-continuity/\"" not in helper_source
+            or "def scheduled_continuity_pause(" not in helper_source
+            or "if args.plan_tag is None" not in helper_source
+            or '"phase": "continuity-gate"' not in helper_source
+        ):
+            raise CandidateError(
+                f"{component.repository} recovery helper lacks deterministic scheduled continuity gating "
+                "with exact-plan manual recovery"
+            )
         recovery_workflows[name] = {
+            "continuity_gate": "scheduled-pause-with-exact-plan-recovery",
             "default_branch": expected_branch,
             "path": expected_path,
             "state": workflow["state"],

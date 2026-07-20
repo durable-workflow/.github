@@ -14,6 +14,12 @@ It also records and observes channel-aware, pre-publication
 each component discovers plans and resumes with only its own GitHub token and
 repository-local publication environment.
 
+The scheduled [workspace-unavailable continuity controller](beta-continuity/README.md)
+assembles those public authorities into an interruption-and-resume drill. Its
+append-only phase records bind GitHub issue intake, exact qualification,
+release recovery, public verification, and clean-runner conformance without a
+bootstrap workspace.
+
 Published candidate tuples can be exercised by the independently runnable
 [beta conformance workflow](beta-conformance/README.md). Its retained GitHub
 Release evidence binds every experiment to the exact seven artifacts, their

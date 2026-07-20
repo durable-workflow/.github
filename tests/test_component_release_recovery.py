@@ -27,6 +27,7 @@ from scripts.component_release_recovery import (
     main,
     manifest_digest,
     resolve_component,
+    scheduled_continuity_pause,
     select_publication_run,
     validate_plan,
     validate_release_preparation,
@@ -104,6 +105,30 @@ def preparation(candidate: dict[str, object]) -> dict[str, object]:
 
 
 class ComponentRecoveryContractTest(unittest.TestCase):
+    def test_scheduled_continuity_recovery_waits_for_remote_resume(self) -> None:
+        candidate = plan()
+        with (
+            mock.patch(
+                "scripts.component_release_recovery.resolve_tag",
+                side_effect=["a" * 40, None],
+            ),
+            mock.patch("scripts.component_release_recovery.read_record", return_value=candidate),
+        ):
+            paused = scheduled_continuity_pause(mock.Mock(), candidate)
+
+        self.assertEqual(
+            f"beta-continuity/{candidate['plan']}/resumed",
+            paused["resumed_tag"],
+        )
+        with (
+            mock.patch(
+                "scripts.component_release_recovery.resolve_tag",
+                side_effect=["a" * 40, "b" * 40],
+            ),
+            mock.patch("scripts.component_release_recovery.read_record", return_value=candidate),
+        ):
+            self.assertIsNone(scheduled_continuity_pause(mock.Mock(), candidate))
+
     def test_recovery_public_client_retries_transient_github_reads(self) -> None:
         sleeps: list[float] = []
         client = PublicClient(max_attempts=3, retry_base_seconds=1, sleep=sleeps.append)

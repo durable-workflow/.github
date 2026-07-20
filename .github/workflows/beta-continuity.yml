@@ -1,0 +1,127 @@
+name: Beta continuity
+
+run-name: Continue workspace-unavailable beta drill
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/beta-continuity.yml
+      - .github/workflows/beta-conformance.yml
+      - beta-continuity/**
+      - qualification/**
+      - scripts/beta_continuity.py
+      - scripts/qualification_policy.py
+      - tests/test_beta_continuity.py
+      - tests/test_qualification_policy.py
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  checks: read
+  contents: write
+  issues: read
+
+concurrency:
+  group: workspace-unavailable-beta-continuity
+  cancel-in-progress: false
+
+jobs:
+  advance:
+    name: Advance only from durable GitHub authority
+    if: ${{ github.server_url == 'https://github.com' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: beta-product-work
+    steps:
+      - name: Check out the public control plane
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install contract validators
+        run: python -m pip install jsonschema==4.23.0 PyYAML==6.0.2 ruff==0.12.3 yamllint==1.37.1
+
+      - name: Qualify continuity controller source
+        run: |
+          python -m ruff check scripts tests
+          python -m yamllint .github/workflows
+          python -m compileall -q scripts tests
+          python -m unittest -v tests.test_beta_continuity tests.test_qualification_policy
+          python -m jsonschema -i beta-continuity/config.json beta-continuity/schema.json
+
+      - name: Select or recover the exact drill plan
+        id: plan
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/beta_continuity.py plan \
+            beta-continuity/config.json \
+            release-plan.json \
+            expected-qualification-commits.json \
+            continuity-state.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Route discovered release dependencies to their owning repositories
+        if: ${{ steps.plan.outcome == 'failure' }}
+        env:
+          BETA_PRODUCT_WORK_TOKEN: ${{ secrets.BETA_PRODUCT_WORK_TOKEN }}
+        run: |
+          python - <<'PYTHON'
+          import json
+          from pathlib import Path
+
+          state = json.loads(Path("continuity-state.json").read_text(encoding="utf-8"))
+          if state.get("outcome") != "blocked":
+              raise SystemExit("continuity planning failed without focused blocker evidence")
+          PYTHON
+          python scripts/beta_continuity.py route-blockers \
+            beta-continuity/config.json continuity-state.json
+
+      - name: Keep planning and routed blockers visible
+        if: ${{ steps.plan.outcome == 'failure' }}
+        run: exit 1
+
+      - name: Qualify the exact seven target commits before acceptance
+        if: ${{ steps.plan.outputs.needs_qualification == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/qualification_policy.py audit \
+            --expected-commits expected-qualification-commits.json \
+            --evidence target-qualification-evidence.json
+
+      - name: Advance one durable continuity phase
+        id: advance
+        env:
+          BETA_PRODUCT_WORK_TOKEN: ${{ secrets.BETA_PRODUCT_WORK_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          qualification=()
+          if [ -f target-qualification-evidence.json ]; then
+            qualification+=(--qualification target-qualification-evidence.json)
+          fi
+          python scripts/beta_continuity.py advance \
+            beta-continuity/config.json release-plan.json continuity-state.json \
+            "${qualification[@]}" --github-output "$GITHUB_OUTPUT"
+
+      - name: Retain the current GitHub observation
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: beta-continuity-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            continuity-state.json
+            expected-qualification-commits.json
+            release-plan.json
+            target-qualification-evidence.json
+          if-no-files-found: warn
+          retention-days: 90

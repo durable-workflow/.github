@@ -24,6 +24,7 @@ from typing import Any
 import yaml
 
 SCHEMA = "durable-workflow.github-target-qualification/v1"
+COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 SUPPORTED_JAVASCRIPT_ACTION_RUNTIMES = ["node24"]
 EXPECTED_TARGETS = {
     "cli": ("cli", "main"),
@@ -680,6 +681,7 @@ def audit_policy(
     policy: dict[str, Any],
     client: GitHubClient,
     *,
+    expected_commits: dict[str, str] | None = None,
     skip_check_runs_for: set[str] | None = None,
     check_run_max_attempts: int = CHECK_RUN_MAX_ATTEMPTS,
     check_run_poll_seconds: float = CHECK_RUN_POLL_SECONDS,
@@ -688,9 +690,16 @@ def audit_policy(
     validate_policy(policy)
     organization = policy["organization"]
     skipped = skip_check_runs_for or set()
+    pinned = expected_commits or {}
     unknown_skips = skipped - set(policy["targets"])
     if unknown_skips:
         raise PolicyError(f"unknown skipped qualification targets: {sorted(unknown_skips)}")
+    unknown_pins = set(pinned) - set(policy["targets"])
+    if unknown_pins:
+        raise PolicyError(f"unknown pinned qualification targets: {sorted(unknown_pins)}")
+    invalid_pins = {name: commit for name, commit in pinned.items() if not COMMIT_PATTERN.fullmatch(commit)}
+    if invalid_pins:
+        raise PolicyError(f"invalid pinned qualification commits: {invalid_pins}")
 
     evidence: dict[str, Any] = {"schema": SCHEMA, "targets": {}}
     action_cache: dict[str, dict[str, Any]] = {}
@@ -709,6 +718,10 @@ def audit_policy(
         head_sha = branch_data.get("commit", {}).get("sha")
         if not isinstance(head_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", head_sha):
             raise PolicyError(f"{slug}@{branch} did not resolve to an exact commit")
+        if name in pinned and head_sha != pinned[name]:
+            raise PolicyError(
+                f"{slug}@{branch} advanced to {head_sha}; the requested release plan pins {pinned[name]}"
+            )
 
         workflow_sources = _load_workflow_sources(client, slug, head_sha)
         action_releases = audit_action_releases(policy, client, workflow_sources, action_cache)
@@ -780,6 +793,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--policy", type=Path, default=Path("qualification/policy.json"))
     parser.add_argument("--github-token", default=os.environ.get("GITHUB_TOKEN"))
     parser.add_argument("--evidence", type=Path)
+    parser.add_argument(
+        "--expected-commits",
+        type=Path,
+        help="JSON object mapping qualification target names to exact expected target-branch commits",
+    )
     parser.add_argument("--skip-check-runs-for", action="append", default=[])
     return parser.parse_args(argv)
 
@@ -796,9 +814,21 @@ def main(argv: list[str] | None = None) -> int:
                 "targets": sorted(policy["targets"]),
             }
         else:
+            expected_commits = None
+            if args.expected_commits:
+                try:
+                    expected_commits = json.loads(args.expected_commits.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as error:
+                    raise PolicyError(f"cannot read expected qualification commits: {error}") from error
+                if not isinstance(expected_commits, dict) or not all(
+                    isinstance(name, str) and isinstance(commit, str)
+                    for name, commit in expected_commits.items()
+                ):
+                    raise PolicyError("expected qualification commits must be a JSON string-to-string object")
             result = audit_policy(
                 policy,
                 GitHubClient(args.github_token),
+                expected_commits=expected_commits,
                 skip_check_runs_for=set(args.skip_check_runs_for),
             )
         output = json.dumps(result, indent=2, sort_keys=True) + "\n"

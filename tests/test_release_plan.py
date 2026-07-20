@@ -454,6 +454,14 @@ class ReleasePlanValidationTest(unittest.TestCase):
                         b"on:\n  schedule:\n  workflow_dispatch:\n"
                         b"steps:\n  - run: recovery resolve --preparation-output release-preparation.json\n"
                     )
+                if url.endswith("scripts/ci/component-release-recovery.py?ref=v2") or url.endswith(
+                    "scripts/ci/component-release-recovery.py?ref=main"
+                ):
+                    return (
+                        b'CONTINUITY_TAG_PREFIX = "beta-continuity/"\n'
+                        b"def scheduled_continuity_pause():\n  pass\n"
+                        b"if args.plan_tag is None:\n  state = {\"phase\": \"continuity-gate\"}\n"
+                    )
                 raise AssertionError(f"unexpected bytes request: {url}")
 
             def json(self, url: str, **_kwargs: object) -> object:

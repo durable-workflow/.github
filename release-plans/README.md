@@ -32,6 +32,14 @@ credentials. Each component repository discovers these records on its own
 schedule and uses its own GitHub token and publication environment to resume
 its release.
 
+For the workspace-unavailable continuity drill, scheduled component recovery
+recognizes the public `beta-continuity/<plan>/accepted` record and waits until
+the matching `resumed` record exists. An explicit recovery dispatch naming the
+exact plan remains available in every component repository and bypasses that
+scheduled pause. The controller can therefore publish one component, retain a
+provably partial interruption, and later resume the same plan, while each
+repository keeps an independent exact-plan recovery path.
+
 The fixed dependency order is enforced through public artifact verification:
 
 | Tier | Components | Required public predecessors |

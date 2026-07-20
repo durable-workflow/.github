@@ -372,6 +372,23 @@ class QualificationPolicyTest(unittest.TestCase):
             self.assertEqual("node24", target["action_releases"][0]["runtime"])
             self.assertIn(".github/workflows/release.yml", target["action_releases"][0]["workflows"])
 
+    def test_audit_rejects_a_plan_commit_after_its_target_branch_advances(self) -> None:
+        policy = policy_fixture()
+
+        with self.assertRaisesRegex(PolicyError, "requested release plan pins"):
+            audit_policy(
+                policy,
+                FakeGitHubClient(policy),
+                expected_commits={"workflow": "b" * 40},
+            )
+
+        evidence = audit_policy(
+            policy,
+            FakeGitHubClient(policy),
+            expected_commits={name: "a" * 40 for name in EXPECTED_TARGETS},
+        )
+        self.assertEqual("a" * 40, evidence["targets"]["workflow"]["commit"])
+
     def test_audit_rejects_an_unapproved_action_release(self) -> None:
         policy = policy_fixture()
 

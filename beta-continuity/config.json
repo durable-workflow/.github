@@ -1,0 +1,18 @@
+{
+  "$schema": "./schema.json",
+  "authority_issue": {
+    "number": 2,
+    "repository": "durable-workflow/.github",
+    "work_id": "github-only-beta-continuity-drill"
+  },
+  "channel": "alpha",
+  "drill": "workspace-unavailable-beta-continuity",
+  "first_component": "workflow",
+  "plan_prefix": "workspace-unavailable",
+  "required_issue_labels": [
+    "authority:github",
+    "beta:blocker",
+    "completion:evidence-required",
+    "status:ready"
+  ]
+}
