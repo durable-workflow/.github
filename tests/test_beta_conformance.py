@@ -1076,7 +1076,7 @@ class ExperimentRetryTest(unittest.TestCase):
     def test_native_failure_projection_sanitizes_and_validates_attribution_strings(self) -> None:
         sensitive_values = {
             "id": r'password="scenario \"id-secret\" id-tail"',
-            "status": r'fail api_token="status \"status-secret\" status-tail"',
+            "status": 'fail api_token="status \\"status-secret\\"\nstatus-tail',
             "failure_stage": r'client password="stage \"stage-secret\" stage-tail"',
             "failure_classification": r'server api_token="class \"class-secret\" class-tail"',
             "failure_owner": 'server password="owner\nnewline-owner-secret" newline-owner-tail',
@@ -1102,6 +1102,8 @@ class ExperimentRetryTest(unittest.TestCase):
         assert summary is not None
         projection = summary["failure_projection"]
         scenario = projection["scenarios"][0]
+        retained_status = summary["scenario_statuses"][0]
+        rendered_summary = canonical_json(summary).decode()
         self.assertEqual("", native_failure_projection_error(projection))
         for field, sensitive_value in sensitive_values.items():
             with self.subTest(field=field):
@@ -1109,12 +1111,42 @@ class ExperimentRetryTest(unittest.TestCase):
                 self.assertIn("[REDACTED]", scenario[field])
                 for fragment in sensitive_fragments[field]:
                     self.assertNotIn(fragment, scenario[field])
+                    self.assertNotIn(fragment, rendered_summary)
                 leaking_projection = json.loads(canonical_json(projection))
                 leaking_projection["scenarios"][0][field] = sensitive_value
                 self.assertEqual(
                     "experiment result has unsanitized native failure attribution",
                     native_failure_projection_error(leaking_projection),
                 )
+        self.assertEqual(scenario["id"], retained_status["id"])
+        self.assertEqual(scenario["status"], retained_status["status"])
+
+    def test_native_summary_validation_rejects_unsanitized_scenario_statuses(self) -> None:
+        specification = self.contract["experiments"]["replay"]
+        result = experiment_result(
+            self.plan,
+            "replay",
+            specification["owning_contract"],
+            specification["required_clients"],
+            specification["required_distributions"],
+            "2026-07-19T00:00:00Z",
+            "passed",
+            1,
+            [successful_diagnostic(self.plan, specification["required_distributions"])],
+        )
+        sensitive_values = {
+            "id": r'password="scenario \"id-secret\" id-tail"',
+            "status": "pass api_token=status-secret\nstatus-tail",
+        }
+
+        for field, sensitive_value in sensitive_values.items():
+            with self.subTest(field=field):
+                leaking_result = json.loads(canonical_json(result))
+                leaking_result["diagnostics"][0]["native_summary"]["scenario_statuses"][0][field] = (
+                    sensitive_value
+                )
+                with self.assertRaisesRegex(ConformanceError, "unsanitized native scenario statuses"):
+                    validate_experiment_result(leaking_result, self.plan)
 
     def test_native_failure_projection_redacts_ambiguous_unquoted_scalar_suffixes(self) -> None:
         sensitive_values = {

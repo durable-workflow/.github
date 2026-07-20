@@ -1341,7 +1341,12 @@ def summarize_native_result(native: Any) -> dict[str, Any] | None:
             status = value.get("status", value.get("outcome", "unknown"))
         else:
             status = value
-        scenarios.append({"id": bounded_text(scenario_id, 128), "status": bounded_text(status, 64)})
+        scenarios.append(
+            {
+                "id": sanitized_evidence_text(scenario_id, 128),
+                "status": sanitized_evidence_text(status, 64),
+            }
+        )
     schema = native.get("schema")
     source_values = [
         native.get("local_product_source_checkouts_used"),
@@ -2683,6 +2688,12 @@ def validate_experiment_result(
                 for cell in scenario_statuses
             ):
                 raise ConformanceError("experiment result has invalid native scenario statuses")
+            if any(
+                contains_sensitive_evidence_text(cell["id"])
+                or contains_sensitive_evidence_text(cell["status"])
+                for cell in scenario_statuses
+            ):
+                raise ConformanceError("experiment result has unsanitized native scenario statuses")
             projection_error = native_failure_projection_error(native_summary["failure_projection"])
             if projection_error:
                 raise ConformanceError(projection_error)
