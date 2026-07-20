@@ -1,0 +1,77 @@
+{
+  "authority_issue": {
+    "labels": [
+      "authority:github",
+      "beta:blocker",
+      "completion:evidence-required",
+      "kind:cross-repository",
+      "priority:P2",
+      "repo:github-control-plane",
+      "status:ready"
+    ],
+    "number": 2,
+    "repository": "durable-workflow/.github",
+    "state": "open",
+    "updated_at": "2026-07-20T13:12:25Z",
+    "url": "https://github.com/durable-workflow/.github/issues/2",
+    "work_id": "github-only-beta-continuity-drill"
+  },
+  "candidate": {
+    "commit": "07d0722facb146096015b8d31fb68ca1c921581c",
+    "manifest": {
+      "candidate": "alpha-workspace-unavailable-recovery-f46818553161",
+      "components": {
+        "cli": {
+          "commit": "36bde75882980e834854a145c9ad0f61ceec4659",
+          "version": "0.1.94"
+        },
+        "sdk-php": {
+          "commit": "0673333d475a5b2d6b336790844bd126536925d9",
+          "version": "0.1.15"
+        },
+        "sdk-python": {
+          "commit": "46d494075c92b307844e83e44ca4de1c93f90715",
+          "version": "0.4.104"
+        },
+        "sdk-rust": {
+          "commit": "e1cbb36befdb90e19d9244e8deaccf9b871d01ba",
+          "version": "0.1.20"
+        },
+        "server": {
+          "commit": "4f36343556b1698eba1fdaf78bc2b9c9d32b9329",
+          "version": "0.2.694"
+        },
+        "waterline": {
+          "commit": "b29fdbd8aa99a50cd688938dde2e03a6b8e26388",
+          "version": "2.0.0-alpha.138"
+        },
+        "workflow": {
+          "commit": "7309173116dfc80ec8d22034ab9362e84dd55be4",
+          "version": "2.0.0-alpha.292"
+        }
+      },
+      "schema": "durable-workflow.beta-candidate/v1"
+    },
+    "tag": "beta-candidate/alpha-workspace-unavailable-recovery-f46818553161"
+  },
+  "drill": "workspace-unavailable-beta-continuity-recovery",
+  "existing_run": null,
+  "github_run": {
+    "attempt": "1",
+    "id": "29770874194",
+    "repository": "durable-workflow/.github",
+    "sha": "1fd9296396bb8fc57f50362323e40ab9008bbc9f"
+  },
+  "observed_at": "2026-07-20T19:10:51Z",
+  "outcome": "requested-clean-github-runner-conformance",
+  "phase": "conformance-requested",
+  "public_verification": {
+    "commit": "1557c1901e55f97478aef02c4b2749351d5df6d8",
+    "tag": "release-candidate/alpha/workspace-unavailable-recovery-f46818553161"
+  },
+  "release_plan": {
+    "sha256": "295a3f654716ea8cd8dc693c1cd15a4b487737e5f01184bad7363fbde6717c40",
+    "tag": "release-plan/workspace-unavailable-recovery-f46818553161"
+  },
+  "schema": "durable-workflow.beta-continuity.evidence/v1"
+}
