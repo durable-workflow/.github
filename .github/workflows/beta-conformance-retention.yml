@@ -174,6 +174,28 @@ jobs:
           download_dir="$(mktemp -d)"
           trap 'rm -rf "$download_dir"' EXIT
 
+          tag_endpoint="/repos/$GITHUB_REPOSITORY/git/ref/tags/$EVIDENCE_TAG"
+          validate_evidence_ref() {
+            ref_sha="$(python - <<'PYTHON'
+          import json
+          import re
+          from pathlib import Path
+
+          ref = json.loads(Path("evidence-ref.json").read_bytes())
+          sha = ref.get("object", {}).get("sha") if isinstance(ref, dict) else None
+          if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+              raise SystemExit("conformance evidence ref does not name a commit")
+          print(sha)
+          PYTHON
+            )"
+            gh api "/repos/$GITHUB_REPOSITORY/compare/${ref_sha}...${GITHUB_SHA}" \
+              > evidence-ref-comparison.json
+            python scripts/beta_conformance.py retention-ref \
+              evidence-ref.json evidence-ref-comparison.json \
+              --expected-tag "$EVIDENCE_TAG" --source-sha "$SOURCE_HEAD_SHA" \
+              --controller-sha "$GITHUB_SHA"
+          }
+
           if ! gh release view "$EVIDENCE_TAG" >/dev/null 2>&1; then
             notes="$(mktemp)"
             create_log="$(mktemp)"
@@ -183,7 +205,12 @@ jobs:
               printf 'identities, runner revision, owning contract, retry record, and bounded diagnostics.\n'
             } > "$notes"
             for attempt in 1 2 3; do
-              if gh release create "$EVIDENCE_TAG" --target "$SOURCE_HEAD_SHA" \
+              create_target=(--target "$GITHUB_SHA")
+              if gh api "$tag_endpoint" > evidence-ref.json 2>/dev/null; then
+                validate_evidence_ref
+                create_target=(--verify-tag)
+              fi
+              if gh release create "$EVIDENCE_TAG" "${create_target[@]}" \
                 --title "Beta conformance ${CANDIDATE} (${SOURCE_RUN_ID}.${SOURCE_RUN_ATTEMPT})" \
                 --notes-file "$notes" --latest=false >"$create_log" 2>&1; then
                 break
@@ -199,6 +226,9 @@ jobs:
               sleep "$((attempt * 5))"
             done
           fi
+
+          gh api "$tag_endpoint" > evidence-ref.json
+          validate_evidence_ref
 
           for asset in release-assets/*.json; do
             name="$(basename "$asset")"

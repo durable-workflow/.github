@@ -47,6 +47,7 @@ from scripts.beta_conformance import (
     validate_contract,
     validate_experiment_result,
     validate_plan,
+    validate_retention_ref,
     validate_retention_source,
     write_json,
 )
@@ -353,7 +354,111 @@ class RetentionSourceTest(unittest.TestCase):
         )
         self.assertIn('runner.get("revision") != os.environ["SOURCE_HEAD_SHA"]', retention_scripts)
         self.assertIn('candidate.get("name") != os.environ["SOURCE_CANDIDATE"]', retention_scripts)
+        self.assertIn("evidence-ref.json evidence-ref-comparison.json", retention_scripts)
         self.assertIn("for attempt in 1 2 3", retention_scripts)
+
+    def test_absent_evidence_tag_targets_the_protected_controller(self) -> None:
+        retention = yaml.load(
+            (ROOT / ".github" / "workflows" / "beta-conformance-retention.yml").read_text(),
+            Loader=yaml.BaseLoader,
+        )
+        retention_scripts = "\n".join(step.get("run", "") for step in retention["jobs"]["retain"]["steps"])
+
+        self.assertIn('create_target=(--target "$GITHUB_SHA")', retention_scripts)
+        self.assertIn("create_target=(--verify-tag)", retention_scripts)
+        self.assertNotIn('gh release create "$EVIDENCE_TAG" --target', retention_scripts)
+        self.assertNotIn('--target "$SOURCE_HEAD_SHA"', retention_scripts)
+        self.assertNotIn('--method POST "/repos/$GITHUB_REPOSITORY/git/refs"', retention_scripts)
+
+    def test_historical_source_and_controller_release_target_are_distinct(self) -> None:
+        tag = "beta-conformance/alpha-workspace-unavailable-recovery-f46818553161/29775218461.1"
+        source_sha = "1fd9296396bb8fc57f50362323e40ab9008bbc9f"
+        controller_sha = "c36b24c2a7ecca24900e4938239d3e789eaae9fd"
+        ref = {"ref": f"refs/tags/{tag}", "object": {"type": "commit", "sha": controller_sha}}
+        comparison = {
+            "ahead_by": 0,
+            "base_commit": {"sha": controller_sha},
+            "behind_by": 0,
+            "merge_base_commit": {"sha": controller_sha},
+            "status": "identical",
+        }
+
+        self.assertEqual(
+            {
+                "controller_sha": controller_sha,
+                "evidence_ref": f"refs/tags/{tag}",
+                "evidence_sha": controller_sha,
+                "source_sha": source_sha,
+            },
+            validate_retention_ref(
+                ref,
+                comparison,
+                expected_tag=tag,
+                source_sha=source_sha,
+                controller_sha=controller_sha,
+            ),
+        )
+        self.assertNotEqual(source_sha, controller_sha)
+
+    def test_existing_source_ref_is_accepted_without_moving_it(self) -> None:
+        tag = "beta-conformance/alpha-workspace-unavailable-recovery-f46818553161/29775218461.1"
+        source_sha = "1fd9296396bb8fc57f50362323e40ab9008bbc9f"
+        controller_sha = "c36b24c2a7ecca24900e4938239d3e789eaae9fd"
+        ref = {"ref": f"refs/tags/{tag}", "object": {"type": "commit", "sha": source_sha}}
+        comparison = {
+            "ahead_by": 1,
+            "base_commit": {"sha": source_sha},
+            "behind_by": 0,
+            "merge_base_commit": {"sha": source_sha},
+            "status": "ahead",
+        }
+
+        validated = validate_retention_ref(
+            ref,
+            comparison,
+            expected_tag=tag,
+            source_sha=source_sha,
+            controller_sha=controller_sha,
+        )
+
+        self.assertEqual(source_sha, validated["evidence_sha"])
+
+    def test_release_creation_rejects_a_mismatched_or_annotated_ref(self) -> None:
+        tag = "beta-conformance/alpha-workspace-unavailable-recovery-f46818553161/29775218461.1"
+        source_sha = "1fd9296396bb8fc57f50362323e40ab9008bbc9f"
+        controller_sha = "c36b24c2a7ecca24900e4938239d3e789eaae9fd"
+        comparison = {
+            "ahead_by": 1,
+            "base_commit": {"sha": source_sha},
+            "behind_by": 0,
+            "merge_base_commit": {"sha": source_sha},
+            "status": "ahead",
+        }
+        mutations = (
+            {"ref": "refs/tags/unrelated", "object": {"type": "commit", "sha": source_sha}},
+            {"ref": f"refs/tags/{tag}", "object": {"type": "tag", "sha": source_sha}},
+            {"ref": f"refs/tags/{tag}", "object": {"type": "commit", "sha": "a" * 40}},
+        )
+        for ref in mutations:
+            with self.subTest(ref=ref), self.assertRaises(ConformanceError):
+                validate_retention_ref(
+                    ref,
+                    comparison,
+                    expected_tag=tag,
+                    source_sha=source_sha,
+                    controller_sha=controller_sha,
+                )
+
+        diverged = dict(comparison, status="diverged", behind_by=1)
+        ref = {"ref": f"refs/tags/{tag}", "object": {"type": "commit", "sha": source_sha}}
+        with self.assertRaisesRegex(ConformanceError, "outside protected controller history"):
+            validate_retention_ref(
+                ref,
+                diverged,
+                expected_tag=tag,
+                source_sha=source_sha,
+                controller_sha=controller_sha,
+            )
 
 
 class CandidateRecordFixture:

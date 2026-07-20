@@ -494,10 +494,18 @@ jobs:
                         "scripts.component_release_recovery.resolve_component",
                         side_effect=RecoveryError("post-discovery failure", "tag-preflight"),
                     ),
+                    mock.patch(
+                        "scripts.component_release_recovery.scheduled_continuity_pause",
+                        return_value=None,
+                    ) as continuity_pause,
                 ):
                     self.assertEqual(1, main())
 
                 discover.assert_called_once_with(mock.ANY, requested_tag, "server")
+                if requested_tag is None:
+                    continuity_pause.assert_called_once_with(mock.ANY, candidate)
+                else:
+                    continuity_pause.assert_not_called()
                 self.assertEqual(canonical_json(candidate), plan_output.read_bytes())
                 self.assertEqual(
                     canonical_json(preparation(candidate)),

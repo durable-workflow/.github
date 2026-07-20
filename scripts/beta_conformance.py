@@ -193,6 +193,54 @@ def validate_retention_source(
     }
 
 
+def validate_retention_ref(
+    ref: Any,
+    comparison: Any,
+    *,
+    expected_tag: str,
+    source_sha: str,
+    controller_sha: str,
+) -> dict[str, str]:
+    """Bind an immutable evidence tag to protected retention-controller history."""
+    expected_ref = f"refs/tags/{expected_tag}"
+    target = ref.get("object") if isinstance(ref, dict) else None
+    if not isinstance(ref, dict) or ref.get("ref") != expected_ref:
+        raise ConformanceError("conformance evidence ref has a mismatched tag identity")
+    if not COMMIT_PATTERN.fullmatch(source_sha) or not COMMIT_PATTERN.fullmatch(controller_sha):
+        raise ConformanceError("conformance evidence ref has an invalid source or controller commit")
+    if (
+        not isinstance(target, dict)
+        or target.get("type") != "commit"
+        or not COMMIT_PATTERN.fullmatch(str(target.get("sha", "")))
+    ):
+        raise ConformanceError("conformance evidence ref does not resolve to a commit")
+    target_sha = target["sha"]
+    base = comparison.get("base_commit") if isinstance(comparison, dict) else None
+    merge_base = comparison.get("merge_base_commit") if isinstance(comparison, dict) else None
+    status = comparison.get("status") if isinstance(comparison, dict) else None
+    ahead_by = comparison.get("ahead_by") if isinstance(comparison, dict) else None
+    behind_by = comparison.get("behind_by") if isinstance(comparison, dict) else None
+    if (
+        not isinstance(base, dict)
+        or base.get("sha") != target_sha
+        or not isinstance(merge_base, dict)
+        or merge_base.get("sha") != target_sha
+        or status not in {"ahead", "identical"}
+        or type(ahead_by) is not int
+        or ahead_by < 0
+        or behind_by != 0
+        or (status == "identical" and (target_sha != controller_sha or ahead_by != 0))
+        or (status == "ahead" and (target_sha == controller_sha or ahead_by < 1))
+    ):
+        raise ConformanceError("conformance evidence ref is outside protected controller history")
+    return {
+        "controller_sha": controller_sha,
+        "evidence_ref": expected_ref,
+        "evidence_sha": target_sha,
+        "source_sha": source_sha,
+    }
+
+
 def sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
@@ -2743,6 +2791,13 @@ def parser() -> argparse.ArgumentParser:
     retention.add_argument("--expected-run-id", type=int, required=True)
     retention.add_argument("--expected-run-attempt", type=int)
     retention.add_argument("--github-output", type=Path)
+
+    retention_ref = commands.add_parser("retention-ref", help="validate the durable conformance evidence ref")
+    retention_ref.add_argument("ref", type=Path)
+    retention_ref.add_argument("comparison", type=Path)
+    retention_ref.add_argument("--expected-tag", required=True)
+    retention_ref.add_argument("--source-sha", required=True)
+    retention_ref.add_argument("--controller-sha", required=True)
     return arguments
 
 
@@ -2826,6 +2881,16 @@ def main(argv: list[str] | None = None) -> int:
                 {name: str(value) for name, value in source.items()},
             )
             print(json.dumps(source, sort_keys=True))
+            return 0
+        if arguments.command == "retention-ref":
+            ref = validate_retention_ref(
+                load_json(arguments.ref),
+                load_json(arguments.comparison),
+                expected_tag=arguments.expected_tag,
+                source_sha=arguments.source_sha,
+                controller_sha=arguments.controller_sha,
+            )
+            print(json.dumps(ref, sort_keys=True))
             return 0
     except (CandidateError, ConformanceError, OSError) as error:
         print(f"beta conformance error: {error}", file=sys.stderr)
