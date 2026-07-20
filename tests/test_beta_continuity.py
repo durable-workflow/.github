@@ -23,10 +23,18 @@ from scripts.beta_continuity import (
     plan_command,
     record_phase,
     require_partial_publication,
+    route_blockers,
     select_versions,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+ROUTED_BLOCKER_LABELS = (
+    "authority:github",
+    "beta:blocker",
+    "kind:release-blocker",
+    "priority:P1",
+    "status:ready",
+)
 
 
 class PlanningClient:
@@ -58,6 +66,7 @@ class PlanningClient:
                             "Blocks https://github.com/durable-workflow/.github/issues/2.\n\n"
                             f"<!-- beta-continuity-blocker: {name}-source-version-{version} -->"
                         ),
+                        "labels": [{"name": label} for label in ROUTED_BLOCKER_LABELS],
                         "number": index + 1,
                     }
                     for index, version in enumerate(self.blocker_versions.get(name, []))
@@ -220,6 +229,101 @@ class BetaContinuityTest(unittest.TestCase):
         self.assertEqual("a" * 40, expected["sdk-python"])
         self.assertEqual("0.1.18", plan["components"]["sdk-rust"]["version"])
         self.assertEqual("b" * 40, expected["sdk-rust"])
+
+    def test_untrusted_lower_number_blocker_markers_cannot_steer_version_selection(self) -> None:
+        config = load_config(ROOT / "beta-continuity" / "config.json")
+        component = COMPONENTS["sdk-python"]
+        dependency = "Blocks https://github.com/durable-workflow/.github/issues/2."
+
+        def issue(
+            number: int,
+            version: str,
+            *,
+            labels: object,
+            parent: str = dependency,
+            marker_component: str = "sdk-python",
+            pull_request: bool = False,
+        ) -> dict[str, object]:
+            value: dict[str, object] = {
+                "body": (
+                    f"{parent}\n\n"
+                    f"<!-- beta-continuity-blocker: {marker_component}-source-version-{version} -->"
+                ),
+                "labels": labels,
+                "number": number,
+            }
+            if pull_request:
+                value["pull_request"] = {"url": "https://api.github.com/repos/example/pulls/1"}
+            return value
+
+        valid_labels = [{"name": label} for label in ROUTED_BLOCKER_LABELS]
+        adversarial_issues = [
+            issue(1, "0.4.900", labels=[]),
+            issue(2, "0.4.901", labels=valid_labels, pull_request=True),
+            issue(3, "0.4.902", labels=[*valid_labels, {"color": "b60205"}]),
+            issue(4, "0.4.903", labels=valid_labels, marker_component="sdk-rust"),
+            issue(
+                5,
+                "0.4.904",
+                labels=valid_labels,
+                parent="Blocks https://github.com/durable-workflow/.github/issues/999.",
+            ),
+            issue(50, "0.4.103", labels=valid_labels),
+        ]
+
+        class AdversarialPlanningClient(PlanningClient):
+            def json(self, url: str) -> object:
+                if url == f"https://api.github.com/repos/{component.repository}/issues?state=all&per_page=100":
+                    return adversarial_issues
+                return super().json(url)
+
+        client = AdversarialPlanningClient()
+        first = select_versions(config, client)  # type: ignore[arg-type]
+        second = select_versions(config, client)  # type: ignore[arg-type]
+
+        self.assertEqual("0.4.103", first["versions"]["sdk-python"])
+        self.assertEqual(first, second)
+
+    def test_protected_blocker_routing_remains_idempotent(self) -> None:
+        class RoutingWriter:
+            def __init__(self) -> None:
+                self.issues: list[dict[str, object]] = []
+
+            def list(self, _path: str) -> list[dict[str, object]]:
+                return self.issues
+
+            def request(self, method: str, _path: str, payload: dict[str, object]) -> None:
+                self.assert_post(method)
+                self.issues.append(payload)
+
+            @staticmethod
+            def assert_post(method: str) -> None:
+                if method != "POST":
+                    raise AssertionError(f"unexpected method: {method}")
+
+        state = {
+            "outcome": "blocked",
+            "selection": {"tag": "beta-continuity-selection/workspace-unavailable-beta-continuity"},
+            "blockers": [
+                {
+                    "component": "sdk-python",
+                    "reason": "source manifest has not reached the retained version",
+                    "repository": COMPONENTS["sdk-python"].repository,
+                    "slug": "sdk-python-source-version-0.4.103",
+                    "version": "0.4.103",
+                }
+            ],
+        }
+        writer = RoutingWriter()
+        with tempfile.TemporaryDirectory() as temporary:
+            state_path = Path(temporary) / "state.json"
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            with patch("scripts.beta_continuity.GitHubWriter", return_value=writer):
+                route_blockers(ROOT / "beta-continuity" / "config.json", state_path)
+                route_blockers(ROOT / "beta-continuity" / "config.json", state_path)
+
+        self.assertEqual(1, len(writer.issues))
+        self.assertEqual(list(ROUTED_BLOCKER_LABELS), writer.issues[0]["labels"])
 
     def test_interruption_requires_a_provably_partial_publication(self) -> None:
         require_partial_publication({"workflow": {"version": "2.0.0-alpha.292"}}, ["waterline"])

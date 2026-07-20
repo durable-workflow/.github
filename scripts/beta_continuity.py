@@ -66,6 +66,13 @@ SOURCE_MANIFESTS = {
     "sdk-rust": ("Cargo.toml", "package", "durable-workflow"),
 }
 PHASES = ("accepted", "interrupted", "resumed", "conformance-requested", "complete")
+ROUTED_BLOCKER_LABELS = (
+    "authority:github",
+    "beta:blocker",
+    "kind:release-blocker",
+    "priority:P1",
+    "status:ready",
+)
 
 
 class ContinuityError(RuntimeError):
@@ -258,6 +265,18 @@ def public_release_tags(client: PublicClient, repository: str) -> list[str]:
     return [str(release["tag_name"]) for release in releases if not release.get("draft") and release.get("tag_name")]
 
 
+def has_routed_blocker_authority(issue: dict[str, Any]) -> bool:
+    labels = issue.get("labels")
+    if not isinstance(labels, list):
+        return False
+    names: set[str] = set()
+    for label in labels:
+        if not isinstance(label, dict) or not isinstance(label.get("name"), str) or not label["name"]:
+            return False
+        names.add(label["name"])
+    return set(ROUTED_BLOCKER_LABELS) <= names
+
+
 def routed_blocker_version(config: dict[str, Any], client: PublicClient, component_name: str) -> str | None:
     repository = COMPONENTS[component_name].repository
     issues = client.json(f"https://api.github.com/repos/{repository}/issues?state=all&per_page=100")
@@ -279,6 +298,7 @@ def routed_blocker_version(config: dict[str, Any], client: PublicClient, compone
         number = issue.get("number")
         if (
             dependency in body
+            and has_routed_blocker_authority(issue)
             and isinstance(number, int)
             and isinstance(version, str)
             and VERSION_PATTERN.fullmatch(version)
@@ -1136,13 +1156,7 @@ def route_blockers(config_path: Path, state_path: Path) -> None:
             {
                 "title": f"Release blocker: prepare {component} source for GitHub continuity",
                 "body": blocker_body(config, blocker, selection),
-                "labels": [
-                    "authority:github",
-                    "beta:blocker",
-                    "kind:release-blocker",
-                    "priority:P1",
-                    "status:ready",
-                ],
+                "labels": list(ROUTED_BLOCKER_LABELS),
             },
         )
 
