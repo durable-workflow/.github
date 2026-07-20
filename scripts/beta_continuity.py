@@ -73,11 +73,15 @@ PHASES = (
     "complete",
     "no-op-confirmed",
 )
-ROUTED_BLOCKER_LABELS = (
+ROUTED_BLOCKER_AUTHORITY_LABELS = (
     "authority:github",
     "beta:blocker",
     "kind:release-blocker",
     "priority:P1",
+)
+ROUTED_BLOCKER_LIFECYCLE_LABELS = {"status:ready", "status:done"}
+ROUTED_BLOCKER_LABELS = (
+    *ROUTED_BLOCKER_AUTHORITY_LABELS,
     "status:ready",
 )
 
@@ -293,7 +297,12 @@ def has_routed_blocker_authority(issue: dict[str, Any]) -> bool:
         if not isinstance(label, dict) or not isinstance(label.get("name"), str) or not label["name"]:
             return False
         names.add(label["name"])
-    return set(ROUTED_BLOCKER_LABELS) <= names
+    lifecycle = {name for name in names if name.startswith("status:")}
+    return (
+        set(ROUTED_BLOCKER_AUTHORITY_LABELS) <= names
+        and len(lifecycle) == 1
+        and lifecycle <= ROUTED_BLOCKER_LIFECYCLE_LABELS
+    )
 
 
 def routed_blocker_version(config: dict[str, Any], client: PublicClient, component_name: str) -> str | None:
@@ -1462,7 +1471,26 @@ def route_blockers(config_path: Path, state_path: Path) -> None:
         repository = blocker["repository"]
         marker = f"<!-- beta-continuity-blocker: {blocker['slug']} -->"
         issues = writer.list(f"/repos/{repository}/issues?state=all")
-        if any(marker in str(issue.get("body", "")) for issue in issues if "pull_request" not in issue):
+        routed = [
+            (issue["number"], issue)
+            for issue in issues
+            if isinstance(issue, dict)
+            and "pull_request" not in issue
+            and marker in str(issue.get("body", ""))
+            and has_routed_blocker_authority(issue)
+            and isinstance(issue.get("number"), int)
+        ]
+        if routed:
+            number, issue = min(routed, key=lambda item: item[0])
+            labels = {label["name"] for label in issue["labels"]}
+            if issue.get("state") != "open" or "status:ready" not in labels:
+                labels = {label for label in labels if not label.startswith("status:")}
+                labels.add("status:ready")
+                writer.request(
+                    "PATCH",
+                    f"/repos/{repository}/issues/{number}",
+                    {"state": "open", "labels": sorted(labels)},
+                )
             continue
         component = blocker["component"]
         writer.request(

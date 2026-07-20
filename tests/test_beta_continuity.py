@@ -285,6 +285,12 @@ class BetaContinuityTest(unittest.TestCase):
             return value
 
         valid_labels = [{"name": label} for label in ROUTED_BLOCKER_LABELS]
+        completed_labels = [
+            {"name": label} for label in (*ROUTED_BLOCKER_LABELS[:-1], "status:done")
+        ]
+        blocked_labels = [
+            {"name": label} for label in (*ROUTED_BLOCKER_LABELS[:-1], "status:blocked")
+        ]
         adversarial_issues = [
             issue(1, "0.4.900", labels=[]),
             issue(2, "0.4.901", labels=valid_labels, pull_request=True),
@@ -296,7 +302,8 @@ class BetaContinuityTest(unittest.TestCase):
                 labels=valid_labels,
                 parent="Blocks https://github.com/durable-workflow/.github/issues/999.",
             ),
-            issue(50, "0.4.103", labels=valid_labels),
+            issue(6, "0.4.905", labels=blocked_labels),
+            issue(50, "0.4.104", labels=completed_labels),
         ]
 
         class AdversarialPlanningClient(PlanningClient):
@@ -306,23 +313,55 @@ class BetaContinuityTest(unittest.TestCase):
                 return super().json(url)
 
         client = AdversarialPlanningClient()
+        client.latest["sdk-python"] = "0.4.104"
         first = select_versions(config, client)  # type: ignore[arg-type]
         second = select_versions(config, client)  # type: ignore[arg-type]
 
-        self.assertEqual("0.4.103", first["versions"]["sdk-python"])
+        self.assertEqual("0.4.104", first["versions"]["sdk-python"])
         self.assertEqual(first, second)
 
-    def test_protected_blocker_routing_remains_idempotent(self) -> None:
+    def test_untrusted_marker_cannot_suppress_protected_blocker_routing(self) -> None:
+        marker = "<!-- beta-continuity-blocker: sdk-python-source-version-0.4.103 -->"
+
         class RoutingWriter:
             def __init__(self) -> None:
-                self.issues: list[dict[str, object]] = []
+                self.issues: list[dict[str, object]] = [
+                    {
+                        "body": marker,
+                        "labels": [],
+                        "number": 1,
+                    },
+                    {
+                        "body": marker,
+                        "labels": [
+                            {"name": label}
+                            for label in (*ROUTED_BLOCKER_LABELS[:-1], "status:blocked")
+                        ],
+                        "number": 2,
+                    },
+                    {
+                        "body": marker,
+                        "labels": [{"name": label} for label in ROUTED_BLOCKER_LABELS],
+                        "number": 3,
+                        "pull_request": {"url": "https://api.github.com/repos/example/pulls/3"},
+                    },
+                ]
+                self.created: list[dict[str, object]] = []
 
             def list(self, _path: str) -> list[dict[str, object]]:
                 return self.issues
 
             def request(self, method: str, _path: str, payload: dict[str, object]) -> None:
                 self.assert_post(method)
-                self.issues.append(payload)
+                self.created.append(payload)
+                self.issues.append(
+                    {
+                        **payload,
+                        "labels": [{"name": label} for label in payload["labels"]],
+                        "number": len(self.issues) + 1,
+                        "state": "open",
+                    }
+                )
 
             @staticmethod
             def assert_post(method: str) -> None:
@@ -350,8 +389,81 @@ class BetaContinuityTest(unittest.TestCase):
                 route_blockers(ROOT / "beta-continuity" / "config.json", state_path)
                 route_blockers(ROOT / "beta-continuity" / "config.json", state_path)
 
-        self.assertEqual(1, len(writer.issues))
-        self.assertEqual(list(ROUTED_BLOCKER_LABELS), writer.issues[0]["labels"])
+        self.assertEqual(1, len(writer.created))
+        self.assertEqual(list(ROUTED_BLOCKER_LABELS), writer.created[0]["labels"])
+
+    def test_completed_protected_blocker_is_reopened_and_reactivated(self) -> None:
+        marker = "<!-- beta-continuity-blocker: sdk-python-source-version-0.4.103 -->"
+
+        class RoutingWriter:
+            def __init__(self) -> None:
+                self.requests: list[tuple[str, str, dict[str, object]]] = []
+                self.issues = [
+                    {
+                        "body": marker,
+                        "labels": [
+                            {"name": label}
+                            for label in (
+                                *ROUTED_BLOCKER_LABELS[:-1],
+                                "status:done",
+                                "component:sdk-python",
+                            )
+                        ],
+                        "number": 5,
+                        "state": "closed",
+                    }
+                ]
+
+            def list(self, _path: str) -> list[dict[str, object]]:
+                return self.issues
+
+            def request(self, method: str, path: str, payload: dict[str, object]) -> None:
+                self.requests.append((method, path, payload))
+                issue = self.issues[0]
+                issue["state"] = payload["state"]
+                issue["labels"] = [{"name": label} for label in payload["labels"]]
+
+        state = {
+            "outcome": "blocked",
+            "selection": {"tag": "beta-continuity-selection/workspace-unavailable-beta-continuity-recovery"},
+            "blockers": [
+                {
+                    "component": "sdk-python",
+                    "reason": "source manifest has not reached the retained version",
+                    "repository": COMPONENTS["sdk-python"].repository,
+                    "slug": "sdk-python-source-version-0.4.103",
+                    "version": "0.4.103",
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            state_path = Path(temporary) / "state.json"
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            writer = RoutingWriter()
+            with patch("scripts.beta_continuity.GitHubWriter", return_value=writer):
+                route_blockers(ROOT / "beta-continuity" / "config.json", state_path)
+                route_blockers(ROOT / "beta-continuity" / "config.json", state_path)
+
+        self.assertEqual(
+            [
+                (
+                    "PATCH",
+                    f"/repos/{COMPONENTS['sdk-python'].repository}/issues/5",
+                    {
+                        "state": "open",
+                        "labels": [
+                            "authority:github",
+                            "beta:blocker",
+                            "component:sdk-python",
+                            "kind:release-blocker",
+                            "priority:P1",
+                            "status:ready",
+                        ],
+                    },
+                )
+            ],
+            writer.requests,
+        )
 
     def test_interruption_requires_a_provably_partial_publication(self) -> None:
         require_partial_publication({"workflow": {"version": "2.0.0-alpha.292"}}, ["waterline"])
