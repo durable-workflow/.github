@@ -120,6 +120,8 @@ jobs:
       - name: Validate and canonicalize the isolated observation handoff
         id: handoff
         env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
           EXPECTED_PLAN_TAG: ${{ needs.observe.outputs.plan-tag }}
           EXPECTED_PLAN_SHA256: ${{ needs.observe.outputs.plan-sha256 }}
           EXPECTED_PREPARATION_SHA256: ${{ needs.observe.outputs.preparation-sha256 }}

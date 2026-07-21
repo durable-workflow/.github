@@ -280,6 +280,8 @@ class CliReleaseAuthorityTest(unittest.TestCase):
         trusted_preparation_sha256 = "${{ needs.observe.outputs.preparation-sha256 }}"
         trusted_verification_outcome = "${{ needs.observe.outputs.verification-outcome }}"
         self.assertEqual("${{ steps.plan.outputs.tag }}", observe["outputs"]["plan-tag"])
+        self.assertEqual("read", observe["permissions"]["attestations"])
+        self.assertNotIn("write", observe["permissions"].values())
         self.assertEqual("${{ steps.plan.outputs.plan_sha256 }}", observe["outputs"]["plan-sha256"])
         self.assertEqual(
             "${{ steps.plan.outputs.preparation_sha256 }}",
@@ -303,6 +305,9 @@ class CliReleaseAuthorityTest(unittest.TestCase):
             trusted_verification_outcome,
             handoff["env"]["EXPECTED_VERIFICATION_OUTCOME"],
         )
+        self.assertEqual("${{ github.token }}", handoff["env"]["GH_TOKEN"])
+        self.assertEqual("${{ github.token }}", handoff["env"]["GITHUB_TOKEN"])
+        self.assertEqual("read", record["permissions"]["attestations"])
         for argument in (
             "--authoritative-plan",
             "--authoritative-preparation",
