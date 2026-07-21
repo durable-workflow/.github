@@ -6,7 +6,7 @@
     "work_id": "github-only-beta-continuity-drill"
   },
   "channel": "alpha",
-  "drill": "workspace-unavailable-beta-continuity-current-tags",
+  "drill": "workspace-unavailable-beta-continuity-release-pages",
   "evidence_work_items": [
     {
       "number": 10,
@@ -32,7 +32,7 @@
     }
   ],
   "first_component": "workflow",
-  "plan_prefix": "workspace-unavailable-current-tags",
+  "plan_prefix": "workspace-unavailable-release-pages",
   "required_issue_labels": [
     "authority:github",
     "beta:blocker",

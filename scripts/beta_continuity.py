@@ -113,6 +113,8 @@ ROUTED_BLOCKER_MARKER = re.compile(
 )
 ROUTED_BLOCKER_MARKER_PREFIX = "<!-- beta-continuity-blocker: "
 QUALIFICATION_EVIDENCE_SCHEMA = "durable-workflow.github-target-qualification/v1"
+GITHUB_RELEASE_PAGE_SIZE = 100
+GITHUB_RELEASE_PAGE_LIMIT = 100
 
 
 class ContinuityError(RuntimeError):
@@ -355,11 +357,61 @@ def next_version(component: str, tags: list[str]) -> str:
     return f"{latest.group(1)}{int(latest.group(2)) + 1}"
 
 
+def public_releases(client: PublicClient, repository: str) -> list[dict[str, Any]]:
+    endpoint = f"https://api.github.com/repos/{repository}/releases"
+    releases: list[dict[str, Any]] = []
+    full_page_digests: set[str] = set()
+    seen_tags: set[str] = set()
+    for page in range(1, GITHUB_RELEASE_PAGE_LIMIT + 1):
+        page_releases = client.json(f"{endpoint}?per_page={GITHUB_RELEASE_PAGE_SIZE}&page={page}")
+        if (
+            not isinstance(page_releases, list)
+            or len(page_releases) > GITHUB_RELEASE_PAGE_SIZE
+            or any(
+                not isinstance(release, dict)
+                or not isinstance(release.get("tag_name"), str)
+                or not release["tag_name"]
+                or type(release.get("draft")) is not bool
+                for release in page_releases
+            )
+        ):
+            raise ContinuityError(f"{repository} releases response page {page} is invalid")
+        page_tags = {release["tag_name"] for release in page_releases}
+        if len(page_tags) != len(page_releases) or seen_tags & page_tags:
+            raise ContinuityError(f"{repository} release pagination did not advance")
+        seen_tags.update(page_tags)
+        releases.extend(page_releases)
+        if len(page_releases) < GITHUB_RELEASE_PAGE_SIZE:
+            return releases
+        page_digest = hashlib.sha256(canonical_json(page_releases)).hexdigest()
+        if page_digest in full_page_digests:
+            raise ContinuityError(f"{repository} release pagination did not advance")
+        full_page_digests.add(page_digest)
+    raise ContinuityError(f"{repository} release history exceeded the pagination bound")
+
+
 def public_release_tags(client: PublicClient, repository: str) -> list[str]:
-    releases = client.json(f"https://api.github.com/repos/{repository}/releases?per_page=100")
-    if not isinstance(releases, list):
-        raise ContinuityError(f"{repository} releases response is invalid")
-    return [str(release["tag_name"]) for release in releases if not release.get("draft") and release.get("tag_name")]
+    return [release["tag_name"] for release in public_releases(client, repository) if not release["draft"]]
+
+
+def require_unoccupied_fresh_versions(client: PublicClient, versions: dict[str, str]) -> None:
+    for name, component in COMPONENTS.items():
+        version = versions[name]
+        encoded = urllib.parse.quote(version, safe="")
+        tag = optional_public_json(
+            client,
+            f"https://api.github.com/repos/{component.repository}/git/ref/tags/{encoded}",
+        )
+        release = optional_public_json(
+            client,
+            f"https://api.github.com/repos/{component.repository}/releases/tags/{encoded}",
+        )
+        occupied_by = [label for label, record in (("tag", tag), ("release", release)) if record is not None]
+        if occupied_by:
+            raise ContinuityError(
+                f"fresh continuity version {component.repository}@{version} is already occupied by public "
+                f"{' and '.join(occupied_by)} authority"
+            )
 
 
 def has_routed_blocker_authority(issue: dict[str, Any]) -> bool:
@@ -443,6 +495,7 @@ def select_versions(config: dict[str, Any], client: PublicClient) -> dict[str, A
         "versions": versions,
     }
     validate_selection(config, selection)
+    require_unoccupied_fresh_versions(client, versions)
     return selection
 
 
@@ -1373,22 +1426,7 @@ def validated_conformance_release(
 
 
 def public_conformance_releases(client: PublicClient) -> list[dict[str, Any]]:
-    endpoint = f"https://api.github.com/repos/{CONTROL_REPOSITORY}/releases"
-    releases: list[dict[str, Any]] = []
-    full_page_digests: set[str] = set()
-    page = 1
-    while True:
-        page_releases = client.json(f"{endpoint}?per_page=100&page={page}")
-        if not isinstance(page_releases, list) or len(page_releases) > 100:
-            raise ContinuityError("GitHub conformance releases response is invalid")
-        releases.extend(release for release in page_releases if isinstance(release, dict))
-        if len(page_releases) < 100:
-            return releases
-        page_digest = hashlib.sha256(canonical_json(page_releases)).hexdigest()
-        if page_digest in full_page_digests:
-            raise ContinuityError("GitHub conformance release pagination did not advance")
-        full_page_digests.add(page_digest)
-        page += 1
+    return public_releases(client, CONTROL_REPOSITORY)
 
 
 def conformance_evidence(

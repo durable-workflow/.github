@@ -43,6 +43,7 @@ from scripts.beta_continuity import (
     next_version,
     phase_tag,
     plan_command,
+    public_release_tags,
     record_phase,
     recovery_publication_triggers,
     require_partial_publication,
@@ -69,9 +70,13 @@ class PlanningClient:
         *,
         stale_manifests: bool = False,
         blocker_versions: dict[str, list[str]] | None = None,
+        occupied_versions: dict[str, set[str]] | None = None,
+        release_pages: dict[str, dict[int, list[dict[str, object]]]] | None = None,
     ) -> None:
         self.stale_manifests = stale_manifests
         self.blocker_versions = blocker_versions or {}
+        self.occupied_versions = occupied_versions or {}
+        self.release_pages = release_pages or {}
         self.commits = {name: f"{index + 1:040x}" for index, name in enumerate(COMPONENTS)}
         self.latest = {
             "workflow": "2.0.0-alpha.291",
@@ -104,8 +109,22 @@ class PlanningClient:
                 ]
             if f"repos/{component.repository}/branches/" in url:
                 return {"commit": {"sha": self.commits[name]}}
-            if url == f"https://api.github.com/repos/{component.repository}/releases?per_page=100":
-                return [{"draft": False, "tag_name": self.latest[name]}]
+            release_prefix = f"https://api.github.com/repos/{component.repository}/releases?per_page=100&page="
+            if url.startswith(release_prefix):
+                page = int(url.removeprefix(release_prefix))
+                return self.release_pages.get(name, {}).get(
+                    page,
+                    [{"draft": False, "tag_name": self.latest[name]}] if page == 1 else [],
+                )
+            encoded_version = url.rsplit("/", 1)[-1]
+            if url.startswith(f"https://api.github.com/repos/{component.repository}/git/ref/tags/"):
+                if "tag" in self.occupied_versions.get(name, set()):
+                    return {"ref": f"refs/tags/{encoded_version}"}
+                return None
+            if url.startswith(f"https://api.github.com/repos/{component.repository}/releases/tags/"):
+                if "release" in self.occupied_versions.get(name, set()):
+                    return {"draft": True, "tag_name": encoded_version}
+                return None
         raise AssertionError(f"unexpected JSON URL: {url}")
 
     def bytes(self, url: str, *, accept: str | None = None) -> bytes:
@@ -345,7 +364,7 @@ class BetaContinuityTest(unittest.TestCase):
     def test_config_is_machine_validated(self) -> None:
         config = load_config(ROOT / "beta-continuity" / "config.json")
 
-        self.assertEqual("workspace-unavailable-beta-continuity-current-tags", config["drill"])
+        self.assertEqual("workspace-unavailable-beta-continuity-release-pages", config["drill"])
         self.assertEqual("durable-workflow/.github", config["authority_issue"]["repository"])
         self.assertEqual(
             {
@@ -355,7 +374,7 @@ class BetaContinuityTest(unittest.TestCase):
             {item["number"]: item["work_id"] for item in config["evidence_work_items"]},
         )
         self.assertEqual("workflow", config["first_component"])
-        self.assertEqual("workspace-unavailable-current-tags", config["plan_prefix"])
+        self.assertEqual("workspace-unavailable-release-pages", config["plan_prefix"])
         self.assertEqual(
             "beta-continuity/workspace-unavailable-0b191da0d140/interrupted",
             config["superseded_interruption"]["tag"],
@@ -391,6 +410,84 @@ class BetaContinuityTest(unittest.TestCase):
             next_version("workflow", ["2.0.0-alpha.9", "2.0.0-alpha.291", "not-a-release"]),
         )
         self.assertEqual("0.4.103", next_version("sdk-python", ["0.4.99", "0.4.102", "1.0.0-beta.1"]))
+
+    def test_fresh_selection_uses_complete_reordered_release_histories(self) -> None:
+        config = load_config(ROOT / "beta-continuity" / "config.json")
+        workflow_page = [
+            {"draft": False, "tag_name": f"2.0.0-alpha.{number}"}
+            for number in range(100, 0, -1)
+        ]
+        python_page = [
+            {"draft": False, "tag_name": f"0.4.{number}"}
+            for number in range(100, 0, -1)
+        ]
+        client = PlanningClient(
+            release_pages={
+                "workflow": {
+                    1: workflow_page,
+                    2: [
+                        {"draft": False, "tag_name": "2.0.0-alpha.200"},
+                        {"draft": False, "tag_name": "2.0.0-alpha.291"},
+                    ],
+                },
+                "sdk-python": {
+                    1: python_page,
+                    2: [
+                        {"draft": False, "tag_name": "0.4.102"},
+                        {"draft": False, "tag_name": "0.4.104"},
+                    ],
+                },
+            }
+        )
+
+        selection = select_versions(config, client)  # type: ignore[arg-type]
+
+        self.assertEqual("2.0.0-alpha.292", selection["versions"]["workflow"])
+        self.assertEqual("0.4.105", selection["versions"]["sdk-python"])
+        self.assertIn(
+            "https://api.github.com/repos/durable-workflow/workflow/releases?per_page=100&page=2",
+            client.requested_urls,
+        )
+        self.assertIn(
+            "https://api.github.com/repos/durable-workflow/sdk-python/releases?per_page=100&page=2",
+            client.requested_urls,
+        )
+
+    def test_release_history_pagination_fails_closed_when_a_page_repeats(self) -> None:
+        page = [
+            {"draft": False, "tag_name": f"2.0.0-alpha.{number}"}
+            for number in range(1, 101)
+        ]
+        client = PlanningClient(release_pages={"workflow": {1: page, 2: page}})
+
+        with self.assertRaisesRegex(ContinuityError, "release pagination did not advance"):
+            public_release_tags(client, COMPONENTS["workflow"].repository)  # type: ignore[arg-type]
+
+    def test_release_history_pagination_fails_closed_at_the_page_bound(self) -> None:
+        pages = {
+            page: [
+                {"draft": False, "tag_name": f"2.0.0-alpha.{(page - 1) * 100 + number}"}
+                for number in range(1, 101)
+            ]
+            for page in (1, 2)
+        }
+        client = PlanningClient(release_pages={"workflow": pages})
+
+        with (
+            patch("scripts.beta_continuity.GITHUB_RELEASE_PAGE_LIMIT", 2),
+            self.assertRaisesRegex(ContinuityError, "exceeded the pagination bound"),
+        ):
+            public_release_tags(client, COMPONENTS["workflow"].repository)  # type: ignore[arg-type]
+
+    def test_fresh_selection_rejects_an_occupied_proposed_version(self) -> None:
+        config = load_config(ROOT / "beta-continuity" / "config.json")
+        client = PlanningClient(occupied_versions={"sdk-python": {"tag", "release"}})
+
+        with self.assertRaisesRegex(
+            ContinuityError,
+            r"durable-workflow/sdk-python@0\.4\.105.*tag and release authority",
+        ):
+            select_versions(config, client)  # type: ignore[arg-type]
 
     def test_plan_binds_seven_heads_and_requires_unoccupied_manifest_versions(self) -> None:
         config = load_config(ROOT / "beta-continuity" / "config.json")
@@ -429,7 +526,7 @@ class BetaContinuityTest(unittest.TestCase):
         }
         selection_record = {
             "status": "created",
-            "tag": "beta-continuity-selection/workspace-unavailable-beta-continuity-current-tags",
+            "tag": "beta-continuity-selection/workspace-unavailable-beta-continuity-release-pages",
             "commit": "f" * 40,
         }
         with tempfile.TemporaryDirectory() as temporary:
@@ -480,6 +577,46 @@ class BetaContinuityTest(unittest.TestCase):
         self.assertEqual("a" * 40, expected["sdk-python"])
         self.assertEqual("0.1.21", plan["components"]["sdk-rust"]["version"])
         self.assertEqual("b" * 40, expected["sdk-rust"])
+
+    def test_planning_reuses_the_immutable_selection_without_recalculating(self) -> None:
+        config = load_config(ROOT / "beta-continuity" / "config.json")
+        client = PlanningClient()
+        selection = select_versions(config, client)  # type: ignore[arg-type]
+        selection_record = {
+            "tag": "beta-continuity-selection/workspace-unavailable-beta-continuity-release-pages",
+            "commit": "f" * 40,
+            "sha256": manifest_digest(selection),
+        }
+        issue = {
+            "number": 2,
+            "repository": "durable-workflow/.github",
+            "state": "open",
+            "work_id": "github-only-beta-continuity-drill",
+        }
+        client.requested_urls.clear()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with (
+                patch("scripts.beta_continuity.PublicClient", return_value=client),
+                patch("scripts.beta_continuity.authority_issue", return_value=issue),
+                patch("scripts.beta_continuity.accepted_plan", return_value=None),
+                patch("scripts.beta_continuity.public_selection", return_value=(selection, selection_record)),
+                patch("scripts.beta_continuity.select_versions") as select,
+                patch("scripts.beta_continuity.record_selection") as record,
+                patch("scripts.beta_continuity.resolve_tag", return_value=None),
+                patch.dict(os.environ, {"GITHUB_SHA": "c" * 40}),
+            ):
+                plan_command(
+                    ROOT / "beta-continuity" / "config.json",
+                    root / "release-plan.json",
+                    root / "expected.json",
+                    root / "state.json",
+                    None,
+                )
+
+            select.assert_not_called()
+            record.assert_not_called()
+            self.assertFalse(any("/releases?" in url for url in client.requested_urls))
 
     def test_fresh_drill_ignores_historical_closed_blocker_versions(self) -> None:
         config = load_config(ROOT / "beta-continuity" / "config.json")
@@ -544,7 +681,7 @@ class BetaContinuityTest(unittest.TestCase):
 
         state = {
             "outcome": "blocked",
-            "selection": {"tag": "beta-continuity-selection/workspace-unavailable-beta-continuity-current-tags"},
+            "selection": {"tag": "beta-continuity-selection/workspace-unavailable-beta-continuity-release-pages"},
             "blockers": [
                 {
                     "component": "sdk-python",
@@ -602,7 +739,7 @@ class BetaContinuityTest(unittest.TestCase):
 
         state = {
             "outcome": "blocked",
-            "selection": {"tag": "beta-continuity-selection/workspace-unavailable-beta-continuity-current-tags"},
+            "selection": {"tag": "beta-continuity-selection/workspace-unavailable-beta-continuity-release-pages"},
             "blockers": [
                 {
                     "component": "sdk-python",
