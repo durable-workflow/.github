@@ -1,0 +1,81 @@
+{
+  "authority_issue": {
+    "labels": [
+      "authority:github",
+      "beta:blocker",
+      "completion:evidence-required",
+      "kind:cross-repository",
+      "priority:P1",
+      "repo:github-control-plane",
+      "status:ready"
+    ],
+    "number": 2,
+    "repository": "durable-workflow/.github",
+    "state": "open",
+    "updated_at": "2026-07-21T04:53:56Z",
+    "url": "https://github.com/durable-workflow/.github/issues/2",
+    "work_id": "github-only-beta-continuity-drill"
+  },
+  "candidate": {
+    "commit": "f5702ef455d9233a353d3536a8db6c573327e688",
+    "manifest": {
+      "candidate": "alpha-workspace-unavailable-release-pages-24ea45b0acb8",
+      "components": {
+        "cli": {
+          "commit": "bc036e94604329612b65a2a9effe2e929f91f4e1",
+          "version": "0.1.95"
+        },
+        "sdk-php": {
+          "commit": "3b79813b1bbcb811277cc30d8dcfc359ea53f65c",
+          "version": "0.1.16"
+        },
+        "sdk-python": {
+          "commit": "13037ddcb1f55d72c24256591e346b991ad64273",
+          "version": "0.4.106"
+        },
+        "sdk-rust": {
+          "commit": "6fa98425c8ec7690ef96f8296a21407aa8d03067",
+          "version": "0.1.22"
+        },
+        "server": {
+          "commit": "5a1d634669b9c9fbf2f7facc9101b1ca84105db9",
+          "version": "0.2.697"
+        },
+        "waterline": {
+          "commit": "0fb3caaba1e8a77f9bfa63ba3dcb2bcbaa825c31",
+          "version": "2.0.0-alpha.139"
+        },
+        "workflow": {
+          "commit": "26b42f2d4ed240c2a69cf4ae58c5b23ffdcc3863",
+          "version": "2.0.0-alpha.293"
+        }
+      },
+      "schema": "durable-workflow.beta-candidate/v1"
+    },
+    "tag": "beta-candidate/alpha-workspace-unavailable-release-pages-24ea45b0acb8"
+  },
+  "conformance_progress": {
+    "outcome": "conformance-execution-requested",
+    "retention_runs": [],
+    "source_run": null
+  },
+  "drill": "workspace-unavailable-beta-continuity-release-pages",
+  "github_run": {
+    "attempt": "1",
+    "id": "29803806816",
+    "repository": "durable-workflow/.github",
+    "sha": "13cef8ead9af6d39c2e9c0558246c51543386617"
+  },
+  "observed_at": "2026-07-21T05:23:09Z",
+  "outcome": "requested-clean-github-runner-conformance",
+  "phase": "conformance-requested",
+  "public_verification": {
+    "commit": "ae0c713bfc6521e6a04d0b9423ab586c89e3334a",
+    "tag": "release-candidate/alpha/workspace-unavailable-release-pages-24ea45b0acb8"
+  },
+  "release_plan": {
+    "sha256": "498804a2c7fd5b0e34f93ef080bea3073bc98e420e8bf84a98ca4cdb94729973",
+    "tag": "release-plan/workspace-unavailable-release-pages-24ea45b0acb8"
+  },
+  "schema": "durable-workflow.beta-continuity.evidence/v1"
+}
