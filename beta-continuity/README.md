@@ -2,10 +2,12 @@
 
 The `Beta continuity` workflow is the GitHub-owned driver for the final remote
 continuity drill. It reads the authoritative public issue and qualified target
-branches, selects seven component versions once, and stores that selection in
-an immutable Git tag before routing any source-version blocker. When a selected
-version publishes while its blocker is being repaired, later runs bind the
-release plan to that tag's source commit instead of allocating a successor.
+branches, allocates seven component versions from public release tags, and
+stores that selection in an immutable Git tag before routing any source-version
+blocker. A fresh drill never inherits version allocations from blockers created
+by an earlier drill. When a selected version publishes while its blocker is
+being repaired, later runs for the same drill bind the release plan to that
+tag's source commit instead of allocating a successor.
 
 Acceptance records which exact-plan components are already public and which are
 still pending. The controller deliberately ends one run only after a component
@@ -55,9 +57,9 @@ evidence work items, and only then comments and closes the parent authority.
 Each closure comment links the same immutable evidence, and retries reuse the
 exact existing report instead of duplicating it.
 
-An earlier interruption that did not distinguish baseline artifacts from new
-repository recovery remains available as immutable diagnostic evidence. The
-corrected drill uses a new selection and plan identity and links that diagnostic
+Earlier interruptions and their routed blockers remain available as immutable
+diagnostic evidence. The corrected drill uses a new selection and plan identity,
+allocates from current public release tags, and links the superseded diagnostic
 phase from its accepted evidence; existing tags are never rewritten.
 
 Planning pauses after the immutable version selection when a component cannot

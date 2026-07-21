@@ -404,29 +404,6 @@ def has_routed_blocker_dependency(config: dict[str, Any], issue: dict[str, Any])
     return dependency in str(issue.get("body", ""))
 
 
-def routed_blocker_version(config: dict[str, Any], client: PublicClient, component_name: str) -> str | None:
-    repository = COMPONENTS[component_name].repository
-    issues = client.json(f"https://api.github.com/repos/{repository}/issues?state=all&per_page=100")
-    if not isinstance(issues, list):
-        raise ContinuityError(f"{repository} issues response is invalid")
-    candidates: list[tuple[int, str]] = []
-    for issue in issues:
-        if not isinstance(issue, dict) or "pull_request" in issue:
-            continue
-        body = str(issue.get("body", ""))
-        markers = list(ROUTED_BLOCKER_MARKER.finditer(body))
-        version = markers[0].group("version") if len(markers) == 1 else None
-        number = issue.get("number")
-        if (
-            isinstance(version, str)
-            and is_exact_routed_blocker(config, issue, component_name, version)
-            and has_routed_blocker_authority(issue)
-            and isinstance(number, int)
-        ):
-            candidates.append((number, version))
-    return min(candidates)[1] if candidates else None
-
-
 def selection_plan_name(config: dict[str, Any], versions: dict[str, str]) -> str:
     digest = hashlib.sha256(canonical_json(versions)).hexdigest()[:12]
     return f"{config['plan_prefix']}-{digest}"
@@ -454,10 +431,10 @@ def validate_selection(config: dict[str, Any], selection: Any) -> None:
 
 
 def select_versions(config: dict[str, Any], client: PublicClient) -> dict[str, Any]:
-    versions: dict[str, str] = {}
-    for name, component in COMPONENTS.items():
-        previously_routed = routed_blocker_version(config, client, name)
-        versions[name] = previously_routed or next_version(name, public_release_tags(client, component.repository))
+    versions = {
+        name: next_version(name, public_release_tags(client, component.repository))
+        for name, component in COMPONENTS.items()
+    }
     selection = {
         "schema": SELECTION_SCHEMA,
         "drill": config["drill"],

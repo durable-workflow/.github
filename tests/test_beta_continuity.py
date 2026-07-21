@@ -79,11 +79,13 @@ class PlanningClient:
             "server": "0.2.693",
             "cli": "0.1.93",
             "sdk-php": "0.1.13",
-            "sdk-python": "0.4.102",
-            "sdk-rust": "0.1.17",
+            "sdk-python": "0.4.104",
+            "sdk-rust": "0.1.20",
         }
+        self.requested_urls: list[str] = []
 
     def json(self, url: str) -> object:
+        self.requested_urls.append(url)
         for name, component in COMPONENTS.items():
             if url == f"https://api.github.com/repos/{component.repository}/issues?state=all&per_page=100":
                 return [
@@ -92,8 +94,11 @@ class PlanningClient:
                             "Blocks https://github.com/durable-workflow/.github/issues/2.\n\n"
                             f"<!-- beta-continuity-blocker: {name}-source-version-{version} -->"
                         ),
-                        "labels": [{"name": label} for label in ROUTED_BLOCKER_LABELS],
+                        "labels": [
+                            {"name": label} for label in (*ROUTED_BLOCKER_LABELS[:-1], "status:done")
+                        ],
                         "number": index + 1,
+                        "state": "closed",
                     }
                     for index, version in enumerate(self.blocker_versions.get(name, []))
                 ]
@@ -106,10 +111,10 @@ class PlanningClient:
     def bytes(self, url: str, *, accept: str | None = None) -> bytes:
         self.assert_raw(accept)
         if "sdk-python" in url:
-            version = "0.4.102" if self.stale_manifests else "0.4.103"
+            version = "0.4.104" if self.stale_manifests else "0.4.105"
             return f'[project]\nname = "durable-workflow"\nversion = "{version}"\n'.encode()
         if "sdk-rust" in url:
-            version = "0.1.17" if self.stale_manifests else "0.1.18"
+            version = "0.1.20" if self.stale_manifests else "0.1.21"
             return f'[package]\nname = "durable-workflow"\nversion = "{version}"\n'.encode()
         raise AssertionError(f"unexpected bytes URL: {url}")
 
@@ -318,7 +323,7 @@ class BetaContinuityTest(unittest.TestCase):
     def test_config_is_machine_validated(self) -> None:
         config = load_config(ROOT / "beta-continuity" / "config.json")
 
-        self.assertEqual("workspace-unavailable-beta-continuity-strict-writer", config["drill"])
+        self.assertEqual("workspace-unavailable-beta-continuity-current-tags", config["drill"])
         self.assertEqual("durable-workflow/.github", config["authority_issue"]["repository"])
         self.assertEqual(
             {
@@ -328,7 +333,7 @@ class BetaContinuityTest(unittest.TestCase):
             {item["number"]: item["work_id"] for item in config["evidence_work_items"]},
         )
         self.assertEqual("workflow", config["first_component"])
-        self.assertEqual("workspace-unavailable-strict-writer", config["plan_prefix"])
+        self.assertEqual("workspace-unavailable-current-tags", config["plan_prefix"])
         self.assertEqual(
             "beta-continuity/workspace-unavailable-0b191da0d140/interrupted",
             config["superseded_interruption"]["tag"],
@@ -374,8 +379,8 @@ class BetaContinuityTest(unittest.TestCase):
 
         self.assertEqual(set(COMPONENTS), set(plan["components"]))
         self.assertEqual("2.0.0-alpha.292", plan["components"]["workflow"]["version"])
-        self.assertEqual("0.4.103", plan["components"]["sdk-python"]["version"])
-        self.assertEqual("0.1.18", plan["components"]["sdk-rust"]["version"])
+        self.assertEqual("0.4.105", plan["components"]["sdk-python"]["version"])
+        self.assertEqual("0.1.21", plan["components"]["sdk-rust"]["version"])
         self.assertEqual(expected, {name: identity["commit"] for name, identity in plan["components"].items()})
         self.assertTrue(plan["plan"].startswith("workspace-unavailable-"))
 
@@ -402,7 +407,7 @@ class BetaContinuityTest(unittest.TestCase):
         }
         selection_record = {
             "status": "created",
-            "tag": "beta-continuity-selection/workspace-unavailable-beta-continuity-strict-writer",
+            "tag": "beta-continuity-selection/workspace-unavailable-beta-continuity-current-tags",
             "commit": "f" * 40,
         }
         with tempfile.TemporaryDirectory() as temporary:
@@ -429,21 +434,16 @@ class BetaContinuityTest(unittest.TestCase):
             state = json.loads((root / "state.json").read_text(encoding="utf-8"))
             self.assertEqual("blocked", state["outcome"])
             self.assertEqual(selection_record["tag"], state["selection"]["tag"])
-            self.assertEqual("0.4.103", state["selection"]["versions"]["sdk-python"])
+            self.assertEqual("0.4.105", state["selection"]["versions"]["sdk-python"])
 
     def test_retained_selection_reuses_published_versions_without_successor_loop(self) -> None:
         config = load_config(ROOT / "beta-continuity" / "config.json")
-        client = PlanningClient(
-            blocker_versions={
-                "sdk-python": ["0.4.103", "0.4.104"],
-                "sdk-rust": ["0.1.18", "0.1.19"],
-            }
-        )
-        client.latest.update({"sdk-python": "0.4.104", "sdk-rust": "0.1.19"})
+        client = PlanningClient()
         selection = select_versions(config, client)  # type: ignore[arg-type]
+        client.latest.update({"sdk-python": "0.4.105", "sdk-rust": "0.1.21"})
         published_commits = {
-            (COMPONENTS["sdk-python"].repository, "0.4.103"): "a" * 40,
-            (COMPONENTS["sdk-rust"].repository, "0.1.18"): "b" * 40,
+            (COMPONENTS["sdk-python"].repository, "0.4.105"): "a" * 40,
+            (COMPONENTS["sdk-rust"].repository, "0.1.21"): "b" * 40,
         }
 
         def resolve_selected_tag(_client: object, repository: str, version: str) -> str | None:
@@ -452,67 +452,28 @@ class BetaContinuityTest(unittest.TestCase):
         with patch("scripts.beta_continuity.resolve_tag", side_effect=resolve_selected_tag):
             plan, expected = build_plan(config, client, selection)  # type: ignore[arg-type]
 
-        self.assertEqual("0.4.103", selection["versions"]["sdk-python"])
-        self.assertEqual("0.1.18", selection["versions"]["sdk-rust"])
-        self.assertEqual("0.4.103", plan["components"]["sdk-python"]["version"])
+        self.assertEqual("0.4.105", selection["versions"]["sdk-python"])
+        self.assertEqual("0.1.21", selection["versions"]["sdk-rust"])
+        self.assertEqual("0.4.105", plan["components"]["sdk-python"]["version"])
         self.assertEqual("a" * 40, expected["sdk-python"])
-        self.assertEqual("0.1.18", plan["components"]["sdk-rust"]["version"])
+        self.assertEqual("0.1.21", plan["components"]["sdk-rust"]["version"])
         self.assertEqual("b" * 40, expected["sdk-rust"])
 
-    def test_untrusted_lower_number_blocker_markers_cannot_steer_version_selection(self) -> None:
+    def test_fresh_drill_ignores_historical_closed_blocker_versions(self) -> None:
         config = load_config(ROOT / "beta-continuity" / "config.json")
-        component = COMPONENTS["sdk-python"]
-        dependency = "Blocks https://github.com/durable-workflow/.github/issues/2."
-
-        def issue(
-            number: int,
-            version: str,
-            *,
-            labels: object,
-            parent: str = dependency,
-            marker_component: str = "sdk-python",
-            pull_request: bool = False,
-        ) -> dict[str, object]:
-            value: dict[str, object] = {
-                "body": (f"{parent}\n\n<!-- beta-continuity-blocker: {marker_component}-source-version-{version} -->"),
-                "labels": labels,
-                "number": number,
+        client = PlanningClient(
+            blocker_versions={
+                "sdk-python": ["0.4.103", "0.4.104"],
+                "sdk-rust": ["0.1.18", "0.1.20"],
             }
-            if pull_request:
-                value["pull_request"] = {"url": "https://api.github.com/repos/example/pulls/1"}
-            return value
-
-        valid_labels = [{"name": label} for label in ROUTED_BLOCKER_LABELS]
-        completed_labels = [{"name": label} for label in (*ROUTED_BLOCKER_LABELS[:-1], "status:done")]
-        blocked_labels = [{"name": label} for label in (*ROUTED_BLOCKER_LABELS[:-1], "status:blocked")]
-        adversarial_issues = [
-            issue(1, "0.4.900", labels=[]),
-            issue(2, "0.4.901", labels=valid_labels, pull_request=True),
-            issue(3, "0.4.902", labels=[*valid_labels, {"color": "b60205"}]),
-            issue(4, "0.4.903", labels=valid_labels, marker_component="sdk-rust"),
-            issue(
-                5,
-                "0.4.904",
-                labels=valid_labels,
-                parent="Blocks https://github.com/durable-workflow/.github/issues/999.",
-            ),
-            issue(6, "0.4.905", labels=blocked_labels),
-            issue(50, "0.4.104", labels=completed_labels),
-        ]
-
-        class AdversarialPlanningClient(PlanningClient):
-            def json(self, url: str) -> object:
-                if url == f"https://api.github.com/repos/{component.repository}/issues?state=all&per_page=100":
-                    return adversarial_issues
-                return super().json(url)
-
-        client = AdversarialPlanningClient()
-        client.latest["sdk-python"] = "0.4.104"
+        )
         first = select_versions(config, client)  # type: ignore[arg-type]
         second = select_versions(config, client)  # type: ignore[arg-type]
 
-        self.assertEqual("0.4.104", first["versions"]["sdk-python"])
+        self.assertEqual("0.4.105", first["versions"]["sdk-python"])
+        self.assertEqual("0.1.21", first["versions"]["sdk-rust"])
         self.assertEqual(first, second)
+        self.assertFalse(any("/issues?" in url for url in client.requested_urls))
 
     def test_untrusted_marker_cannot_suppress_protected_blocker_routing(self) -> None:
         marker = "<!-- beta-continuity-blocker: sdk-python-source-version-0.4.103 -->"
@@ -561,7 +522,7 @@ class BetaContinuityTest(unittest.TestCase):
 
         state = {
             "outcome": "blocked",
-            "selection": {"tag": "beta-continuity-selection/workspace-unavailable-beta-continuity-strict-writer"},
+            "selection": {"tag": "beta-continuity-selection/workspace-unavailable-beta-continuity-current-tags"},
             "blockers": [
                 {
                     "component": "sdk-python",
@@ -619,7 +580,7 @@ class BetaContinuityTest(unittest.TestCase):
 
         state = {
             "outcome": "blocked",
-            "selection": {"tag": "beta-continuity-selection/workspace-unavailable-beta-continuity-strict-writer"},
+            "selection": {"tag": "beta-continuity-selection/workspace-unavailable-beta-continuity-current-tags"},
             "blockers": [
                 {
                     "component": "sdk-python",
