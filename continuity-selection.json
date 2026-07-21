@@ -1,0 +1,15 @@
+{
+  "channel": "alpha",
+  "drill": "workspace-unavailable-beta-continuity-strict-writer",
+  "plan": "workspace-unavailable-strict-writer-fea3337adc78",
+  "schema": "durable-workflow.beta-continuity.selection/v1",
+  "versions": {
+    "cli": "0.1.95",
+    "sdk-php": "0.1.16",
+    "sdk-python": "0.4.103",
+    "sdk-rust": "0.1.18",
+    "server": "0.2.697",
+    "waterline": "2.0.0-alpha.139",
+    "workflow": "2.0.0-alpha.293"
+  }
+}
