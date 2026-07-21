@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import base64
 import copy
 import hashlib
 import http.client
 import io
+import json
 import shutil
 import subprocess
 import tarfile
@@ -14,23 +16,64 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
+from jsonschema import Draft202012Validator
+
 from scripts.beta_candidate import (
     CLI_ASSETS,
     COMPONENTS,
     SCHEMA,
-    VERIFICATION_SCHEMA,
     CandidateError,
     PublicClient,
     PublicInfrastructureError,
+    canonical_cli_embedded_identity,
     canonical_json,
     check_candidate_compatibility,
+    inspect_cli_phar_identity,
+    load_verification,
     manifest_digest,
     parse_checksums,
     record_candidate,
+    revalidate_verification,
     validate_manifest,
+    validate_verification,
     verify_github_release,
     verify_python_archive_identity,
 )
+from tests.verification_fixture import candidate_verification
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+
+
+def write_build_info_phar(path: Path, version: str, commit: str) -> None:
+    generated = f"""<?php
+declare(strict_types=1);
+namespace DurableWorkflow\\Cli;
+final class GeneratedBuildInfo
+{{
+    public const VERSION = '{version}';
+    public const COMMIT = '{commit}';
+    public const BUILD_DATE = '2026-07-21T00:00:00Z';
+}}
+""".encode()
+    script = (
+        "$archive = new Phar($argv[1]); "
+        "$archive->addFromString('src/GeneratedBuildInfo.php', base64_decode($argv[2], true));"
+    )
+    subprocess.run(
+        [
+            "php",
+            "-d",
+            "phar.readonly=0",
+            "-r",
+            script,
+            "--",
+            str(path),
+            base64.b64encode(generated).decode(),
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
 
 
 def http_error(status: int, body: bytes = b"error", **headers: str) -> urllib.error.HTTPError:
@@ -54,28 +97,87 @@ def manifest() -> dict[str, object]:
 
 
 def verification(candidate: dict[str, object]) -> dict[str, object]:
-    identities = candidate["components"]
-    assert isinstance(identities, dict)
-    return {
-        "schema": VERIFICATION_SCHEMA,
-        "candidate": candidate["candidate"],
-        "manifest_sha256": manifest_digest(candidate),
-        "verified_at": "2026-07-16T00:00:00Z",
-        "outcome": "verified",
-        "components": {
-            name: {
-                "version": identity["version"],
-                "commit": identity["commit"],
-                "source": {},
-                "distribution": {},
-                "outcome": "verified",
-            }
-            for name, identity in identities.items()
-        },
-    }
+    return candidate_verification(candidate, verified_at="2026-07-16T00:00:00Z")
 
 
 class ManifestTest(unittest.TestCase):
+    def test_verification_schema_and_runtime_reject_unknown_or_missing_nested_evidence(self) -> None:
+        candidate = manifest()
+        result = verification(candidate)
+        schema = json.loads((REPOSITORY_ROOT / "candidates" / "verification-schema.json").read_bytes())
+        Draft202012Validator.check_schema(schema)
+        Draft202012Validator(schema).validate(result)
+        validate_verification(result, candidate)
+
+        for path in ("top-level", "nested"):
+            with self.subTest(path=path):
+                tampered = copy.deepcopy(result)
+                if path == "top-level":
+                    tampered["injected"] = "same-user-process"
+                else:
+                    tampered["components"]["workflow"]["distribution"]["injected"] = True
+                with self.assertRaisesRegex(CandidateError, "keys must be exactly"):
+                    validate_verification(tampered, candidate)
+
+        missing = copy.deepcopy(result)
+        del missing["components"]["server"]["distribution"]["configs"]
+        with self.assertRaisesRegex(CandidateError, "keys must be exactly"):
+            validate_verification(missing, candidate)
+
+    def test_fresh_writer_independently_rejects_shape_valid_fabricated_distribution_evidence(self) -> None:
+        candidate = manifest()
+        trusted = verification(candidate)
+        tampered = copy.deepcopy(trusted)
+        tampered["components"]["workflow"]["distribution"]["dist"]["sha256"] = "f" * 64
+        validate_verification(tampered, candidate)
+
+        sources = {COMPONENTS[name].repository: result["source"] for name, result in trusted["components"].items()}
+
+        def composer_verifier(
+            _client: object, component: object, _version: str, _commit: str, _directory: Path
+        ) -> dict[str, object]:
+            name = next(name for name, expected in COMPONENTS.items() if expected == component)
+            return trusted["components"][name]["distribution"]
+
+        with (
+            mock.patch(
+                "scripts.beta_candidate.resolve_github_tag", side_effect=lambda _client, repo, _version: sources[repo]
+            ),
+            mock.patch.dict("scripts.beta_candidate.VERIFIERS", {"composer": composer_verifier}),
+            self.assertRaisesRegex(CandidateError, "differs from the isolated verification handoff"),
+        ):
+            revalidate_verification(tampered, candidate, mock.Mock())
+
+    def test_fresh_writer_rejects_a_fabricated_cli_identity_suffix(self) -> None:
+        candidate = manifest()
+        tampered = verification(candidate)
+        identity = tampered["components"]["cli"]["distribution"]["package_source"]
+        identity["embedded_phar_identity"] = f"{identity['embedded_phar_identity']} verifier-controlled"
+
+        with self.assertRaisesRegex(CandidateError, "package_source does not bind the planned CLI source"):
+            revalidate_verification(tampered, candidate, mock.Mock())
+
+    def test_non_executing_phar_inspection_binds_the_full_embedded_source_commit(self) -> None:
+        version = "0.1.94"
+        commit = "3" * 40
+        with tempfile.TemporaryDirectory() as temporary:
+            phar = Path(temporary) / "dw.phar"
+            write_build_info_phar(phar, version, commit)
+
+            self.assertEqual(
+                canonical_cli_embedded_identity(version, commit),
+                inspect_cli_phar_identity(phar, version, commit),
+            )
+            with self.assertRaisesRegex(CandidateError, "does not embed planned source commit"):
+                inspect_cli_phar_identity(phar, version, "f" * 40)
+
+    def test_verification_loader_rejects_oversized_handoff_before_parsing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "verification.json"
+            path.write_bytes(b" " * (256 * 1024 + 1))
+            with self.assertRaisesRegex(CandidateError, "exceeds the 256 KiB limit"):
+                load_verification(path, manifest())
+
     def test_public_client_preserves_explicit_github_api_version(self) -> None:
         client = PublicClient("fixture-token")
         with mock.patch("scripts.beta_candidate.urllib.request.urlopen", return_value=object()) as open_url:
@@ -320,9 +422,7 @@ class ManifestTest(unittest.TestCase):
         def verify_attestation(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
             self.assertEqual("durable-workflow/cli", command[command.index("--repo") + 1])
             if "--source-digest" not in command:
-                return subprocess.CompletedProcess(
-                    command, 1, stdout="", stderr="workflow authority does not match"
-                )
+                return subprocess.CompletedProcess(command, 1, stdout="", stderr="workflow authority does not match")
             source_digest = command[command.index("--source-digest") + 1]
             return subprocess.CompletedProcess(
                 command,
@@ -387,6 +487,7 @@ class RecordTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         root = Path(self.temporary.name)
+        self.root = root
         self.repository = root / "work"
         self.remote = root / "remote.git"
         subprocess.run(["git", "init", "--bare", str(self.remote)], check=True, capture_output=True)
@@ -394,8 +495,12 @@ class RecordTest(unittest.TestCase):
         self.manifest_path = root / "candidate.json"
         self.verification_path = root / "verification.json"
         self.authoritative_path = root / "authoritative.json"
+        self.revalidation_patcher = mock.patch("scripts.beta_candidate.revalidate_verification")
+        self.revalidate = self.revalidation_patcher.start()
+        self.revalidate.side_effect = lambda verification, _manifest, _client: verification
 
     def tearDown(self) -> None:
+        self.revalidation_patcher.stop()
         self.temporary.cleanup()
 
     def write_request(self, candidate: dict[str, object]) -> None:
@@ -411,6 +516,7 @@ class RecordTest(unittest.TestCase):
             self.verification_path,
             remote=str(self.remote),
             authoritative_verification=self.authoritative_path,
+            client=mock.Mock(),
         )
         repeated = record_candidate(
             self.repository,
@@ -418,10 +524,12 @@ class RecordTest(unittest.TestCase):
             self.verification_path,
             remote=str(self.remote),
             authoritative_verification=self.authoritative_path,
+            client=mock.Mock(),
         )
         self.assertEqual("created", created["status"])
         self.assertEqual("existing", repeated["status"])
         self.assertEqual(created["commit"], repeated["commit"])
+        self.assertEqual(1, self.revalidate.call_count)
         record_files = subprocess.run(
             ["git", "--git-dir", str(self.remote), "ls-tree", "-r", "--name-only", created["commit"]],
             check=True,
@@ -443,6 +551,7 @@ class RecordTest(unittest.TestCase):
             self.verification_path,
             remote=str(self.remote),
             authoritative_verification=self.authoritative_path,
+            client=mock.Mock(),
         )
         changed = copy.deepcopy(candidate)
         changed["components"]["cli"]["version"] = "1.2.99"
@@ -457,6 +566,7 @@ class RecordTest(unittest.TestCase):
                 self.verification_path,
                 remote=str(self.remote),
                 authoritative_verification=self.authoritative_path,
+                client=mock.Mock(),
             )
 
     def test_record_rejects_incomplete_verification(self) -> None:
@@ -472,7 +582,128 @@ class RecordTest(unittest.TestCase):
                 self.verification_path,
                 remote=str(self.remote),
                 authoritative_verification=self.authoritative_path,
+                client=mock.Mock(),
             )
+
+    def test_same_user_downloaded_process_tampering_fails_before_first_git_write(self) -> None:
+        candidate = manifest()
+        self.write_request(candidate)
+        result = json.loads(self.verification_path.read_bytes())
+        result["components"]["workflow"]["distribution"]["dist"]["sha256"] = "f" * 64
+        self.verification_path.write_bytes(canonical_json(result))
+        self.revalidate.side_effect = CandidateError("independent public evidence differs")
+
+        with self.assertRaisesRegex(CandidateError, "independent public evidence differs"):
+            record_candidate(
+                self.repository,
+                self.manifest_path,
+                self.verification_path,
+                remote=str(self.remote),
+                authoritative_verification=self.authoritative_path,
+                client=mock.Mock(),
+            )
+
+        refs = subprocess.run(
+            ["git", "--git-dir", str(self.remote), "show-ref"],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual("", refs.stdout)
+
+    def test_cli_identity_suffix_tampering_fails_before_first_git_write(self) -> None:
+        candidate = manifest()
+        self.write_request(candidate)
+        result = json.loads(self.verification_path.read_bytes())
+        cli = result["components"]["cli"]
+        cli["distribution"]["package_source"]["embedded_phar_identity"] = (
+            f"{canonical_cli_embedded_identity(cli['version'], cli['commit'])} fabricated-suffix"
+        )
+        self.verification_path.write_bytes(canonical_json(result))
+
+        with self.assertRaisesRegex(CandidateError, "package_source does not bind the planned CLI source"):
+            record_candidate(
+                self.repository,
+                self.manifest_path,
+                self.verification_path,
+                remote=str(self.remote),
+                authoritative_verification=self.authoritative_path,
+                client=mock.Mock(),
+            )
+
+        self.revalidate.assert_not_called()
+        refs = subprocess.run(
+            ["git", "--git-dir", str(self.remote), "show-ref"],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual("", refs.stdout)
+
+    def test_canonical_cli_handoff_for_other_source_bytes_fails_before_first_git_write(self) -> None:
+        candidate = manifest()
+        self.write_request(candidate)
+        submitted = verification(candidate)
+        cli_identity = candidate["components"]["cli"]
+        wrong_phar = self.root / "wrong-source.phar"
+        write_build_info_phar(wrong_phar, cli_identity["version"], "f" * 40)
+        sources = {
+            COMPONENTS[name].repository: result["source"] for name, result in submitted["components"].items()
+        }
+
+        def distribution_verifier(
+            _client: object,
+            component: object,
+            _version: str,
+            _commit: str,
+            _directory: Path,
+        ) -> dict[str, object]:
+            name = next(name for name, expected in COMPONENTS.items() if expected == component)
+            return submitted["components"][name]["distribution"]
+
+        def cli_verifier(
+            _client: object,
+            _component: object,
+            version: str,
+            commit: str,
+            directory: Path,
+        ) -> dict[str, object]:
+            phar = directory / "dw.phar"
+            shutil.copyfile(wrong_phar, phar)
+            inspect_cli_phar_identity(phar, version, commit)
+            self.fail("other-source PHAR bytes unexpectedly matched the planned source")
+
+        self.revalidate.side_effect = lambda handoff, selected, client: revalidate_verification(
+            handoff, selected, client
+        )
+        verifier_replacements = {
+            component.distribution: distribution_verifier for component in COMPONENTS.values()
+        }
+        with (
+            mock.patch(
+                "scripts.beta_candidate.resolve_github_tag",
+                side_effect=lambda _client, repository, _version: sources[repository],
+            ),
+            mock.patch.dict("scripts.beta_candidate.VERIFIERS", verifier_replacements),
+            mock.patch("scripts.beta_candidate.verify_github_release", side_effect=cli_verifier),
+            self.assertRaisesRegex(CandidateError, "does not embed planned source commit"),
+        ):
+            record_candidate(
+                self.repository,
+                self.manifest_path,
+                self.verification_path,
+                remote=str(self.remote),
+                authoritative_verification=self.authoritative_path,
+                client=mock.Mock(),
+            )
+
+        refs = subprocess.run(
+            ["git", "--git-dir", str(self.remote), "show-ref"],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual("", refs.stdout)
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ from scripts.release_plan import (
     COMPONENTS,
     FOUNDATION_COMMIT,
     FOUNDATION_TAG,
+    OBSERVATION_FAILURE_REASON,
     OCCUPIED_SOURCE_MANIFEST_REASON,
     PLAN_TAG_PREFIX,
     PREPARATION_SCHEMA,
@@ -27,6 +28,7 @@ from scripts.release_plan import (
     check_plan_compatibility,
     completion_manifest,
     conflict_component_names,
+    failed_observation_state,
     is_immediate_version_successor,
     load_continuity_supersession,
     load_public_supersession,
@@ -49,6 +51,7 @@ from scripts.release_plan import (
     validate_supersession_handoff,
     validate_supersession_record,
 )
+from tests.verification_fixture import candidate_verification
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
@@ -255,10 +258,7 @@ def environment_approval_evidence() -> dict[str, object]:
                 "id": 17,
                 "name": "release-plan-supersession",
                 "node_id": "ENV_kwDOApproval",
-                "url": (
-                    "https://api.github.com/repos/durable-workflow/.github/environments/"
-                    "release-plan-supersession"
-                ),
+                "url": ("https://api.github.com/repos/durable-workflow/.github/environments/release-plan-supersession"),
             }
         ],
         "run_attempt": 1,
@@ -281,9 +281,7 @@ def github_environment() -> dict[str, object]:
             "https://github.com/durable-workflow/.github/deployments/activity_log"
             "?environments_filter=release-plan-supersession"
         ),
-        "protection_rules": [
-            {"id": 19, "type": "required_reviewers", "reviewers": [{"type": "User"}]}
-        ],
+        "protection_rules": [{"id": 19, "type": "required_reviewers", "reviewers": [{"type": "User"}]}],
         "deployment_branch_policy": {
             "custom_branch_policies": True,
             "protected_branches": False,
@@ -367,8 +365,7 @@ def supersession_record(
             "run_url": "https://github.com/durable-workflow/.github/actions/runs/456",
             "workflow_commit": "f" * 40,
             "workflow_ref": (
-                "durable-workflow/.github/.github/workflows/"
-                "release-plan-supersession.yml@refs/heads/main"
+                "durable-workflow/.github/.github/workflows/release-plan-supersession.yml@refs/heads/main"
             ),
         },
     }
@@ -471,21 +468,7 @@ class ReleasePlanValidationTest(unittest.TestCase):
         plan = release_plan()
         preparation = release_preparation(plan)
         candidate = candidate_manifest(plan)
-        verification = {
-            "schema": "durable-workflow.beta-candidate-verification/v1",
-            "candidate": candidate["candidate"],
-            "manifest_sha256": manifest_digest(candidate),
-            "verified_at": "2026-07-20T21:00:00Z",
-            "outcome": "verified",
-            "components": {
-                name: {
-                    "version": identity["version"],
-                    "commit": identity["commit"],
-                    "outcome": "verified",
-                }
-                for name, identity in candidate["components"].items()
-            },
-        }
+        verification = candidate_verification(candidate)
         state = {
             "schema": "durable-workflow.release-state/v1",
             "plan": plan["plan"],
@@ -497,6 +480,8 @@ class ReleasePlanValidationTest(unittest.TestCase):
             "components": verification["components"],
             "durable_evidence": {
                 "release_plan_tag": f"{PLAN_TAG_PREFIX}{plan['plan']}",
+                "component_actions": "repository Actions runs and public version tags",
+                "release_preparation_sha256": manifest_digest(preparation),
             },
             "resume_action": "No recovery action is required",
         }
@@ -532,24 +517,74 @@ class ReleasePlanValidationTest(unittest.TestCase):
                 "expected_plan_tag": f"{PLAN_TAG_PREFIX}{plan['plan']}",
                 "expected_plan_sha256": manifest_digest(plan),
                 "expected_preparation_sha256": manifest_digest(preparation),
+                "expected_verification_outcome": "success",
+                "client": mock.Mock(),
             }
 
-            result = validate_observation_handoff(
-                paths["plan"],
-                paths["preparation"],
-                paths["candidate"],
-                paths["verification"],
-                paths["state"],
-                outputs,
-                **authority_arguments,
-            )
+            with mock.patch("scripts.release_plan.revalidate_verification", return_value=verification):
+                result = validate_observation_handoff(
+                    paths["plan"],
+                    paths["preparation"],
+                    paths["candidate"],
+                    paths["verification"],
+                    paths["state"],
+                    outputs,
+                    **authority_arguments,
+                )
 
             self.assertEqual(f"{PLAN_TAG_PREFIX}{plan['plan']}", result["tag"])
             self.assertEqual(canonical_json(plan), (outputs / "release-plan.json").read_bytes())
             changed_state = copy.deepcopy(state)
             changed_state["plan_sha256"] = "f" * 64
             paths["state"].write_bytes(canonical_json(changed_state))
-            with self.assertRaisesRegex(CandidateError, "does not bind"):
+            with (
+                mock.patch("scripts.release_plan.revalidate_verification", return_value=verification),
+                self.assertRaisesRegex(CandidateError, "trusted reconstruction"),
+            ):
+                validate_observation_handoff(
+                    paths["plan"],
+                    paths["preparation"],
+                    paths["candidate"],
+                    paths["verification"],
+                    paths["state"],
+                    outputs,
+                    **authority_arguments,
+                )
+
+            paths["state"].write_bytes(canonical_json(state))
+            mismatched_outcome_arguments = {**authority_arguments, "expected_verification_outcome": "failure"}
+            with self.assertRaisesRegex(CandidateError, "contradicts the trusted verification-step outcome"):
+                validate_observation_handoff(
+                    paths["plan"],
+                    paths["preparation"],
+                    paths["candidate"],
+                    paths["verification"],
+                    paths["state"],
+                    outputs,
+                    **mismatched_outcome_arguments,
+                )
+
+            injected_state = copy.deepcopy(state)
+            injected_state["durable_evidence"]["same_user_process"] = "fabricated"
+            paths["state"].write_bytes(canonical_json(injected_state))
+            with (
+                mock.patch("scripts.release_plan.revalidate_verification", return_value=verification),
+                self.assertRaisesRegex(CandidateError, "trusted reconstruction"),
+            ):
+                validate_observation_handoff(
+                    paths["plan"],
+                    paths["preparation"],
+                    paths["candidate"],
+                    paths["verification"],
+                    paths["state"],
+                    outputs,
+                    **authority_arguments,
+                )
+
+            oversized_state = copy.deepcopy(state)
+            oversized_state["resume_action"] = "x" * 4097
+            paths["state"].write_bytes(canonical_json(oversized_state))
+            with self.assertRaisesRegex(CandidateError, "oversized or invalid text"):
                 validate_observation_handoff(
                     paths["plan"],
                     paths["preparation"],
@@ -574,6 +609,73 @@ class ReleasePlanValidationTest(unittest.TestCase):
                     outputs,
                     **authority_arguments,
                 )
+
+    def test_failed_observer_reason_tampering_fails_before_first_writer_output(self) -> None:
+        plan = release_plan()
+        preparation = release_preparation(plan)
+        candidate = candidate_manifest(plan)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            inputs = root / "inputs"
+            authority = root / "authority"
+            outputs = root / "outputs"
+            inputs.mkdir()
+            authority.mkdir()
+            paths = {
+                "plan": inputs / "release-plan.json",
+                "preparation": inputs / "release-preparation.json",
+                "candidate": inputs / "candidate-verifier-input.json",
+                "verification": inputs / "verification.json",
+                "state": inputs / "release-state.json",
+            }
+            paths["plan"].write_bytes(canonical_json(plan))
+            paths["preparation"].write_bytes(canonical_json(preparation))
+            paths["candidate"].write_bytes(canonical_json(candidate))
+            authoritative_plan = authority / "release-plan.json"
+            authoritative_preparation = authority / "release-preparation.json"
+            authoritative_plan.write_bytes(canonical_json(plan))
+            authoritative_preparation.write_bytes(canonical_json(preparation))
+            state = failed_observation_state(plan, preparation, "2026-07-20T21:00:00Z")
+            state["reason"] = "cli: verifier-controlled failure detail"
+            paths["state"].write_bytes(canonical_json(state))
+
+            with self.assertRaisesRegex(CandidateError, "writer's trusted reconstruction"):
+                validate_observation_handoff(
+                    paths["plan"],
+                    paths["preparation"],
+                    paths["candidate"],
+                    paths["verification"],
+                    paths["state"],
+                    outputs,
+                    authoritative_plan_path=authoritative_plan,
+                    authoritative_preparation_path=authoritative_preparation,
+                    expected_plan_tag=f"{PLAN_TAG_PREFIX}{plan['plan']}",
+                    expected_plan_sha256=manifest_digest(plan),
+                    expected_preparation_sha256=manifest_digest(preparation),
+                    expected_verification_outcome="failure",
+                    client=mock.Mock(),
+                )
+
+            self.assertFalse(outputs.exists())
+            state["reason"] = OBSERVATION_FAILURE_REASON
+            paths["state"].write_bytes(canonical_json(state))
+            validate_observation_handoff(
+                paths["plan"],
+                paths["preparation"],
+                paths["candidate"],
+                paths["verification"],
+                paths["state"],
+                outputs,
+                authoritative_plan_path=authoritative_plan,
+                authoritative_preparation_path=authoritative_preparation,
+                expected_plan_tag=f"{PLAN_TAG_PREFIX}{plan['plan']}",
+                expected_plan_sha256=manifest_digest(plan),
+                expected_preparation_sha256=manifest_digest(preparation),
+                expected_verification_outcome="failure",
+                client=mock.Mock(),
+            )
+            durable_state = json.loads((outputs / "release-state.json").read_bytes())
+            self.assertEqual(OBSERVATION_FAILURE_REASON, durable_state["reason"])
 
     def test_completion_rejects_a_handoff_for_a_different_public_plan(self) -> None:
         plan = release_plan()
@@ -637,16 +739,13 @@ class ReleasePlanValidationTest(unittest.TestCase):
 
         preparation = release_preparation(plan)
         preparation["components"]["sdk-php"]["release_notes"]["source"]["url"] = (
-            "https://github.com/durable-workflow/sdk-php/blob/"
-            f"{'f' * 40}/CHANGELOG.md"
+            f"https://github.com/durable-workflow/sdk-php/blob/{'f' * 40}/CHANGELOG.md"
         )
         with self.assertRaisesRegex(CandidateError, "invalid note-source evidence"):
             validate_release_preparation(preparation, plan)
 
     def test_preparation_schema_accepts_the_machine_record(self) -> None:
-        schema = json.loads(
-            (REPOSITORY_ROOT / "release-plans" / "preparation-schema.json").read_bytes()
-        )
+        schema = json.loads((REPOSITORY_ROOT / "release-plans" / "preparation-schema.json").read_bytes())
         Draft202012Validator.check_schema(schema)
         Draft202012Validator(schema).validate(release_preparation(release_plan()))
 
@@ -703,7 +802,7 @@ class ReleasePlanValidationTest(unittest.TestCase):
                     return (
                         b'CONTINUITY_TAG_PREFIX = "beta-continuity/"\n'
                         b"def scheduled_continuity_pause():\n  pass\n"
-                        b"if args.plan_tag is None:\n  state = {\"phase\": \"continuity-gate\"}\n"
+                        b'if args.plan_tag is None:\n  state = {"phase": "continuity-gate"}\n'
                     )
                 raise AssertionError(f"unexpected bytes request: {url}")
 
@@ -954,10 +1053,7 @@ class ReleasePlanValidationTest(unittest.TestCase):
             def json(self, url: str) -> list[dict[str, str]]:
                 requested_urls.append(url)
                 return [
-                    *[
-                        {"ref": f"refs/tags/release-plan/completed-{index:03d}"}
-                        for index in range(125)
-                    ],
+                    *[{"ref": f"refs/tags/release-plan/completed-{index:03d}"} for index in range(125)],
                     {"ref": "refs/tags/release-plan/plan-a"},
                 ]
 
@@ -989,10 +1085,7 @@ class ReleasePlanValidationTest(unittest.TestCase):
             require_prior_plans_completed(requested, FixtureClient())
 
         self.assertEqual(
-            [
-                "https://api.github.com/repos/durable-workflow/.github/"
-                "git/matching-refs/tags/release-plan/"
-            ],
+            ["https://api.github.com/repos/durable-workflow/.github/git/matching-refs/tags/release-plan/"],
             requested_urls,
         )
 
@@ -1270,9 +1363,7 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
                     return approval_history()
                 if "/actions/runs/" in url:
                     return workflow_run()
-                if url.endswith("/releases/tags/0.4.100") or url.endswith(
-                    "/pypi/durable-workflow/0.4.100/json"
-                ):
+                if url.endswith("/releases/tags/0.4.100") or url.endswith("/pypi/durable-workflow/0.4.100/json"):
                     raise CandidateError(f"public request failed (404) for {url}")
                 raise AssertionError(f"unexpected JSON request: {url}")
 
@@ -1297,8 +1388,7 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
                 run_id="456",
                 run_attempt="1",
                 workflow_ref=(
-                    "durable-workflow/.github/.github/workflows/"
-                    "release-plan-supersession.yml@refs/heads/main"
+                    "durable-workflow/.github/.github/workflows/release-plan-supersession.yml@refs/heads/main"
                 ),
                 workflow_commit="f" * 40,
             )
@@ -1402,8 +1492,9 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
         ):
             run = workflow_run()
             run["path"] = path
-            with self.subTest(path=path), self.assertRaisesRegex(
-                CandidateError, "workflow run evidence does not match"
+            with (
+                self.subTest(path=path),
+                self.assertRaisesRegex(CandidateError, "workflow run evidence does not match"),
             ):
                 evidence(run, approval_history())
 
@@ -1441,10 +1532,7 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
         def resolve(_client: object, repository: str, tag: str) -> str | None:
             if repository == "durable-workflow/.github" and tag == "release-plan/plan-a":
                 return failed_commit
-            if (
-                repository == "durable-workflow/waterline"
-                and tag == failed["components"]["waterline"]["version"]
-            ):
+            if repository == "durable-workflow/waterline" and tag == failed["components"]["waterline"]["version"]:
                 return observed_commit
             return None
 
@@ -1474,8 +1562,7 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
                 run_id="456",
                 run_attempt="1",
                 workflow_ref=(
-                    "durable-workflow/.github/.github/workflows/"
-                    "release-plan-supersession.yml@refs/heads/main"
+                    "durable-workflow/.github/.github/workflows/release-plan-supersession.yml@refs/heads/main"
                 ),
                 workflow_commit="f" * 40,
             )
@@ -1507,9 +1594,7 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
         }
         successor = successor_plan(failed, components=("waterline", "sdk-rust"))
         successor["plan"] = "plan-b"
-        successor["components"]["sdk-rust"]["commit"] = (
-            "2e09d42d8380bd0a2c8145dfeabd9d6294a8e8e1"
-        )
+        successor["components"]["sdk-rust"]["commit"] = "2e09d42d8380bd0a2c8145dfeabd9d6294a8e8e1"
         failed_commit = "a" * 40
         observed_commit = "e" * 40
 
@@ -1545,10 +1630,7 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
         def resolve(_client: object, repository: str, tag: str) -> str | None:
             if repository == "durable-workflow/.github" and tag == "release-plan/plan-a":
                 return failed_commit
-            if (
-                repository == "durable-workflow/waterline"
-                and tag == failed["components"]["waterline"]["version"]
-            ):
+            if repository == "durable-workflow/waterline" and tag == failed["components"]["waterline"]["version"]:
                 return observed_commit
             return None
 
@@ -1578,8 +1660,7 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
                 run_id="456",
                 run_attempt="1",
                 workflow_ref=(
-                    "durable-workflow/.github/.github/workflows/"
-                    "release-plan-supersession.yml@refs/heads/main"
+                    "durable-workflow/.github/.github/workflows/release-plan-supersession.yml@refs/heads/main"
                 ),
                 workflow_commit="f" * 40,
             )
@@ -1736,8 +1817,7 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
                 run_id="456",
                 run_attempt="1",
                 workflow_ref=(
-                    "durable-workflow/.github/.github/workflows/"
-                    "release-plan-supersession.yml@refs/heads/main"
+                    "durable-workflow/.github/.github/workflows/release-plan-supersession.yml@refs/heads/main"
                 ),
                 workflow_commit="f" * 40,
             )
@@ -1776,8 +1856,7 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
                 run_id="456",
                 run_attempt="1",
                 workflow_ref=(
-                    "durable-workflow/.github/.github/workflows/"
-                    "release-plan-supersession.yml@refs/heads/main"
+                    "durable-workflow/.github/.github/workflows/release-plan-supersession.yml@refs/heads/main"
                 ),
                 workflow_commit="f" * 40,
             )
@@ -1790,9 +1869,7 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
             "commit": "dde751dc45366beaf8a829ed42c7ab92d0aad775",
         }
         successor = successor_plan(failed, component="sdk-rust")
-        successor["components"]["sdk-rust"]["commit"] = (
-            "2e09d42d8380bd0a2c8145dfeabd9d6294a8e8e1"
-        )
+        successor["components"]["sdk-rust"]["commit"] = "2e09d42d8380bd0a2c8145dfeabd9d6294a8e8e1"
         failed_commit = "a" * 40
         observed_waterline_commit = "e" * 40
 
@@ -1805,10 +1882,7 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
         def resolve(_client: object, repository: str, tag: str) -> str | None:
             if repository == "durable-workflow/.github" and tag == "release-plan/plan-a":
                 return failed_commit
-            if (
-                repository == "durable-workflow/waterline"
-                and tag == failed["components"]["waterline"]["version"]
-            ):
+            if repository == "durable-workflow/waterline" and tag == failed["components"]["waterline"]["version"]:
                 return observed_waterline_commit
             return None
 
@@ -1826,8 +1900,7 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
                 run_id="456",
                 run_attempt="1",
                 workflow_ref=(
-                    "durable-workflow/.github/.github/workflows/"
-                    "release-plan-supersession.yml@refs/heads/main"
+                    "durable-workflow/.github/.github/workflows/release-plan-supersession.yml@refs/heads/main"
                 ),
                 workflow_commit="f" * 40,
             )
@@ -1888,9 +1961,7 @@ class ReleasePlanRecordTest(unittest.TestCase):
             authoritative_plan=self.authoritative_path,
             authoritative_preparation=self.authoritative_preparation_path,
         )
-        self.preparation_path.write_bytes(
-            canonical_json(release_preparation(plan, "2026-07-20"))
-        )
+        self.preparation_path.write_bytes(canonical_json(release_preparation(plan, "2026-07-20")))
         repeated = record_plan(
             self.repository,
             self.plan_path,
@@ -1942,10 +2013,7 @@ class ReleasePlanRecordTest(unittest.TestCase):
         def resolve(_client: object, repository: str, tag: str) -> str | None:
             if repository == "durable-workflow/.github" and tag == record["failed_plan"]["tag"]:
                 return "a" * 40
-            if (
-                repository == "durable-workflow/waterline"
-                and tag == failed["components"]["waterline"]["version"]
-            ):
+            if repository == "durable-workflow/waterline" and tag == failed["components"]["waterline"]["version"]:
                 return "e" * 40
             return None
 
@@ -1961,11 +2029,7 @@ class ReleasePlanRecordTest(unittest.TestCase):
             mock.patch("scripts.release_plan.read_public_record", return_value=failed),
             mock.patch.dict(
                 "scripts.release_plan.VERIFIERS",
-                {
-                    "composer": mock.Mock(
-                        return_value=record["conflicts"][0]["distribution"]
-                    )
-                },
+                {"composer": mock.Mock(return_value=record["conflicts"][0]["distribution"])},
             ),
             mock.patch(
                 "scripts.release_plan.protected_environment_evidence",
@@ -2028,6 +2092,7 @@ class ReleasePlanRecordTest(unittest.TestCase):
         }
         for drift, error in errors.items():
             with self.subTest(drift=drift):
+
                 def resolve(
                     _client: object,
                     repository: str,
@@ -2062,11 +2127,7 @@ class ReleasePlanRecordTest(unittest.TestCase):
                     client.json.return_value = {
                         "draft": False,
                         "html_url": record["conflicts"][0]["github_release"]["url"],
-                        "id": (
-                            124
-                            if drift == "release"
-                            else record["conflicts"][0]["github_release"]["id"]
-                        ),
+                        "id": (124 if drift == "release" else record["conflicts"][0]["github_release"]["id"]),
                         "tag_name": failed_version,
                     }
                 live_distribution = copy.deepcopy(record["conflicts"][0]["distribution"])
@@ -2174,8 +2235,7 @@ class ReleasePlanRecordTest(unittest.TestCase):
                 run_id="456",
                 run_attempt="1",
                 workflow_ref=(
-                    "durable-workflow/.github/.github/workflows/"
-                    "release-plan-supersession.yml@refs/heads/main"
+                    "durable-workflow/.github/.github/workflows/release-plan-supersession.yml@refs/heads/main"
                 ),
                 workflow_commit="f" * 40,
             )
@@ -2229,9 +2289,7 @@ class ReleasePlanRecordTest(unittest.TestCase):
         record = supersession_record(failed, successor, component="sdk-python")
         failed_identity = failed["components"]["sdk-python"]
         successor_identity = successor["components"]["sdk-python"]
-        release_api = (
-            "https://api.github.com/repos/durable-workflow/sdk-python/releases/tags/0.4.100"
-        )
+        release_api = "https://api.github.com/repos/durable-workflow/sdk-python/releases/tags/0.4.100"
         distribution_api = "https://pypi.org/pypi/durable-workflow/0.4.100/json"
         record["conflicts"][0] = {
             "component": "sdk-python",

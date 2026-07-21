@@ -30,14 +30,16 @@ from scripts.beta_candidate import (
     CandidateError,
     PublicClient,
     PublicInfrastructureError,
+    canonical_cli_embedded_identity,
     canonical_json,
     fetch_existing_record,
     load_manifest,
+    load_verification,
     manifest_digest,
     read_record_file,
     resolve_github_tag,
+    revalidate_verification,
     run_git,
-    validate_verification,
     verify_candidate,
     verify_github_release,
     write_github_output,
@@ -66,11 +68,20 @@ SOURCE_MANIFEST_REASON = "source-manifest-version-conflict"
 OCCUPIED_SOURCE_MANIFEST_REASON = "occupied-source-manifest-version-conflict"
 SUPERSESSION_API_VERSION = "2026-03-10"
 SUPERSESSION_ENVIRONMENT_URL = (
-    f"https://github.com/{CONTROL_REPOSITORY}/deployments/activity_log"
-    f"?environments_filter={SUPERSESSION_ENVIRONMENT}"
+    f"https://github.com/{CONTROL_REPOSITORY}/deployments/activity_log?environments_filter={SUPERSESSION_ENVIRONMENT}"
 )
 SUPERSESSION_ENVIRONMENT_API_URL = (
     f"https://api.github.com/repos/{CONTROL_REPOSITORY}/environments/{SUPERSESSION_ENVIRONMENT}"
+)
+OBSERVATION_MAX_BYTES = 256 * 1024
+OBSERVATION_MAX_TEXT = 4096
+OBSERVATION_MAX_ITEMS = 64
+OBSERVATION_MAX_DEPTH = 12
+OBSERVATION_FAILURE_REASON = (
+    "Public artifact verification failed; inspect the read-only observer run for component diagnostics"
+)
+OBSERVATION_RECOVERY_ACTION = (
+    "Run the affected component's Release plan recovery action, then rerun Release plan observer"
 )
 
 EXPECTED_DEFAULT_BRANCHES = {
@@ -264,8 +275,7 @@ def component_release_notes(
         path = SOURCE_CHANGELOGS[component_name]
         encoded_path = urllib.parse.quote(path, safe="/")
         raw = client.bytes(
-            f"https://api.github.com/repos/{component.repository}/contents/{encoded_path}"
-            f"?ref={identity['commit']}",
+            f"https://api.github.com/repos/{component.repository}/contents/{encoded_path}?ref={identity['commit']}",
             accept="application/vnd.github.raw+json",
         )
         body = unreleased_changelog_body(raw, component_name)
@@ -275,9 +285,7 @@ def component_release_notes(
             "url": f"https://github.com/{component.repository}/blob/{identity['commit']}/{path}",
         }
     else:
-        commit = client.json(
-            f"https://api.github.com/repos/{component.repository}/commits/{identity['commit']}"
-        )
+        commit = client.json(f"https://api.github.com/repos/{component.repository}/commits/{identity['commit']}")
         message = commit.get("commit", {}).get("message") if isinstance(commit, dict) else None
         if not isinstance(message, str) or not message.strip():
             raise CandidateError(f"{component_name} source commit has no public release-note summary")
@@ -299,9 +307,7 @@ def component_release_notes(
     }
 
 
-def prepare_release(
-    plan: dict[str, Any], client: PublicClient, release_date: str
-) -> dict[str, Any]:
+def prepare_release(plan: dict[str, Any], client: PublicClient, release_date: str) -> dict[str, Any]:
     validate_plan(plan)
     release_date = parse_release_date(release_date)
     preparation = {
@@ -375,12 +381,9 @@ def validate_release_preparation(preparation: Any, plan: dict[str, Any]) -> None
         ):
             raise CandidateError(f"release preparation component {name} has mismatched note content")
         source = notes["source"]
-        expected_kind = (
-            "changelog-unreleased" if name in SOURCE_CHANGELOGS else "source-commit-message"
-        )
+        expected_kind = "changelog-unreleased" if name in SOURCE_CHANGELOGS else "source-commit-message"
         expected_source_url = (
-            f"https://github.com/{COMPONENTS[name].repository}/blob/{identity['commit']}/"
-            f"{SOURCE_CHANGELOGS[name]}"
+            f"https://github.com/{COMPONENTS[name].repository}/blob/{identity['commit']}/{SOURCE_CHANGELOGS[name]}"
             if name in SOURCE_CHANGELOGS
             else f"https://github.com/{COMPONENTS[name].repository}/commit/{identity['commit']}"
         )
@@ -394,14 +397,9 @@ def validate_release_preparation(preparation: Any, plan: dict[str, Any]) -> None
             raise CandidateError(f"release preparation component {name} has invalid note-source evidence")
 
 
-def revalidate_release_preparation(
-    preparation: dict[str, Any], plan: dict[str, Any], client: PublicClient
-) -> None:
+def revalidate_release_preparation(preparation: dict[str, Any], plan: dict[str, Any], client: PublicClient) -> None:
     validate_release_preparation(preparation, plan)
-    dates = {
-        entry["release_notes"]["release_date"]
-        for entry in preparation["components"].values()
-    }
+    dates = {entry["release_notes"]["release_date"] for entry in preparation["components"].values()}
     if len(dates) != 1:
         raise CandidateError("release preparation components do not share one release date")
     expected = prepare_release(plan, client, dates.pop())
@@ -441,10 +439,7 @@ def conflict_component_names(conflicts: Any) -> list[str]:
     if isinstance(conflicts, str):
         names = [conflicts]
     elif isinstance(conflicts, list):
-        names = [
-            conflict.get("component") if isinstance(conflict, dict) else conflict
-            for conflict in conflicts
-        ]
+        names = [conflict.get("component") if isinstance(conflict, dict) else conflict for conflict in conflicts]
     else:
         raise CandidateError("release plan failure conflicts must be a non-empty list")
     if (
@@ -498,31 +493,17 @@ def validate_successor_transition(
         successor_identity = successor_plan["components"][name]
         if conflict.get("reason") == SUPERSESSION_REASON:
             if successor_identity["commit"] != failed_identity["commit"]:
-                raise CandidateError(
-                    f"superseding release plan must retain {name}'s conflicting planned commit"
-                )
-            if not is_immediate_version_successor(
-                failed_identity["version"], successor_identity["version"]
-            ):
-                raise CandidateError(
-                    f"superseding release plan must allocate {name}'s immediate next version"
-                )
+                raise CandidateError(f"superseding release plan must retain {name}'s conflicting planned commit")
+            if not is_immediate_version_successor(failed_identity["version"], successor_identity["version"]):
+                raise CandidateError(f"superseding release plan must allocate {name}'s immediate next version")
         elif conflict.get("reason") == SOURCE_MANIFEST_REASON:
             if successor_identity["version"] != failed_identity["version"]:
-                raise CandidateError(
-                    f"superseding release plan must retain {name}'s intended version"
-                )
+                raise CandidateError(f"superseding release plan must retain {name}'s intended version")
             if successor_identity["commit"] == failed_identity["commit"]:
-                raise CandidateError(
-                    f"superseding release plan must replace {name}'s incompatible source commit"
-                )
+                raise CandidateError(f"superseding release plan must replace {name}'s incompatible source commit")
         elif conflict.get("reason") == OCCUPIED_SOURCE_MANIFEST_REASON:
-            if not is_immediate_version_successor(
-                failed_identity["version"], successor_identity["version"]
-            ):
-                raise CandidateError(
-                    f"superseding release plan must allocate {name}'s immediate next version"
-                )
+            if not is_immediate_version_successor(failed_identity["version"], successor_identity["version"]):
+                raise CandidateError(f"superseding release plan must allocate {name}'s immediate next version")
             if successor_identity["commit"] == failed_identity["commit"]:
                 raise CandidateError(
                     f"superseding release plan must replace {name}'s incompatible tagged source commit"
@@ -647,15 +628,11 @@ def validate_source_manifest_evidence(
         )
 
 
-def publication_absence_locations(
-    component_name: str, version: str
-) -> tuple[dict[str, str], dict[str, str]]:
+def publication_absence_locations(component_name: str, version: str) -> tuple[dict[str, str], dict[str, str]]:
     component = COMPONENTS[component_name]
     encoded_version = urllib.parse.quote(version, safe="")
     release = {
-        "api_url": (
-            f"https://api.github.com/repos/{component.repository}/releases/tags/{encoded_version}"
-        ),
+        "api_url": (f"https://api.github.com/repos/{component.repository}/releases/tags/{encoded_version}"),
         "status": "absent",
         "url": f"https://github.com/{component.repository}/releases/tag/{encoded_version}",
     }
@@ -675,9 +652,7 @@ def publication_absence_locations(
             "url": f"https://crates.io/crates/{encoded_package}/{encoded_version}",
         }
     else:
-        raise CandidateError(
-            f"{component_name} has no supported source-manifest distribution absence proof"
-        )
+        raise CandidateError(f"{component_name} has no supported source-manifest distribution absence proof")
     return release, distribution
 
 
@@ -693,23 +668,14 @@ def validate_occupied_source_manifest_evidence(
         or source_tag["tag"] != identity["version"]
         or source_tag["commit"] != identity["commit"]
         or not COMMIT_PATTERN.fullmatch(str(source_tag["tag_object"]))
-        or source_tag["url"]
-        != f"https://github.com/{component.repository}/tree/{identity['version']}"
+        or source_tag["url"] != f"https://github.com/{component.repository}/tree/{identity['version']}"
     ):
-        raise CandidateError(
-            f"release plan failure does not prove {component_name}'s occupied planned source tag"
-        )
-    expected_release, expected_distribution = publication_absence_locations(
-        component_name, identity["version"]
-    )
+        raise CandidateError(f"release plan failure does not prove {component_name}'s occupied planned source tag")
+    expected_release, expected_distribution = publication_absence_locations(component_name, identity["version"])
     if conflict["github_release"] != expected_release:
-        raise CandidateError(
-            f"release plan failure lacks {component_name} GitHub Release absence evidence"
-        )
+        raise CandidateError(f"release plan failure lacks {component_name} GitHub Release absence evidence")
     if conflict["distribution"] != expected_distribution:
-        raise CandidateError(
-            f"release plan failure lacks {component_name} distribution absence evidence"
-        )
+        raise CandidateError(f"release plan failure lacks {component_name} distribution absence evidence")
 
 
 def validate_conflict_record(
@@ -725,8 +691,7 @@ def validate_conflict_record(
     identity = failed_plan["components"][component_name]
     successor_identity = successor_plan["components"][component_name]
     common_identity_matches = (
-        conflict.get("version") == identity["version"]
-        and conflict.get("planned_commit") == identity["commit"]
+        conflict.get("version") == identity["version"] and conflict.get("planned_commit") == identity["commit"]
     )
     reason = conflict.get("reason")
     if reason == SUPERSESSION_REASON:
@@ -745,9 +710,7 @@ def validate_conflict_record(
             or not COMMIT_PATTERN.fullmatch(str(conflict.get("observed_commit", "")))
             or conflict["observed_commit"] == identity["commit"]
         ):
-            raise CandidateError(
-                "release plan failure conflict does not prove a different public source identity"
-            )
+            raise CandidateError("release plan failure conflict does not prove a different public source identity")
         release = conflict["github_release"]
         if (
             not isinstance(release, dict)
@@ -755,16 +718,11 @@ def validate_conflict_record(
             or type(release["id"]) is not int
             or release["id"] < 1
             or not isinstance(release["url"], str)
-            or not release["url"].startswith(
-                f"https://github.com/{COMPONENTS[component_name].repository}/releases/"
-            )
+            or not release["url"].startswith(f"https://github.com/{COMPONENTS[component_name].repository}/releases/")
         ):
             raise CandidateError("release plan failure lacks durable GitHub Release evidence")
         distribution = conflict["distribution"]
-        if (
-            not isinstance(distribution, dict)
-            or distribution.get("kind") != COMPONENTS[component_name].distribution
-        ):
+        if not isinstance(distribution, dict) or distribution.get("kind") != COMPONENTS[component_name].distribution:
             raise CandidateError("release plan failure lacks matching distribution evidence")
         require_distribution_identity(
             distribution,
@@ -805,9 +763,7 @@ def validate_conflict_record(
             "successor_source_manifest",
         }
         if set(conflict) != expected_keys or not common_identity_matches:
-            raise CandidateError(
-                "release plan failure occupied manifest conflict evidence has an invalid shape"
-            )
+            raise CandidateError("release plan failure occupied manifest conflict evidence has an invalid shape")
         validate_source_manifest_evidence(
             conflict["source_manifest"], component_name, identity, must_match_version=False
         )
@@ -910,15 +866,12 @@ def require_distribution_identity(
         )
     elif component.distribution == "github-release":
         package_source = distribution.get("package_source")
-        embedded_identity = (
-            package_source.get("embedded_phar_identity") if isinstance(package_source, dict) else None
-        )
         matches = (
             isinstance(package_source, dict)
             and set(package_source) == {"commit", "embedded_phar_identity"}
             and package_source.get("commit") == observed_commit
-            and isinstance(embedded_identity, str)
-            and f"{version} (commit {observed_commit[:12]}," in embedded_identity
+            and package_source.get("embedded_phar_identity")
+            == canonical_cli_embedded_identity(version, observed_commit)
         )
         authority = distribution.get("build_attestation_authority")
         exact_tag_authority = {
@@ -931,9 +884,9 @@ def require_distribution_identity(
             "ref": "refs/heads/main",
             "workflow": f"{component.repository}/.github/workflows/release.yml",
         }
-        if (
-            distribution.get("build_attestations_verified") is not True
-            or authority not in (exact_tag_authority, qualified_main_authority)
+        if distribution.get("build_attestations_verified") is not True or authority not in (
+            exact_tag_authority,
+            qualified_main_authority,
         ):
             raise CandidateError("public distribution evidence has an untrusted build attestation authority")
     elif component.distribution == "pypi":
@@ -964,17 +917,9 @@ def github_release_conflict_evidence(
 ) -> dict[str, Any]:
     component = COMPONENTS[component_name]
     encoded_version = urllib.parse.quote(version, safe="")
-    release = client.json(
-        f"https://api.github.com/repos/{component.repository}/releases/tags/{encoded_version}"
-    )
-    if (
-        not isinstance(release, dict)
-        or release.get("draft")
-        or release.get("tag_name") != version
-    ):
-        raise CandidateError(
-            f"{component_name} version {version} has no public GitHub Release conflict"
-        )
+    release = client.json(f"https://api.github.com/repos/{component.repository}/releases/tags/{encoded_version}")
+    if not isinstance(release, dict) or release.get("draft") or release.get("tag_name") != version:
+        raise CandidateError(f"{component_name} version {version} has no public GitHub Release conflict")
     return {
         "id": release.get("id"),
         "url": release.get("html_url"),
@@ -1020,9 +965,7 @@ def source_manifest_evidence(
     return evidence
 
 
-def conflict_components_from_public_evidence(
-    failed_plan: dict[str, Any], client: PublicClient
-) -> list[str]:
+def conflict_components_from_public_evidence(failed_plan: dict[str, Any], client: PublicClient) -> list[str]:
     conflicts = []
     for name in COMPONENTS:
         identity = failed_plan["components"][name]
@@ -1060,8 +1003,7 @@ def revalidate_conflict_public_evidence(
             )
         except CandidateError as error:
             raise CandidateError(
-                f"terminal conflict GitHub Release evidence for {component_name} no longer matches GitHub: "
-                f"{error}"
+                f"terminal conflict GitHub Release evidence for {component_name} no longer matches GitHub: {error}"
             ) from error
         if live_release != conflict["github_release"]:
             raise CandidateError(
@@ -1070,24 +1012,12 @@ def revalidate_conflict_public_evidence(
         try:
             with tempfile.TemporaryDirectory(prefix="release-plan-failure-revalidation-") as temporary:
                 if component.distribution == "github-release":
-                    package_source = conflict["distribution"].get("package_source")
-                    embedded_identity = (
-                        package_source.get("embedded_phar_identity")
-                        if isinstance(package_source, dict)
-                        else None
-                    )
-                    if not isinstance(embedded_identity, str):
-                        raise CandidateError(
-                            f"terminal conflict distribution evidence for {component_name} "
-                            "has no verified CLI identity"
-                        )
                     live_distribution = verify_github_release(
                         client,
                         component,
                         conflict["version"],
                         conflict["observed_commit"],
                         Path(temporary),
-                        verified_embedded_identity=embedded_identity,
                     )
                 else:
                     live_distribution = VERIFIERS[component.distribution](
@@ -1105,8 +1035,7 @@ def revalidate_conflict_public_evidence(
             )
         except CandidateError as error:
             raise CandidateError(
-                f"terminal conflict distribution evidence for {component_name} no longer matches its registry: "
-                f"{error}"
+                f"terminal conflict distribution evidence for {component_name} no longer matches its registry: {error}"
             ) from error
         if live_distribution != conflict["distribution"]:
             raise CandidateError(
@@ -1143,20 +1072,14 @@ def revalidate_conflict_public_evidence(
                 f"terminal conflict publication absence evidence for {component_name} no longer matches "
                 f"GitHub and its registry: {error}"
             ) from error
-        if (
-            live_release != conflict["github_release"]
-            or live_distribution != conflict["distribution"]
-        ):
+        if live_release != conflict["github_release"] or live_distribution != conflict["distribution"]:
             raise CandidateError(
                 f"terminal conflict publication absence evidence for {component_name} no longer matches "
                 "GitHub and its registry"
             )
     if source_manifest_evidence(client, component_name, failed_identity) != conflict["source_manifest"]:
         raise CandidateError(f"terminal conflict source manifest for {component_name} no longer matches GitHub")
-    if (
-        source_manifest_evidence(client, component_name, successor_identity)
-        != conflict["successor_source_manifest"]
-    ):
+    if source_manifest_evidence(client, component_name, successor_identity) != conflict["successor_source_manifest"]:
         raise CandidateError(f"terminal successor source manifest for {component_name} no longer matches GitHub")
 
 
@@ -1403,9 +1326,7 @@ def require_prior_plans_completed(plan: dict[str, Any], client: PublicClient) ->
     return completed
 
 
-def preflight_plan(
-    plan: dict[str, Any], client: PublicClient, *, release_date: str | None = None
-) -> dict[str, Any]:
+def preflight_plan(plan: dict[str, Any], client: PublicClient, *, release_date: str | None = None) -> dict[str, Any]:
     foundation = read_public_record(client, FOUNDATION_TAG, FOUNDATION_COMMIT, "candidate.json")
     if foundation.get("candidate") != "beta-continuity-foundation":
         raise CandidateError("immutable candidate foundation has an unexpected identity")
@@ -1464,7 +1385,7 @@ def preflight_plan(
             accept="application/vnd.github.raw+json",
         ).decode("utf-8")
         if (
-            "CONTINUITY_TAG_PREFIX = \"beta-continuity/\"" not in helper_source
+            'CONTINUITY_TAG_PREFIX = "beta-continuity/"' not in helper_source
             or "def scheduled_continuity_pause(" not in helper_source
             or "if args.plan_tag is None" not in helper_source
             or '"phase": "continuity-gate"' not in helper_source
@@ -1527,9 +1448,7 @@ def check_plan_compatibility(repository: Path, plan_path: Path, *, remote: str) 
     if existing != canonical:
         raise CandidateError(f"release plan {plan['plan']} is immutable and the requested tuple is different")
     try:
-        preparation = json.loads(
-            read_record_file(repository, existing_ref, "release-preparation.json")
-        )
+        preparation = json.loads(read_record_file(repository, existing_ref, "release-preparation.json"))
     except json.JSONDecodeError as error:
         raise CandidateError(f"release plan {plan['plan']} has invalid preparation authority") from error
     validate_release_preparation(preparation, plan)
@@ -1580,9 +1499,7 @@ def record_plan(
         try:
             validate_release_preparation(json.loads(existing_preparation), plan)
         except json.JSONDecodeError as error:
-            raise CandidateError(
-                f"release plan {plan['plan']} has invalid immutable preparation authority"
-            ) from error
+            raise CandidateError(f"release plan {plan['plan']} has invalid immutable preparation authority") from error
         authoritative_plan.write_bytes(existing)
         authoritative_preparation.write_bytes(existing_preparation)
         return {
@@ -1686,9 +1603,7 @@ def protected_environment_evidence(client: PublicClient) -> dict[str, Any]:
         for rule in rules or []
         if isinstance(rule, dict) and rule.get("type") == "required_reviewers" and rule.get("reviewers")
     ]
-    rule_ids = sorted(
-        rule["id"] for rule in reviewer_rules if type(rule.get("id")) is int and rule["id"] > 0
-    )
+    rule_ids = sorted(rule["id"] for rule in reviewer_rules if type(rule.get("id")) is int and rule["id"] > 0)
     if not rule_ids:
         raise CandidateError(
             f"GitHub environment {SUPERSESSION_ENVIRONMENT} must require a reviewer before supersession"
@@ -1708,9 +1623,7 @@ def protected_environment_evidence(client: PublicClient) -> dict[str, Any]:
         or deployment_branch_policy.get("custom_branch_policies") is not True
         or deployment_branch_policy.get("protected_branches") is not False
     ):
-        raise CandidateError(
-            f"GitHub environment {SUPERSESSION_ENVIRONMENT} must enable custom branch policies"
-        )
+        raise CandidateError(f"GitHub environment {SUPERSESSION_ENVIRONMENT} must enable custom branch policies")
     policies = client.json(
         f"https://api.github.com/repos/{CONTROL_REPOSITORY}/environments/{encoded}/"
         "deployment-branch-policies?per_page=100",
@@ -1729,9 +1642,7 @@ def protected_environment_evidence(client: PublicClient) -> dict[str, Any]:
         or branch_policies[0].get("name") != "main"
         or branch_policies[0].get("type", "branch") != "branch"
     ):
-        raise CandidateError(
-            f"GitHub environment {SUPERSESSION_ENVIRONMENT} must allow only the main branch"
-        )
+        raise CandidateError(f"GitHub environment {SUPERSESSION_ENVIRONMENT} must allow only the main branch")
     evidence = {
         "custom_branch_policies": [
             {
@@ -1858,9 +1769,7 @@ def prove_publication_absence(
         except CandidateError as error:
             if "(404)" in str(error):
                 continue
-            raise CandidateError(
-                f"cannot prove {component_name} {surface} absence for {version}: {error}"
-            ) from error
+            raise CandidateError(f"cannot prove {component_name} {surface} absence for {version}: {error}") from error
         raise CandidateError(
             f"{component_name} version {version} already has a {surface}; "
             "an occupied source-manifest conflict requires it to be absent"
@@ -1925,14 +1834,10 @@ def prepare_conflict_evidence(
             )
     else:
         if observed_commit is None:
-            raise CandidateError(
-                f"{conflict_component} version {identity['version']} has no terminal public conflict"
-            )
+            raise CandidateError(f"{conflict_component} version {identity['version']} has no terminal public conflict")
         source = resolve_github_tag(client, component.repository, identity["version"])
         if source["commit"] != observed_commit:
-            raise CandidateError(
-                f"{conflict_component} version {identity['version']} changed while proving its source"
-            )
+            raise CandidateError(f"{conflict_component} version {identity['version']} changed while proving its source")
         if observed_commit == identity["commit"]:
             raise CandidateError(
                 f"{conflict_component} version {identity['version']} still resolves to the planned source commit"
@@ -2010,8 +1915,7 @@ def prepare_supersession(
     missing_conflicts = [name for name in required_conflicts if name not in component_names]
     if missing_conflicts:
         raise CandidateError(
-            "conflicting components omit independently proven public conflicts: "
-            + ", ".join(missing_conflicts)
+            "conflicting components omit independently proven public conflicts: " + ", ".join(missing_conflicts)
         )
 
     existing = load_public_supersession(failed_plan, failed_plan_commit, client)
@@ -2027,10 +1931,7 @@ def prepare_supersession(
     if resolve_tag(client, CONTROL_REPOSITORY, completion_tag) is not None:
         raise CandidateError(f"completed release plan {failed_plan_tag} cannot be terminally failed")
 
-    conflicts = [
-        prepare_conflict_evidence(failed_plan, successor_plan, name, client)
-        for name in component_names
-    ]
+    conflicts = [prepare_conflict_evidence(failed_plan, successor_plan, name, client) for name in component_names]
 
     try:
         run_id_value = int(run_id)
@@ -2098,18 +1999,14 @@ def validate_supersession_handoff(
     successor = load_plan(successor_plan_path)
     failed = record.get("failed_plan")
     if not isinstance(failed, dict) or failed.get("tag") != expected_failed_plan_tag:
-        raise CandidateError(
-            "release plan failure record does not match the trusted failed plan dispatch input"
-        )
+        raise CandidateError("release plan failure record does not match the trusted failed plan dispatch input")
     expected_components = (
         parse_conflict_components(expected_conflict_components)
         if isinstance(expected_conflict_components, str)
         else conflict_component_names(expected_conflict_components)
     )
     if conflict_component_names(record.get("conflicts")) != expected_components:
-        raise CandidateError(
-            "release plan failure record does not match the trusted conflict component dispatch input"
-        )
+        raise CandidateError("release plan failure record does not match the trusted conflict component dispatch input")
     if record.get("successor_plan") != {
         "tag": f"{PLAN_TAG_PREFIX}{successor['plan']}",
         "sha256": manifest_digest(successor),
@@ -2321,11 +2218,8 @@ def record_completion(
         validate_release_preparation(preparation, plan)
     completion = completion_manifest(plan, plan_record_commit, preparation)
     canonical_completion = canonical_json(completion)
-    try:
-        verification = json.loads(verification_path.read_bytes())
-    except (OSError, json.JSONDecodeError) as error:
-        raise CandidateError(f"cannot read public verification: {error}") from error
-    validate_verification(verification, candidate_manifest(plan))
+    candidate = candidate_manifest(plan)
+    verification = load_verification(verification_path, candidate)
     completion_verification = {
         "schema": "durable-workflow.release-candidate-verification/v1",
         "candidate": plan["plan"],
@@ -2352,6 +2246,10 @@ def record_completion(
             "tag": tag,
             "commit": run_git(["rev-parse", f"{existing_ref}^{{commit}}"], cwd=repository),
         }
+
+    verification = revalidate_verification(verification, candidate, client)
+    completion_verification["public_verification"] = verification
+    canonical_verification = canonical_json(completion_verification)
 
     with tempfile.NamedTemporaryFile(prefix="release-candidate-index-", delete=False) as index:
         index_path = Path(index.name)
@@ -2502,24 +2400,20 @@ def observe_plan(
             "release_plan_tag": f"{PLAN_TAG_PREFIX}{plan['plan']}",
             "component_actions": "repository Actions runs and public version tags",
         },
-        "resume_action": "Run the component's Release plan recovery action, then rerun Release plan observer",
+        "resume_action": OBSERVATION_RECOVERY_ACTION,
     }
     if preparation is not None:
         state["durable_evidence"]["release_preparation_sha256"] = manifest_digest(preparation)
-    try:
-        for name, component in COMPONENTS.items():
-            version = plan["components"][name]["version"]
-            encoded = urllib.parse.quote(version, safe="")
-            try:
-                release = client.json(f"https://api.github.com/repos/{component.repository}/releases/tags/{encoded}")
-            except CandidateError as error:
-                raise CandidateError(f"{name}: GitHub Release lookup failed: {error}") from error
-            if release.get("draft") or release.get("tag_name") != version:
-                raise CandidateError(f"{name}: GitHub Release {component.repository}@{version} is not public")
-        verification = verify_candidate(candidate, client)
-    except CandidateError as error:
-        state["reason"] = str(error)
-        raise CandidateError(str(error)) from error
+    for name, component in COMPONENTS.items():
+        version = plan["components"][name]["version"]
+        encoded = urllib.parse.quote(version, safe="")
+        try:
+            release = client.json(f"https://api.github.com/repos/{component.repository}/releases/tags/{encoded}")
+        except CandidateError as error:
+            raise CandidateError(f"{name}: GitHub Release lookup failed: {error}") from error
+        if release.get("draft") or release.get("tag_name") != version:
+            raise CandidateError(f"{name}: GitHub Release {component.repository}@{version} is not public")
+    verification = verify_candidate(candidate, client)
     state.update(
         {
             "phase": "complete",
@@ -2529,6 +2423,29 @@ def observe_plan(
         }
     )
     return verification, state
+
+
+def failed_observation_state(
+    plan: dict[str, Any], preparation: dict[str, Any] | None, observed_at: str
+) -> dict[str, Any]:
+    durable_evidence = {
+        "release_plan_tag": f"{PLAN_TAG_PREFIX}{plan['plan']}",
+        "component_actions": "repository Actions runs and public version tags",
+    }
+    if preparation is not None:
+        durable_evidence["release_preparation_sha256"] = manifest_digest(preparation)
+    return {
+        "schema": "durable-workflow.release-state/v1",
+        "plan": plan["plan"],
+        "channel": plan["channel"],
+        "plan_sha256": manifest_digest(plan),
+        "observed_at": observed_at,
+        "phase": "public-artifact-verification",
+        "outcome": "failed",
+        "reason": OBSERVATION_FAILURE_REASON,
+        "durable_evidence": durable_evidence,
+        "resume_action": OBSERVATION_RECOVERY_ACTION,
+    }
 
 
 def validate_observation_handoff(
@@ -2544,6 +2461,8 @@ def validate_observation_handoff(
     expected_plan_tag: str,
     expected_plan_sha256: str,
     expected_preparation_sha256: str,
+    expected_verification_outcome: str,
+    client: PublicClient,
 ) -> dict[str, str]:
     plan = load_plan(plan_path)
     plan_tag = f"{PLAN_TAG_PREFIX}{plan['plan']}"
@@ -2551,11 +2470,7 @@ def validate_observation_handoff(
         raise CandidateError("observation handoff does not match the originally selected plan tag")
     if expected_plan_sha256 != manifest_digest(plan):
         raise CandidateError("observation handoff does not match the originally selected release plan")
-    preparation = (
-        load_release_preparation(preparation_path, plan)
-        if preparation_path.exists()
-        else None
-    )
+    preparation = load_release_preparation(preparation_path, plan) if preparation_path.exists() else None
     authoritative_plan = load_plan(authoritative_plan_path)
     authoritative_preparation = (
         load_release_preparation(authoritative_preparation_path, authoritative_plan)
@@ -2577,51 +2492,86 @@ def validate_observation_handoff(
     if canonical_json(candidate) != canonical_json(candidate_manifest(plan)):
         raise CandidateError("observation candidate does not match its release plan")
     try:
-        state = json.loads(state_path.read_bytes())
-    except (OSError, json.JSONDecodeError) as error:
+        state_raw = state_path.read_bytes()
+    except OSError as error:
         raise CandidateError(f"cannot read release observation state: {error}") from error
-    if (
-        not isinstance(state, dict)
-        or state.get("schema") != "durable-workflow.release-state/v1"
-        or state.get("plan") != plan["plan"]
-        or state.get("channel") != plan["channel"]
-        or state.get("plan_sha256") != manifest_digest(plan)
-        or not isinstance(state.get("durable_evidence"), dict)
+    if len(state_raw) > OBSERVATION_MAX_BYTES:
+        raise CandidateError(f"release observation state exceeds the {OBSERVATION_MAX_BYTES // 1024} KiB limit")
+    try:
+        state = json.loads(state_raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise CandidateError(f"cannot read release observation state: {error}") from error
+    validate_observation_bounds(state)
+    if not isinstance(state, dict):
+        raise CandidateError("release observation state must be a JSON object")
+    observed_at = state.get("observed_at")
+    if not isinstance(observed_at, str) or not re.fullmatch(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", observed_at
     ):
-        raise CandidateError("release observation state does not bind its release plan")
+        raise CandidateError("release observation state has an invalid observed_at timestamp")
+    try:
+        dt.datetime.strptime(observed_at, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError as error:
+        raise CandidateError("release observation state has an invalid observed_at timestamp") from error
+    if expected_verification_outcome not in {"success", "failure"}:
+        raise CandidateError("trusted verification-step outcome must be success or failure")
 
     outcome = state.get("outcome")
     verification: dict[str, Any] | None = None
+    durable_evidence = {
+        "release_plan_tag": plan_tag,
+        "component_actions": "repository Actions runs and public version tags",
+    }
+    if preparation is not None:
+        durable_evidence["release_preparation_sha256"] = preparation_sha256
     if outcome == "verified":
-        if state.get("phase") != "complete":
-            raise CandidateError("verified release observation is not complete")
-        try:
-            verification = json.loads(verification_path.read_bytes())
-        except (OSError, json.JSONDecodeError) as error:
-            raise CandidateError(f"cannot read release observation verification: {error}") from error
-        validate_verification(verification, candidate)
-        if state.get("components") != verification["components"]:
-            raise CandidateError("release observation state and verification components differ")
-    elif outcome in {"failed", "superseded"}:
-        expected_phase = "terminal-failure" if outcome == "superseded" else "public-artifact-verification"
-        reason = state.get("reason")
-        if (
-            state.get("phase") != expected_phase
-            or not isinstance(reason, str)
-            or not 0 < len(reason) <= 4096
-        ):
-            raise CandidateError("failed release observation lacks a bounded recovery reason")
+        if expected_verification_outcome != "success":
+            raise CandidateError("verified release observation contradicts the trusted verification-step outcome")
+        submitted_verification = load_verification(verification_path, candidate)
+        verification = revalidate_verification(submitted_verification, candidate, client)
+        expected_state = {
+            "schema": "durable-workflow.release-state/v1",
+            "plan": plan["plan"],
+            "channel": plan["channel"],
+            "plan_sha256": manifest_digest(plan),
+            "observed_at": observed_at,
+            "phase": "complete",
+            "outcome": "verified",
+            "components": verification["components"],
+            "durable_evidence": durable_evidence,
+            "resume_action": "No recovery action is required",
+        }
+    elif outcome == "failed":
+        if expected_verification_outcome != "failure":
+            raise CandidateError("failed release observation contradicts the trusted verification-step outcome")
+        expected_state = failed_observation_state(plan, preparation, observed_at)
         if verification_path.exists():
             raise CandidateError("failed release observation unexpectedly contains verification evidence")
+    elif outcome == "superseded":
+        if expected_verification_outcome != "failure":
+            raise CandidateError("superseded release observation contradicts the trusted verification-step outcome")
+        if verification_path.exists():
+            raise CandidateError("superseded release observation unexpectedly contains verification evidence")
+        expected_state = terminal_failure_state(plan, client)
+        if expected_state is None:
+            raise CandidateError("superseded release observation has no current public terminal authority")
+        expected_state["observed_at"] = observed_at
     else:
         raise CandidateError("release observation state has an invalid outcome")
+    if state != expected_state:
+        raise CandidateError("release observation state differs from the writer's trusted reconstruction")
+
+    trusted_state = expected_state
+    trusted_state["observed_at"] = (
+        dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
 
     output_directory.mkdir(parents=True, exist_ok=True)
     (output_directory / "release-plan.json").write_bytes(canonical_json(plan))
     if preparation is not None:
         (output_directory / "release-preparation.json").write_bytes(canonical_json(preparation))
     (output_directory / "candidate-verifier-input.json").write_bytes(canonical_json(candidate))
-    (output_directory / "release-state.json").write_bytes(canonical_json(state))
+    (output_directory / "release-state.json").write_bytes(canonical_json(trusted_state))
     if verification is not None:
         (output_directory / "verification.json").write_bytes(canonical_json(verification))
     return {
@@ -2632,9 +2582,31 @@ def validate_observation_handoff(
     }
 
 
-def discover_plan(
-    client: PublicClient, requested_tag: str | None
-) -> tuple[str, dict[str, Any], dict[str, Any] | None]:
+def validate_observation_bounds(value: Any, context: str = "release observation state", depth: int = 0) -> None:
+    if depth > OBSERVATION_MAX_DEPTH:
+        raise CandidateError(f"{context} exceeds the maximum nesting depth")
+    if isinstance(value, dict):
+        if len(value) > OBSERVATION_MAX_ITEMS:
+            raise CandidateError(f"{context} contains too many object fields")
+        for key, nested in value.items():
+            if not isinstance(key, str) or not key or len(key) > 128:
+                raise CandidateError(f"{context} contains an invalid object key")
+            validate_observation_bounds(nested, f"{context}.{key}", depth + 1)
+    elif isinstance(value, list):
+        if len(value) > OBSERVATION_MAX_ITEMS:
+            raise CandidateError(f"{context} contains too many array items")
+        for index, nested in enumerate(value):
+            validate_observation_bounds(nested, f"{context}[{index}]", depth + 1)
+    elif isinstance(value, str):
+        if len(value) > OBSERVATION_MAX_TEXT or "\x00" in value:
+            raise CandidateError(f"{context} contains oversized or invalid text")
+    elif value is not None and type(value) not in {bool, int}:
+        raise CandidateError(f"{context} contains an unsupported JSON value")
+    elif type(value) is int and not -(2**63) <= value <= 2**63 - 1:
+        raise CandidateError(f"{context} contains an oversized integer")
+
+
+def discover_plan(client: PublicClient, requested_tag: str | None) -> tuple[str, dict[str, Any], dict[str, Any] | None]:
     if requested_tag:
         tag = requested_tag
         if not tag.startswith(PLAN_TAG_PREFIX):
@@ -2667,8 +2639,7 @@ def discover_plan(
     if preparation is not None:
         validate_release_preparation(preparation, plan)
     release = client.json(
-        f"https://api.github.com/repos/{CONTROL_REPOSITORY}/releases/tags/"
-        f"{urllib.parse.quote(tag, safe='')}"
+        f"https://api.github.com/repos/{CONTROL_REPOSITORY}/releases/tags/{urllib.parse.quote(tag, safe='')}"
     )
     assets = {asset.get("name"): asset for asset in release.get("assets", [])}
     records = [("release-plan.json", plan)]
@@ -2761,6 +2732,7 @@ def main() -> int:
     validate_observation.add_argument("--expected-plan-tag", required=True)
     validate_observation.add_argument("--expected-plan-sha256", required=True)
     validate_observation.add_argument("--expected-preparation-sha256", required=True)
+    validate_observation.add_argument("--expected-verification-outcome", required=True)
     validate_observation.add_argument("--github-output", type=Path)
 
     complete = subparsers.add_parser("complete")
@@ -2862,11 +2834,7 @@ def main() -> int:
             print(json.dumps(values, sort_keys=True))
         elif args.command == "observe":
             plan = load_plan(args.plan)
-            preparation = (
-                load_release_preparation(args.preparation, plan)
-                if args.preparation.exists()
-                else None
-            )
+            preparation = load_release_preparation(args.preparation, plan) if args.preparation.exists() else None
             candidate = candidate_manifest(plan)
             args.candidate.write_bytes(canonical_json(candidate))
             client = PublicClient(token)
@@ -2876,34 +2844,12 @@ def main() -> int:
                 raise CandidateError(terminal_state["reason"])
             try:
                 verification, state = observe_plan(plan, preparation, client)
-            except CandidateError as error:
-                reason = str(error)
-                failed_component = next(
-                    (name for name in COMPONENTS if reason.startswith(f"{name}:")),
-                    None,
+            except CandidateError:
+                failed_state = failed_observation_state(
+                    plan,
+                    preparation,
+                    dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
                 )
-                failed_state = {
-                    "schema": "durable-workflow.release-state/v1",
-                    "plan": plan["plan"],
-                    "channel": plan["channel"],
-                    "plan_sha256": manifest_digest(plan),
-                    "observed_at": dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-                    "phase": "public-artifact-verification",
-                    "outcome": "failed",
-                    "failed_component": failed_component,
-                    "reason": reason,
-                    "durable_evidence": {
-                        "release_plan_tag": f"{PLAN_TAG_PREFIX}{plan['plan']}",
-                        "component_actions": "repository Actions runs and public version tags",
-                    },
-                    "resume_action": (
-                        "Run the component's Release plan recovery action, then rerun Release plan observer"
-                    ),
-                }
-                if preparation is not None:
-                    failed_state["durable_evidence"]["release_preparation_sha256"] = manifest_digest(
-                        preparation
-                    )
                 args.state.write_bytes(canonical_json(failed_state))
                 raise
             args.verification.write_bytes(canonical_json(verification))
@@ -2921,6 +2867,8 @@ def main() -> int:
                 expected_plan_tag=args.expected_plan_tag,
                 expected_plan_sha256=args.expected_plan_sha256,
                 expected_preparation_sha256=args.expected_preparation_sha256,
+                expected_verification_outcome=args.expected_verification_outcome,
+                client=PublicClient(token),
             )
             write_github_output(args.github_output, result)
             print(json.dumps(result, sort_keys=True))

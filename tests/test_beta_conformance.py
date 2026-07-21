@@ -16,7 +16,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 from referencing import Registry, Resource
 
-from scripts.beta_candidate import CLI_ASSETS, COMPONENTS, SCHEMA, VERIFICATION_SCHEMA, canonical_json, manifest_digest
+from scripts.beta_candidate import COMPONENTS, SCHEMA, canonical_json
 from scripts.beta_conformance import (
     EXPERIMENTS,
     MAX_INFRASTRUCTURE_ATTEMPTS,
@@ -52,6 +52,7 @@ from scripts.beta_conformance import (
     validate_retention_source,
     write_json,
 )
+from tests.verification_fixture import candidate_verification as complete_candidate_verification
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATH = ROOT / "beta-conformance" / "contract.json"
@@ -76,62 +77,7 @@ def candidate_manifest() -> dict[str, object]:
 
 
 def candidate_verification(candidate: dict[str, object]) -> dict[str, object]:
-    components = candidate["components"]
-    assert isinstance(components, dict)
-    results = {}
-    for name, identity in components.items():
-        assert isinstance(identity, dict)
-        digest = f"{list(COMPONENTS).index(name) + 1:064x}"
-        component = COMPONENTS[name]
-        if component.distribution == "composer":
-            distribution = {
-                "kind": "composer",
-                "dist": {"sha256": digest},
-            }
-        elif component.distribution == "github-release":
-            distribution = {
-                "kind": "github-release",
-                "assets": [
-                    {"name": asset_name, "sha256": f"{index + 20:064x}"}
-                    for index, asset_name in enumerate(sorted(CLI_ASSETS))
-                ],
-            }
-        elif component.distribution == "pypi":
-            distribution = {
-                "kind": "pypi",
-                "files": [
-                    {"filename": "durable_workflow.whl", "sha256": digest},
-                    {"filename": "durable_workflow.tar.gz", "sha256": f"{100:064x}"},
-                ],
-            }
-        elif component.distribution == "crates.io":
-            distribution = {
-                "kind": "crates.io",
-                "archive": {"sha256": digest},
-            }
-        elif component.distribution == "oci":
-            distribution = {
-                "kind": "oci",
-                "image": f"docker.io/durableworkflow/server:{identity['version']}",
-                "manifest_digest": f"sha256:{'a' * 64}",
-            }
-        else:
-            raise AssertionError(component.distribution)
-        results[name] = {
-            "version": identity["version"],
-            "commit": identity["commit"],
-            "source": {},
-            "distribution": distribution,
-            "outcome": "verified",
-        }
-    return {
-        "schema": VERIFICATION_SCHEMA,
-        "candidate": candidate["candidate"],
-        "manifest_sha256": manifest_digest(candidate),
-        "verified_at": "2026-07-17T00:00:00Z",
-        "outcome": "verified",
-        "components": results,
-    }
+    return complete_candidate_verification(candidate, verified_at="2026-07-17T00:00:00Z")
 
 
 def successful_diagnostic(
@@ -168,15 +114,11 @@ def successful_diagnostic(
         "native_result_prefix_bytes": None,
         "native_summary": {
             "schema": schema,
-            "artifact_versions": {
-                name: artifact_tuple[name]["version"] for name in selected_versions
-            },
+            "artifact_versions": {name: artifact_tuple[name]["version"] for name in selected_versions},
             "executed_distribution_identities": {
                 name: json.loads(canonical_json(distribution_identities[name])) for name in selected
             },
-            "scenario_statuses": [
-                {"id": scenario_id, "status": "pass"} for scenario_id in selected_scenarios
-            ],
+            "scenario_statuses": [{"id": scenario_id, "status": "pass"} for scenario_id in selected_scenarios],
             "failure_projection": {
                 "max_bytes": NATIVE_FAILURE_PROJECTION_LIMIT,
                 "component_max_bytes": NATIVE_FAILURE_COMPONENT_LIMIT,
@@ -189,9 +131,7 @@ def successful_diagnostic(
     }
 
 
-def successful_runner_diagnostics(
-    plan: dict[str, object], specification: dict[str, Any]
-) -> list[dict[str, object]]:
+def successful_runner_diagnostics(plan: dict[str, object], specification: dict[str, Any]) -> list[dict[str, object]]:
     return [
         successful_diagnostic(
             plan,
@@ -219,12 +159,9 @@ def successful_native_result(
     return {
         "schema": "fixture.result/v1",
         "outcome": "pass",
-        "artifact_versions": {
-            name: artifact_tuple[name]["version"] for name in selected_versions
-        },
+        "artifact_versions": {name: artifact_tuple[name]["version"] for name in selected_versions},
         "executed_distribution_identities": {
-            name: json.loads(canonical_json(distribution_identities[name]))
-            for name in required_distributions
+            name: json.loads(canonical_json(distribution_identities[name])) for name in required_distributions
         },
         "local_product_source_checkout_used": False,
         "scenario_results": {"fixture": "pass"},
@@ -343,16 +280,12 @@ class RetentionSourceTest(unittest.TestCase):
         self.assertEqual("none", canary_input["default"])
         self.assertEqual("none", canary_input["options"][0])
         self.assertEqual({"none", *EXPERIMENTS}, set(canary_input["options"]))
-        execute_step = next(
-            step for step in execution["jobs"]["conformance"]["steps"] if step.get("id") == "execute"
-        )
+        execute_step = next(step for step in execution["jobs"]["conformance"]["steps"] if step.get("id") == "execute")
         self.assertEqual(
             "${{ inputs.injected_canary_failure_experiment }}",
             execute_step["env"]["INJECTED_CANARY_FAILURE_EXPERIMENT"],
         )
-        execution_scripts = "\n".join(
-            step.get("run", "") for step in execution["jobs"]["conformance"]["steps"]
-        )
+        execution_scripts = "\n".join(step.get("run", "") for step in execution["jobs"]["conformance"]["steps"])
         self.assertIn('INJECTED_CANARY_FAILURE_EXPERIMENT" = "$EXPERIMENT', execution_scripts)
         self.assertIn("injection+=(--inject-product-failure)", execution_scripts)
         self.assertEqual(["Beta conformance"], retention["on"]["workflow_run"]["workflows"])
@@ -366,9 +299,7 @@ class RetentionSourceTest(unittest.TestCase):
             retention["jobs"]["retain"]["permissions"],
         )
         self.assertEqual("beta-conformance", retention["jobs"]["retain"]["environment"])
-        retention_scripts = "\n".join(
-            step.get("run", "") for step in retention["jobs"]["retain"]["steps"]
-        )
+        retention_scripts = "\n".join(step.get("run", "") for step in retention["jobs"]["retain"]["steps"])
         self.assertIn('runner.get("revision") != os.environ["SOURCE_HEAD_SHA"]', retention_scripts)
         self.assertIn('candidate.get("name") != os.environ["SOURCE_CANDIDATE"]', retention_scripts)
         self.assertIn("evidence-ref.json evidence-ref-comparison.json", retention_scripts)
@@ -605,9 +536,7 @@ class ContractTest(unittest.TestCase):
 
     def test_contract_rejects_a_multi_runner_distribution_gap(self) -> None:
         contract = load_contract(CONTRACT_PATH)
-        contract["experiments"]["heartbeats"]["runners"][2]["required_distributions"].remove(
-            "sdk-rust"
-        )
+        contract["experiments"]["heartbeats"]["runners"][2]["required_distributions"].remove("sdk-rust")
 
         with self.assertRaisesRegex(ConformanceError, "do not cover"):
             validate_contract(contract)
@@ -715,9 +644,7 @@ class StandaloneServerRuntimeTest(unittest.TestCase):
         wait_for_server.assert_called_once()
         run_commands = [command for command in commands if command[1] == "run"]
         self.assertEqual(6, len(run_commands))
-        server_commands = [
-            command for command in run_commands if self.plan["server_runner"]["image"] in command
-        ]
+        server_commands = [command for command in run_commands if self.plan["server_runner"]["image"] in command]
         self.assertEqual(4, len(server_commands))
         self.assertTrue(any(MYSQL_RUNTIME_IMAGE in command for command in run_commands))
         self.assertTrue(any(REDIS_RUNTIME_IMAGE in command for command in run_commands))
@@ -976,10 +903,7 @@ class ExperimentRetryTest(unittest.TestCase):
             inject_product_failure=True,
         )
 
-        raw_stderr = (
-            "deterministic synthetic sanitizer canary: "
-            f"Authorization: Bearer {SYNTHETIC_CREDENTIAL_CANARY}"
-        )
+        raw_stderr = f"deterministic synthetic sanitizer canary: Authorization: Bearer {SYNTHETIC_CREDENTIAL_CANARY}"
         diagnostic = result["diagnostics"][0]
         asset = (self.result_dir / "experiment-result.json").read_bytes()
         self.assertEqual(canonical_json(result), asset)
@@ -1089,9 +1013,9 @@ class ExperimentRetryTest(unittest.TestCase):
 
     def test_native_failure_projection_retains_attribution_and_sanitized_companion_evidence(self) -> None:
         private_token = "beta-0123456789abcdef0123456789abcdef"
-        quoted_password = r'two \"quoted-password-fragment\" password-tail'
+        quoted_password = r"two \"quoted-password-fragment\" password-tail"
         quoted_api_token = "left,right;tail"
-        escaped_password = r'escaped \\\"escaped-password-fragment\\\" escaped-tail'
+        escaped_password = r"escaped \\\"escaped-password-fragment\\\" escaped-tail"
         escaped_api_token = "escaped,left;tail"
         quoted_bearer = "bearer token, with; delimiters"
         multiline_password = 'line-one\nmultiline-password-secret" multiline-password-tail'
@@ -1115,16 +1039,13 @@ class ExperimentRetryTest(unittest.TestCase):
                             "status_code": 500,
                             "public_error_envelope": {
                                 "message": f"Authorization: Bearer {private_token}",
-                                "diagnostic": (
-                                    f'{{"password":"{quoted_password}",'
-                                    f'"api_token":"{quoted_api_token}"}}'
-                                ),
+                                "diagnostic": (f'{{"password":"{quoted_password}","api_token":"{quoted_api_token}"}}'),
                                 "quoted_header": f'{{"Authorization":"Bearer {quoted_bearer}"}}',
                                 "multiline_diagnostic": f'password="{multiline_password}',
                                 "multiline_header": f"Authorization: Bearer {multiline_authorization}",
                                 "escaped_diagnostics": [
-                                    rf'{{\"password\":\"{escaped_password}\"}}',
-                                    rf'{{\"api_token\":\"{escaped_api_token}\"}}',
+                                    rf"{{\"password\":\"{escaped_password}\"}}",
+                                    rf"{{\"api_token\":\"{escaped_api_token}\"}}",
                                 ],
                             },
                         },
@@ -1183,16 +1104,16 @@ class ExperimentRetryTest(unittest.TestCase):
         self.assertEqual("Authorization: Bearer [REDACTED]", public_error_envelope["multiline_header"])
         escaped_diagnostics = public_error_envelope["escaped_diagnostics"]
         self.assertEqual(
-            [r'{\"password\":\"[REDACTED]\"}', r'{\"api_token\":\"[REDACTED]\"}'],
+            [r"{\"password\":\"[REDACTED]\"}", r"{\"api_token\":\"[REDACTED]\"}"],
             escaped_diagnostics,
         )
         self.assertEqual("", native_failure_projection_error(projection))
-        escaped_diagnostics[0] = rf'{{\"password\":\"{escaped_password}\"}}'
+        escaped_diagnostics[0] = rf"{{\"password\":\"{escaped_password}\"}}"
         self.assertEqual(
             "experiment result has unsanitized native failure evidence",
             native_failure_projection_error(projection),
         )
-        escaped_diagnostics[1] = r'{\"api_token\":\"[REDACTED]\"}'
+        escaped_diagnostics[1] = r"{\"api_token\":\"[REDACTED]\"}"
         public_error_envelope["multiline_diagnostic"] = f'password="{multiline_password}'
         self.assertEqual(
             "experiment result has unsanitized native failure evidence",
@@ -1204,8 +1125,8 @@ class ExperimentRetryTest(unittest.TestCase):
             "experiment result has unsanitized native failure evidence",
             native_failure_projection_error(projection),
         )
-        escaped_diagnostics[0] = r'{\"password\":\"[REDACTED]\"}'
-        escaped_diagnostics[1] = rf'{{\"api_token\":\"{escaped_api_token}\"}}'
+        escaped_diagnostics[0] = r"{\"password\":\"[REDACTED]\"}"
+        escaped_diagnostics[1] = rf"{{\"api_token\":\"{escaped_api_token}\"}}"
         self.assertEqual(
             "experiment result has unsanitized native failure evidence",
             native_failure_projection_error(projection),
@@ -1280,9 +1201,7 @@ class ExperimentRetryTest(unittest.TestCase):
         for field, sensitive_value in sensitive_values.items():
             with self.subTest(field=field):
                 leaking_result = json.loads(canonical_json(result))
-                leaking_result["diagnostics"][0]["native_summary"]["scenario_statuses"][0][field] = (
-                    sensitive_value
-                )
+                leaking_result["diagnostics"][0]["native_summary"]["scenario_statuses"][0][field] = sensitive_value
                 with self.assertRaisesRegex(ConformanceError, "unsanitized native scenario statuses"):
                     validate_experiment_result(leaking_result, self.plan)
 
@@ -1426,8 +1345,7 @@ class ExperimentRetryTest(unittest.TestCase):
                 "artifactVersions": native.pop("artifact_versions"),
                 "runtime_matrix": {},
                 "scenario_results": {
-                    scenario: {"scenario_id": scenario, "status": "pass"}
-                    for scenario in runner["required_scenarios"]
+                    scenario: {"scenario_id": scenario, "status": "pass"} for scenario in runner["required_scenarios"]
                 },
                 "finding_links": {},
             }
@@ -1862,9 +1780,7 @@ class ExperimentRetryTest(unittest.TestCase):
             stdout_path.write_text("", encoding="utf-8")
             stderr_path.write_text("", encoding="utf-8")
             native = self.native_result("pass")
-            native["executed_distribution_identities"]["sdk-python"]["locator"] = (
-                "not-a-distribution-locator"
-            )
+            native["executed_distribution_identities"]["sdk-python"]["locator"] = "not-a-distribution-locator"
             native_dir = Path(command[-1])
             (native_dir / self.runner["result"]).write_bytes(canonical_json(native))
             return 0, False
@@ -2047,9 +1963,7 @@ class ExperimentRetryTest(unittest.TestCase):
             stdout_path.write_text("", encoding="utf-8")
             stderr_path.write_text("", encoding="utf-8")
             native = self.native_result("pass")
-            native["executed_distribution_identities"]["sdk-python"]["locator"] = (
-                "pypi:durable-workflow@9.9.9"
-            )
+            native["executed_distribution_identities"]["sdk-python"]["locator"] = "pypi:durable-workflow@9.9.9"
             native_dir = Path(command[-1])
             (native_dir / self.runner["result"]).write_bytes(canonical_json(native))
             return 0, False
@@ -2069,9 +1983,7 @@ class ExperimentRetryTest(unittest.TestCase):
         self.assertEqual("artifact-binding", binding["runner"])
         self.assertEqual(
             "pypi:durable-workflow@9.9.9",
-            result["diagnostics"][0]["native_summary"]["executed_distribution_identities"]["sdk-python"][
-                "locator"
-            ],
+            result["diagnostics"][0]["native_summary"]["executed_distribution_identities"]["sdk-python"]["locator"],
         )
         self.assertIn("different distribution locator", binding["findings"][0]["summary"])
 
@@ -2241,9 +2153,7 @@ class MultiRunnerExperimentTest(unittest.TestCase):
         )
 
         peer_version = json.loads(canonical_json(native))
-        peer_version["artifact_versions"]["sdk-python"] = self.plan["artifact_tuple"][
-            "sdk-python"
-        ]["version"]
+        peer_version["artifact_versions"]["sdk-python"] = self.plan["artifact_tuple"]["sdk-python"]["version"]
         self.assertIn(
             "outside its required distributions: sdk-python",
             native_result_completeness_error(
@@ -2293,9 +2203,7 @@ class MultiRunnerExperimentTest(unittest.TestCase):
                 assert isinstance(artifact_tuple, dict)
                 assert isinstance(distribution_identities, dict)
                 versions["sdk-python"] = artifact_tuple["sdk-python"]["version"]
-                identities["sdk-python"] = json.loads(
-                    canonical_json(distribution_identities["sdk-python"])
-                )
+                identities["sdk-python"] = json.loads(canonical_json(distribution_identities["sdk-python"]))
 
         executed, result = self.execute_shards(add_python_claim)
 
@@ -2625,9 +2533,7 @@ class EvidenceTest(unittest.TestCase):
             successful_runner_diagnostics(self.plan, specification),
         )
         php_summary = next(
-            diagnostic["native_summary"]
-            for diagnostic in result["diagnostics"]
-            if diagnostic["runner"] == "php-sdk"
+            diagnostic["native_summary"] for diagnostic in result["diagnostics"] if diagnostic["runner"] == "php-sdk"
         )
 
         self.assertEqual({"sdk-php", "server"}, set(php_summary["artifact_versions"]))
@@ -2686,9 +2592,7 @@ class EvidenceTest(unittest.TestCase):
             successful_runner_diagnostics(self.plan, specification),
         )
         php_summary = result["diagnostics"][0]["native_summary"]
-        php_summary["artifact_versions"]["sdk-python"] = self.plan["artifact_tuple"]["sdk-python"][
-            "version"
-        ]
+        php_summary["artifact_versions"]["sdk-python"] = self.plan["artifact_tuple"]["sdk-python"]["version"]
         php_summary["executed_distribution_identities"]["sdk-python"] = json.loads(
             canonical_json(self.plan["distribution_identities"]["sdk-python"])
         )

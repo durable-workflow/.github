@@ -38,6 +38,7 @@ from scripts.beta_continuity import (
     validate_interrupted_evidence,
 )
 from scripts.release_plan import candidate_manifest
+from tests.verification_fixture import candidate_verification
 
 ROOT = Path(__file__).resolve().parents[1]
 ROUTED_BLOCKER_LABELS = (
@@ -622,17 +623,7 @@ class BetaContinuityTest(unittest.TestCase):
             for index, (name, identity) in enumerate(plan["components"].items())
         }
         candidate = candidate_manifest(plan)
-        public_verification = {
-            "schema": "durable-workflow.beta-candidate-verification/v1",
-            "candidate": candidate["candidate"],
-            "manifest_sha256": manifest_digest(candidate),
-            "verified_at": "2026-07-20T10:20:00Z",
-            "outcome": "verified",
-            "components": {
-                name: {"commit": identity["commit"], "outcome": "verified", "version": identity["version"]}
-                for name, identity in plan["components"].items()
-            },
-        }
+        public_verification = candidate_verification(candidate, verified_at="2026-07-20T10:20:00Z")
         qualification_targets = {
             name: {
                 "branch": "v2" if name in {"workflow", "waterline"} else "main",
@@ -835,15 +826,9 @@ class BetaContinuityTest(unittest.TestCase):
             "state": "open",
         }
         missing_specification = config["evidence_work_items"][1]
-        parent_path = (
-            f"/repos/{parent_specification['repository']}/issues/{parent_specification['number']}"
-        )
-        present_path = (
-            f"/repos/{present_specification['repository']}/issues/{present_specification['number']}"
-        )
-        missing_path = (
-            f"/repos/{missing_specification['repository']}/issues/{missing_specification['number']}"
-        )
+        parent_path = f"/repos/{parent_specification['repository']}/issues/{parent_specification['number']}"
+        present_path = f"/repos/{present_specification['repository']}/issues/{present_specification['number']}"
+        missing_path = f"/repos/{missing_specification['repository']}/issues/{missing_specification['number']}"
 
         class MissingWorkItemWriter:
             def __init__(self) -> None:

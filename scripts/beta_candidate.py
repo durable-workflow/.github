@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import contextlib
 import datetime as dt
 import email.utils
@@ -40,6 +42,12 @@ GITHUB_READ_RETRY_MAX_SECONDS = 120.0
 GITHUB_READ_REQUEST_TIMEOUT_SECONDS = 30.0
 GITHUB_READ_DEADLINE_SECONDS = 600.0
 INFRASTRUCTURE_EXIT_CODE = 75
+VERIFICATION_MAX_BYTES = 256 * 1024
+MAX_URL_LENGTH = 2048
+MAX_TEXT_LENGTH = 4096
+MAX_PYPI_FILES = 32
+PHAR_BUILD_INFO_MAX_BYTES = 16 * 1024
+RFC3339_SECONDS_PATTERN = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 
 
 @dataclass(frozen=True)
@@ -156,25 +164,299 @@ def manifest_digest(manifest: dict[str, Any]) -> str:
     return hashlib.sha256(canonical_json(manifest)).hexdigest()
 
 
+def canonical_cli_embedded_identity(version: str, commit: str) -> str:
+    """Return the writer-reproducible portion of the verified PHAR identity."""
+    return f"dw {version.lstrip('v')} (commit {commit[:12]})"
+
+
+def _require_exact_keys(value: Any, keys: set[str], context: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != keys:
+        raise CandidateError(f"{context} keys must be exactly {sorted(keys)}")
+    return value
+
+
+def _require_bounded_string(value: Any, context: str, *, maximum: int = MAX_TEXT_LENGTH) -> str:
+    if not isinstance(value, str) or not value or len(value) > maximum or "\x00" in value:
+        raise CandidateError(f"{context} must be a non-empty string of at most {maximum} characters")
+    return value
+
+
+def _require_https_url(value: Any, context: str) -> str:
+    url = _require_bounded_string(value, context, maximum=MAX_URL_LENGTH)
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "https" or not parsed.netloc or parsed.username is not None or parsed.password is not None:
+        raise CandidateError(f"{context} must be a bounded public HTTPS URL")
+    return url
+
+
+def _require_positive_integer(value: Any, context: str, *, allow_zero: bool = False) -> int:
+    minimum = 0 if allow_zero else 1
+    if type(value) is not int or value < minimum or value > 2**63 - 1:
+        raise CandidateError(f"{context} must be an integer between {minimum} and {2**63 - 1}")
+    return value
+
+
+def _validate_download_evidence(value: Any, context: str) -> None:
+    download = _require_exact_keys(value, {"url", "size", "sha256"}, context)
+    _require_https_url(download["url"], f"{context}.url")
+    _require_positive_integer(download["size"], f"{context}.size")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(download["sha256"])):
+        raise CandidateError(f"{context}.sha256 must be a lowercase SHA-256 identity")
+
+
+def _validate_source_evidence(value: Any, component: Component, version: str, commit: str, context: str) -> None:
+    source = _require_exact_keys(value, {"repository", "tag", "tag_object", "commit", "url"}, context)
+    if (
+        source["repository"] != component.repository
+        or source["tag"] != version
+        or source["commit"] != commit
+        or not COMMIT_PATTERN.fullmatch(str(source["tag_object"]))
+        or source["url"] != f"https://github.com/{component.repository}/tree/{version}"
+    ):
+        raise CandidateError(f"{context} does not prove the planned source tag and commit")
+
+
+def _validate_composer_evidence(value: Any, component: Component, _version: str, commit: str, context: str) -> None:
+    distribution = _require_exact_keys(
+        value,
+        {"kind", "package", "registry", "source_reference", "dist_reference", "dist"},
+        context,
+    )
+    encoded = "/".join(urllib.parse.quote(part, safe="") for part in component.package.split("/"))
+    if (
+        distribution["kind"] != "composer"
+        or distribution["package"] != component.package
+        or distribution["registry"] != f"https://repo.packagist.org/p2/{encoded}.json"
+        or distribution["source_reference"] != commit
+        or distribution["dist_reference"] != commit
+    ):
+        raise CandidateError(f"{context} does not prove the planned Composer package identity")
+    _validate_download_evidence(distribution["dist"], f"{context}.dist")
+
+
+def _validate_github_release_evidence(
+    value: Any, component: Component, version: str, commit: str, context: str
+) -> None:
+    distribution = _require_exact_keys(
+        value,
+        {
+            "kind",
+            "repository",
+            "release_id",
+            "release_url",
+            "build_attestations_verified",
+            "build_attestation_authority",
+            "package_source",
+            "assets",
+        },
+        context,
+    )
+    release_url = _require_https_url(distribution["release_url"], f"{context}.release_url")
+    if (
+        distribution["kind"] != "github-release"
+        or distribution["repository"] != component.repository
+        or not release_url.startswith(f"https://github.com/{component.repository}/releases/")
+        or distribution["build_attestations_verified"] is not True
+    ):
+        raise CandidateError(f"{context} does not prove the planned GitHub Release")
+    _require_positive_integer(distribution["release_id"], f"{context}.release_id")
+
+    authority = distribution["build_attestation_authority"]
+    if isinstance(authority, dict) and authority.get("mode") == "exact-tag":
+        expected_authority = {"mode": "exact-tag", "ref": f"refs/tags/{version}", "commit": commit}
+    else:
+        expected_authority = {
+            "mode": "qualified-main-workflow",
+            "ref": "refs/heads/main",
+            "workflow": f"{component.repository}/.github/workflows/release.yml",
+        }
+    if authority != expected_authority:
+        raise CandidateError(f"{context}.build_attestation_authority is not an accepted exact authority")
+
+    package_source = _require_exact_keys(
+        distribution["package_source"], {"commit", "embedded_phar_identity"}, f"{context}.package_source"
+    )
+    embedded_identity = package_source["embedded_phar_identity"]
+    if package_source["commit"] != commit or embedded_identity != canonical_cli_embedded_identity(version, commit):
+        raise CandidateError(f"{context}.package_source does not bind the planned CLI source")
+
+    assets = distribution["assets"]
+    if not isinstance(assets, list) or len(assets) != len(CLI_ASSETS):
+        raise CandidateError(f"{context}.assets must contain exactly the required CLI release assets")
+    names: set[str] = set()
+    for index, raw_asset in enumerate(assets):
+        asset = _require_exact_keys(
+            raw_asset, {"name", "asset_id", "url", "size", "sha256"}, f"{context}.assets[{index}]"
+        )
+        if asset["name"] not in CLI_ASSETS or asset["name"] in names:
+            raise CandidateError(f"{context}.assets contains an invalid or duplicate asset name")
+        names.add(asset["name"])
+        _require_positive_integer(asset["asset_id"], f"{context}.assets[{index}].asset_id")
+        _validate_download_evidence(
+            {key: asset[key] for key in ("url", "size", "sha256")},
+            f"{context}.assets[{index}]",
+        )
+    if names != CLI_ASSETS:
+        raise CandidateError(f"{context}.assets does not cover every required CLI release asset")
+
+
+def _validate_pypi_evidence(value: Any, component: Component, version: str, commit: str, context: str) -> None:
+    distribution = _require_exact_keys(value, {"kind", "package", "registry", "source_identity", "files"}, context)
+    encoded_package = urllib.parse.quote(component.package, safe="")
+    encoded_version = urllib.parse.quote(version, safe="")
+    if (
+        distribution["kind"] != "pypi"
+        or distribution["package"] != component.package
+        or distribution["registry"] != f"https://pypi.org/pypi/{encoded_package}/{encoded_version}/json"
+    ):
+        raise CandidateError(f"{context} does not prove the planned PyPI package identity")
+    source_identity = _require_exact_keys(
+        distribution["source_identity"],
+        {"source_archive", "source_files_compared", "wheel_files_compared", "source_commit"},
+        f"{context}.source_identity",
+    )
+    _validate_download_evidence(source_identity["source_archive"], f"{context}.source_identity.source_archive")
+    _require_positive_integer(
+        source_identity["source_files_compared"], f"{context}.source_identity.source_files_compared"
+    )
+    _require_positive_integer(
+        source_identity["wheel_files_compared"], f"{context}.source_identity.wheel_files_compared"
+    )
+    if source_identity["source_commit"] != commit:
+        raise CandidateError(f"{context}.source_identity does not bind the planned source commit")
+
+    files = distribution["files"]
+    if not isinstance(files, list) or not 2 <= len(files) <= MAX_PYPI_FILES:
+        raise CandidateError(f"{context}.files must contain 2-{MAX_PYPI_FILES} bounded distribution files")
+    names: set[str] = set()
+    package_types: set[str] = set()
+    for index, raw_file in enumerate(files):
+        file = _require_exact_keys(
+            raw_file,
+            {"url", "size", "sha256", "filename", "package_type"},
+            f"{context}.files[{index}]",
+        )
+        filename = _require_bounded_string(file["filename"], f"{context}.files[{index}].filename", maximum=255)
+        if filename in names or "/" in filename or "\\" in filename:
+            raise CandidateError(f"{context}.files contains an invalid or duplicate filename")
+        names.add(filename)
+        if file["package_type"] not in {"bdist_wheel", "sdist"}:
+            raise CandidateError(f"{context}.files contains an unsupported package type")
+        package_types.add(file["package_type"])
+        _validate_download_evidence(
+            {key: file[key] for key in ("url", "size", "sha256")},
+            f"{context}.files[{index}]",
+        )
+    if package_types != {"bdist_wheel", "sdist"}:
+        raise CandidateError(f"{context}.files must prove both wheel and source distributions")
+
+
+def _validate_crate_evidence(value: Any, component: Component, version: str, commit: str, context: str) -> None:
+    distribution = _require_exact_keys(
+        value,
+        {"kind", "package", "registry", "archive_vcs_commit", "archive_vcs_dirty", "archive"},
+        context,
+    )
+    encoded_package = urllib.parse.quote(component.package, safe="")
+    encoded_version = urllib.parse.quote(version, safe="")
+    if (
+        distribution["kind"] != "crates.io"
+        or distribution["package"] != component.package
+        or distribution["registry"] != f"https://crates.io/api/v1/crates/{encoded_package}/{encoded_version}"
+        or distribution["archive_vcs_commit"] != commit
+        or distribution["archive_vcs_dirty"] is not False
+    ):
+        raise CandidateError(f"{context} does not prove the planned crates.io package identity")
+    _validate_download_evidence(distribution["archive"], f"{context}.archive")
+
+
+def _validate_oci_evidence(value: Any, component: Component, version: str, commit: str, context: str) -> None:
+    distribution = _require_exact_keys(value, {"kind", "image", "manifest_digest", "platforms", "configs"}, context)
+    if (
+        distribution["kind"] != "oci"
+        or distribution["image"] != f"{component.package}:{version}"
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(distribution["manifest_digest"]))
+    ):
+        raise CandidateError(f"{context} does not prove the planned OCI image identity")
+    platforms = distribution["platforms"]
+    if not isinstance(platforms, list) or len(platforms) != 2 or set(platforms) != {"linux/amd64", "linux/arm64"}:
+        raise CandidateError(f"{context}.platforms must prove exactly the required Linux platforms")
+    configs = distribution["configs"]
+    if not isinstance(configs, list) or len(configs) != 2:
+        raise CandidateError(f"{context}.configs must prove exactly two platform configurations")
+    digests: set[str] = set()
+    expected_labels = {
+        "org.opencontainers.image.revision": commit,
+        "dev.durable-workflow.release.tag": version,
+    }
+    for index, raw_config in enumerate(configs):
+        config = _require_exact_keys(raw_config, {"digest", "labels"}, f"{context}.configs[{index}]")
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(config["digest"])) or config["digest"] in digests:
+            raise CandidateError(f"{context}.configs contains an invalid or duplicate digest")
+        digests.add(config["digest"])
+        if config["labels"] != expected_labels:
+            raise CandidateError(f"{context}.configs labels do not bind the planned source identity")
+
+
+def load_verification(path: Path, manifest: dict[str, Any]) -> dict[str, Any]:
+    try:
+        raw = path.read_bytes()
+    except OSError as error:
+        raise CandidateError(f"cannot read verification result: {error}") from error
+    if len(raw) > VERIFICATION_MAX_BYTES:
+        raise CandidateError(f"verification result exceeds the {VERIFICATION_MAX_BYTES // 1024} KiB limit")
+    try:
+        verification = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise CandidateError(f"cannot read verification result: {error}") from error
+    validate_verification(verification, manifest)
+    return verification
+
+
 def validate_verification(verification: Any, manifest: dict[str, Any]) -> None:
     if not isinstance(verification, dict):
         raise CandidateError("verification result must be a JSON object")
+    expected_top = {"schema", "candidate", "manifest_sha256", "verified_at", "outcome", "components"}
+    if set(verification) != expected_top:
+        raise CandidateError(f"verification result keys must be exactly {sorted(expected_top)}")
     if (
-        verification.get("schema") != VERIFICATION_SCHEMA
-        or verification.get("candidate") != manifest["candidate"]
-        or verification.get("manifest_sha256") != manifest_digest(manifest)
-        or verification.get("outcome") != "verified"
+        verification["schema"] != VERIFICATION_SCHEMA
+        or verification["candidate"] != manifest["candidate"]
+        or verification["manifest_sha256"] != manifest_digest(manifest)
+        or verification["outcome"] != "verified"
     ):
         raise CandidateError("verification result does not prove this exact candidate manifest")
-    components = verification.get("components")
+    verified_at = verification["verified_at"]
+    if not isinstance(verified_at, str) or not RFC3339_SECONDS_PATTERN.fullmatch(verified_at):
+        raise CandidateError("verification result verified_at must be an RFC 3339 UTC timestamp")
+    try:
+        dt.datetime.strptime(verified_at, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError as error:
+        raise CandidateError("verification result verified_at must be a valid UTC timestamp") from error
+
+    components = verification["components"]
     if not isinstance(components, dict) or set(components) != set(COMPONENTS):
         raise CandidateError("verification result does not cover every candidate component")
     for name, identity in manifest["components"].items():
         result = components[name]
-        if not isinstance(result, dict) or result.get("outcome") != "verified":
+        expected_result = {"version", "commit", "source", "distribution", "outcome"}
+        if not isinstance(result, dict) or set(result) != expected_result or result["outcome"] != "verified":
             raise CandidateError(f"verification result for {name} is not successful")
-        if result.get("version") != identity["version"] or result.get("commit") != identity["commit"]:
+        if result["version"] != identity["version"] or result["commit"] != identity["commit"]:
             raise CandidateError(f"verification result for {name} proves a different source release")
+        component = COMPONENTS[name]
+        context = f"verification result for {name}"
+        _validate_source_evidence(result["source"], component, identity["version"], identity["commit"], context)
+        distribution_validators = {
+            "composer": _validate_composer_evidence,
+            "github-release": _validate_github_release_evidence,
+            "pypi": _validate_pypi_evidence,
+            "crates.io": _validate_crate_evidence,
+            "oci": _validate_oci_evidence,
+        }
+        distribution_validators[component.distribution](
+            result["distribution"], component, identity["version"], identity["commit"], f"{context}.distribution"
+        )
 
 
 class PublicClient:
@@ -320,11 +602,7 @@ class PublicClient:
         for attempt in range(1, attempt_limit + 1):
             if endpoint_class is not None and self._remaining_time() <= 0:
                 raise PublicInfrastructureError(endpoint_class, attempt - 1, reason="workflow-deadline")
-            timeout = (
-                min(self.request_timeout_seconds, self._remaining_time())
-                if endpoint_class is not None
-                else 60
-            )
+            timeout = min(self.request_timeout_seconds, self._remaining_time()) if endpoint_class is not None else 60
             request = urllib.request.Request(url, headers=request_headers)
             failure: _TransientGitHubRead | None = None
             try:
@@ -486,14 +764,79 @@ def parse_checksums(raw: bytes) -> dict[str, str]:
     return checksums
 
 
+def inspect_cli_phar_identity(phar_path: Path, version: str, expected_commit: str) -> str:
+    """Read generated source identity from a PHAR archive without executing its stub."""
+    if shutil.which("php") is None:
+        raise CandidateError("PHP is required to inspect CLI release source metadata")
+    inspection = r"""
+try {
+    $archive = new Phar($argv[1]);
+    $path = 'src/GeneratedBuildInfo.php';
+    if (!$archive->offsetExists($path)) {
+        exit(41);
+    }
+    $contents = $archive[$path]->getContent();
+    if (strlen($contents) > 16384) {
+        exit(42);
+    }
+    fwrite(STDOUT, base64_encode($contents));
+} catch (Throwable $error) {
+    exit(43);
+}
+"""
+    try:
+        process = subprocess.run(
+            [
+                "php",
+                "-d",
+                "display_errors=0",
+                "-d",
+                "log_errors=0",
+                "-r",
+                inspection,
+                "--",
+                str(phar_path),
+            ],
+            cwd=phar_path.parent,
+            check=False,
+            text=True,
+            capture_output=True,
+            env={"PATH": os.environ.get("PATH", os.defpath)},
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise CandidateError(f"CLI PHAR for {version} source metadata inspection timed out") from error
+    if process.returncode:
+        raise CandidateError(f"CLI PHAR for {version} has no inspectable generated source metadata")
+    try:
+        generated = base64.b64decode(process.stdout, validate=True)
+    except (ValueError, binascii.Error) as error:
+        raise CandidateError(f"CLI PHAR for {version} has invalid generated source metadata") from error
+    if len(generated) > PHAR_BUILD_INFO_MAX_BYTES:
+        raise CandidateError(f"CLI PHAR for {version} has oversized generated source metadata")
+    try:
+        source = generated.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise CandidateError(f"CLI PHAR for {version} has non-UTF-8 generated source metadata") from error
+
+    def generated_constant(name: str) -> str | None:
+        matches = re.findall(rf"\bpublic\s+const\s+{name}\s*=\s*'([^'\\\r\n]*)'\s*;", source)
+        return matches[0] if len(matches) == 1 else None
+
+    if (
+        generated_constant("VERSION") != version.lstrip("v")
+        or generated_constant("COMMIT") != expected_commit
+    ):
+        raise CandidateError(f"CLI PHAR for {version} does not embed planned source commit {expected_commit}")
+    return canonical_cli_embedded_identity(version, expected_commit)
+
+
 def verify_github_release(
     client: PublicClient,
     component: Component,
     version: str,
     expected_commit: str,
     directory: Path,
-    *,
-    verified_embedded_identity: str | None = None,
 ) -> dict[str, Any]:
     encoded = urllib.parse.quote(version, safe="")
     api_url = f"https://api.github.com/repos/{component.repository}/releases/tags/{encoded}"
@@ -560,34 +903,10 @@ def verify_github_release(
                 break
             failures.append(f"{mode[0]}: {process.stderr.strip()}")
         else:
-            raise CandidateError(
-                f"CLI build attestation failed for {asset_path.name}: {'; '.join(failures)}"
-            )
+            raise CandidateError(f"CLI build attestation failed for {asset_path.name}: {'; '.join(failures)}")
 
     assert selected_attestation_mode is not None
-    expected_identity = f"{version} (commit {expected_commit[:12]},"
-    if verified_embedded_identity is None:
-        if shutil.which("php") is None:
-            raise CandidateError("PHP is required to verify CLI release source metadata")
-        phar_version = subprocess.run(
-            ["php", str(directory / "dw.phar"), "--version"],
-            cwd=directory,
-            check=False,
-            text=True,
-            capture_output=True,
-            env={"PATH": os.environ.get("PATH", os.defpath)},
-        )
-        if phar_version.returncode or expected_identity not in phar_version.stdout:
-            raise CandidateError(
-                f"CLI PHAR for {version} does not embed planned source commit {expected_commit}"
-            )
-        embedded_identity = phar_version.stdout.strip()
-    else:
-        if expected_identity not in verified_embedded_identity:
-            raise CandidateError(
-                f"prior CLI PHAR identity for {version} does not bind source commit {expected_commit}"
-            )
-        embedded_identity = verified_embedded_identity
+    embedded_identity = inspect_cli_phar_identity(directory / "dw.phar", version, expected_commit)
     return {
         "kind": "github-release",
         "repository": component.repository,
@@ -694,7 +1013,11 @@ def verify_pypi(
     expected_repository = f"https://github.com/{component.repository}"
     if expected_repository not in repository_urls:
         raise CandidateError(f"PyPI metadata for {component.package}=={version} does not name {expected_repository}")
-    files = [item for item in payload.get("urls", []) if not item.get("yanked")]
+    files = [
+        item
+        for item in payload.get("urls", [])
+        if not item.get("yanked") and item.get("packagetype") in {"bdist_wheel", "sdist"}
+    ]
     package_types = {item.get("packagetype") for item in files}
     if not {"bdist_wheel", "sdist"}.issubset(package_types):
         raise CandidateError(f"PyPI release {component.package}=={version} must provide a wheel and source archive")
@@ -891,6 +1214,55 @@ def verify_candidate(manifest: dict[str, Any], client: PublicClient) -> dict[str
     }
 
 
+def revalidate_verification(
+    verification: dict[str, Any], manifest: dict[str, Any], client: PublicClient
+) -> dict[str, Any]:
+    """Independently reproduce and canonicalize evidence before an authenticated write."""
+    validate_verification(verification, manifest)
+    components: dict[str, Any] = {}
+    with tempfile.TemporaryDirectory(prefix="beta-candidate-writer-revalidation-") as temporary:
+        directory = Path(temporary)
+        for name, component in COMPONENTS.items():
+            identity = manifest["components"][name]
+            submitted = verification["components"][name]
+            try:
+                source = resolve_github_tag(client, component.repository, identity["version"])
+                require_tag_commit(source, identity["commit"])
+                if component.distribution == "github-release":
+                    distribution = verify_github_release(
+                        client,
+                        component,
+                        identity["version"],
+                        identity["commit"],
+                        directory,
+                    )
+                else:
+                    distribution = VERIFIERS[component.distribution](
+                        client, component, identity["version"], identity["commit"], directory
+                    )
+            except CandidateError as error:
+                raise CandidateError(f"fresh writer revalidation failed for {name}: {error}") from error
+            if source != submitted["source"] or distribution != submitted["distribution"]:
+                raise CandidateError(
+                    f"fresh writer revalidation for {name} differs from the isolated verification handoff"
+                )
+            components[name] = {
+                "version": identity["version"],
+                "commit": identity["commit"],
+                "source": source,
+                "distribution": distribution,
+                "outcome": "verified",
+            }
+    return {
+        "schema": VERIFICATION_SCHEMA,
+        "candidate": manifest["candidate"],
+        "manifest_sha256": manifest_digest(manifest),
+        "verified_at": dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "outcome": "verified",
+        "components": components,
+    }
+
+
 def run_git(arguments: list[str], *, cwd: Path, env: dict[str, str] | None = None, check: bool = True) -> str:
     process = subprocess.run(
         ["git", *arguments],
@@ -969,15 +1341,11 @@ def record_candidate(
     *,
     remote: str,
     authoritative_verification: Path,
+    client: PublicClient,
 ) -> dict[str, str]:
     manifest = load_manifest(manifest_path)
     canonical_manifest = canonical_json(manifest)
-    try:
-        verification = json.loads(verification_path.read_bytes())
-    except (OSError, json.JSONDecodeError) as error:
-        raise CandidateError(f"cannot read verification result: {error}") from error
-    validate_verification(verification, manifest)
-    canonical_verification = canonical_json(verification)
+    verification = load_verification(verification_path, manifest)
     tag = f"{TAG_PREFIX}{manifest['candidate']}"
 
     existing_ref = fetch_existing_record(repository, remote, tag)
@@ -993,6 +1361,9 @@ def record_candidate(
             "tag": tag,
             "commit": run_git(["rev-parse", f"{existing_ref}^{{commit}}"], cwd=repository),
         }
+
+    verification = revalidate_verification(verification, manifest, client)
+    canonical_verification = canonical_json(verification)
 
     with tempfile.NamedTemporaryFile(prefix="beta-candidate-index-", delete=False) as index:
         index_path = Path(index.name)
@@ -1089,11 +1460,7 @@ def command_verify(arguments: argparse.Namespace) -> None:
 
 def command_validate_verification(arguments: argparse.Namespace) -> None:
     manifest = load_manifest(arguments.manifest)
-    try:
-        verification = json.loads(arguments.verification.read_bytes())
-    except (OSError, json.JSONDecodeError) as error:
-        raise CandidateError(f"cannot read verification result: {error}") from error
-    validate_verification(verification, manifest)
+    load_verification(arguments.verification, manifest)
 
 
 def command_check(arguments: argparse.Namespace) -> None:
@@ -1109,6 +1476,7 @@ def command_record(arguments: argparse.Namespace) -> None:
         arguments.verification,
         remote=arguments.remote,
         authoritative_verification=arguments.authoritative_verification,
+        client=PublicClient(os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")),
     )
     write_github_output(arguments.github_output, result)
     print(json.dumps(result, sort_keys=True))

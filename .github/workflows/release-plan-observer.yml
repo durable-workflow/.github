@@ -83,8 +83,9 @@ jobs:
     name: Record observation from a fresh checkout
     needs: observe
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     permissions:
+      attestations: read
       contents: write
     steps:
       - name: Check out a fresh qualified control plane
@@ -122,6 +123,7 @@ jobs:
           EXPECTED_PLAN_TAG: ${{ needs.observe.outputs.plan-tag }}
           EXPECTED_PLAN_SHA256: ${{ needs.observe.outputs.plan-sha256 }}
           EXPECTED_PREPARATION_SHA256: ${{ needs.observe.outputs.preparation-sha256 }}
+          EXPECTED_VERIFICATION_OUTCOME: ${{ needs.observe.outputs.verification-outcome }}
         run: |
           python scripts/release_plan.py validate-observation-handoff \
             isolated-observation/release-plan.json \
@@ -135,6 +137,7 @@ jobs:
             --expected-plan-tag "$EXPECTED_PLAN_TAG" \
             --expected-plan-sha256 "$EXPECTED_PLAN_SHA256" \
             --expected-preparation-sha256 "$EXPECTED_PREPARATION_SHA256" \
+            --expected-verification-outcome "$EXPECTED_VERIFICATION_OUTCOME" \
             --github-output "$GITHUB_OUTPUT"
 
       - name: Retain aggregate state on the plan release

@@ -111,8 +111,9 @@ jobs:
     name: Record qualified immutable candidate from a fresh checkout
     needs: qualify
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     permissions:
+      attestations: read
       contents: write
     steps:
       - name: Check out a fresh qualified control plane
