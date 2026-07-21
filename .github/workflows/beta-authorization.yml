@@ -1,0 +1,155 @@
+name: Beta authorization
+
+run-name: Authorize beta plan ${{ fromJSON(inputs.authorization_request).authorization.candidate }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      authorization_request:
+        description: Exact protected beta authorization request JSON
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: beta-authorization-registry
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Verify and record protected beta authorization
+    if: ${{ github.server_url == 'https://github.com' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: beta-authorization
+    permissions:
+      actions: read
+      checks: read
+      contents: write
+      issues: read
+    steps:
+      - name: Check out the protected authorization controller
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install changed-file quality tooling
+        run: python -m pip install jsonschema==4.23.0 PyYAML==6.0.2 ruff==0.12.3 yamllint==1.37.1
+
+      - name: Qualify beta authorization source
+        run: |
+          python -m ruff check scripts tests
+          python -m yamllint .github/workflows
+          python -m compileall -q scripts tests
+          python -m unittest discover -v
+          python -m json.tool beta-authorization/request-schema.json >/dev/null
+          python -m json.tool beta-authorization/record-schema.json >/dev/null
+          python -m json.tool beta-authorization/evidence-schema.json >/dev/null
+
+      - name: Canonicalize the exact authorization request
+        env:
+          AUTHORIZATION_REQUEST: ${{ inputs.authorization_request }}
+        run: |
+          python - <<'PYTHON'
+          import os
+          from pathlib import Path
+
+          Path("requested-beta-authorization.json").write_text(
+              os.environ["AUTHORIZATION_REQUEST"], encoding="utf-8"
+          )
+          PYTHON
+          python scripts/beta_authorization.py validate \
+            requested-beta-authorization.json beta-authorization-request.json
+
+      - name: Compare existing authorization before mutable qualification
+        id: compatibility
+        run: |
+          python scripts/beta_authorization.py check beta-authorization-request.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Qualify the exact intended source commits
+        if: ${{ steps.compatibility.outputs.status == 'new' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/beta_authorization.py expected-commits \
+            beta-authorization-request.json beta-authorization-expected-commits.json
+          python scripts/qualification_policy.py audit \
+            --expected-commits beta-authorization-expected-commits.json \
+            --evidence target-qualification-evidence.json
+
+      - name: Create or compare the immutable authorization
+        id: record
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git_authorization="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::$git_authorization"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $git_authorization" \
+            python scripts/beta_authorization.py record beta-authorization-request.json \
+              --qualification target-qualification-evidence.json \
+              --authoritative-authorization authoritative-beta-authorization.json \
+              --authoritative-evidence authoritative-beta-authorization-evidence.json \
+              --authoritative-qualification authoritative-target-qualification-evidence.json \
+              --actor "$GITHUB_ACTOR" \
+              --run-id "$GITHUB_RUN_ID" \
+              --run-attempt "$GITHUB_RUN_ATTEMPT" \
+              --workflow-ref "$GITHUB_WORKFLOW_REF" \
+              --workflow-commit "$GITHUB_SHA" \
+              --github-output "$GITHUB_OUTPUT"
+
+      - name: Create or repair the durable GitHub Release mirror
+        env:
+          AUTHORIZATION_TAG: ${{ steps.record.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+          RECORD_COMMIT: ${{ steps.record.outputs.commit }}
+        run: |
+          set -euo pipefail
+          mirror_dir="$(mktemp -d)"
+          trap 'rm -rf "$mirror_dir"' EXIT
+          if ! gh release view "$AUTHORIZATION_TAG" >/dev/null 2>&1; then
+            gh release create "$AUTHORIZATION_TAG" --verify-tag --prerelease \
+              --title "Protected beta authorization" \
+              --notes "Protected beta decision at immutable Git commit ${RECORD_COMMIT}. Stable 2.0 is not authorized."
+          fi
+          repair_asset() {
+            source_path="$1"
+            asset_name="$2"
+            rm -f "$mirror_dir/$asset_name"
+            if gh release download "$AUTHORIZATION_TAG" --pattern "$asset_name" --dir "$mirror_dir" >/dev/null 2>&1; then
+              cmp --silent "$source_path" "$mirror_dir/$asset_name" || {
+                printf 'release asset %s differs from immutable Git authority\n' "$asset_name" >&2
+                exit 1
+              }
+            else
+              upload_dir="$(mktemp -d)"
+              cp "$source_path" "$upload_dir/$asset_name"
+              gh release upload "$AUTHORIZATION_TAG" "$upload_dir/$asset_name"
+              rm -rf "$upload_dir"
+            fi
+          }
+          repair_asset authoritative-beta-authorization.json beta-authorization.json
+          repair_asset authoritative-beta-authorization-evidence.json beta-authorization-evidence.json
+          repair_asset authoritative-target-qualification-evidence.json target-qualification-evidence.json
+
+      - name: Retain workflow evidence mirror
+        uses: actions/upload-artifact@v7
+        with:
+          name: beta-authorization-${{ steps.record.outputs.candidate }}
+          path: |
+            authoritative-beta-authorization.json
+            authoritative-beta-authorization-evidence.json
+            authoritative-target-qualification-evidence.json
+          if-no-files-found: error
+          retention-days: 90

@@ -51,7 +51,10 @@ The fixed dependency order is enforced through public artifact verification:
 Workflow and Waterline use exact `2.0.0-alpha.N` versions in an alpha plan and
 exact `2.0.0-beta.N` versions in a beta plan. A beta plan additionally names an
 immutable `beta-authorization/*` record whose candidate and seven-component
-tuple match the plan exactly. An alpha plan cannot name or satisfy that gate.
+tuple match the plan exactly. The protected
+[`Beta authorization`](../beta-authorization/README.md) action is the
+repository-owned producer and recovery path for that record. An alpha plan
+cannot name or satisfy that gate.
 
 Before a plan is recorded, GitHub must report `v2` as the effective default
 branch for Workflow and Waterline and `main` for the other five repositories.

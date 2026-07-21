@@ -14,6 +14,12 @@ It also records and observes channel-aware, pre-publication
 each component discovers plans and resumes with only its own GitHub token and
 repository-local publication environment.
 
+The protected [beta authorization authority](beta-authorization/README.md)
+binds a product-owner decision to the exact proposed beta plan and its public
+qualification, candidate, conformance, continuity, and backlog evidence. Its
+append-only Git and GitHub Release record authorizes beta only; stable 2.0 has
+a separate decision boundary.
+
 The scheduled [workspace-unavailable continuity controller](beta-continuity/README.md)
 assembles those public authorities into an interruption-and-resume drill. Its
 append-only phase records bind GitHub issue intake, exact qualification,
