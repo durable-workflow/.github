@@ -10,6 +10,7 @@
     "artifact_tuple",
     "source_identities",
     "distribution_identities",
+    "runtime_dependencies",
     "runner",
     "server_runner",
     "experiments"
@@ -20,6 +21,7 @@
     "artifact_tuple": { "$ref": "#/$defs/components" },
     "source_identities": { "$ref": "#/$defs/sourceIdentities" },
     "distribution_identities": { "$ref": "#/$defs/distributionIdentities" },
+    "runtime_dependencies": { "$ref": "#/$defs/runtimeDependencies" },
     "runner": { "$ref": "#/$defs/runner" },
     "server_runner": { "$ref": "#/$defs/serverRunner" },
     "experiments": {
@@ -98,6 +100,35 @@
         "image": { "type": "string", "pattern": "^docker\\.io/durableworkflow/server@sha256:[0-9a-f]{64}$" },
         "manifest_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
         "source_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+      }
+    },
+    "runtimeDependencies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mysql", "redis"],
+      "properties": {
+        "mysql": { "$ref": "#/$defs/mysqlRuntimeDependency" },
+        "redis": { "$ref": "#/$defs/redisRuntimeDependency" }
+      }
+    },
+    "mysqlRuntimeDependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selector", "image", "manifest_digest"],
+      "properties": {
+        "selector": { "const": "docker.io/library/mysql:8.0" },
+        "image": { "type": "string", "pattern": "^docker\\.io/library/mysql@sha256:[0-9a-f]{64}$" },
+        "manifest_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
+    "redisRuntimeDependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selector", "image", "manifest_digest"],
+      "properties": {
+        "selector": { "const": "docker.io/library/redis:7-alpine" },
+        "image": { "type": "string", "pattern": "^docker\\.io/library/redis@sha256:[0-9a-f]{64}$" },
+        "manifest_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
       }
     },
     "distributionArtifact": {

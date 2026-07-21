@@ -110,9 +110,7 @@ jobs:
       - name: Restore immutable execution plan from the completed run
         uses: actions/download-artifact@v8
         with:
-          name: >-
-            beta-conformance-plan-${{ needs.bind.outputs.source_run_id }}-${{
-            needs.bind.outputs.source_run_attempt }}
+          name: beta-conformance-plan-${{ needs.bind.outputs.source_run_id }}
           path: aggregate-input
           github-token: ${{ github.token }}
           run-id: ${{ needs.bind.outputs.source_run_id }}

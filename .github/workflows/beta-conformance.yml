@@ -60,6 +60,7 @@ jobs:
           python-version: "3.13"
 
       - name: Fetch immutable candidate records
+        if: ${{ github.run_attempt == 1 }}
         run: git fetch --force --tags origin 'refs/tags/beta-candidate/*:refs/tags/beta-candidate/*'
 
       - name: Write requested candidate without shell interpolation
@@ -73,18 +74,33 @@ jobs:
           Path("requested-candidate.json").write_text(os.environ["CANDIDATE_MANIFEST"], encoding="utf-8")
           PYTHON
 
-      - name: Bind candidate, sources, runner, and experiment set
-        id: plan
+      - name: Bind candidate, runtime dependencies, runner, and experiment set once
+        if: ${{ github.run_attempt == 1 }}
         run: |
           python scripts/beta_conformance.py prepare requested-candidate.json execution-plan.json \
+            --contract beta-conformance/contract.json \
+            --runner-revision "$GITHUB_SHA"
+
+      - name: Restore first-attempt immutable execution plan
+        if: ${{ github.run_attempt > 1 }}
+        uses: actions/download-artifact@v8
+        with:
+          name: beta-conformance-plan-${{ github.run_id }}
+          path: .
+
+      - name: Validate the retained plan and expose the experiment set
+        id: plan
+        run: |
+          python scripts/beta_conformance.py restore-plan execution-plan.json requested-candidate.json \
             --contract beta-conformance/contract.json \
             --runner-revision "$GITHUB_SHA" \
             --github-output "$GITHUB_OUTPUT"
 
-      - name: Pass immutable execution plan to isolated jobs
+      - name: Retain the first-attempt execution plan for every recovery path
+        if: ${{ github.run_attempt == 1 }}
         uses: actions/upload-artifact@v7
         with:
-          name: beta-conformance-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          name: beta-conformance-plan-${{ github.run_id }}
           path: execution-plan.json
           if-no-files-found: error
           retention-days: 30
@@ -110,7 +126,7 @@ jobs:
       - name: Restore immutable execution plan
         uses: actions/download-artifact@v8
         with:
-          name: beta-conformance-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          name: beta-conformance-plan-${{ github.run_id }}
           path: conformance-input
 
       - name: Extract orchestration and fixtures from exact server image

@@ -1,5 +1,9 @@
 {
   "$schema": "./contract-schema.json",
+  "runtime_dependencies": {
+    "mysql": "docker.io/library/mysql:8.0",
+    "redis": "docker.io/library/redis:7-alpine"
+  },
   "experiments": {
     "heartbeats": {
       "owning_contract": "worker-heartbeat-observability",

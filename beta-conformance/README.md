@@ -7,7 +7,14 @@ already exists at the immutable Git tag `beta-candidate/<candidate>`.
 source identity, a distribution without recorded SHA-256 identities, or a
 server image without the recorded OCI manifest digest. The plan binds the
 digest of the complete candidate verification document as well as normalized
-digests for every package, crate, image manifest, and CLI release asset.
+digests for every package, crate, image manifest, and CLI release asset. The
+contract also declares the MySQL and Redis image selectors needed by the
+standalone runtime. `prepare` resolves each selector once and records its OCI
+manifest digest in the immutable execution plan. The first workflow attempt
+retains that plan under the run identity. A full rerun restores and validates
+the retained plan instead of resolving the selectors again; if the plan is not
+available or does not match the candidate, contract, and runner revision, the
+workflow stops before creating experiment jobs.
 
 The experiment contract is [`contract.json`](contract.json). It selects replay,
 polyglot, worker-heartbeat, and signals/query runners shipped inside the exact
@@ -21,7 +28,9 @@ from the candidate. The union of the runner distribution sets must equal the
 experiment's complete required set. The direct PHP SDK runner declares a
 standalone server dependency, so the portable wrapper
 bootstraps the digest-pinned candidate image and starts its HTTP, queue-worker,
-and scheduler processes on isolated Docker state. The wrapper waits for the
+and scheduler processes with digest-pinned MySQL and Redis containers on
+isolated Docker state. Matrix jobs never launch either dependency through its
+mutable selector. The wrapper waits for the
 published readiness endpoint before injecting the loopback URL, namespace, and
 ephemeral token into that runner; it removes the containers and database volume
 after every attempt.
@@ -67,6 +76,8 @@ Every experiment result conforms to
   release-asset bytes actually executed by the published runner;
 - the control-plane runner revision and contract digest;
 - the exact server OCI digest used to obtain the product-owned runner;
+- the declared MySQL and Redis selectors and the exact OCI manifest digests
+  launched for the standalone runtime;
 - the owning product contract, outcome, retry record, failure fingerprint,
   and bounded diagnostic tails and findings.
 

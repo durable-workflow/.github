@@ -60,8 +60,10 @@ NATIVE_FAILURE_COMPONENT_LIMIT = 6 * 1024
 FINDING_LIMIT = 20
 FINDING_TEXT_LIMIT = 2048
 MAX_INFRASTRUCTURE_ATTEMPTS = 2
-MYSQL_RUNTIME_IMAGE = "mysql:8.0"
-REDIS_RUNTIME_IMAGE = "redis:7-alpine"
+RUNTIME_DEPENDENCY_SELECTORS = {
+    "mysql": "docker.io/library/mysql:8.0",
+    "redis": "docker.io/library/redis:7-alpine",
+}
 NATIVE_SCENARIO_STATUSES = {"pass", "fail", "unsupported", "not_covered", "runner_blocked"}
 TRANSIENT_PATTERNS = (
     re.compile(
@@ -301,12 +303,19 @@ def safe_relative_path(value: Any, *, suffix: str | None = None) -> str:
 
 
 def validate_contract(contract: Any) -> None:
-    if not isinstance(contract, dict) or set(contract) != {"$schema", "schema", "experiments"}:
+    if not isinstance(contract, dict) or set(contract) != {
+        "$schema",
+        "schema",
+        "runtime_dependencies",
+        "experiments",
+    }:
         raise ConformanceError("beta conformance contract has an invalid top-level shape")
     if contract["$schema"] != "./contract-schema.json":
         raise ConformanceError("beta conformance contract must reference its repository schema")
     if contract["schema"] != CONTRACT_SCHEMA:
         raise ConformanceError(f"beta conformance contract schema must be {CONTRACT_SCHEMA}")
+    if contract["runtime_dependencies"] != RUNTIME_DEPENDENCY_SELECTORS:
+        raise ConformanceError("beta conformance contract has invalid runtime dependency selectors")
     experiments = contract["experiments"]
     if not isinstance(experiments, dict) or set(experiments) != set(EXPERIMENTS):
         raise ConformanceError(f"beta conformance experiments must be exactly {list(EXPERIMENTS)}")
@@ -641,12 +650,82 @@ def validate_distribution_identities(identities: Any, components: dict[str, Any]
     validate_partial_distribution_identities(identities, components)
 
 
+def validate_runtime_dependencies(dependencies: Any) -> None:
+    if not isinstance(dependencies, dict) or set(dependencies) != set(RUNTIME_DEPENDENCY_SELECTORS):
+        raise ConformanceError("runtime dependencies do not bind the declared MySQL and Redis images")
+    for name, selector in RUNTIME_DEPENDENCY_SELECTORS.items():
+        dependency = dependencies[name]
+        repository = selector.rsplit(":", 1)[0]
+        digest = dependency.get("manifest_digest") if isinstance(dependency, dict) else None
+        if (
+            not isinstance(dependency, dict)
+            or set(dependency) != {"selector", "image", "manifest_digest"}
+            or dependency["selector"] != selector
+            or not isinstance(digest, str)
+            or not OCI_DIGEST_PATTERN.fullmatch(digest)
+            or dependency["image"] != f"{repository}@{digest}"
+        ):
+            raise ConformanceError(f"runtime dependency {name} has no exact OCI manifest binding")
+
+
+def normalized_oci_repository(value: str) -> str:
+    repository = value.removeprefix("docker.io/")
+    if "/" not in repository:
+        repository = f"library/{repository}"
+    return repository
+
+
+def resolve_runtime_dependencies(
+    contract: dict[str, Any], *, docker: str = "docker"
+) -> dict[str, dict[str, str]]:
+    """Resolve declared selectors once so isolated jobs consume immutable references."""
+    validate_contract(contract)
+    dependencies: dict[str, dict[str, str]] = {}
+    for name, selector in contract["runtime_dependencies"].items():
+        docker_runtime_command([docker, "pull", selector])
+        inspection = docker_runtime_command(
+            [docker, "image", "inspect", "--format", "{{json .RepoDigests}}", selector]
+        )
+        try:
+            references = json.loads(inspection.stdout)
+        except (json.JSONDecodeError, TypeError) as error:
+            raise ConformanceError(f"runtime dependency {name} has invalid Docker digest evidence") from error
+        if not isinstance(references, list):
+            raise ConformanceError(f"runtime dependency {name} has invalid Docker digest evidence")
+        expected_repository = normalized_oci_repository(selector.rsplit(":", 1)[0])
+        digests = {
+            digest
+            for reference in references
+            if isinstance(reference, str)
+            for repository, separator, digest in [reference.rpartition("@")]
+            if separator
+            and normalized_oci_repository(repository) == expected_repository
+            and OCI_DIGEST_PATTERN.fullmatch(digest)
+        }
+        if len(digests) != 1:
+            raise ConformanceError(
+                f"runtime dependency {name} did not resolve to one immutable OCI manifest digest"
+            )
+        digest = digests.pop()
+        repository = selector.rsplit(":", 1)[0]
+        dependencies[name] = {
+            "selector": selector,
+            "image": f"{repository}@{digest}",
+            "manifest_digest": digest,
+        }
+    validate_runtime_dependencies(dependencies)
+    return dependencies
+
+
 def prepare_plan(
     repository: Path,
     manifest: dict[str, Any],
     contract: dict[str, Any],
     runner_revision: str,
+    runtime_dependencies: dict[str, Any],
 ) -> dict[str, Any]:
+    validate_contract(contract)
+    validate_runtime_dependencies(runtime_dependencies)
     if not COMMIT_PATTERN.fullmatch(runner_revision):
         raise ConformanceError("runner revision must be a full lowercase Git commit")
     git(repository, "cat-file", "-e", f"{runner_revision}^{{commit}}")
@@ -673,6 +752,7 @@ def prepare_plan(
         "artifact_tuple": components,
         "source_identities": {name: identity["commit"] for name, identity in components.items()},
         "distribution_identities": distribution_identities,
+        "runtime_dependencies": runtime_dependencies,
         "runner": {
             "repository": "durable-workflow/.github",
             "revision": runner_revision,
@@ -696,6 +776,7 @@ def validate_plan(plan: Any) -> None:
         "artifact_tuple",
         "source_identities",
         "distribution_identities",
+        "runtime_dependencies",
         "runner",
         "server_runner",
         "experiments",
@@ -718,6 +799,7 @@ def validate_plan(plan: Any) -> None:
     if not isinstance(sources, dict) or sources != {name: item["commit"] for name, item in components.items()}:
         raise ConformanceError("beta conformance plan source identities do not match the artifact tuple")
     validate_distribution_identities(plan["distribution_identities"], components)
+    validate_runtime_dependencies(plan["runtime_dependencies"])
     candidate = plan["candidate"]
     if (
         not isinstance(candidate, dict)
@@ -752,6 +834,37 @@ def validate_plan(plan: Any) -> None:
         raise ConformanceError("beta conformance plan has an invalid published server runner binding")
     if plan["experiments"] != list(EXPERIMENTS):
         raise ConformanceError("beta conformance plan does not select the complete experiment set")
+
+
+def restore_plan(
+    plan: dict[str, Any],
+    manifest: dict[str, Any],
+    contract: dict[str, Any],
+    runner_revision: str,
+) -> dict[str, Any]:
+    """Restore a first-attempt plan without resolving mutable inputs again."""
+    validate_plan(plan)
+    validate_contract(contract)
+    if not COMMIT_PATTERN.fullmatch(runner_revision) or plan["runner"]["revision"] != runner_revision:
+        raise ConformanceError("restored beta conformance plan does not bind this workflow revision")
+    if plan["runner"]["contract_sha256"] != sha256_bytes(canonical_json(contract)):
+        raise ConformanceError("restored beta conformance plan does not bind this contract")
+    if (
+        plan["candidate"]["name"] != manifest["candidate"]
+        or plan["candidate"]["manifest_sha256"] != manifest_digest(manifest)
+        or plan["artifact_tuple"] != manifest["components"]
+    ):
+        raise ConformanceError("restored beta conformance plan does not bind the requested candidate")
+    return plan
+
+
+def plan_github_outputs(plan: dict[str, Any]) -> dict[str, str]:
+    validate_plan(plan)
+    return {
+        "candidate": plan["candidate"]["name"],
+        "experiments": json.dumps(plan["experiments"], separators=(",", ":")),
+        "manifest_sha256": plan["candidate"]["manifest_sha256"],
+    }
 
 
 def load_plan(path: Path) -> dict[str, Any]:
@@ -1617,6 +1730,8 @@ def standalone_server_runtime(
     ]
     bootstrap_name, http_name, queue_name, scheduler_name, mysql_name, redis_name = container_names
     image = plan["server_runner"]["image"]
+    mysql_image = plan["runtime_dependencies"]["mysql"]["image"]
+    redis_image = plan["runtime_dependencies"]["redis"]["image"]
     server_version = plan["artifact_tuple"]["server"]["version"]
     manifest_digest = plan["candidate"]["manifest_sha256"]
     runtime_token = f"beta-{manifest_digest[:32]}"
@@ -1694,7 +1809,7 @@ def standalone_server_runtime(
                 "2s",
                 "--health-retries",
                 "60",
-                MYSQL_RUNTIME_IMAGE,
+                mysql_image,
             ]
         )
         docker_runtime_command(
@@ -1716,7 +1831,7 @@ def standalone_server_runtime(
                 "2s",
                 "--health-retries",
                 "60",
-                REDIS_RUNTIME_IMAGE,
+                redis_image,
             ]
         )
         wait_for_healthy_container(mysql_name, docker=docker)
@@ -1848,6 +1963,7 @@ def failure_fingerprint(
         "candidate_manifest_sha256": plan["candidate"]["manifest_sha256"],
         "candidate_verification_sha256": plan["candidate"]["verification_sha256"],
         "contract_sha256": plan["runner"]["contract_sha256"],
+        "runtime_dependencies": plan["runtime_dependencies"],
         "experiment": experiment,
         "classification": classification,
         "owning_contract": owner,
@@ -1925,6 +2041,7 @@ def experiment_result(
         "artifact_tuple": plan["artifact_tuple"],
         "source_identities": plan["source_identities"],
         "distribution_identities": plan["distribution_identities"],
+        "runtime_dependencies": plan["runtime_dependencies"],
         "runner": plan["runner"],
         "server_runner": plan["server_runner"],
         "owning_contract": owner,
@@ -2527,6 +2644,7 @@ def validate_experiment_result(
         "artifact_tuple",
         "source_identities",
         "distribution_identities",
+        "runtime_dependencies",
         "runner",
         "server_runner",
         "owning_contract",
@@ -2550,6 +2668,7 @@ def validate_experiment_result(
         "artifact_tuple",
         "source_identities",
         "distribution_identities",
+        "runtime_dependencies",
         "runner",
         "server_runner",
     ):
@@ -2768,6 +2887,7 @@ def missing_experiment_summary(
                 "candidate_manifest_sha256": plan["candidate"]["manifest_sha256"],
                 "candidate_verification_sha256": plan["candidate"]["verification_sha256"],
                 "contract_sha256": plan["runner"]["contract_sha256"],
+                "runtime_dependencies": plan["runtime_dependencies"],
                 "experiment": experiment,
                 "classification": "infrastructure_failure",
                 "reason": "experiment result was not retained",
@@ -2856,6 +2976,7 @@ def aggregate_results(
         "source_identities": plan["source_identities"],
         "distribution_identities": plan["distribution_identities"],
         "executed_distribution_identities": executed_distribution_identities,
+        "runtime_dependencies": plan["runtime_dependencies"],
         "runner": plan["runner"],
         "server_runner": plan["server_runner"],
         "source_policy": {
@@ -2900,7 +3021,15 @@ def parser() -> argparse.ArgumentParser:
     prepare.add_argument("--contract", type=Path, required=True)
     prepare.add_argument("--repository", type=Path, default=Path("."))
     prepare.add_argument("--runner-revision", required=True)
+    prepare.add_argument("--docker", default="docker")
     prepare.add_argument("--github-output", type=Path)
+
+    restore = commands.add_parser("restore-plan", help="validate and reuse a retained first-attempt plan")
+    restore.add_argument("plan", type=Path)
+    restore.add_argument("manifest", type=Path)
+    restore.add_argument("--contract", type=Path, required=True)
+    restore.add_argument("--runner-revision", required=True)
+    restore.add_argument("--github-output", type=Path)
 
     extract = commands.add_parser("extract", help="extract conformance orchestration from the exact server image")
     extract.add_argument("plan", type=Path)
@@ -2960,16 +3089,25 @@ def main(argv: list[str] | None = None) -> int:
         if arguments.command == "prepare":
             manifest = load_manifest(arguments.manifest)
             contract = load_contract(arguments.contract)
-            plan = prepare_plan(arguments.repository, manifest, contract, arguments.runner_revision)
-            write_json(arguments.output, plan)
-            write_github_output(
-                arguments.github_output,
-                {
-                    "candidate": plan["candidate"]["name"],
-                    "experiments": json.dumps(plan["experiments"], separators=(",", ":")),
-                    "manifest_sha256": plan["candidate"]["manifest_sha256"],
-                },
+            runtime_dependencies = resolve_runtime_dependencies(contract, docker=arguments.docker)
+            plan = prepare_plan(
+                arguments.repository,
+                manifest,
+                contract,
+                arguments.runner_revision,
+                runtime_dependencies,
             )
+            write_json(arguments.output, plan)
+            write_github_output(arguments.github_output, plan_github_outputs(plan))
+            return 0
+        if arguments.command == "restore-plan":
+            plan = restore_plan(
+                load_plan(arguments.plan),
+                load_manifest(arguments.manifest),
+                load_contract(arguments.contract),
+                arguments.runner_revision,
+            )
+            write_github_output(arguments.github_output, plan_github_outputs(plan))
             return 0
         if arguments.command == "extract":
             extract_runner(load_plan(arguments.plan), arguments.output, arguments.extraction_record, arguments.docker)

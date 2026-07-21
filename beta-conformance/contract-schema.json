@@ -4,13 +4,22 @@
   "title": "Durable Workflow beta conformance contract",
   "type": "object",
   "additionalProperties": false,
-  "required": ["$schema", "schema", "experiments"],
+  "required": ["$schema", "schema", "runtime_dependencies", "experiments"],
   "properties": {
     "$schema": {
       "const": "./contract-schema.json"
     },
     "schema": {
       "const": "durable-workflow.beta-conformance.contract/v1"
+    },
+    "runtime_dependencies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mysql", "redis"],
+      "properties": {
+        "mysql": { "const": "docker.io/library/mysql:8.0" },
+        "redis": { "const": "docker.io/library/redis:7-alpine" }
+      }
     },
     "experiments": {
       "type": "object",

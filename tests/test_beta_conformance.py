@@ -20,12 +20,11 @@ from scripts.beta_candidate import COMPONENTS, SCHEMA, canonical_json
 from scripts.beta_conformance import (
     EXPERIMENTS,
     MAX_INFRASTRUCTURE_ATTEMPTS,
-    MYSQL_RUNTIME_IMAGE,
     NATIVE_FAILURE_COMPONENT_LIMIT,
     NATIVE_FAILURE_PROJECTION_LIMIT,
     NATIVE_RESULT_LIMIT,
     NATIVE_RESULT_PREFIX_LIMIT,
-    REDIS_RUNTIME_IMAGE,
+    RUNTIME_DEPENDENCY_SELECTORS,
     SYNTHETIC_CREDENTIAL_CANARY,
     ConformanceError,
     aggregate_results,
@@ -39,6 +38,8 @@ from scripts.beta_conformance import (
     native_failure_projection_error,
     native_result_completeness_error,
     prepare_plan,
+    resolve_runtime_dependencies,
+    restore_plan,
     run_experiment,
     runner_required_artifact_versions,
     runner_runtime_environment,
@@ -78,6 +79,18 @@ def candidate_manifest() -> dict[str, object]:
 
 def candidate_verification(candidate: dict[str, object]) -> dict[str, object]:
     return complete_candidate_verification(candidate, verified_at="2026-07-17T00:00:00Z")
+
+
+def runtime_dependencies() -> dict[str, dict[str, str]]:
+    dependencies = {}
+    for index, (name, selector) in enumerate(RUNTIME_DEPENDENCY_SELECTORS.items(), start=1):
+        digest = f"sha256:{index:064x}"
+        dependencies[name] = {
+            "selector": selector,
+            "image": f"{selector.rsplit(':', 1)[0]}@{digest}",
+            "manifest_digest": digest,
+        }
+    return dependencies
 
 
 def successful_diagnostic(
@@ -305,6 +318,44 @@ class RetentionSourceTest(unittest.TestCase):
         self.assertIn("evidence-ref.json evidence-ref-comparison.json", retention_scripts)
         self.assertIn("for attempt in 1 2 3", retention_scripts)
 
+    def test_workflow_reuses_the_first_attempt_plan_or_fails_before_experiments(self) -> None:
+        workflows = ROOT / ".github" / "workflows"
+        execution = yaml.load((workflows / "beta-conformance.yml").read_text(), Loader=yaml.BaseLoader)
+        retention = yaml.load(
+            (workflows / "beta-conformance-retention.yml").read_text(),
+            Loader=yaml.BaseLoader,
+        )
+        prepare_steps = execution["jobs"]["prepare"]["steps"]
+        create = next(step for step in prepare_steps if " prepare " in f" {step.get('run', '')} ")
+        restore = next(step for step in prepare_steps if step.get("uses") == "actions/download-artifact@v8")
+        expose = next(step for step in prepare_steps if step.get("id") == "plan")
+        retain = next(step for step in prepare_steps if step.get("uses") == "actions/upload-artifact@v7")
+        plan_name = "beta-conformance-plan-${{ github.run_id }}"
+
+        self.assertEqual("${{ github.run_attempt == 1 }}", create["if"])
+        self.assertEqual("${{ github.run_attempt > 1 }}", restore["if"])
+        self.assertEqual(plan_name, restore["with"]["name"])
+        self.assertIn("restore-plan execution-plan.json requested-candidate.json", expose["run"])
+        self.assertEqual("${{ github.run_attempt == 1 }}", retain["if"])
+        self.assertEqual(plan_name, retain["with"]["name"])
+        self.assertNotIn("run_attempt", restore["with"]["name"])
+
+        conformance_restore = next(
+            step
+            for step in execution["jobs"]["conformance"]["steps"]
+            if step.get("uses") == "actions/download-artifact@v8"
+        )
+        retention_restore = next(
+            step
+            for step in retention["jobs"]["retain"]["steps"]
+            if step.get("uses") == "actions/download-artifact@v8" and "name" in step.get("with", {})
+        )
+        self.assertEqual(plan_name, conformance_restore["with"]["name"])
+        self.assertEqual(
+            "beta-conformance-plan-${{ needs.bind.outputs.source_run_id }}",
+            retention_restore["with"]["name"],
+        )
+
     def test_absent_evidence_tag_targets_the_protected_controller(self) -> None:
         retention = yaml.load(
             (ROOT / ".github" / "workflows" / "beta-conformance-retention.yml").read_text(),
@@ -456,6 +507,7 @@ class ContractTest(unittest.TestCase):
     def test_contract_is_portable_and_covers_the_required_beta_set(self) -> None:
         contract = load_contract(CONTRACT_PATH)
         self.assertEqual(set(EXPERIMENTS), set(contract["experiments"]))
+        self.assertEqual(RUNTIME_DEPENDENCY_SELECTORS, contract["runtime_dependencies"])
         self.assertEqual(
             {"sdk-php", "sdk-python", "sdk-rust"},
             {
@@ -574,8 +626,10 @@ class PlanTest(unittest.TestCase):
             self.fixture.manifest,
             self.contract,
             self.fixture.commit,
+            runtime_dependencies(),
         )
         validate_plan(plan)
+        beta_schema_validator("plan-schema.json").validate(plan)
         self.assertEqual(self.fixture.commit, plan["candidate"]["record_commit"])
         self.assertEqual(self.fixture.commit, plan["runner"]["revision"])
         self.assertEqual(
@@ -591,12 +645,98 @@ class PlanTest(unittest.TestCase):
             plan["candidate"]["verification_sha256"],
         )
         self.assertEqual(set(COMPONENTS), set(plan["distribution_identities"]))
+        self.assertEqual(runtime_dependencies(), plan["runtime_dependencies"])
+
+    def test_prepare_resolves_declared_runtime_selectors_to_one_manifest_digest(self) -> None:
+        digests = {"mysql": f"sha256:{'c' * 64}", "redis": f"sha256:{'d' * 64}"}
+        commands: list[list[str]] = []
+
+        def docker(command: list[str], **arguments: object) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            selector = command[-1]
+            name = next(name for name, value in RUNTIME_DEPENDENCY_SELECTORS.items() if value == selector)
+            if command[1] == "image":
+                repository = name if name == "mysql" else f"docker.io/library/{name}"
+                stdout = json.dumps([f"{repository}@{digests[name]}"])
+            else:
+                stdout = "pulled\n"
+            return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+        with mock.patch("scripts.beta_conformance.docker_runtime_command", side_effect=docker):
+            resolved = resolve_runtime_dependencies(self.contract)
+
+        self.assertEqual(4, len(commands))
+        for name, selector in RUNTIME_DEPENDENCY_SELECTORS.items():
+            self.assertEqual(selector, resolved[name]["selector"])
+            self.assertEqual(digests[name], resolved[name]["manifest_digest"])
+            self.assertEqual(
+                f"{selector.rsplit(':', 1)[0]}@{digests[name]}",
+                resolved[name]["image"],
+            )
+
+    def test_restore_reuses_the_plan_without_resolving_runtime_selectors(self) -> None:
+        plan = prepare_plan(
+            self.fixture.repository,
+            self.fixture.manifest,
+            self.contract,
+            self.fixture.commit,
+            runtime_dependencies(),
+        )
+
+        with mock.patch("scripts.beta_conformance.resolve_runtime_dependencies") as resolve:
+            restored = restore_plan(plan, self.fixture.manifest, self.contract, self.fixture.commit)
+
+        self.assertIs(plan, restored)
+        resolve.assert_not_called()
+
+    def test_restore_rejects_a_plan_from_another_run_identity(self) -> None:
+        plan = prepare_plan(
+            self.fixture.repository,
+            self.fixture.manifest,
+            self.contract,
+            self.fixture.commit,
+            runtime_dependencies(),
+        )
+
+        with self.subTest("runner revision"), self.assertRaisesRegex(ConformanceError, "workflow revision"):
+            restore_plan(plan, self.fixture.manifest, self.contract, "f" * 40)
+
+        with self.subTest("candidate"):
+            changed_manifest = json.loads(canonical_json(self.fixture.manifest))
+            changed_manifest["candidate"] = "another-candidate"
+            with self.assertRaisesRegex(ConformanceError, "requested candidate"):
+                restore_plan(plan, changed_manifest, self.contract, self.fixture.commit)
+
+        with self.subTest("contract"):
+            changed_contract = json.loads(canonical_json(self.contract))
+            changed_contract["experiments"]["replay"]["timeout_seconds"] += 1
+            with self.assertRaisesRegex(ConformanceError, "this contract"):
+                restore_plan(plan, self.fixture.manifest, changed_contract, self.fixture.commit)
+
+    def test_plan_rejects_a_mutable_runtime_dependency_reference(self) -> None:
+        dependencies = runtime_dependencies()
+        dependencies["mysql"]["image"] = dependencies["mysql"]["selector"]
+
+        with self.assertRaisesRegex(ConformanceError, "exact OCI manifest binding"):
+            prepare_plan(
+                self.fixture.repository,
+                self.fixture.manifest,
+                self.contract,
+                self.fixture.commit,
+                dependencies,
+            )
 
     def test_plan_rejects_tuple_mutation_after_immutable_record(self) -> None:
         changed = json.loads(canonical_json(self.fixture.manifest))
         changed["components"]["sdk-python"]["version"] = "9.9.9"
         with self.assertRaisesRegex(RuntimeError, "does not contain the requested immutable tuple"):
-            prepare_plan(self.fixture.repository, changed, self.contract, self.fixture.commit)
+            prepare_plan(
+                self.fixture.repository,
+                changed,
+                self.contract,
+                self.fixture.commit,
+                runtime_dependencies(),
+            )
 
 
 class StandaloneServerRuntimeTest(unittest.TestCase):
@@ -608,6 +748,7 @@ class StandaloneServerRuntimeTest(unittest.TestCase):
             self.fixture.manifest,
             self.contract,
             self.fixture.commit,
+            runtime_dependencies(),
         )
         self.temporary = tempfile.TemporaryDirectory()
         self.scratch = Path(self.temporary.name)
@@ -646,8 +787,9 @@ class StandaloneServerRuntimeTest(unittest.TestCase):
         self.assertEqual(6, len(run_commands))
         server_commands = [command for command in run_commands if self.plan["server_runner"]["image"] in command]
         self.assertEqual(4, len(server_commands))
-        self.assertTrue(any(MYSQL_RUNTIME_IMAGE in command for command in run_commands))
-        self.assertTrue(any(REDIS_RUNTIME_IMAGE in command for command in run_commands))
+        for dependency in self.plan["runtime_dependencies"].values():
+            self.assertTrue(any(dependency["image"] in command for command in run_commands))
+            self.assertFalse(any(dependency["selector"] in command for command in run_commands))
         expected_version = self.plan["artifact_tuple"]["server"]["version"]
         self.assertTrue(all(f"APP_VERSION={expected_version}" in command for command in server_commands))
         self.assertTrue(all("DB_CONNECTION=mysql" in command for command in server_commands))
@@ -750,7 +892,13 @@ class FailureClassificationTest(unittest.TestCase):
         fixture = CandidateRecordFixture()
         try:
             contract = load_contract(CONTRACT_PATH)
-            plan = prepare_plan(fixture.repository, fixture.manifest, contract, fixture.commit)
+            plan = prepare_plan(
+                fixture.repository,
+                fixture.manifest,
+                contract,
+                fixture.commit,
+                runtime_dependencies(),
+            )
             diagnostic = successful_diagnostic(plan, ["sdk-python"])
             diagnostic["native_summary"]["artifact_versions"] = {
                 "sdk-python": "9.9.9",
@@ -765,7 +913,13 @@ class FailureClassificationTest(unittest.TestCase):
         fixture = CandidateRecordFixture()
         try:
             contract = load_contract(CONTRACT_PATH)
-            plan = prepare_plan(fixture.repository, fixture.manifest, contract, fixture.commit)
+            plan = prepare_plan(
+                fixture.repository,
+                fixture.manifest,
+                contract,
+                fixture.commit,
+                runtime_dependencies(),
+            )
             diagnostic = successful_diagnostic(plan, ["sdk-python"])
             diagnostic["native_summary"]["executed_distribution_identities"]["sdk-python"]["artifacts"][0]["sha256"] = (
                 "f" * 64
@@ -780,7 +934,13 @@ class FailureClassificationTest(unittest.TestCase):
         fixture = CandidateRecordFixture()
         try:
             contract = load_contract(CONTRACT_PATH)
-            plan = prepare_plan(fixture.repository, fixture.manifest, contract, fixture.commit)
+            plan = prepare_plan(
+                fixture.repository,
+                fixture.manifest,
+                contract,
+                fixture.commit,
+                runtime_dependencies(),
+            )
             diagnostic = successful_diagnostic(plan, ["sdk-python"])
             native = {
                 "executed_distribution_identities": diagnostic["native_summary"]["executed_distribution_identities"]
@@ -802,7 +962,13 @@ class FailureClassificationTest(unittest.TestCase):
         fixture = CandidateRecordFixture()
         try:
             contract = load_contract(CONTRACT_PATH)
-            plan = prepare_plan(fixture.repository, fixture.manifest, contract, fixture.commit)
+            plan = prepare_plan(
+                fixture.repository,
+                fixture.manifest,
+                contract,
+                fixture.commit,
+                runtime_dependencies(),
+            )
             diagnostic = successful_diagnostic(plan, ["cli"])
             del diagnostic["native_summary"]["executed_distribution_identities"]["cli"]
             failures = artifact_binding_failures(plan, ["cli"], [diagnostic])
@@ -815,7 +981,13 @@ class FailureClassificationTest(unittest.TestCase):
         fixture = CandidateRecordFixture()
         try:
             contract = load_contract(CONTRACT_PATH)
-            plan = prepare_plan(fixture.repository, fixture.manifest, contract, fixture.commit)
+            plan = prepare_plan(
+                fixture.repository,
+                fixture.manifest,
+                contract,
+                fixture.commit,
+                runtime_dependencies(),
+            )
             specification = contract["experiments"]["replay"]
             first = injected_failure_result(
                 plan,
@@ -851,6 +1023,7 @@ class ExperimentRetryTest(unittest.TestCase):
             self.fixture.manifest,
             self.contract,
             self.fixture.commit,
+            runtime_dependencies(),
         )
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
@@ -1476,6 +1649,7 @@ class ExperimentRetryTest(unittest.TestCase):
             self.fixture.manifest,
             self.contract,
             self.fixture.commit,
+            runtime_dependencies(),
         )
 
         @contextlib.contextmanager
@@ -1531,6 +1705,7 @@ class ExperimentRetryTest(unittest.TestCase):
             self.fixture.manifest,
             self.contract,
             self.fixture.commit,
+            runtime_dependencies(),
         )
 
         with (
@@ -2050,6 +2225,7 @@ class MultiRunnerExperimentTest(unittest.TestCase):
             self.fixture.manifest,
             self.contract,
             self.fixture.commit,
+            runtime_dependencies(),
         )
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
@@ -2282,6 +2458,7 @@ class EvidenceTest(unittest.TestCase):
             self.fixture.manifest,
             self.contract,
             self.fixture.commit,
+            runtime_dependencies(),
         )
 
     def tearDown(self) -> None:
@@ -2490,6 +2667,8 @@ class EvidenceTest(unittest.TestCase):
 
         self.assertEqual("pass", suite["outcome"])
         self.assertEqual(set(COMPONENTS), set(suite["executed_distribution_identities"]))
+        self.assertEqual(self.plan["runtime_dependencies"], suite["runtime_dependencies"])
+        beta_schema_validator("suite-result-schema.json").validate(suite)
 
     def test_aggregate_rejects_a_passing_result_missing_a_declared_runner(self) -> None:
         specification = self.contract["experiments"]["polyglot"]
