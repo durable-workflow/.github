@@ -1,0 +1,81 @@
+{
+  "authority_issue": {
+    "labels": [
+      "authority:github",
+      "beta:blocker",
+      "completion:evidence-required",
+      "kind:cross-repository",
+      "priority:P1",
+      "repo:github-control-plane",
+      "status:ready"
+    ],
+    "number": 2,
+    "repository": "durable-workflow/.github",
+    "state": "open",
+    "updated_at": "2026-07-21T04:52:53Z",
+    "url": "https://github.com/durable-workflow/.github/issues/2",
+    "work_id": "github-only-beta-continuity-drill"
+  },
+  "drill": "workspace-unavailable-beta-continuity-release-pages",
+  "github_run": {
+    "attempt": "1",
+    "id": "29802446158",
+    "repository": "durable-workflow/.github",
+    "sha": "13cef8ead9af6d39c2e9c0558246c51543386617"
+  },
+  "interrupted_phase": {
+    "commit": "fdaf1e93aae79059b03024c526ffaaf74a4c31ee",
+    "tag": "beta-continuity/workspace-unavailable-release-pages-24ea45b0acb8/interrupted"
+  },
+  "observed_at": "2026-07-21T04:53:53Z",
+  "outcome": "resumed-identical-plan",
+  "pending_components_at_resume": [
+    "waterline",
+    "server",
+    "cli",
+    "sdk-php"
+  ],
+  "phase": "resumed",
+  "plan_record": {
+    "commit": "fa40b58d3ead510b9e730a008ac0b9a1bf59c381",
+    "sha256": "498804a2c7fd5b0e34f93ef080bea3073bc98e420e8bf84a98ca4cdb94729973",
+    "tag": "release-plan/workspace-unavailable-release-pages-24ea45b0acb8"
+  },
+  "published_components_at_resume": {
+    "sdk-python": {
+      "commit": "13037ddcb1f55d72c24256591e346b991ad64273",
+      "published_at": "2026-07-21T04:17:02Z",
+      "release_id": 357110827,
+      "url": "https://github.com/durable-workflow/sdk-python/releases/tag/0.4.106",
+      "version": "0.4.106"
+    },
+    "sdk-rust": {
+      "commit": "6fa98425c8ec7690ef96f8296a21407aa8d03067",
+      "published_at": "2026-07-21T04:44:07Z",
+      "release_id": 357117657,
+      "url": "https://github.com/durable-workflow/sdk-rust/releases/tag/0.1.22",
+      "version": "0.1.22"
+    },
+    "workflow": {
+      "commit": "26b42f2d4ed240c2a69cf4ae58c5b23ffdcc3863",
+      "published_at": "2026-07-21T04:51:52Z",
+      "release_id": 357119503,
+      "url": "https://github.com/durable-workflow/workflow/releases/tag/2.0.0-alpha.293",
+      "version": "2.0.0-alpha.293"
+    }
+  },
+  "release_plan": {
+    "sha256": "498804a2c7fd5b0e34f93ef080bea3073bc98e420e8bf84a98ca4cdb94729973",
+    "tag": "release-plan/workspace-unavailable-release-pages-24ea45b0acb8"
+  },
+  "repository_recovery_workflows": {
+    "cli": "https://github.com/durable-workflow/cli/actions/workflows/release-plan-recovery.yml",
+    "sdk-php": "https://github.com/durable-workflow/sdk-php/actions/workflows/release-plan-recovery.yml",
+    "sdk-python": "https://github.com/durable-workflow/sdk-python/actions/workflows/release-plan-recovery.yml",
+    "sdk-rust": "https://github.com/durable-workflow/sdk-rust/actions/workflows/release-plan-recovery.yml",
+    "server": "https://github.com/durable-workflow/server/actions/workflows/release-plan-recovery.yml",
+    "waterline": "https://github.com/durable-workflow/waterline/actions/workflows/release-plan-recovery.yml",
+    "workflow": "https://github.com/durable-workflow/workflow/actions/workflows/release-plan-recovery.yml"
+  },
+  "schema": "durable-workflow.beta-continuity.evidence/v1"
+}
