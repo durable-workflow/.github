@@ -1,0 +1,934 @@
+{
+  "schema": "durable-workflow.github-target-qualification/v1",
+  "targets": {
+    "cli": {
+      "action_releases": [
+        {
+          "action": "actions/attest-build-provenance",
+          "commit": "0f67c3f4856b2e3261c31976d6725780e5e4c373",
+          "reference": "v4",
+          "repository": "actions/attest-build-provenance",
+          "runtime": "composite",
+          "workflows": [
+            ".github/workflows/release.yml"
+          ]
+        },
+        {
+          "action": "actions/cache",
+          "commit": "caa296126883cff596d87d8935842f9db880ef25",
+          "reference": "v5",
+          "repository": "actions/cache",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/release.yml"
+          ]
+        },
+        {
+          "action": "actions/checkout",
+          "commit": "d23441a48e516b6c34aea4fa41551a30e30af803",
+          "reference": "v6",
+          "repository": "actions/checkout",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/build.yml",
+            ".github/workflows/public-boundary.yml",
+            ".github/workflows/release-plan-recovery.yml",
+            ".github/workflows/release.yml"
+          ]
+        },
+        {
+          "action": "actions/download-artifact",
+          "commit": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+          "reference": "v8",
+          "repository": "actions/download-artifact",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/release-plan-recovery.yml",
+            ".github/workflows/release.yml"
+          ]
+        },
+        {
+          "action": "actions/upload-artifact",
+          "commit": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "reference": "v7",
+          "repository": "actions/upload-artifact",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/release-plan-recovery.yml",
+            ".github/workflows/release.yml"
+          ]
+        },
+        {
+          "action": "shivammathur/setup-php",
+          "commit": "f3e473d116dcccaddc5834248c87452386958240",
+          "reference": "v2",
+          "repository": "shivammathur/setup-php",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/build.yml",
+            ".github/workflows/release.yml"
+          ]
+        },
+        {
+          "action": "softprops/action-gh-release",
+          "commit": "3d0d9888cb7fd7b750713d6e236d1fcb99157228",
+          "reference": "v3",
+          "repository": "softprops/action-gh-release",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/release.yml"
+          ]
+        }
+      ],
+      "branch": "main",
+      "commit": "bc036e94604329612b65a2a9effe2e929f91f4e1",
+      "protected_checks": [
+        "Target branch qualification"
+      ],
+      "successful_check_runs": {
+        "Target branch qualification": 88434811019
+      },
+      "workflows": [
+        {
+          "path": ".github/workflows/build.yml",
+          "required_check": "Target branch qualification",
+          "workflow_id": 260978155
+        }
+      ]
+    },
+    "documentation": {
+      "action_releases": [
+        {
+          "action": "actions/checkout",
+          "commit": "d23441a48e516b6c34aea4fa41551a30e30af803",
+          "reference": "v6",
+          "repository": "actions/checkout",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/deploy.yml",
+            ".github/workflows/installers.yml",
+            ".github/workflows/protocol-specs.yml",
+            ".github/workflows/public-artifact-tuple.yml",
+            ".github/workflows/public-boundary.yml",
+            ".github/workflows/qualification.yml"
+          ]
+        },
+        {
+          "action": "actions/setup-node",
+          "commit": "249970729cb0ef3589644e2896645e5dc5ba9c38",
+          "reference": "v6",
+          "repository": "actions/setup-node",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/deploy.yml",
+            ".github/workflows/protocol-specs.yml",
+            ".github/workflows/public-artifact-tuple.yml",
+            ".github/workflows/qualification.yml"
+          ]
+        },
+        {
+          "action": "actions/setup-python",
+          "commit": "ece7cb06caefa5fff74198d8649806c4678c61a1",
+          "reference": "v6",
+          "repository": "actions/setup-python",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/installers.yml"
+          ]
+        },
+        {
+          "action": "actions/upload-artifact",
+          "commit": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "reference": "v7",
+          "repository": "actions/upload-artifact",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/deploy.yml",
+            ".github/workflows/public-artifact-tuple.yml"
+          ]
+        },
+        {
+          "action": "peaceiris/actions-gh-pages",
+          "commit": "84c30a85c19949d7eee79c4ff27748b70285e453",
+          "reference": "v4",
+          "repository": "peaceiris/actions-gh-pages",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/deploy.yml"
+          ]
+        }
+      ],
+      "branch": "main",
+      "commit": "ee60066476ee414efd23ab386971f0a3196b5cf9",
+      "protected_checks": [
+        "Executable documentation contracts"
+      ],
+      "successful_check_runs": {
+        "Executable documentation contracts": 88251049798
+      },
+      "workflows": [
+        {
+          "path": ".github/workflows/qualification.yml",
+          "required_check": "Executable documentation contracts",
+          "workflow_id": 314451424
+        }
+      ]
+    },
+    "github-control-plane": {
+      "action_releases": [
+        {
+          "action": "actions/checkout",
+          "commit": "d23441a48e516b6c34aea4fa41551a30e30af803",
+          "reference": "v6",
+          "repository": "actions/checkout",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/beta-candidate.yml",
+            ".github/workflows/beta-conformance-retention.yml",
+            ".github/workflows/beta-conformance.yml",
+            ".github/workflows/beta-continuity.yml",
+            ".github/workflows/issue-authority.yml",
+            ".github/workflows/release-plan-observer.yml",
+            ".github/workflows/release-plan-supersession.yml",
+            ".github/workflows/release-plan.yml",
+            ".github/workflows/source-qualification.yml",
+            ".github/workflows/target-qualification-audit.yml"
+          ]
+        },
+        {
+          "action": "actions/download-artifact",
+          "commit": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+          "reference": "v8",
+          "repository": "actions/download-artifact",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/beta-candidate.yml",
+            ".github/workflows/beta-conformance-retention.yml",
+            ".github/workflows/beta-conformance.yml",
+            ".github/workflows/release-plan-observer.yml",
+            ".github/workflows/release-plan-supersession.yml",
+            ".github/workflows/release-plan.yml"
+          ]
+        },
+        {
+          "action": "actions/setup-python",
+          "commit": "ece7cb06caefa5fff74198d8649806c4678c61a1",
+          "reference": "v6",
+          "repository": "actions/setup-python",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/beta-candidate.yml",
+            ".github/workflows/beta-conformance-retention.yml",
+            ".github/workflows/beta-conformance.yml",
+            ".github/workflows/beta-continuity.yml",
+            ".github/workflows/issue-authority.yml",
+            ".github/workflows/release-plan-observer.yml",
+            ".github/workflows/release-plan-supersession.yml",
+            ".github/workflows/release-plan.yml",
+            ".github/workflows/source-qualification.yml",
+            ".github/workflows/target-qualification-audit.yml"
+          ]
+        },
+        {
+          "action": "actions/upload-artifact",
+          "commit": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "reference": "v7",
+          "repository": "actions/upload-artifact",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/beta-candidate.yml",
+            ".github/workflows/beta-conformance-retention.yml",
+            ".github/workflows/beta-conformance.yml",
+            ".github/workflows/beta-continuity.yml",
+            ".github/workflows/issue-authority.yml",
+            ".github/workflows/release-plan-observer.yml",
+            ".github/workflows/release-plan-supersession.yml",
+            ".github/workflows/release-plan.yml",
+            ".github/workflows/target-qualification-audit.yml"
+          ]
+        }
+      ],
+      "branch": "main",
+      "commit": "13cef8ead9af6d39c2e9c0558246c51543386617",
+      "protected_checks": [
+        "Control-plane source qualification"
+      ],
+      "successful_check_runs": {
+        "Control-plane source qualification": 88539009680
+      },
+      "workflows": [
+        {
+          "path": ".github/workflows/source-qualification.yml",
+          "required_check": "Control-plane source qualification",
+          "workflow_id": 314696846
+        }
+      ]
+    },
+    "sample-app": {
+      "action_releases": [
+        {
+          "action": "actions/cache",
+          "commit": "caa296126883cff596d87d8935842f9db880ef25",
+          "reference": "v5",
+          "repository": "actions/cache",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/ci.yml"
+          ]
+        },
+        {
+          "action": "actions/checkout",
+          "commit": "d23441a48e516b6c34aea4fa41551a30e30af803",
+          "reference": "v6",
+          "repository": "actions/checkout",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/ci.yml",
+            ".github/workflows/polyglot-validation.yml",
+            ".github/workflows/public-boundary.yml",
+            ".github/workflows/smoke.yml"
+          ]
+        },
+        {
+          "action": "shivammathur/setup-php",
+          "commit": "f3e473d116dcccaddc5834248c87452386958240",
+          "reference": "v2",
+          "repository": "shivammathur/setup-php",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/ci.yml"
+          ]
+        }
+      ],
+      "branch": "main",
+      "commit": "00c8b8950b1ea2732a126e934b0d1b0258ee3c90",
+      "protected_checks": [
+        "Target branch qualification",
+        "docker compose sample workflows",
+        "polyglot smoke (PHP/Python/Rust)"
+      ],
+      "successful_check_runs": {
+        "Target branch qualification": 87767556275,
+        "docker compose sample workflows": 87767404422,
+        "polyglot smoke (PHP/Python/Rust)": 87767404775
+      },
+      "workflows": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "required_check": "Target branch qualification",
+          "workflow_id": 264714649
+        },
+        {
+          "path": ".github/workflows/polyglot-validation.yml",
+          "required_check": "polyglot smoke (PHP/Python/Rust)",
+          "workflow_id": 275508304
+        },
+        {
+          "path": ".github/workflows/smoke.yml",
+          "required_check": "docker compose sample workflows",
+          "workflow_id": 264760957
+        }
+      ]
+    },
+    "sdk-php": {
+      "action_releases": [
+        {
+          "action": "actions/checkout",
+          "commit": "d23441a48e516b6c34aea4fa41551a30e30af803",
+          "reference": "v6",
+          "repository": "actions/checkout",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/ci.yml",
+            ".github/workflows/docs.yml",
+            ".github/workflows/public-boundary.yml",
+            ".github/workflows/release-plan-recovery.yml"
+          ]
+        },
+        {
+          "action": "actions/deploy-pages",
+          "commit": "cd2ce8fcbc39b97be8ca5fce6e763baed58fa128",
+          "reference": "v5",
+          "repository": "actions/deploy-pages",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/docs.yml"
+          ]
+        },
+        {
+          "action": "actions/download-artifact",
+          "commit": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+          "reference": "v8",
+          "repository": "actions/download-artifact",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/release-plan-recovery.yml"
+          ]
+        },
+        {
+          "action": "actions/upload-artifact",
+          "commit": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "reference": "v7",
+          "repository": "actions/upload-artifact",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/release-plan-recovery.yml"
+          ]
+        },
+        {
+          "action": "actions/upload-pages-artifact",
+          "commit": "fc324d3547104276b827a68afc52ff2a11cc49c9",
+          "reference": "v5",
+          "repository": "actions/upload-pages-artifact",
+          "runtime": "composite",
+          "workflows": [
+            ".github/workflows/docs.yml"
+          ]
+        },
+        {
+          "action": "shivammathur/setup-php",
+          "commit": "f3e473d116dcccaddc5834248c87452386958240",
+          "reference": "v2",
+          "repository": "shivammathur/setup-php",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/ci.yml",
+            ".github/workflows/docs.yml"
+          ]
+        }
+      ],
+      "branch": "main",
+      "commit": "3b79813b1bbcb811277cc30d8dcfc359ea53f65c",
+      "protected_checks": [
+        "Target branch qualification"
+      ],
+      "successful_check_runs": {
+        "Target branch qualification": 88424910885
+      },
+      "workflows": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "required_check": "Target branch qualification",
+          "workflow_id": 312595209
+        }
+      ]
+    },
+    "sdk-python": {
+      "action_releases": [
+        {
+          "action": "actions/checkout",
+          "commit": "d23441a48e516b6c34aea4fa41551a30e30af803",
+          "reference": "v6",
+          "repository": "actions/checkout",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/ci.yml",
+            ".github/workflows/docs.yml",
+            ".github/workflows/public-boundary.yml",
+            ".github/workflows/publish.yml",
+            ".github/workflows/release-plan-recovery.yml"
+          ]
+        },
+        {
+          "action": "actions/deploy-pages",
+          "commit": "cd2ce8fcbc39b97be8ca5fce6e763baed58fa128",
+          "reference": "v5",
+          "repository": "actions/deploy-pages",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/docs.yml"
+          ]
+        },
+        {
+          "action": "actions/download-artifact",
+          "commit": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+          "reference": "v8",
+          "repository": "actions/download-artifact",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/publish.yml"
+          ]
+        },
+        {
+          "action": "actions/setup-python",
+          "commit": "ece7cb06caefa5fff74198d8649806c4678c61a1",
+          "reference": "v6",
+          "repository": "actions/setup-python",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/ci.yml",
+            ".github/workflows/docs.yml",
+            ".github/workflows/publish.yml"
+          ]
+        },
+        {
+          "action": "actions/upload-artifact",
+          "commit": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "reference": "v7",
+          "repository": "actions/upload-artifact",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/publish.yml",
+            ".github/workflows/release-plan-recovery.yml"
+          ]
+        },
+        {
+          "action": "actions/upload-pages-artifact",
+          "commit": "fc324d3547104276b827a68afc52ff2a11cc49c9",
+          "reference": "v5",
+          "repository": "actions/upload-pages-artifact",
+          "runtime": "composite",
+          "workflows": [
+            ".github/workflows/docs.yml"
+          ]
+        },
+        {
+          "action": "pypa/gh-action-pypi-publish",
+          "commit": "ba38be9e461d3875417946c167d0b5f3d385a247",
+          "reference": "release/v1",
+          "repository": "pypa/gh-action-pypi-publish",
+          "runtime": "composite",
+          "workflows": [
+            ".github/workflows/publish.yml"
+          ]
+        }
+      ],
+      "branch": "main",
+      "commit": "13037ddcb1f55d72c24256591e346b991ad64273",
+      "protected_checks": [
+        "Target branch qualification"
+      ],
+      "successful_check_runs": {
+        "Target branch qualification": 88541010955
+      },
+      "workflows": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "required_check": "Target branch qualification",
+          "workflow_id": 260969875
+        }
+      ]
+    },
+    "sdk-rust": {
+      "action_releases": [
+        {
+          "action": "actions/checkout",
+          "commit": "d23441a48e516b6c34aea4fa41551a30e30af803",
+          "reference": "v6",
+          "repository": "actions/checkout",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/ci.yml",
+            ".github/workflows/docs.yml",
+            ".github/workflows/public-boundary.yml",
+            ".github/workflows/release-plan-recovery.yml",
+            ".github/workflows/release.yml"
+          ]
+        },
+        {
+          "action": "actions/configure-pages",
+          "commit": "45bfe0192ca1faeb007ade9deae92b16b8254a0d",
+          "reference": "v6",
+          "repository": "actions/configure-pages",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/docs.yml"
+          ]
+        },
+        {
+          "action": "actions/deploy-pages",
+          "commit": "cd2ce8fcbc39b97be8ca5fce6e763baed58fa128",
+          "reference": "v5",
+          "repository": "actions/deploy-pages",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/docs.yml"
+          ]
+        },
+        {
+          "action": "actions/download-artifact",
+          "commit": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+          "reference": "v8",
+          "repository": "actions/download-artifact",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/release-plan-recovery.yml"
+          ]
+        },
+        {
+          "action": "actions/upload-artifact",
+          "commit": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "reference": "v7",
+          "repository": "actions/upload-artifact",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/release-plan-recovery.yml",
+            ".github/workflows/release.yml"
+          ]
+        },
+        {
+          "action": "actions/upload-pages-artifact",
+          "commit": "fc324d3547104276b827a68afc52ff2a11cc49c9",
+          "reference": "v5",
+          "repository": "actions/upload-pages-artifact",
+          "runtime": "composite",
+          "workflows": [
+            ".github/workflows/docs.yml"
+          ]
+        },
+        {
+          "action": "dtolnay/rust-toolchain",
+          "commit": "4d407b29186a635f0cc27475ef0bc0ae605a8866",
+          "reference": "1.86.0",
+          "repository": "dtolnay/rust-toolchain",
+          "runtime": "composite",
+          "workflows": [
+            ".github/workflows/docs.yml",
+            ".github/workflows/release.yml"
+          ]
+        },
+        {
+          "action": "dtolnay/rust-toolchain",
+          "commit": "4cda84d5c5c54efe2404f9d843567869ab1699d4",
+          "reference": "stable",
+          "repository": "dtolnay/rust-toolchain",
+          "runtime": "composite",
+          "workflows": [
+            ".github/workflows/ci.yml"
+          ]
+        }
+      ],
+      "branch": "main",
+      "commit": "6fa98425c8ec7690ef96f8296a21407aa8d03067",
+      "protected_checks": [
+        "Target branch qualification"
+      ],
+      "successful_check_runs": {
+        "Target branch qualification": 88544357957
+      },
+      "workflows": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "required_check": "Target branch qualification",
+          "workflow_id": 310727597
+        }
+      ]
+    },
+    "server": {
+      "action_releases": [
+        {
+          "action": "actions/checkout",
+          "commit": "d23441a48e516b6c34aea4fa41551a30e30af803",
+          "reference": "v6",
+          "repository": "actions/checkout",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/helm-chart-validation.yml",
+            ".github/workflows/kubernetes-validation.yml",
+            ".github/workflows/phpunit-feature.yml",
+            ".github/workflows/polyglot-validation.yml",
+            ".github/workflows/public-boundary.yml",
+            ".github/workflows/published-compose.yml",
+            ".github/workflows/release-plan-recovery.yml",
+            ".github/workflows/release.yml",
+            ".github/workflows/replay-query-concurrent-http.yml",
+            ".github/workflows/server-perf-soak.yml",
+            ".github/workflows/server-perf.yml",
+            ".github/workflows/single-region-failover.yml",
+            ".github/workflows/small-cluster.yml",
+            ".github/workflows/version-validation.yml"
+          ]
+        },
+        {
+          "action": "actions/setup-python",
+          "commit": "ece7cb06caefa5fff74198d8649806c4678c61a1",
+          "reference": "v6",
+          "repository": "actions/setup-python",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/helm-chart-validation.yml",
+            ".github/workflows/polyglot-validation.yml",
+            ".github/workflows/version-validation.yml"
+          ]
+        },
+        {
+          "action": "actions/upload-artifact",
+          "commit": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "reference": "v7",
+          "repository": "actions/upload-artifact",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/helm-chart-validation.yml",
+            ".github/workflows/kubernetes-validation.yml",
+            ".github/workflows/release-plan-recovery.yml",
+            ".github/workflows/release.yml",
+            ".github/workflows/server-perf-soak.yml",
+            ".github/workflows/server-perf.yml",
+            ".github/workflows/single-region-failover.yml"
+          ]
+        },
+        {
+          "action": "azure/setup-helm",
+          "commit": "9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310",
+          "reference": "v5",
+          "repository": "azure/setup-helm",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/helm-chart-validation.yml"
+          ]
+        },
+        {
+          "action": "docker/build-push-action",
+          "commit": "53b7df96c91f9c12dcc8a07bcb9ccacbed38856a",
+          "reference": "v7",
+          "repository": "docker/build-push-action",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/release.yml"
+          ]
+        },
+        {
+          "action": "docker/login-action",
+          "commit": "af1e73f918a031802d376d3c8bbc3fe56130a9b0",
+          "reference": "v4",
+          "repository": "docker/login-action",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/release.yml"
+          ]
+        },
+        {
+          "action": "docker/metadata-action",
+          "commit": "dc802804100637a589fabce1cb79ff13a1411302",
+          "reference": "v6",
+          "repository": "docker/metadata-action",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/release.yml"
+          ]
+        },
+        {
+          "action": "docker/setup-buildx-action",
+          "commit": "bb05f3f5519dd87d3ba754cc423b652a5edd6d2c",
+          "reference": "v4",
+          "repository": "docker/setup-buildx-action",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/kubernetes-validation.yml",
+            ".github/workflows/polyglot-validation.yml",
+            ".github/workflows/release.yml",
+            ".github/workflows/server-perf.yml",
+            ".github/workflows/small-cluster.yml",
+            ".github/workflows/version-validation.yml"
+          ]
+        },
+        {
+          "action": "docker/setup-qemu-action",
+          "commit": "96fe6ef7f33517b61c61be40b68a1882f3264fb8",
+          "reference": "v4",
+          "repository": "docker/setup-qemu-action",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/published-compose.yml",
+            ".github/workflows/release.yml"
+          ]
+        },
+        {
+          "action": "helm/chart-testing-action",
+          "commit": "6ec842c01de15ebb84c8627d2744a0c2f2755c9f",
+          "reference": "v2.8.0",
+          "repository": "helm/chart-testing-action",
+          "runtime": "composite",
+          "workflows": [
+            ".github/workflows/helm-chart-validation.yml"
+          ]
+        },
+        {
+          "action": "helm/kind-action",
+          "commit": "ef37e7f390d99f746eb8b610417061a60e82a6cc",
+          "reference": "v1.14.0",
+          "repository": "helm/kind-action",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/helm-chart-validation.yml"
+          ]
+        }
+      ],
+      "branch": "main",
+      "commit": "5a1d634669b9c9fbf2f7facc9101b1ca84105db9",
+      "protected_checks": [
+        "PHPUnit feature suite"
+      ],
+      "successful_check_runs": {
+        "PHPUnit feature suite": 88465916710
+      },
+      "workflows": [
+        {
+          "path": ".github/workflows/phpunit-feature.yml",
+          "required_check": "PHPUnit feature suite",
+          "workflow_id": 264946429
+        }
+      ]
+    },
+    "waterline": {
+      "action_releases": [
+        {
+          "action": "actions/cache",
+          "commit": "caa296126883cff596d87d8935842f9db880ef25",
+          "reference": "v5",
+          "repository": "actions/cache",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/php.yml"
+          ]
+        },
+        {
+          "action": "actions/checkout",
+          "commit": "d23441a48e516b6c34aea4fa41551a30e30af803",
+          "reference": "v6",
+          "repository": "actions/checkout",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/php.yml",
+            ".github/workflows/public-boundary.yml",
+            ".github/workflows/release-docs-audit.yml",
+            ".github/workflows/release-plan-recovery.yml",
+            ".github/workflows/screenshots.yml"
+          ]
+        },
+        {
+          "action": "actions/download-artifact",
+          "commit": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+          "reference": "v8",
+          "repository": "actions/download-artifact",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/release-plan-recovery.yml"
+          ]
+        },
+        {
+          "action": "actions/setup-node",
+          "commit": "249970729cb0ef3589644e2896645e5dc5ba9c38",
+          "reference": "v6",
+          "repository": "actions/setup-node",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/screenshots.yml"
+          ]
+        },
+        {
+          "action": "actions/upload-artifact",
+          "commit": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "reference": "v7",
+          "repository": "actions/upload-artifact",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/release-docs-audit.yml",
+            ".github/workflows/release-plan-recovery.yml",
+            ".github/workflows/screenshots.yml"
+          ]
+        },
+        {
+          "action": "shivammathur/setup-php",
+          "commit": "f3e473d116dcccaddc5834248c87452386958240",
+          "reference": "v2",
+          "repository": "shivammathur/setup-php",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/php.yml",
+            ".github/workflows/screenshots.yml"
+          ]
+        }
+      ],
+      "branch": "v2",
+      "commit": "0fb3caaba1e8a77f9bfa63ba3dcb2bcbaa825c31",
+      "protected_checks": [
+        "Target branch qualification"
+      ],
+      "successful_check_runs": {
+        "Target branch qualification": 88430253596
+      },
+      "workflows": [
+        {
+          "path": ".github/workflows/php.yml",
+          "required_check": "Target branch qualification",
+          "workflow_id": 67431104
+        }
+      ]
+    },
+    "workflow": {
+      "action_releases": [
+        {
+          "action": "actions/cache",
+          "commit": "caa296126883cff596d87d8935842f9db880ef25",
+          "reference": "v5",
+          "repository": "actions/cache",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/php.yml"
+          ]
+        },
+        {
+          "action": "actions/checkout",
+          "commit": "d23441a48e516b6c34aea4fa41551a30e30af803",
+          "reference": "v6",
+          "repository": "actions/checkout",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/php.yml",
+            ".github/workflows/public-boundary.yml",
+            ".github/workflows/release-docs-audit.yml",
+            ".github/workflows/release-plan-recovery.yml"
+          ]
+        },
+        {
+          "action": "actions/upload-artifact",
+          "commit": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "reference": "v7",
+          "repository": "actions/upload-artifact",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/php.yml",
+            ".github/workflows/release-docs-audit.yml",
+            ".github/workflows/release-plan-recovery.yml"
+          ]
+        },
+        {
+          "action": "codecov/codecov-action",
+          "commit": "fb8b3582c8e4def4969c97caa2f19720cb33a72f",
+          "reference": "v7",
+          "repository": "codecov/codecov-action",
+          "runtime": "composite",
+          "workflows": [
+            ".github/workflows/php.yml"
+          ]
+        },
+        {
+          "action": "shivammathur/setup-php",
+          "commit": "f3e473d116dcccaddc5834248c87452386958240",
+          "reference": "v2",
+          "repository": "shivammathur/setup-php",
+          "runtime": "node24",
+          "workflows": [
+            ".github/workflows/release-docs-audit.yml"
+          ]
+        }
+      ],
+      "branch": "v2",
+      "commit": "26b42f2d4ed240c2a69cf4ae58c5b23ffdcc3863",
+      "protected_checks": [
+        "build"
+      ],
+      "successful_check_runs": {
+        "build": 88428290072
+      },
+      "workflows": [
+        {
+          "path": ".github/workflows/php.yml",
+          "required_check": "build",
+          "workflow_id": 20934911
+        }
+      ]
+    }
+  }
+}

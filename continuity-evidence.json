@@ -1,0 +1,98 @@
+{
+  "authority_issue": {
+    "labels": [
+      "authority:github",
+      "beta:blocker",
+      "completion:evidence-required",
+      "kind:cross-repository",
+      "priority:P1",
+      "repo:github-control-plane",
+      "status:ready"
+    ],
+    "number": 2,
+    "repository": "durable-workflow/.github",
+    "state": "open",
+    "updated_at": "2026-07-21T01:53:49Z",
+    "url": "https://github.com/durable-workflow/.github/issues/2",
+    "work_id": "github-only-beta-continuity-drill"
+  },
+  "candidate_identity": {
+    "components": {
+      "cli": {
+        "commit": "bc036e94604329612b65a2a9effe2e929f91f4e1",
+        "version": "0.1.95"
+      },
+      "sdk-php": {
+        "commit": "3b79813b1bbcb811277cc30d8dcfc359ea53f65c",
+        "version": "0.1.16"
+      },
+      "sdk-python": {
+        "commit": "13037ddcb1f55d72c24256591e346b991ad64273",
+        "version": "0.4.106"
+      },
+      "sdk-rust": {
+        "commit": "6fa98425c8ec7690ef96f8296a21407aa8d03067",
+        "version": "0.1.22"
+      },
+      "server": {
+        "commit": "5a1d634669b9c9fbf2f7facc9101b1ca84105db9",
+        "version": "0.2.697"
+      },
+      "waterline": {
+        "commit": "0fb3caaba1e8a77f9bfa63ba3dcb2bcbaa825c31",
+        "version": "2.0.0-alpha.139"
+      },
+      "workflow": {
+        "commit": "26b42f2d4ed240c2a69cf4ae58c5b23ffdcc3863",
+        "version": "2.0.0-alpha.293"
+      }
+    },
+    "plan_sha256": "498804a2c7fd5b0e34f93ef080bea3073bc98e420e8bf84a98ca4cdb94729973"
+  },
+  "credential_boundary": "GitHub protected beta product work environment",
+  "drill": "workspace-unavailable-beta-continuity-release-pages",
+  "github_run": {
+    "attempt": "1",
+    "id": "29802254258",
+    "repository": "durable-workflow/.github",
+    "sha": "13cef8ead9af6d39c2e9c0558246c51543386617"
+  },
+  "observed_at": "2026-07-21T04:49:53Z",
+  "outcome": "accepted",
+  "pending_components_at_acceptance": [
+    "workflow",
+    "waterline",
+    "server",
+    "cli",
+    "sdk-php"
+  ],
+  "phase": "accepted",
+  "public_components_at_acceptance": {
+    "sdk-python": {
+      "commit": "13037ddcb1f55d72c24256591e346b991ad64273",
+      "published_at": "2026-07-21T04:17:02Z",
+      "release_id": 357110827,
+      "url": "https://github.com/durable-workflow/sdk-python/releases/tag/0.4.106",
+      "version": "0.4.106"
+    },
+    "sdk-rust": {
+      "commit": "6fa98425c8ec7690ef96f8296a21407aa8d03067",
+      "published_at": "2026-07-21T04:44:07Z",
+      "release_id": 357117657,
+      "url": "https://github.com/durable-workflow/sdk-rust/releases/tag/0.1.22",
+      "version": "0.1.22"
+    }
+  },
+  "release_plan": {
+    "sha256": "498804a2c7fd5b0e34f93ef080bea3073bc98e420e8bf84a98ca4cdb94729973",
+    "tag": "release-plan/workspace-unavailable-release-pages-24ea45b0acb8"
+  },
+  "schema": "durable-workflow.beta-continuity.evidence/v1",
+  "superseded_interruption": {
+    "commit": "d327e15fa3732aebae9a584c61f1541ec53d3693",
+    "evidence_sha256": "435c2456c36f534b1755d00bfb280c9ec07e20ee2d2a7f8be9748877b8b99132",
+    "plan_sha256": "80e88698fa37b6d738d111dd2be3e3c145607973f8147c54cc25e5d91d415b17",
+    "reason": "missing-post-acceptance-publication-trigger",
+    "tag": "beta-continuity/workspace-unavailable-0b191da0d140/interrupted"
+  }
+}
