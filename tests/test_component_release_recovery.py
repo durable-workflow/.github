@@ -32,6 +32,7 @@ from scripts.component_release_recovery import (
     validate_plan,
     validate_release_preparation,
     verify_cli,
+    verify_composer,
     verify_recovery_workflow_source,
 )
 
@@ -105,6 +106,79 @@ def preparation(candidate: dict[str, object]) -> dict[str, object]:
 
 
 class ComponentRecoveryContractTest(unittest.TestCase):
+    def test_recovery_composer_verification_expands_minified_exact_version_strictly(self) -> None:
+        component = COMPONENTS["sdk-php"]
+        commit = "a" * 40
+        client = mock.Mock()
+        client.json.return_value = {
+            "minified": "composer/2.0",
+            "packages": {
+                component.package: [
+                    {
+                        "version": "0.1.2",
+                        "source": {"reference": commit},
+                        "dist": {"reference": commit},
+                    },
+                    {"version": "0.1.1"},
+                ]
+            },
+        }
+
+        result = verify_composer(client, component, "0.1.1", commit)
+        self.assertEqual(commit, result["source_reference"])
+        self.assertEqual(commit, result["dist_reference"])
+
+        client.json.return_value["packages"][component.package][1]["dist"] = {"reference": "b" * 40}
+        with self.assertRaisesRegex(RecoveryError, "Packagist identity.*not"):
+            verify_composer(client, component, "0.1.1", commit)
+
+    def test_recovery_composer_verification_rejects_invalid_compact_identity_and_order(self) -> None:
+        component = COMPONENTS["sdk-php"]
+        commit = "a" * 40
+        first = {
+            "version": "0.1.1",
+            "source": {"reference": commit},
+            "dist": {"reference": commit},
+        }
+        client = mock.Mock()
+
+        cases = (
+            ([first, {"version": "0.1.2"}], "strictly descending"),
+            ([first, {"version": "0.1.0"}, {"dist": {"reference": commit}}], "declare a version"),
+        )
+        for versions, error in cases:
+            with self.subTest(error=error):
+                client.json.return_value = {
+                    "minified": "composer/2.0",
+                    "packages": {component.package: versions},
+                }
+                with self.assertRaisesRegex(RecoveryError, error):
+                    verify_composer(client, component, "0.1.1", commit)
+
+    def test_recovery_composer_verification_rejects_ambiguous_exact_version_before_provenance(self) -> None:
+        component = COMPONENTS["sdk-php"]
+        commit = "a" * 40
+        client = mock.Mock()
+        client.json.return_value = {
+            "packages": {
+                component.package: [
+                    {
+                        "version": "0.1.1",
+                        "source": {"reference": commit},
+                        "dist": {"reference": commit},
+                    },
+                    {
+                        "version": "v0.1.1",
+                        "source": {"reference": "b" * 40},
+                        "dist": {"reference": "b" * 40},
+                    },
+                ]
+            }
+        }
+
+        with self.assertRaisesRegex(RecoveryError, "multiple records"):
+            verify_composer(client, component, "0.1.1", commit)
+
     def test_scheduled_continuity_recovery_waits_for_remote_resume(self) -> None:
         candidate = plan()
         with (

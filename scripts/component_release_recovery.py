@@ -28,6 +28,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+# GitHub Actions invokes this file directly from the repository root. In that
+# mode Python adds scripts/, rather than the repository root, to sys.path.
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.packagist_metadata import PackagistMetadataError, exact_package_version
+
 SCHEMA = "durable-workflow.release-plan/v1"
 PREPARATION_SCHEMA = "durable-workflow.release-preparation/v1"
 STATE_SCHEMA = "durable-workflow.component-release-recovery/v1"
@@ -813,12 +820,18 @@ def verify_composer(client: PublicClient, component: Component, version: str, co
     encoded = "/".join(urllib.parse.quote(part, safe="") for part in component.package.split("/"))
     url = f"https://repo.packagist.org/p2/{encoded}.json"
     payload = client.json(url)
-    releases = payload.get("packages", {}).get(component.package, [])
-    release = next((item for item in releases if str(item.get("version", "")).lstrip("v") == version.lstrip("v")), None)
+    try:
+        release = exact_package_version(payload, component.package, version)
+    except PackagistMetadataError as error:
+        raise RecoveryError(
+            f"Packagist metadata for {component.package} is invalid: {error}", "registry-publication"
+        ) from error
     if release is None:
         raise NotFound(f"Packagist does not expose {component.package}@{version}", "registry-publication")
-    source = release.get("source", {}).get("reference")
-    dist = release.get("dist", {}).get("reference")
+    source_metadata = release.get("source")
+    dist_metadata = release.get("dist")
+    source = source_metadata.get("reference") if isinstance(source_metadata, dict) else None
+    dist = dist_metadata.get("reference") if isinstance(dist_metadata, dict) else None
     if source != commit or dist != commit:
         raise RecoveryError(
             f"Packagist identity for {component.package}@{version} is {source}/{dist}, not {commit}",

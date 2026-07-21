@@ -36,6 +36,7 @@ from scripts.beta_candidate import (
     revalidate_verification,
     validate_manifest,
     validate_verification,
+    verify_composer,
     verify_github_release,
     verify_python_archive_identity,
 )
@@ -101,6 +102,147 @@ def verification(candidate: dict[str, object]) -> dict[str, object]:
 
 
 class ManifestTest(unittest.TestCase):
+    def test_waterline_alpha_139_expands_minified_metadata_and_checks_effective_provenance(self) -> None:
+        component = COMPONENTS["waterline"]
+        commit = "a" * 40
+        dist_url = "https://api.github.com/repos/durable-workflow/waterline/zipball/commit"
+        payload = {
+            "minified": "composer/2.0",
+            "packages": {
+                component.package: [
+                    {
+                        "name": component.package,
+                        "version": "2.0.0-alpha.140",
+                        "source": {
+                            "type": "git",
+                            "url": "https://github.com/durable-workflow/waterline",
+                            "reference": commit,
+                        },
+                        "dist": {"type": "zip", "url": dist_url, "reference": commit},
+                    },
+                    {"version": "2.0.0-alpha.139"},
+                ]
+            },
+        }
+        client = mock.Mock()
+        client.json.return_value = payload
+        client.download.return_value = {"url": dist_url, "size": 1, "sha256": "b" * 64}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            result = verify_composer(client, component, "2.0.0-alpha.139", commit, Path(temporary))
+
+        self.assertEqual(commit, result["source_reference"])
+        self.assertEqual(commit, result["dist_reference"])
+        client.download.assert_called_once()
+
+        payload["packages"][component.package][1]["source"] = {
+            "type": "git",
+            "url": "https://github.com/durable-workflow/waterline",
+            "reference": "c" * 40,
+        }
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            self.assertRaisesRegex(CandidateError, "source identity.*does not match"),
+        ):
+            verify_composer(client, component, "2.0.0-alpha.139", commit, Path(temporary))
+
+        payload["packages"][component.package][1]["source"] = "__unset"
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            self.assertRaisesRegex(CandidateError, "source identity.*does not match"),
+        ):
+            verify_composer(client, component, "2.0.0-alpha.139", commit, Path(temporary))
+
+        del payload["packages"][component.package][1]["source"]
+        payload["packages"][component.package][0]["source"]["reference"] = "c" * 40
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            self.assertRaisesRegex(CandidateError, "source identity.*does not match"),
+        ):
+            verify_composer(client, component, "2.0.0-alpha.139", commit, Path(temporary))
+
+    def test_composer_verification_does_not_inherit_unmarked_or_unsupported_metadata(self) -> None:
+        component = COMPONENTS["workflow"]
+        commit = "a" * 40
+        first = {
+            "version": "2.0.0-alpha.2",
+            "source": {"reference": commit},
+            "dist": {"url": "https://example.test/package.zip", "reference": commit},
+        }
+        client = mock.Mock()
+
+        cases = (
+            (None, "source identity.*does not match"),
+            ("composer/3.0", "unsupported minified format"),
+        )
+        for marker, error in cases:
+            with self.subTest(marker=marker):
+                payload = {"packages": {component.package: [first, {"version": "2.0.0-alpha.1"}]}}
+                if marker is not None:
+                    payload["minified"] = marker
+                client.json.return_value = payload
+                with (
+                    tempfile.TemporaryDirectory() as temporary,
+                    self.assertRaisesRegex(CandidateError, error),
+                ):
+                    verify_composer(client, component, "2.0.0-alpha.1", commit, Path(temporary))
+
+    def test_composer_verification_rejects_invalid_compact_identity_and_order(self) -> None:
+        component = COMPONENTS["waterline"]
+        commit = "a" * 40
+        dist_url = "https://example.test/package.zip"
+        first = {
+            "version": "2.0.0-alpha.139",
+            "source": {"reference": commit},
+            "dist": {"url": dist_url, "reference": commit},
+        }
+        client = mock.Mock()
+
+        cases = (
+            ([first, {"version": "2.0.0-alpha.140"}], "strictly descending"),
+            ([first, {"version": "2.0.0-alpha.138"}, {"source": {"reference": commit}}], "declare a version"),
+        )
+        for versions, error in cases:
+            with self.subTest(error=error):
+                client.json.return_value = {
+                    "minified": "composer/2.0",
+                    "packages": {component.package: versions},
+                }
+                with (
+                    tempfile.TemporaryDirectory() as temporary,
+                    self.assertRaisesRegex(CandidateError, error),
+                ):
+                    verify_composer(client, component, "2.0.0-alpha.139", commit, Path(temporary))
+
+    def test_composer_verification_rejects_ambiguous_exact_version_before_provenance(self) -> None:
+        component = COMPONENTS["workflow"]
+        commit = "a" * 40
+        client = mock.Mock()
+        client.json.return_value = {
+            "packages": {
+                component.package: [
+                    {
+                        "version": "2.0.0-alpha.1",
+                        "source": {"reference": commit},
+                        "dist": {"url": "https://example.test/package.zip", "reference": commit},
+                    },
+                    {
+                        "version": "v2.0.0-alpha.1",
+                        "source": {"reference": "b" * 40},
+                        "dist": {"url": "https://example.test/drifted.zip", "reference": "b" * 40},
+                    },
+                ]
+            }
+        }
+
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            self.assertRaisesRegex(CandidateError, "multiple records"),
+        ):
+            verify_composer(client, component, "2.0.0-alpha.1", commit, Path(temporary))
+
+        client.download.assert_not_called()
+
     def test_verification_schema_and_runtime_reject_unknown_or_missing_nested_evidence(self) -> None:
         candidate = manifest()
         result = verification(candidate)

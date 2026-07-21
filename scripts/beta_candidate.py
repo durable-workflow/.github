@@ -30,6 +30,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+# GitHub Actions invokes this file directly from the repository root. In that
+# mode Python adds scripts/, rather than the repository root, to sys.path.
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.packagist_metadata import PackagistMetadataError, exact_package_version
+
 SCHEMA = "durable-workflow.beta-candidate/v1"
 VERIFICATION_SCHEMA = "durable-workflow.beta-candidate-verification/v1"
 CANDIDATE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
@@ -730,18 +737,21 @@ def verify_composer(
     encoded = "/".join(urllib.parse.quote(part, safe="") for part in component.package.split("/"))
     metadata_url = f"https://repo.packagist.org/p2/{encoded}.json"
     payload = client.json(metadata_url)
-    releases = payload.get("packages", {}).get(component.package, [])
-    release = next((item for item in releases if item.get("version", "").lstrip("v") == version.lstrip("v")), None)
+    try:
+        release = exact_package_version(payload, component.package, version)
+    except PackagistMetadataError as error:
+        raise CandidateError(f"Packagist metadata for {component.package} is invalid: {error}") from error
     if not release:
         raise CandidateError(f"Packagist does not expose {component.package}@{version}")
-    source_reference = release.get("source", {}).get("reference")
+    source = release.get("source")
+    source_reference = source.get("reference") if isinstance(source, dict) else None
     dist = release.get("dist", {})
-    dist_reference = dist.get("reference")
+    dist_reference = dist.get("reference") if isinstance(dist, dict) else None
     if source_reference != expected_commit or dist_reference != expected_commit:
         raise CandidateError(
             f"Packagist source identity for {component.package}@{version} does not match {expected_commit}"
         )
-    dist_url = dist.get("url")
+    dist_url = dist.get("url") if isinstance(dist, dict) else None
     if not isinstance(dist_url, str) or not dist_url.startswith("https://"):
         raise CandidateError(f"Packagist release {component.package}@{version} has no public dist URL")
     download = client.download(dist_url, directory / f"{component.package.replace('/', '-')}.zip")
