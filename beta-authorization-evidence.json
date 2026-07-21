@@ -1,0 +1,129 @@
+{
+  "authorization_sha256": "5619e138275fcc36ec98cb7324ba0ac3afa7251c192670ed9722a462a4e3f990",
+  "backlog": {
+    "allowed_authorization_gate": {
+      "number": 3,
+      "repository": "durable-workflow/.github",
+      "url": "https://github.com/durable-workflow/.github/issues/3"
+    },
+    "repositories": [
+      "durable-workflow/.github",
+      "durable-workflow/workflow",
+      "durable-workflow/waterline",
+      "durable-workflow/server",
+      "durable-workflow/cli",
+      "durable-workflow/sample-app",
+      "durable-workflow/sdk-php",
+      "durable-workflow/sdk-python",
+      "durable-workflow/sdk-rust",
+      "durable-workflow/durable-workflow.github.io"
+    ],
+    "unresolved_p0_p1": []
+  },
+  "candidate": {
+    "commit": "7249113ee37a41b1ff58f57896879c9fc264c3fd",
+    "manifest_sha256": "26084d2e8f12faeebb7b09bf3de41e1dd65f8afdaa5d38f786fcbcd1bf770f15",
+    "tag": "beta-candidate/alpha-current-e743e3760000",
+    "verification_sha256": "e2d8de06ec17fccef4cd0e60d02f5a944d15b50c26f57e95ee0281a5ee324b96"
+  },
+  "conformance": {
+    "commit": "13cef8ead9af6d39c2e9c0558246c51543386617",
+    "release": "https://github.com/durable-workflow/.github/releases/tag/beta-conformance/alpha-current-e743e3760000/29825107651.1",
+    "run": {
+      "evidence_tag": "beta-conformance/alpha-current-e743e3760000/29825107651.1",
+      "repository": "durable-workflow/.github",
+      "run_attempt": 1,
+      "run_id": 29825107651
+    },
+    "tag": "beta-conformance/alpha-current-e743e3760000/29825107651.1"
+  },
+  "continuity": {
+    "complete": {
+      "commit": "c2d845708ae219661c505fb3bd170eff72863b8e",
+      "tag": "beta-continuity/workspace-unavailable-release-pages-24ea45b0acb8/complete"
+    },
+    "no_op": {
+      "commit": "2de4420b00fcb3a12c565be316b0d0283a0a9440",
+      "tag": "beta-continuity/workspace-unavailable-release-pages-24ea45b0acb8/no-op-confirmed"
+    },
+    "plan": {
+      "commit": "fa40b58d3ead510b9e730a008ac0b9a1bf59c381",
+      "sha256": "498804a2c7fd5b0e34f93ef080bea3073bc98e420e8bf84a98ca4cdb94729973",
+      "tag": "release-plan/workspace-unavailable-release-pages-24ea45b0acb8"
+    }
+  },
+  "decision": {
+    "author": {
+      "html_url": "https://github.com/rmcdaniel",
+      "id": 1130888,
+      "login": "rmcdaniel",
+      "node_id": "MDQ6VXNlcjExMzA4ODg=",
+      "url": "https://api.github.com/users/rmcdaniel"
+    },
+    "body_sha256": "86a833303ab48b3327af8013a2722ae1da4c13cbf65bf0e5f957533a0e72e2a6",
+    "comment": 5033650755,
+    "comment_url": "https://github.com/durable-workflow/.github/issues/3#issuecomment-5033650755",
+    "issue": 3,
+    "issue_url": "https://github.com/durable-workflow/.github/issues/3",
+    "repository": "durable-workflow/.github"
+  },
+  "github_authority": {
+    "actor": "rmcdaniel",
+    "environment": "beta-authorization",
+    "environment_approval": {
+      "comment": "Approved exact first-beta authorization after candidate, qualification, conformance, continuity, and public backlog review.",
+      "environments": [
+        {
+          "html_url": "https://github.com/durable-workflow/.github/deployments/activity_log?environments_filter=beta-authorization",
+          "id": 18494447685,
+          "name": "beta-authorization",
+          "node_id": "EN_kwDOIklQaM8AAAAETlrgRQ",
+          "url": "https://api.github.com/repos/durable-workflow/.github/environments/beta-authorization"
+        }
+      ],
+      "run_attempt": 1,
+      "run_id": 29828211675,
+      "state": "approved",
+      "user": {
+        "html_url": "https://github.com/rmcdaniel",
+        "id": 1130888,
+        "login": "rmcdaniel",
+        "node_id": "MDQ6VXNlcjExMzA4ODg=",
+        "url": "https://api.github.com/users/rmcdaniel"
+      }
+    },
+    "environment_protection": {
+      "custom_branch_policies": [
+        {
+          "id": 55214206,
+          "name": "main"
+        }
+      ],
+      "deployment_branch_policy": {
+        "custom_branch_policies": true,
+        "protected_branches": false
+      },
+      "environment_id": 18494447685,
+      "environment_url": "https://github.com/durable-workflow/.github/deployments/activity_log?environments_filter=beta-authorization",
+      "prevent_self_review": false,
+      "required_reviewer_rule_ids": [
+        60510956
+      ],
+      "required_reviewer_user_ids": [
+        1130888
+      ]
+    },
+    "repository": "durable-workflow/.github",
+    "run_attempt": 1,
+    "run_id": 29828211675,
+    "run_url": "https://github.com/durable-workflow/.github/actions/runs/29828211675",
+    "workflow_commit": "dda7a5d57252baa9d3a8f3319a45c7f63886c440",
+    "workflow_ref": "durable-workflow/.github/.github/workflows/beta-authorization.yml@refs/heads/main"
+  },
+  "qualification": {
+    "path": "target-qualification-evidence.json",
+    "sha256": "534238f2bbf56d154785327fa2e3e3226b7e871f3796680772ddcfc336ba55be"
+  },
+  "request_sha256": "51f26e001a8234824e6f1514f6602e52542e88d1afd0d4cc0c9f3a1894042b3d",
+  "schema": "durable-workflow.beta-authorization-evidence/v1"
+}
