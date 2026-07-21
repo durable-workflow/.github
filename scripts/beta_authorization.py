@@ -82,15 +82,19 @@ REQUIRED_AUTHORITY_LABELS = {
 MAX_REQUEST_BYTES = 256 * 1024
 MAX_EVIDENCE_BYTES = 1024 * 1024
 MAX_QUALIFICATION_BYTES = 2 * 1024 * 1024
+MAX_QUALIFICATION_POLICY_BYTES = 256 * 1024
 MAX_ISSUE_PAGES = 100
 QUALIFICATION_BRANCH_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$")
 QUALIFICATION_WORKFLOW_PATH_PATTERN = re.compile(
     r"^\.github/workflows/[a-z0-9][a-z0-9.-]*\.ya?ml$"
 )
+QUALIFICATION_POLICY_WORKFLOW_PATH_PATTERN = re.compile(r"^[a-z0-9][a-z0-9.-]*\.ya?ml$")
+QUALIFICATION_REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 ACTION_REPOSITORY_PATTERN = re.compile(
     r"^[a-z0-9][a-z0-9_.-]*/[a-z0-9][a-z0-9_.-]*$"
 )
 ACTION_PATH_PART_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+ACTION_REFERENCE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 ACTION_RUNTIME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 
@@ -415,9 +419,171 @@ def verify_candidate_evidence(client: PublicClient, request: dict[str, Any]) -> 
     }
 
 
-def valid_recorded_action_releases(value: Any) -> bool:
+def validate_qualification_policy_contract(value: Any, context: str) -> dict[str, Any]:
+    policy = require_exact_keys(
+        value,
+        {
+            "$schema",
+            "action_runtime",
+            "organization",
+            "required_status_checks_strict",
+            "schema",
+            "targets",
+        },
+        context,
+    )
+    action_runtime = require_exact_keys(
+        policy["action_runtime"],
+        {"allowed_releases", "supported_javascript_runtimes"},
+        f"{context} action runtime",
+    )
+    allowed_releases = action_runtime["allowed_releases"]
+    supported_runtimes = action_runtime["supported_javascript_runtimes"]
+    targets = policy["targets"]
+    if (
+        policy["$schema"] != "./schema.json"
+        or policy["schema"] != QUALIFICATION_SCHEMA
+        or policy["organization"] != "durable-workflow"
+        or policy["required_status_checks_strict"] is not True
+        or not isinstance(allowed_releases, dict)
+        or not allowed_releases
+        or any(
+            not isinstance(repository, str)
+            or not ACTION_REPOSITORY_PATTERN.fullmatch(repository)
+            or not isinstance(references, list)
+            or not references
+            or len(references) != len(set(references))
+            or any(
+                not isinstance(reference, str)
+                or not ACTION_REFERENCE_PATTERN.fullmatch(reference)
+                for reference in references
+            )
+            for repository, references in allowed_releases.items()
+        )
+        or not isinstance(supported_runtimes, list)
+        or not supported_runtimes
+        or len(supported_runtimes) != len(set(supported_runtimes))
+        or any(
+            not isinstance(runtime, str) or not ACTION_RUNTIME_PATTERN.fullmatch(runtime)
+            for runtime in supported_runtimes
+        )
+        or not isinstance(targets, dict)
+        or not targets
+        or any(
+            not isinstance(name, str) or not IDENTITY_PATTERN.fullmatch(name)
+            for name in targets
+        )
+    ):
+        raise CandidateError(f"{context} has an invalid immutable contract")
+
+    repositories: set[str] = set()
+    for name, value in targets.items():
+        target = require_exact_keys(
+            value,
+            {"branch", "repository", "workflows"},
+            f"{context} target {name}",
+        )
+        repository = target["repository"]
+        branch = target["branch"]
+        workflows = target["workflows"]
+        if (
+            not isinstance(repository, str)
+            or not QUALIFICATION_REPOSITORY_PATTERN.fullmatch(repository)
+            or repository in repositories
+            or not isinstance(branch, str)
+            or not QUALIFICATION_BRANCH_PATTERN.fullmatch(branch)
+            or not isinstance(workflows, list)
+            or not workflows
+        ):
+            raise CandidateError(f"{context} target {name} has an invalid immutable contract")
+        repositories.add(repository)
+        paths: set[str] = set()
+        checks: set[str] = set()
+        for value in workflows:
+            workflow = require_exact_keys(
+                value,
+                {"matrix_independent", "path", "required_check"},
+                f"{context} target {name} workflow",
+            )
+            path = workflow["path"]
+            check = workflow["required_check"]
+            if (
+                not isinstance(path, str)
+                or not QUALIFICATION_POLICY_WORKFLOW_PATH_PATTERN.fullmatch(path)
+                or path in paths
+                or not isinstance(check, str)
+                or not check.strip()
+                or check in checks
+                or not isinstance(workflow["matrix_independent"], bool)
+            ):
+                raise CandidateError(
+                    f"{context} target {name} workflow has an invalid immutable contract"
+                )
+            paths.add(path)
+            checks.add(check)
+    return policy
+
+
+def current_qualification_policy() -> dict[str, Any]:
+    path = Path(__file__).resolve().parents[1] / "qualification" / "policy.json"
+    try:
+        raw = path.read_bytes()
+        policy = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as error:
+        raise CandidateError(f"cannot read current qualification policy: {error}") from error
+    if len(raw) > MAX_QUALIFICATION_POLICY_BYTES:
+        raise CandidateError("current qualification policy exceeds the 256 KiB limit")
+    return validate_qualification_policy_contract(policy, "current qualification policy")
+
+
+def historical_qualification_policy(repository: Path, commit: str) -> dict[str, Any]:
+    ancestry = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", commit, "HEAD"],
+        cwd=repository,
+        check=False,
+        capture_output=True,
+    )
+    if ancestry.returncode:
+        raise CandidateError(
+            "recorded beta authorization qualification policy is not in controller history"
+        )
+    process = subprocess.run(
+        ["git", "show", f"{commit}:qualification/policy.json"],
+        cwd=repository,
+        check=False,
+        capture_output=True,
+    )
+    if process.returncode:
+        raise CandidateError(
+            "recorded beta authorization lacks its historical qualification policy"
+        )
+    if len(process.stdout) > MAX_QUALIFICATION_POLICY_BYTES:
+        raise CandidateError("recorded historical qualification policy exceeds the 256 KiB limit")
+    try:
+        policy = json.loads(process.stdout)
+    except json.JSONDecodeError as error:
+        raise CandidateError(
+            "recorded historical qualification policy is not valid JSON"
+        ) from error
+    return validate_qualification_policy_contract(
+        policy,
+        "recorded historical qualification policy",
+    )
+
+
+def valid_recorded_action_releases(
+    value: Any,
+    *,
+    action_runtime: dict[str, Any] | None = None,
+) -> bool:
     if not isinstance(value, list):
         return False
+    allowed_releases = action_runtime["allowed_releases"] if action_runtime is not None else None
+    supported_runtimes = (
+        set(action_runtime["supported_javascript_runtimes"])
+        if action_runtime is not None
+        else None
+    )
     identities: set[tuple[str, str]] = set()
     for release in value:
         if not isinstance(release, dict) or set(release) != {
@@ -461,6 +627,15 @@ def valid_recorded_action_releases(value: Any) -> bool:
             )
             or len(set(workflows)) != len(workflows)
             or (action, reference) in identities
+            or (
+                allowed_releases is not None
+                and reference not in allowed_releases.get(repository, [])
+            )
+            or (
+                supported_runtimes is not None
+                and runtime.startswith("node")
+                and runtime not in supported_runtimes
+            )
         ):
             return False
         identities.add((action, reference))
@@ -472,23 +647,29 @@ def validate_qualification_evidence(
     request: dict[str, Any],
     *,
     current_policy: bool = True,
+    qualification_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     targets = qualification.get("targets") if isinstance(qualification, dict) else None
     policy = (
-        json.loads(
-            (Path(__file__).resolve().parents[1] / "qualification" / "policy.json").read_bytes()
-        )
+        current_qualification_policy()
         if current_policy
-        else None
+        else (
+            validate_qualification_policy_contract(
+                qualification_policy,
+                "recorded historical qualification policy",
+            )
+            if qualification_policy is not None
+            else None
+        )
     )
     if (
         not isinstance(qualification, dict)
         or set(qualification) != {"schema", "targets"}
         or qualification.get("schema") != QUALIFICATION_SCHEMA
         or not isinstance(targets, dict)
-        or (current_policy and set(targets) != set(policy["targets"]))
+        or (policy is not None and set(targets) != set(policy["targets"]))
         or (
-            not current_policy
+            policy is None
             and not set(targets) >= set(request["authorization"]["components"])
         )
         or any(
@@ -499,7 +680,7 @@ def validate_qualification_evidence(
         raise CandidateError("cited qualification evidence has an invalid authority shape")
     target_contracts = (
         policy["targets"]
-        if current_policy
+        if policy is not None
         else {name: None for name in targets}
     )
     for name, target_policy in target_contracts.items():
@@ -576,7 +757,10 @@ def validate_qualification_evidence(
             or not isinstance(successful, dict)
             or set(successful) != set(protected)
             or any(type(run_id) is not int or run_id < 1 for run_id in successful.values())
-            or not valid_recorded_action_releases(target.get("action_releases"))
+            or not valid_recorded_action_releases(
+                target.get("action_releases"),
+                action_runtime=policy["action_runtime"] if policy is not None else None,
+            )
             or not workflows_are_valid
             or set(protected) != recorded_checks
             or len(protected) != len(recorded_checks)
@@ -892,6 +1076,7 @@ def validate_recorded_evidence(
     value: Any,
     request: dict[str, Any],
     qualification: dict[str, Any],
+    repository: Path | None = None,
 ) -> dict[str, Any]:
     evidence = require_exact_keys(
         value,
@@ -943,7 +1128,8 @@ def validate_recorded_evidence(
         or authority["environment"] != AUTHORIZATION_ENVIRONMENT
         or not isinstance(actor, str)
         or not LOGIN_PATTERN.fullmatch(actor)
-        or not COMMIT_PATTERN.fullmatch(str(authority["workflow_commit"]))
+        or not isinstance(authority["workflow_commit"], str)
+        or not COMMIT_PATTERN.fullmatch(authority["workflow_commit"])
         or type(authority["run_id"]) is not int
         or authority["run_id"] < 1
         or type(authority["run_attempt"]) is not int
@@ -979,7 +1165,16 @@ def validate_recorded_evidence(
         "sha256": manifest_digest(qualification),
     }:
         raise CandidateError("existing beta authorization has different qualification evidence")
-    validate_qualification_evidence(qualification, request, current_policy=False)
+    historical_policy = historical_qualification_policy(
+        repository if repository is not None else Path.cwd(),
+        authority["workflow_commit"],
+    )
+    validate_qualification_evidence(
+        qualification,
+        request,
+        current_policy=False,
+        qualification_policy=historical_policy,
+    )
     conformance = require_exact_keys(
         evidence["conformance"],
         {"tag", "commit", "release", "run"},
@@ -1113,6 +1308,7 @@ def load_recorded_evidence(
     raw: bytes,
     request: dict[str, Any],
     qualification: dict[str, Any],
+    repository: Path,
 ) -> dict[str, Any]:
     if len(raw) > MAX_EVIDENCE_BYTES:
         raise CandidateError("recorded beta authorization evidence exceeds the 1 MiB limit")
@@ -1120,7 +1316,7 @@ def load_recorded_evidence(
         value = json.loads(raw)
     except json.JSONDecodeError as error:
         raise CandidateError("existing beta authorization evidence is not valid JSON") from error
-    return validate_recorded_evidence(value, request, qualification)
+    return validate_recorded_evidence(value, request, qualification, repository)
 
 
 def existing_authorization(
@@ -1148,7 +1344,7 @@ def existing_authorization(
         qualification = json.loads(existing_qualification)
     except json.JSONDecodeError as error:
         raise CandidateError("existing target qualification evidence is not valid JSON") from error
-    load_recorded_evidence(existing_evidence, request, qualification)
+    load_recorded_evidence(existing_evidence, request, qualification, repository)
     if authoritative_authorization is not None:
         authoritative_authorization.write_bytes(existing_authorization)
     if authoritative_evidence is not None:
@@ -1223,7 +1419,7 @@ def record_authorization(
         workflow_ref=workflow_ref,
         workflow_commit=workflow_commit,
     )
-    validate_recorded_evidence(evidence, request, qualification)
+    validate_recorded_evidence(evidence, request, qualification, repository)
     canonical_authorization = canonical_json(authorization)
     canonical_evidence = canonical_json(evidence)
     canonical_qualification = canonical_json(qualification)

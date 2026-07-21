@@ -639,8 +639,22 @@ class ImmutableAuthorizationRecordTest(unittest.TestCase):
         subprocess.run(["git", "config", "user.name", "Test"], cwd=self.repository, check=True)
         subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.repository, check=True)
         (self.repository / "README.md").write_text("test\n", encoding="utf-8")
-        subprocess.run(["git", "add", "README.md"], cwd=self.repository, check=True)
+        historical_policy = self.repository / "qualification" / "policy.json"
+        historical_policy.parent.mkdir()
+        historical_policy.write_bytes((ROOT / "qualification" / "policy.json").read_bytes())
+        subprocess.run(
+            ["git", "add", "README.md", "qualification/policy.json"],
+            cwd=self.repository,
+            check=True,
+        )
         subprocess.run(["git", "commit", "-m", "Initial"], cwd=self.repository, check=True, capture_output=True)
+        self.workflow_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
         subprocess.run(["git", "remote", "add", "origin", str(self.remote)], cwd=self.repository, check=True)
         subprocess.run(["git", "push", "origin", "main"], cwd=self.repository, check=True, capture_output=True)
         self.request = request()
@@ -669,8 +683,19 @@ class ImmutableAuthorizationRecordTest(unittest.TestCase):
             run_id=456,
             run_attempt=1,
             workflow_ref=AUTHORIZATION_WORKFLOW_REF,
-            workflow_commit="6" * 40,
+            workflow_commit=self.workflow_commit,
         )
+
+    def recorded_evidence(
+        self,
+        qualification_evidence: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        evidence = recorded_evidence(self.request)
+        evidence["github_authority"]["workflow_commit"] = self.workflow_commit
+        evidence["qualification"]["sha256"] = manifest_digest(
+            qualification_evidence if qualification_evidence is not None else qualification()
+        )
+        return evidence
 
     def replace_remote_record(
         self,
@@ -713,7 +738,7 @@ class ImmutableAuthorizationRecordTest(unittest.TestCase):
             "new",
             check_authorization(self.repository, self.request_path, remote="origin")["status"],
         )
-        build.return_value = recorded_evidence(self.request)
+        build.return_value = self.recorded_evidence()
         created = self.record()
         self.assertEqual("created", created["status"])
         commit = created["commit"]
@@ -735,7 +760,7 @@ class ImmutableAuthorizationRecordTest(unittest.TestCase):
         build: mock.Mock,
     ) -> None:
         original_qualification = qualification()
-        original_evidence = recorded_evidence(self.request)
+        original_evidence = self.recorded_evidence(original_qualification)
         build.return_value = original_evidence
         created = self.record()
         self.assertEqual("created", created["status"])
@@ -778,7 +803,7 @@ class ImmutableAuthorizationRecordTest(unittest.TestCase):
         build: mock.Mock,
     ) -> None:
         retained_qualification = qualification()
-        retained_evidence = recorded_evidence(self.request)
+        retained_evidence = self.recorded_evidence(retained_qualification)
         build.return_value = retained_evidence
         self.record()
 
@@ -809,7 +834,7 @@ class ImmutableAuthorizationRecordTest(unittest.TestCase):
         build: mock.Mock,
     ) -> None:
         retained_qualification = qualification()
-        retained_evidence = recorded_evidence(self.request)
+        retained_evidence = self.recorded_evidence(retained_qualification)
         build.return_value = retained_evidence
         self.record()
 
@@ -847,16 +872,116 @@ class ImmutableAuthorizationRecordTest(unittest.TestCase):
                 "reference": "v6",
                 "repository": "actions/checkout",
                 "runtime": "node24",
-                "workflows": [".github/workflows/release.yml"],
+                "workflows": [".github/workflows/phpunit-feature.yml"],
             }
         ]
-        retained_evidence = recorded_evidence(self.request)
-        retained_evidence["qualification"]["sha256"] = manifest_digest(retained_qualification)
+        retained_evidence = self.recorded_evidence(retained_qualification)
         self.qualification_path.write_bytes(canonical_json(retained_qualification))
         build.return_value = retained_evidence
         self.record()
 
         retained_qualification["targets"]["server"]["action_releases"] = ["malformed"]
+        retained_evidence["qualification"]["sha256"] = manifest_digest(retained_qualification)
+        self.replace_remote_record(retained_evidence, retained_qualification)
+
+        self.authoritative.unlink()
+        self.evidence.unlink()
+        self.authoritative_qualification.unlink()
+        self.qualification_path.unlink()
+        build.side_effect = AssertionError("existing immutable authorization must not be rebuilt")
+
+        with self.assertRaisesRegex(CandidateError, "does not prove intended server source commit"):
+            self.record()
+
+        build.assert_called_once()
+        self.assertFalse(self.authoritative.exists())
+        self.assertFalse(self.evidence.exists())
+        self.assertFalse(self.authoritative_qualification.exists())
+
+    @mock.patch("scripts.beta_authorization.build_evidence")
+    def test_recovery_rejects_deleted_historical_target(self, build: mock.Mock) -> None:
+        retained_qualification = qualification()
+        retained_evidence = self.recorded_evidence(retained_qualification)
+        build.return_value = retained_evidence
+        self.record()
+
+        retained_qualification["targets"].pop("documentation")
+        retained_evidence["qualification"]["sha256"] = manifest_digest(retained_qualification)
+        self.replace_remote_record(retained_evidence, retained_qualification)
+
+        self.authoritative.unlink()
+        self.evidence.unlink()
+        self.authoritative_qualification.unlink()
+        self.qualification_path.unlink()
+        build.side_effect = AssertionError("existing immutable authorization must not be rebuilt")
+
+        with self.assertRaisesRegex(CandidateError, "invalid authority shape"):
+            self.record()
+
+        build.assert_called_once()
+        self.assertFalse(self.authoritative.exists())
+        self.assertFalse(self.evidence.exists())
+        self.assertFalse(self.authoritative_qualification.exists())
+
+    @mock.patch("scripts.beta_authorization.build_evidence")
+    def test_recovery_rejects_coherent_historical_target_replacement(self, build: mock.Mock) -> None:
+        retained_qualification = qualification()
+        retained_evidence = self.recorded_evidence(retained_qualification)
+        build.return_value = retained_evidence
+        self.record()
+
+        documentation = retained_qualification["targets"]["documentation"]
+        documentation["branch"] = "v2"
+        documentation["protected_checks"] = ["Replacement documentation check"]
+        documentation["successful_check_runs"] = {"Replacement documentation check": 999}
+        documentation["workflows"] = [
+            {
+                "path": ".github/workflows/replacement.yml",
+                "required_check": "Replacement documentation check",
+                "workflow_id": 998,
+            }
+        ]
+        retained_evidence["qualification"]["sha256"] = manifest_digest(retained_qualification)
+        self.replace_remote_record(retained_evidence, retained_qualification)
+
+        self.authoritative.unlink()
+        self.evidence.unlink()
+        self.authoritative_qualification.unlink()
+        self.qualification_path.unlink()
+        build.side_effect = AssertionError("existing immutable authorization must not be rebuilt")
+
+        with self.assertRaisesRegex(
+            CandidateError,
+            "qualification evidence for documentation has an invalid protected target record",
+        ):
+            self.record()
+
+        build.assert_called_once()
+        self.assertFalse(self.authoritative.exists())
+        self.assertFalse(self.evidence.exists())
+        self.assertFalse(self.authoritative_qualification.exists())
+
+    @mock.patch("scripts.beta_authorization.build_evidence")
+    def test_recovery_rejects_action_release_outside_historical_policy(self, build: mock.Mock) -> None:
+        retained_qualification = qualification()
+        retained_qualification["targets"]["server"]["action_releases"] = [
+            {
+                "action": "actions/checkout",
+                "commit": "b" * 40,
+                "reference": "v6",
+                "repository": "actions/checkout",
+                "runtime": "node24",
+                "workflows": [".github/workflows/phpunit-feature.yml"],
+            }
+        ]
+        retained_evidence = self.recorded_evidence(retained_qualification)
+        self.qualification_path.write_bytes(canonical_json(retained_qualification))
+        build.return_value = retained_evidence
+        self.record()
+
+        action_release = retained_qualification["targets"]["server"]["action_releases"][0]
+        action_release["reference"] = "v999"
+        action_release["runtime"] = "node999"
         retained_evidence["qualification"]["sha256"] = manifest_digest(retained_qualification)
         self.replace_remote_record(retained_evidence, retained_qualification)
 
@@ -921,7 +1046,7 @@ class ImmutableAuthorizationRecordTest(unittest.TestCase):
         self.assertNotIn("beta-authorization/", refs)
 
         build.side_effect = None
-        build.return_value = recorded_evidence(self.request)
+        build.return_value = self.recorded_evidence()
         self.record()
         changed = copy.deepcopy(self.request)
         changed["authorization"]["components"]["server"]["commit"] = "9" * 40
