@@ -1364,6 +1364,7 @@ def validated_conformance_release(
         "artifact_tuple": suite.get("artifact_tuple"),
         "source_identities": suite.get("source_identities"),
         "distribution_identities": suite.get("distribution_identities"),
+        "runtime_dependencies": suite.get("runtime_dependencies"),
         "runner": suite.get("runner"),
         "server_runner": suite.get("server_runner"),
         "experiments": list(CONFORMANCE_EXPERIMENTS),

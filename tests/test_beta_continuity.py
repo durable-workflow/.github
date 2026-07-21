@@ -6,11 +6,24 @@ import os
 import subprocess
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 from scripts.beta_candidate import COMPONENTS, manifest_digest
+from scripts.beta_conformance import (
+    EXPERIMENTS as CONFORMANCE_EXPERIMENTS,
+)
+from scripts.beta_conformance import (
+    NATIVE_FAILURE_COMPONENT_LIMIT,
+    NATIVE_FAILURE_PROJECTION_LIMIT,
+    RUNTIME_DEPENDENCY_SELECTORS,
+    experiment_result,
+)
+from scripts.beta_conformance import (
+    PLAN_SCHEMA as CONFORMANCE_PLAN_SCHEMA,
+)
 from scripts.beta_continuity import (
     EVIDENCE_SCHEMA,
     ContinuityError,
@@ -140,20 +153,103 @@ def conformance_release_fixture(
 ) -> tuple[dict[str, Any], dict[str, bytes], dict[str, Any]]:
     candidate = candidate_manifest(plan)
     tag = f"beta-conformance/{candidate['candidate']}/{run_id}.1"
-    experiments = ("heartbeats", "polyglot", "replay", "signals-queries")
-    payloads = {
-        f"https://downloads.example/{run_id}/{name}.json": json.dumps(
-            {
-                "classification": "passed",
-                "experiment": name,
-                "outcome": "pass",
-                "stdout_tail": "password=published-secret" if sensitive and name == "replay" else "",
+    runtime_dependencies = {}
+    for index, (name, selector) in enumerate(RUNTIME_DEPENDENCY_SELECTORS.items(), start=1):
+        digest = f"sha256:{index:064x}"
+        runtime_dependencies[name] = {
+            "selector": selector,
+            "image": f"{selector.rsplit(':', 1)[0]}@{digest}",
+            "manifest_digest": digest,
+        }
+    distribution_identities = {
+        name: {
+            "kind": component.distribution,
+            "locator": f"{component.distribution}:{component.package}@{plan['components'][name]['version']}",
+            "artifacts": [{"name": f"{name}.artifact", "sha256": f"{index + 10:064x}"}],
+        }
+        for index, (name, component) in enumerate(COMPONENTS.items())
+    }
+    server_digest = f"sha256:{99:064x}"
+    conformance_plan = {
+        "schema": CONFORMANCE_PLAN_SCHEMA,
+        "candidate": {
+            "name": candidate["candidate"],
+            "manifest_sha256": manifest_digest(candidate),
+            "verification_sha256": "a" * 64,
+            "record_ref": f"beta-candidate/{candidate['candidate']}",
+            "record_commit": "b" * 40,
+        },
+        "artifact_tuple": plan["components"],
+        "source_identities": {
+            name: identity["commit"] for name, identity in plan["components"].items()
+        },
+        "distribution_identities": distribution_identities,
+        "runtime_dependencies": runtime_dependencies,
+        "runner": {
+            "repository": "durable-workflow/.github",
+            "revision": "c" * 40,
+            "contract_sha256": "d" * 64,
+        },
+        "server_runner": {
+            "image": f"docker.io/durableworkflow/server@{server_digest}",
+            "manifest_digest": server_digest,
+            "source_commit": plan["components"]["server"]["commit"],
+        },
+        "experiments": list(CONFORMANCE_EXPERIMENTS),
+    }
+    empty_digest = hashlib.sha256(b"").hexdigest()
+    payloads = {}
+    for name in CONFORMANCE_EXPERIMENTS:
+        diagnostic = {
+            "runner": "fixture",
+            "attempt": 1,
+            "exit_code": 0,
+            "timed_out": False,
+            "native_outcome": "pass",
+            "runner_blocked": False,
+            "stdout_tail": "",
+            "stdout_sha256": empty_digest,
+            "stderr_tail": "",
+            "stderr_sha256": empty_digest,
+            "native_result_size_bytes": 128,
+            "native_result_sha256": "e" * 64,
+            "native_result_prefix_sha256": None,
+            "native_result_prefix_bytes": None,
+            "native_summary": {
+                "schema": "fixture.result/v1",
+                "artifact_versions": {
+                    component: identity["version"] for component, identity in plan["components"].items()
+                },
+                "executed_distribution_identities": deepcopy(distribution_identities),
+                "scenario_statuses": [{"id": "fixture", "status": "pass"}],
+                "failure_projection": {
+                    "max_bytes": NATIVE_FAILURE_PROJECTION_LIMIT,
+                    "component_max_bytes": NATIVE_FAILURE_COMPONENT_LIMIT,
+                    "truncated": False,
+                    "scenarios": [],
+                },
+                "local_product_source_checkout_used": False,
             },
+            "findings": [],
+        }
+        result = experiment_result(
+            conformance_plan,
+            name,
+            "fixture-contract",
+            ["sdk-php", "sdk-python", "sdk-rust"],
+            list(COMPONENTS),
+            "2026-07-20T10:00:00Z",
+            "passed",
+            1,
+            [diagnostic],
+        )
+        if sensitive and name == "replay":
+            result["diagnostics"][0]["stdout_tail"] = "password=published-secret"
+        payloads[f"https://downloads.example/{run_id}/{name}.json"] = json.dumps(
+            result,
             sort_keys=True,
             separators=(",", ":"),
         ).encode()
-        for name in experiments
-    }
     run = {
         "repository": "durable-workflow/.github",
         "run_id": run_id,
@@ -162,12 +258,13 @@ def conformance_release_fixture(
     }
     suite = {
         "schema": "durable-workflow.beta-conformance.suite-result/v1",
-        "candidate": {"name": candidate["candidate"]},
-        "artifact_tuple": plan["components"],
-        "source_identities": {},
-        "distribution_identities": {},
-        "runner": {},
-        "server_runner": {},
+        "candidate": conformance_plan["candidate"],
+        "artifact_tuple": conformance_plan["artifact_tuple"],
+        "source_identities": conformance_plan["source_identities"],
+        "distribution_identities": conformance_plan["distribution_identities"],
+        "runtime_dependencies": conformance_plan["runtime_dependencies"],
+        "runner": conformance_plan["runner"],
+        "server_runner": conformance_plan["server_runner"],
         "github_run": run,
         "outcome": "pass",
         "experiments": {
@@ -176,7 +273,7 @@ def conformance_release_fixture(
                 "outcome": "pass",
                 "result_sha256": hashlib.sha256(payloads[f"https://downloads.example/{run_id}/{name}.json"]).hexdigest(),
             }
-            for name in experiments
+            for name in CONFORMANCE_EXPERIMENTS
         },
     }
     suite_url = f"https://downloads.example/{run_id}/suite-result.json"
@@ -1491,18 +1588,14 @@ class BetaContinuityTest(unittest.TestCase):
             def bytes(url: str) -> bytes:
                 return (unsafe_payloads | replacement_payloads)[url]
 
-        with (
-            patch("scripts.beta_continuity.validate_conformance_plan"),
-            patch("scripts.beta_continuity.validate_experiment_result"),
-        ):
-            self.assertEqual(
-                replacement_reference,
-                conformance_evidence(
-                    ExistingReleaseClient(),  # type: ignore[arg-type]
-                    plan,
-                    preferred=unsafe_reference,
-                ),
-            )
+        self.assertEqual(
+            replacement_reference,
+            conformance_evidence(
+                ExistingReleaseClient(),  # type: ignore[arg-type]
+                plan,
+                preferred=unsafe_reference,
+            ),
+        )
 
     def test_multiple_valid_conformance_releases_preserve_recorded_authority(self) -> None:
         plan = continuity_plan("stable-conformance-authority-test")
@@ -1520,18 +1613,65 @@ class BetaContinuityTest(unittest.TestCase):
             def bytes(url: str) -> bytes:
                 return (first_payloads | later_payloads)[url]
 
-        with (
-            patch("scripts.beta_continuity.validate_conformance_plan"),
-            patch("scripts.beta_continuity.validate_experiment_result"),
-        ):
-            for releases in ([later_release, first_release], [first_release, later_release]):
-                with self.subTest(releases=[release["tag_name"] for release in releases]):
-                    client = MultipleReleaseClient(releases)
-                    self.assertEqual(first_reference, conformance_evidence(client, plan))  # type: ignore[arg-type]
-                    self.assertEqual(
-                        first_reference,
-                        conformance_evidence(client, plan, preferred=first_reference),  # type: ignore[arg-type]
-                    )
+        for releases in ([later_release, first_release], [first_release, later_release]):
+            with self.subTest(releases=[release["tag_name"] for release in releases]):
+                client = MultipleReleaseClient(releases)
+                self.assertEqual(first_reference, conformance_evidence(client, plan))  # type: ignore[arg-type]
+                self.assertEqual(
+                    first_reference,
+                    conformance_evidence(client, plan, preferred=first_reference),  # type: ignore[arg-type]
+                )
+
+    def test_conformance_release_requires_exact_runtime_dependency_evidence(self) -> None:
+        plan = continuity_plan("runtime-dependency-binding-test")
+        release, payloads, reference = conformance_release_fixture(plan, 12348)
+
+        class ReleaseClient:
+            def __init__(self, retained_payloads: dict[str, bytes]) -> None:
+                self.retained_payloads = retained_payloads
+
+            @staticmethod
+            def json(_url: str) -> list[dict[str, Any]]:
+                return [release]
+
+            def bytes(self, url: str) -> bytes:
+                return self.retained_payloads[url]
+
+        self.assertEqual(reference, conformance_evidence(ReleaseClient(payloads), plan))  # type: ignore[arg-type]
+
+        suite_url = "https://downloads.example/12348/suite-result.json"
+        missing_payloads = dict(payloads)
+        missing_suite = json.loads(missing_payloads[suite_url])
+        del missing_suite["runtime_dependencies"]
+        missing_payloads[suite_url] = json.dumps(missing_suite, sort_keys=True, separators=(",", ":")).encode()
+        self.assertIsNone(conformance_evidence(ReleaseClient(missing_payloads), plan))  # type: ignore[arg-type]
+
+        drifted_payloads = dict(payloads)
+        experiment = CONFORMANCE_EXPERIMENTS[0]
+        experiment_url = f"https://downloads.example/12348/{experiment}.json"
+        drifted_result = json.loads(drifted_payloads[experiment_url])
+        drifted_digest = f"sha256:{88:064x}"
+        drifted_result["runtime_dependencies"]["mysql"].update(
+            {
+                "image": f"docker.io/library/mysql@{drifted_digest}",
+                "manifest_digest": drifted_digest,
+            }
+        )
+        drifted_payloads[experiment_url] = json.dumps(
+            drifted_result,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        drifted_suite = json.loads(drifted_payloads[suite_url])
+        drifted_suite["experiments"][experiment]["result_sha256"] = hashlib.sha256(
+            drifted_payloads[experiment_url]
+        ).hexdigest()
+        drifted_payloads[suite_url] = json.dumps(
+            drifted_suite,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        self.assertIsNone(conformance_evidence(ReleaseClient(drifted_payloads), plan))  # type: ignore[arg-type]
 
     def test_phase_records_are_append_only_and_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
