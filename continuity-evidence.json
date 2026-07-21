@@ -1,0 +1,107 @@
+{
+  "accepted_phase": "beta-continuity/workspace-unavailable-release-pages-24ea45b0acb8/accepted",
+  "authority_issue": {
+    "labels": [
+      "authority:github",
+      "beta:blocker",
+      "completion:evidence-required",
+      "kind:cross-repository",
+      "priority:P1",
+      "repo:github-control-plane",
+      "status:ready"
+    ],
+    "number": 2,
+    "repository": "durable-workflow/.github",
+    "state": "open",
+    "updated_at": "2026-07-21T05:23:11Z",
+    "url": "https://github.com/durable-workflow/.github/issues/2",
+    "work_id": "github-only-beta-continuity-drill"
+  },
+  "conformance": {
+    "release": "https://github.com/durable-workflow/.github/releases/tag/beta-conformance/alpha-workspace-unavailable-release-pages-24ea45b0acb8/29803838387.1",
+    "run": {
+      "evidence_tag": "beta-conformance/alpha-workspace-unavailable-release-pages-24ea45b0acb8/29803838387.1",
+      "repository": "durable-workflow/.github",
+      "run_attempt": 1,
+      "run_id": 29803838387
+    },
+    "tag": "beta-conformance/alpha-workspace-unavailable-release-pages-24ea45b0acb8/29803838387.1"
+  },
+  "drill": "workspace-unavailable-beta-continuity-release-pages",
+  "github_run": {
+    "attempt": "1",
+    "id": "29804296736",
+    "repository": "durable-workflow/.github",
+    "sha": "13cef8ead9af6d39c2e9c0558246c51543386617"
+  },
+  "interrupted_phase": "beta-continuity/workspace-unavailable-release-pages-24ea45b0acb8/interrupted",
+  "observed_at": "2026-07-21T05:33:08Z",
+  "outcome": "passed",
+  "phase": "complete",
+  "plan_record": {
+    "commit": "fa40b58d3ead510b9e730a008ac0b9a1bf59c381",
+    "sha256": "498804a2c7fd5b0e34f93ef080bea3073bc98e420e8bf84a98ca4cdb94729973",
+    "tag": "release-plan/workspace-unavailable-release-pages-24ea45b0acb8"
+  },
+  "public_verification": {
+    "commit": "ae0c713bfc6521e6a04d0b9423ab586c89e3334a",
+    "tag": "release-candidate/alpha/workspace-unavailable-release-pages-24ea45b0acb8"
+  },
+  "published_components": {
+    "cli": {
+      "commit": "bc036e94604329612b65a2a9effe2e929f91f4e1",
+      "published_at": "2026-07-21T05:13:02Z",
+      "release_id": 357125140,
+      "url": "https://github.com/durable-workflow/cli/releases/tag/0.1.95",
+      "version": "0.1.95"
+    },
+    "sdk-php": {
+      "commit": "3b79813b1bbcb811277cc30d8dcfc359ea53f65c",
+      "published_at": "2026-07-21T04:55:35Z",
+      "release_id": 357120472,
+      "url": "https://github.com/durable-workflow/sdk-php/releases/tag/0.1.16",
+      "version": "0.1.16"
+    },
+    "sdk-python": {
+      "commit": "13037ddcb1f55d72c24256591e346b991ad64273",
+      "published_at": "2026-07-21T04:17:02Z",
+      "release_id": 357110827,
+      "url": "https://github.com/durable-workflow/sdk-python/releases/tag/0.4.106",
+      "version": "0.4.106"
+    },
+    "sdk-rust": {
+      "commit": "6fa98425c8ec7690ef96f8296a21407aa8d03067",
+      "published_at": "2026-07-21T04:44:07Z",
+      "release_id": 357117657,
+      "url": "https://github.com/durable-workflow/sdk-rust/releases/tag/0.1.22",
+      "version": "0.1.22"
+    },
+    "server": {
+      "commit": "5a1d634669b9c9fbf2f7facc9101b1ca84105db9",
+      "published_at": "2026-07-21T04:55:55Z",
+      "release_id": 357120571,
+      "url": "https://github.com/durable-workflow/server/releases/tag/0.2.697",
+      "version": "0.2.697"
+    },
+    "waterline": {
+      "commit": "0fb3caaba1e8a77f9bfa63ba3dcb2bcbaa825c31",
+      "published_at": "2026-07-21T05:01:45Z",
+      "release_id": 357122144,
+      "url": "https://github.com/durable-workflow/waterline/releases/tag/2.0.0-alpha.139",
+      "version": "2.0.0-alpha.139"
+    },
+    "workflow": {
+      "commit": "26b42f2d4ed240c2a69cf4ae58c5b23ffdcc3863",
+      "published_at": "2026-07-21T04:51:52Z",
+      "release_id": 357119503,
+      "url": "https://github.com/durable-workflow/workflow/releases/tag/2.0.0-alpha.293",
+      "version": "2.0.0-alpha.293"
+    }
+  },
+  "release_plan": {
+    "sha256": "498804a2c7fd5b0e34f93ef080bea3073bc98e420e8bf84a98ca4cdb94729973",
+    "tag": "release-plan/workspace-unavailable-release-pages-24ea45b0acb8"
+  },
+  "resumed_phase": "beta-continuity/workspace-unavailable-release-pages-24ea45b0acb8/resumed",
+  "schema": "durable-workflow.beta-continuity.evidence/v1"
+}
