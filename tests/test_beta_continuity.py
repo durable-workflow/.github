@@ -221,7 +221,7 @@ class BetaContinuityTest(unittest.TestCase):
     def test_config_is_machine_validated(self) -> None:
         config = load_config(ROOT / "beta-continuity" / "config.json")
 
-        self.assertEqual("workspace-unavailable-beta-continuity-recovery", config["drill"])
+        self.assertEqual("workspace-unavailable-beta-continuity-strict-writer", config["drill"])
         self.assertEqual("durable-workflow/.github", config["authority_issue"]["repository"])
         self.assertEqual(
             {
@@ -231,7 +231,7 @@ class BetaContinuityTest(unittest.TestCase):
             {item["number"]: item["work_id"] for item in config["evidence_work_items"]},
         )
         self.assertEqual("workflow", config["first_component"])
-        self.assertEqual("workspace-unavailable-recovery", config["plan_prefix"])
+        self.assertEqual("workspace-unavailable-strict-writer", config["plan_prefix"])
         self.assertEqual(
             "beta-continuity/workspace-unavailable-0b191da0d140/interrupted",
             config["superseded_interruption"]["tag"],
@@ -305,7 +305,7 @@ class BetaContinuityTest(unittest.TestCase):
         }
         selection_record = {
             "status": "created",
-            "tag": "beta-continuity-selection/workspace-unavailable-beta-continuity-recovery",
+            "tag": "beta-continuity-selection/workspace-unavailable-beta-continuity-strict-writer",
             "commit": "f" * 40,
         }
         with tempfile.TemporaryDirectory() as temporary:
@@ -464,7 +464,7 @@ class BetaContinuityTest(unittest.TestCase):
 
         state = {
             "outcome": "blocked",
-            "selection": {"tag": "beta-continuity-selection/workspace-unavailable-beta-continuity-recovery"},
+            "selection": {"tag": "beta-continuity-selection/workspace-unavailable-beta-continuity-strict-writer"},
             "blockers": [
                 {
                     "component": "sdk-python",
@@ -522,7 +522,7 @@ class BetaContinuityTest(unittest.TestCase):
 
         state = {
             "outcome": "blocked",
-            "selection": {"tag": "beta-continuity-selection/workspace-unavailable-beta-continuity-recovery"},
+            "selection": {"tag": "beta-continuity-selection/workspace-unavailable-beta-continuity-strict-writer"},
             "blockers": [
                 {
                     "component": "sdk-python",

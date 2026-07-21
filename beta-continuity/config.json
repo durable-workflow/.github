@@ -6,7 +6,7 @@
     "work_id": "github-only-beta-continuity-drill"
   },
   "channel": "alpha",
-  "drill": "workspace-unavailable-beta-continuity-recovery",
+  "drill": "workspace-unavailable-beta-continuity-strict-writer",
   "evidence_work_items": [
     {
       "number": 10,
@@ -32,7 +32,7 @@
     }
   ],
   "first_component": "workflow",
-  "plan_prefix": "workspace-unavailable-recovery",
+  "plan_prefix": "workspace-unavailable-strict-writer",
   "required_issue_labels": [
     "authority:github",
     "beta:blocker",
