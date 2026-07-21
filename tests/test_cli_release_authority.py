@@ -171,7 +171,9 @@ class CliReleaseAuthorityTest(unittest.TestCase):
                 "handoff": {
                     "candidate.json",
                     "verification.json",
+                    "handoff.json",
                 },
+                "recoverable": True,
             },
             "release-plan-observer.yml": {
                 "verification": "python scripts/release_plan.py observe",
@@ -182,7 +184,9 @@ class CliReleaseAuthorityTest(unittest.TestCase):
                     "candidate-verifier-input.json",
                     "release-state.json",
                     "verification.json",
+                    "handoff.json",
                 },
+                "recoverable": True,
             },
             "release-plan-supersession.yml": {
                 "verification": "python scripts/release_plan.py prepare-supersession",
@@ -191,6 +195,7 @@ class CliReleaseAuthorityTest(unittest.TestCase):
                     "release-plan-failure.json",
                     "authoritative-successor-release-plan.json",
                 },
+                "recoverable": False,
             },
         }
 
@@ -208,6 +213,13 @@ class CliReleaseAuthorityTest(unittest.TestCase):
                 workflow = yaml.safe_load(source)
                 self.assertEqual({}, workflow["permissions"])
                 jobs = workflow["jobs"]
+                for job_name, job in jobs.items():
+                    step_ids = [step["id"] for step in job["steps"] if "id" in step]
+                    self.assertEqual(
+                        len(step_ids),
+                        len(set(step_ids)),
+                        f"{filename} job {job_name} has duplicate step IDs",
+                    )
                 verification_name, verification_job = next(
                     (name, job)
                     for name, job in jobs.items()
@@ -251,7 +263,53 @@ class CliReleaseAuthorityTest(unittest.TestCase):
                     step for step in mutation_job["steps"] if step.get("uses") == "actions/download-artifact@v8"
                 )
 
-                self.assertEqual(upload["with"]["name"], download["with"]["name"])
+                if contract["recoverable"]:
+                    selector = next(
+                        step for step in mutation_job["steps"] if "handoff_recovery.py select" in step.get("run", "")
+                    )
+                    validator = next(
+                        step for step in mutation_job["steps"] if "handoff_recovery.py validate" in step.get("run", "")
+                    )
+                    producer = next(
+                        step
+                        for step in verification_job["steps"]
+                        if "handoff_recovery.py create" in step.get("run", "")
+                    )
+                    self.assertEqual("read", mutation_job["permissions"]["actions"])
+                    self.assertIn("${{ github.run_attempt }}", upload["with"]["name"])
+                    self.assertEqual(30, upload["with"]["retention-days"])
+                    self.assertNotIn("name", download["with"])
+                    selector_id = selector["id"]
+                    self.assertEqual(
+                        f"${{{{ steps.{selector_id}.outputs.artifact_id }}}}",
+                        download["with"]["artifact-ids"],
+                    )
+                    self.assertEqual("${{ github.token }}", download["with"]["github-token"])
+                    self.assertEqual("${{ github.run_id }}", download["with"]["run-id"])
+                    self.assertIn('--run-id "$GITHUB_RUN_ID"', selector["run"])
+                    self.assertIn('--run-attempt "$GITHUB_RUN_ATTEMPT"', selector["run"])
+                    self.assertIn("--producer-attempt", selector["run"])
+                    self.assertIn(
+                        f"${{{{ steps.{selector_id}.outputs.producer_attempt }}}}",
+                        validator["run"],
+                    )
+                    self.assertEqual(
+                        "${{ steps.handoff.outputs.producer_attempt }}",
+                        verification_job["outputs"]["handoff-attempt"],
+                    )
+                    self.assertIn("--producer-attempt", validator["run"])
+                    self.assertIn("--workflow-ref", producer["run"])
+                    probe = next(
+                        step for step in mutation_job["steps"] if "recorder-only recovery" in step.get("name", "")
+                    )
+                    self.assertEqual(
+                        "${{ inputs.recorder_recovery_probe && github.run_attempt == 1 }}",
+                        probe["if"],
+                    )
+                    self.assertLess(mutation_job["steps"].index(validator), mutation_job["steps"].index(probe))
+                    self.assertLess(mutation_job["steps"].index(probe), mutation_job["steps"].index(mutation))
+                else:
+                    self.assertEqual(upload["with"]["name"], download["with"]["name"])
                 self.assertEqual(
                     contract["handoff"],
                     set(upload["with"]["path"].splitlines()),

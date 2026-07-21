@@ -13,6 +13,11 @@ on:
         description: Exact beta candidate JSON matching candidates/schema.json
         required: true
         type: string
+      recorder_recovery_probe:
+        description: Fail the first recorder attempt before mutation to exercise recorder-only recovery
+        required: false
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -25,6 +30,8 @@ jobs:
     name: Qualify immutable candidate without write authority
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      handoff-attempt: ${{ steps.handoff.outputs.producer_attempt }}
     permissions:
       actions: read
       attestations: read
@@ -98,6 +105,18 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: python scripts/beta_candidate.py verify candidate.json verification.json
 
+      - name: Bind candidate evidence to this producing attempt
+        id: handoff
+        run: |
+          python scripts/handoff_recovery.py create candidate handoff.json \
+            --directory . \
+            --repository "$GITHUB_REPOSITORY" \
+            --workflow-ref "$GITHUB_WORKFLOW_REF" \
+            --source-sha "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --github-output "$GITHUB_OUTPUT"
+
       - name: Pass only candidate verification evidence to the recorder
         uses: actions/upload-artifact@v7
         with:
@@ -105,7 +124,9 @@ jobs:
           path: |
             candidate.json
             verification.json
+            handoff.json
           if-no-files-found: error
+          retention-days: 30
 
   record:
     name: Record qualified immutable candidate from a fresh checkout
@@ -113,6 +134,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
+      actions: read
       attestations: read
       contents: write
     steps:
@@ -128,11 +150,39 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Select the newest exact handoff from this workflow run
+        id: handoff
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/handoff_recovery.py select candidate \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-sha "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --producer-attempt "${{ needs.qualify.outputs.handoff-attempt }}" \
+            --github-output "$GITHUB_OUTPUT"
+
       - name: Restore isolated candidate verification evidence
         uses: actions/download-artifact@v8
         with:
-          name: beta-candidate-verification-${{ github.run_id }}-${{ github.run_attempt }}
+          artifact-ids: ${{ steps.handoff.outputs.artifact_id }}
           path: isolated-verification
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+
+      - name: Validate the selected attempt-bound handoff
+        run: |
+          python scripts/handoff_recovery.py validate candidate \
+            isolated-verification/handoff.json \
+            --directory isolated-verification \
+            --repository "$GITHUB_REPOSITORY" \
+            --workflow-ref "$GITHUB_WORKFLOW_REF" \
+            --source-sha "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --current-attempt "$GITHUB_RUN_ATTEMPT" \
+            --producer-attempt "${{ steps.handoff.outputs.producer_attempt }}"
 
       - name: Rebuild and validate the authorized verification handoff
         env:
@@ -152,6 +202,12 @@ jobs:
           python scripts/beta_candidate.py compare candidate.json isolated-verification/candidate.json
           python scripts/beta_candidate.py validate-verification \
             candidate.json isolated-verification/verification.json
+
+      - name: Exercise recorder-only recovery before any mutation
+        if: ${{ inputs.recorder_recovery_probe && github.run_attempt == 1 }}
+        run: |
+          echo "Recorder recovery probe stopped the first writer attempt before mutation." >&2
+          exit 1
 
       - name: Create or compare the immutable Git record
         id: record
