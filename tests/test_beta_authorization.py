@@ -804,6 +804,77 @@ class ImmutableAuthorizationRecordTest(unittest.TestCase):
         self.assertFalse(self.authoritative_qualification.exists())
 
     @mock.patch("scripts.beta_authorization.build_evidence")
+    def test_recovery_rejects_malformed_retained_non_component_target(
+        self,
+        build: mock.Mock,
+    ) -> None:
+        retained_qualification = qualification()
+        retained_evidence = recorded_evidence(self.request)
+        build.return_value = retained_evidence
+        self.record()
+
+        retained_qualification["targets"]["documentation"] = {"malformed": True}
+        retained_evidence["qualification"]["sha256"] = manifest_digest(retained_qualification)
+        self.replace_remote_record(retained_evidence, retained_qualification)
+
+        self.authoritative.unlink()
+        self.evidence.unlink()
+        self.authoritative_qualification.unlink()
+        self.qualification_path.unlink()
+        build.side_effect = AssertionError("existing immutable authorization must not be rebuilt")
+
+        with self.assertRaisesRegex(
+            CandidateError,
+            "qualification evidence for documentation has an invalid protected target record",
+        ):
+            self.record()
+
+        build.assert_called_once()
+        self.assertFalse(self.authoritative.exists())
+        self.assertFalse(self.evidence.exists())
+        self.assertFalse(self.authoritative_qualification.exists())
+
+    @mock.patch("scripts.beta_authorization.build_evidence")
+    def test_recovery_rejects_malformed_retained_action_release(
+        self,
+        build: mock.Mock,
+    ) -> None:
+        retained_qualification = qualification()
+        retained_qualification["targets"]["server"]["action_releases"] = [
+            {
+                "action": "actions/checkout",
+                "commit": "b" * 40,
+                "reference": "v6",
+                "repository": "actions/checkout",
+                "runtime": "node24",
+                "workflows": [".github/workflows/release.yml"],
+            }
+        ]
+        retained_evidence = recorded_evidence(self.request)
+        retained_evidence["qualification"]["sha256"] = manifest_digest(retained_qualification)
+        self.qualification_path.write_bytes(canonical_json(retained_qualification))
+        build.return_value = retained_evidence
+        self.record()
+
+        retained_qualification["targets"]["server"]["action_releases"] = ["malformed"]
+        retained_evidence["qualification"]["sha256"] = manifest_digest(retained_qualification)
+        self.replace_remote_record(retained_evidence, retained_qualification)
+
+        self.authoritative.unlink()
+        self.evidence.unlink()
+        self.authoritative_qualification.unlink()
+        self.qualification_path.unlink()
+        build.side_effect = AssertionError("existing immutable authorization must not be rebuilt")
+
+        with self.assertRaisesRegex(CandidateError, "does not prove intended server source commit"):
+            self.record()
+
+        build.assert_called_once()
+        self.assertFalse(self.authoritative.exists())
+        self.assertFalse(self.evidence.exists())
+        self.assertFalse(self.authoritative_qualification.exists())
+
+    @mock.patch("scripts.beta_authorization.build_evidence")
     def test_new_authorization_remains_bound_to_current_qualification_policy(
         self,
         build: mock.Mock,

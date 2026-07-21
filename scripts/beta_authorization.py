@@ -83,6 +83,15 @@ MAX_REQUEST_BYTES = 256 * 1024
 MAX_EVIDENCE_BYTES = 1024 * 1024
 MAX_QUALIFICATION_BYTES = 2 * 1024 * 1024
 MAX_ISSUE_PAGES = 100
+QUALIFICATION_BRANCH_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$")
+QUALIFICATION_WORKFLOW_PATH_PATTERN = re.compile(
+    r"^\.github/workflows/[a-z0-9][a-z0-9.-]*\.ya?ml$"
+)
+ACTION_REPOSITORY_PATTERN = re.compile(
+    r"^[a-z0-9][a-z0-9_.-]*/[a-z0-9][a-z0-9_.-]*$"
+)
+ACTION_PATH_PART_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+ACTION_RUNTIME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 
 def require_exact_keys(value: Any, expected: set[str], context: str) -> dict[str, Any]:
@@ -406,6 +415,58 @@ def verify_candidate_evidence(client: PublicClient, request: dict[str, Any]) -> 
     }
 
 
+def valid_recorded_action_releases(value: Any) -> bool:
+    if not isinstance(value, list):
+        return False
+    identities: set[tuple[str, str]] = set()
+    for release in value:
+        if not isinstance(release, dict) or set(release) != {
+            "action",
+            "commit",
+            "reference",
+            "repository",
+            "runtime",
+            "workflows",
+        }:
+            return False
+        action = release["action"]
+        repository = release["repository"]
+        reference = release["reference"]
+        runtime = release["runtime"]
+        workflows = release["workflows"]
+        action_directory_parts = action.split("/")[2:] if isinstance(action, str) else []
+        if (
+            not isinstance(repository, str)
+            or not ACTION_REPOSITORY_PATTERN.fullmatch(repository)
+            or not isinstance(action, str)
+            or not (action == repository or action.startswith(f"{repository}/"))
+            or any(
+                part in {".", ".."} or not ACTION_PATH_PART_PATTERN.fullmatch(part)
+                for part in action_directory_parts
+            )
+            or not isinstance(release["commit"], str)
+            or not COMMIT_PATTERN.fullmatch(release["commit"])
+            or not isinstance(reference, str)
+            or not reference.strip()
+            or reference != reference.strip()
+            or "${{" in reference
+            or not isinstance(runtime, str)
+            or not ACTION_RUNTIME_PATTERN.fullmatch(runtime)
+            or not isinstance(workflows, list)
+            or not workflows
+            or any(
+                not isinstance(path, str)
+                or not QUALIFICATION_WORKFLOW_PATH_PATTERN.fullmatch(path)
+                for path in workflows
+            )
+            or len(set(workflows)) != len(workflows)
+            or (action, reference) in identities
+        ):
+            return False
+        identities.add((action, reference))
+    return True
+
+
 def validate_qualification_evidence(
     qualification: Any,
     request: dict[str, Any],
@@ -426,16 +487,20 @@ def validate_qualification_evidence(
         or qualification.get("schema") != QUALIFICATION_SCHEMA
         or not isinstance(targets, dict)
         or (current_policy and set(targets) != set(policy["targets"]))
-        or (not current_policy and not set(targets) >= set(COMPONENTS))
+        or (
+            not current_policy
+            and not set(targets) >= set(request["authorization"]["components"])
+        )
+        or any(
+            not isinstance(name, str) or not IDENTITY_PATTERN.fullmatch(name)
+            for name in targets
+        )
     ):
         raise CandidateError("cited qualification evidence has an invalid authority shape")
     target_contracts = (
         policy["targets"]
         if current_policy
-        else {
-            name: {"branch": EXPECTED_DEFAULT_BRANCHES[name], "workflows": None}
-            for name in COMPONENTS
-        }
+        else {name: None for name in targets}
     )
     for name, target_policy in target_contracts.items():
         target = targets.get(name)
@@ -444,7 +509,7 @@ def validate_qualification_evidence(
         expected_commit = request["authorization"]["components"].get(name, {}).get("commit")
         expected_checks = (
             {workflow["required_check"] for workflow in target_policy["workflows"]}
-            if target_policy["workflows"] is not None
+            if target_policy is not None
             else None
         )
         workflows = target.get("workflows") if isinstance(target, dict) else None
@@ -455,10 +520,7 @@ def validate_qualification_evidence(
                 isinstance(workflow, dict)
                 and set(workflow) == {"path", "required_check", "workflow_id"}
                 and isinstance(workflow["path"], str)
-                and re.fullmatch(
-                    r"\.github/workflows/[a-z0-9][a-z0-9.-]*\.yml",
-                    workflow["path"],
-                )
+                and QUALIFICATION_WORKFLOW_PATH_PATTERN.fullmatch(workflow["path"])
                 and isinstance(workflow["required_check"], str)
                 and bool(workflow["required_check"].strip())
                 and type(workflow["workflow_id"]) is int
@@ -486,9 +548,10 @@ def validate_qualification_evidence(
                 (f".github/workflows/{workflow['path']}", workflow["required_check"])
                 for workflow in target_policy["workflows"]
             }
-            if target_policy["workflows"] is not None
+            if target_policy is not None
             else None
         )
+        branch = target.get("branch") if isinstance(target, dict) else None
         if (
             not isinstance(target, dict)
             or set(target)
@@ -500,8 +563,11 @@ def validate_qualification_evidence(
                 "successful_check_runs",
                 "workflows",
             }
-            or target.get("branch") != target_policy["branch"]
-            or not COMMIT_PATTERN.fullmatch(str(target.get("commit", "")))
+            or not isinstance(branch, str)
+            or not QUALIFICATION_BRANCH_PATTERN.fullmatch(branch)
+            or (target_policy is not None and branch != target_policy["branch"])
+            or not isinstance(target.get("commit"), str)
+            or not COMMIT_PATTERN.fullmatch(target["commit"])
             or (expected_commit is not None and target.get("commit") != expected_commit)
             or not isinstance(protected, list)
             or not protected
@@ -510,13 +576,13 @@ def validate_qualification_evidence(
             or not isinstance(successful, dict)
             or set(successful) != set(protected)
             or any(type(run_id) is not int or run_id < 1 for run_id in successful.values())
-            or not isinstance(target.get("action_releases"), list)
+            or not valid_recorded_action_releases(target.get("action_releases"))
             or not workflows_are_valid
             or set(protected) != recorded_checks
             or len(protected) != len(recorded_checks)
             or len(recorded_paths) != len(workflows)
             or len(recorded_checks) != len(workflows)
-            or (target_policy["workflows"] is not None and len(workflows) != len(target_policy["workflows"]))
+            or (target_policy is not None and len(workflows) != len(target_policy["workflows"]))
             or (expected_workflows is not None and recorded_workflows != expected_workflows)
         ):
             if name in request["authorization"]["components"]:
