@@ -672,6 +672,41 @@ class ImmutableAuthorizationRecordTest(unittest.TestCase):
             workflow_commit="6" * 40,
         )
 
+    def replace_remote_record(
+        self,
+        evidence: dict[str, object],
+        qualification_evidence: dict[str, object],
+    ) -> None:
+        for filename, value in (
+            ("beta-authorization.json", self.request["authorization"]),
+            ("beta-authorization-evidence.json", evidence),
+            ("target-qualification-evidence.json", qualification_evidence),
+        ):
+            (self.repository / filename).write_bytes(canonical_json(value))
+        subprocess.run(
+            [
+                "git",
+                "add",
+                "beta-authorization.json",
+                "beta-authorization-evidence.json",
+                "target-qualification-evidence.json",
+            ],
+            cwd=self.repository,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "Replace retained record"],
+            cwd=self.repository,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "push", "--force", "origin", "HEAD:refs/tags/beta-authorization/first-beta"],
+            cwd=self.repository,
+            check=True,
+            capture_output=True,
+        )
+
     @mock.patch("scripts.beta_authorization.build_evidence")
     def test_identical_rerun_compares_without_revalidating_or_changing_record(self, build: mock.Mock) -> None:
         self.assertEqual(
@@ -693,6 +728,113 @@ class ImmutableAuthorizationRecordTest(unittest.TestCase):
             "existing",
             check_authorization(self.repository, self.request_path, remote="origin")["status"],
         )
+
+    @mock.patch("scripts.beta_authorization.build_evidence")
+    def test_identical_rerun_recovers_record_after_current_qualification_policy_changes(
+        self,
+        build: mock.Mock,
+    ) -> None:
+        original_qualification = qualification()
+        original_evidence = recorded_evidence(self.request)
+        build.return_value = original_evidence
+        created = self.record()
+        self.assertEqual("created", created["status"])
+
+        self.authoritative.unlink()
+        self.evidence.unlink()
+        self.authoritative_qualification.unlink()
+        self.qualification_path.unlink()
+        build.side_effect = AssertionError("existing immutable authorization must not be rebuilt")
+
+        policy_path = ROOT / "qualification" / "policy.json"
+        changed_policy = json.loads(policy_path.read_bytes())
+        changed_policy["targets"]["server"]["workflows"][0]["required_check"] = (
+            "Future server qualification"
+        )
+        changed_policy_bytes = canonical_json(changed_policy)
+        read_bytes = Path.read_bytes
+
+        def read_with_changed_policy(path: Path) -> bytes:
+            if path == policy_path:
+                return changed_policy_bytes
+            return read_bytes(path)
+
+        with mock.patch.object(Path, "read_bytes", read_with_changed_policy):
+            self.assertEqual(
+                "existing",
+                check_authorization(self.repository, self.request_path, remote="origin")["status"],
+            )
+            existing = self.record()
+
+        self.assertEqual("existing", existing["status"])
+        self.assertEqual(created["commit"], existing["commit"])
+        self.assertEqual(canonical_json(self.request["authorization"]), self.authoritative.read_bytes())
+        self.assertEqual(canonical_json(original_evidence), self.evidence.read_bytes())
+        self.assertEqual(canonical_json(original_qualification), self.authoritative_qualification.read_bytes())
+
+    @mock.patch("scripts.beta_authorization.build_evidence")
+    def test_recovery_rejects_retained_checks_that_disagree_with_recorded_workflow(
+        self,
+        build: mock.Mock,
+    ) -> None:
+        retained_qualification = qualification()
+        retained_evidence = recorded_evidence(self.request)
+        build.return_value = retained_evidence
+        self.record()
+
+        retained_qualification["targets"]["server"]["protected_checks"] = ["Unrelated check"]
+        retained_qualification["targets"]["server"]["successful_check_runs"] = {
+            "Unrelated check": 999
+        }
+        retained_evidence["qualification"]["sha256"] = manifest_digest(retained_qualification)
+        self.replace_remote_record(retained_evidence, retained_qualification)
+
+        self.authoritative.unlink()
+        self.evidence.unlink()
+        self.authoritative_qualification.unlink()
+        self.qualification_path.unlink()
+        build.side_effect = AssertionError("existing immutable authorization must not be rebuilt")
+
+        with self.assertRaisesRegex(CandidateError, "does not prove intended server source commit"):
+            self.record()
+
+        build.assert_called_once()
+        self.assertFalse(self.authoritative.exists())
+        self.assertFalse(self.evidence.exists())
+        self.assertFalse(self.authoritative_qualification.exists())
+
+    @mock.patch("scripts.beta_authorization.build_evidence")
+    def test_new_authorization_remains_bound_to_current_qualification_policy(
+        self,
+        build: mock.Mock,
+    ) -> None:
+        policy_path = ROOT / "qualification" / "policy.json"
+        changed_policy = json.loads(policy_path.read_bytes())
+        changed_policy["targets"]["server"]["workflows"][0]["required_check"] = (
+            "Future server qualification"
+        )
+        changed_policy_bytes = canonical_json(changed_policy)
+        read_bytes = Path.read_bytes
+
+        def read_with_changed_policy(path: Path) -> bytes:
+            if path == policy_path:
+                return changed_policy_bytes
+            return read_bytes(path)
+
+        with (
+            mock.patch.object(Path, "read_bytes", read_with_changed_policy),
+            self.assertRaisesRegex(CandidateError, "does not prove intended server source commit"),
+        ):
+            self.record()
+
+        build.assert_not_called()
+        refs = subprocess.run(
+            ["git", "ls-remote", "--tags", str(self.remote)],
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout
+        self.assertNotIn("beta-authorization/", refs)
 
     @mock.patch("scripts.beta_authorization.build_evidence")
     def test_changed_identity_is_rejected_and_first_validation_failure_does_not_publish(self, build: mock.Mock) -> None:

@@ -46,5 +46,8 @@ commit contains the minimal `beta-authorization.json` consumed by release
 plans, a detailed `beta-authorization-evidence.json`, and the exact
 `target-qualification-evidence.json`. A GitHub Release with the same tag mirrors
 all three files. Repeating an identical request compares and recovers that
-record; a changed request or an occupied conflicting tag fails closed. The
-action authorizes only the beta channel. Stable 2.0 remains a separate decision.
+record from its retained qualification contract even when the current target
+qualification policy has advanced. New authorizations remain subject to the
+current policy. A changed request or an occupied conflicting tag fails closed.
+The action authorizes only the beta channel. Stable 2.0 remains a separate
+decision.

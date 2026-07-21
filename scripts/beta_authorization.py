@@ -413,8 +413,12 @@ def validate_qualification_evidence(
     current_policy: bool = True,
 ) -> dict[str, Any]:
     targets = qualification.get("targets") if isinstance(qualification, dict) else None
-    policy = json.loads(
-        (Path(__file__).resolve().parents[1] / "qualification" / "policy.json").read_bytes()
+    policy = (
+        json.loads(
+            (Path(__file__).resolve().parents[1] / "qualification" / "policy.json").read_bytes()
+        )
+        if current_policy
+        else None
     )
     if (
         not isinstance(qualification, dict)
@@ -450,6 +454,13 @@ def validate_qualification_evidence(
             and all(
                 isinstance(workflow, dict)
                 and set(workflow) == {"path", "required_check", "workflow_id"}
+                and isinstance(workflow["path"], str)
+                and re.fullmatch(
+                    r"\.github/workflows/[a-z0-9][a-z0-9.-]*\.yml",
+                    workflow["path"],
+                )
+                and isinstance(workflow["required_check"], str)
+                and bool(workflow["required_check"].strip())
                 and type(workflow["workflow_id"]) is int
                 and workflow["workflow_id"] > 0
                 for workflow in workflows
@@ -457,6 +468,16 @@ def validate_qualification_evidence(
         )
         recorded_workflows = (
             {(workflow["path"], workflow["required_check"]) for workflow in workflows}
+            if workflows_are_valid
+            else set()
+        )
+        recorded_paths = (
+            {workflow["path"] for workflow in workflows}
+            if workflows_are_valid
+            else set()
+        )
+        recorded_checks = (
+            {workflow["required_check"] for workflow in workflows}
             if workflows_are_valid
             else set()
         )
@@ -491,6 +512,10 @@ def validate_qualification_evidence(
             or any(type(run_id) is not int or run_id < 1 for run_id in successful.values())
             or not isinstance(target.get("action_releases"), list)
             or not workflows_are_valid
+            or set(protected) != recorded_checks
+            or len(protected) != len(recorded_checks)
+            or len(recorded_paths) != len(workflows)
+            or len(recorded_checks) != len(workflows)
             or (target_policy["workflows"] is not None and len(workflows) != len(target_policy["workflows"]))
             or (expected_workflows is not None and recorded_workflows != expected_workflows)
         ):
@@ -888,7 +913,7 @@ def validate_recorded_evidence(
         "sha256": manifest_digest(qualification),
     }:
         raise CandidateError("existing beta authorization has different qualification evidence")
-    validate_qualification_evidence(qualification, request)
+    validate_qualification_evidence(qualification, request, current_policy=False)
     conformance = require_exact_keys(
         evidence["conformance"],
         {"tag", "commit", "release", "run"},
