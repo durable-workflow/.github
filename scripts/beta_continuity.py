@@ -1280,75 +1280,159 @@ def base_evidence(
     }
 
 
-def conformance_evidence(client: PublicClient, plan: dict[str, Any]) -> dict[str, Any] | None:
+def conformance_release_rank(prefix: str, tag: Any) -> tuple[int, int] | None:
+    if not isinstance(tag, str) or not tag.startswith(prefix):
+        return None
+    match = re.fullmatch(r"([1-9][0-9]*)\.([1-9][0-9]*)", tag.removeprefix(prefix))
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def exact_conformance_reference(plan: dict[str, Any], reference: Any) -> bool:
+    candidate = candidate_manifest(plan)
+    prefix = f"beta-conformance/{candidate['candidate']}/"
+    if not isinstance(reference, dict) or set(reference) != {"release", "run", "tag"}:
+        return False
+    rank = conformance_release_rank(prefix, reference.get("tag"))
+    run = reference.get("run")
+    return (
+        rank is not None
+        and isinstance(reference.get("release"), str)
+        and reference["release"].startswith(f"https://github.com/{CONTROL_REPOSITORY}/releases/tag/")
+        and run
+        == {
+            "repository": CONTROL_REPOSITORY,
+            "run_id": rank[0],
+            "run_attempt": rank[1],
+            "evidence_tag": reference["tag"],
+        }
+    )
+
+
+def validated_conformance_release(
+    client: PublicClient,
+    plan: dict[str, Any],
+    candidate: dict[str, Any],
+    release: dict[str, Any],
+    rank: tuple[int, int],
+) -> dict[str, Any] | None:
+    tag = release.get("tag_name")
+    release_url = release.get("html_url")
+    release_assets = release.get("assets")
+    if (
+        not isinstance(tag, str)
+        or not isinstance(release_url, str)
+        or not release_url.startswith(f"https://github.com/{CONTROL_REPOSITORY}/releases/tag/")
+        or not isinstance(release_assets, list)
+    ):
+        return None
+    assets = {
+        item.get("name"): item
+        for item in release_assets
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    }
+    suite_asset = assets.get("suite-result.json")
+    if not isinstance(suite_asset, dict):
+        return None
+    try:
+        suite, _suite_payload = validated_conformance_asset(client, suite_asset)
+    except ConformanceError:
+        return None
+    expected_run = {
+        "repository": CONTROL_REPOSITORY,
+        "run_id": rank[0],
+        "run_attempt": rank[1],
+        "evidence_tag": tag,
+    }
+    if (
+        not isinstance(suite, dict)
+        or suite.get("schema") != "durable-workflow.beta-conformance.suite-result/v1"
+        or suite.get("github_run") != expected_run
+    ):
+        return None
+    if (
+        suite.get("outcome") != "pass"
+        or not isinstance(suite.get("candidate"), dict)
+        or suite["candidate"].get("name") != candidate["candidate"]
+        or suite.get("artifact_tuple") != plan["components"]
+    ):
+        return None
+    conformance_plan = {
+        "schema": CONFORMANCE_PLAN_SCHEMA,
+        "candidate": suite.get("candidate"),
+        "artifact_tuple": suite.get("artifact_tuple"),
+        "source_identities": suite.get("source_identities"),
+        "distribution_identities": suite.get("distribution_identities"),
+        "runner": suite.get("runner"),
+        "server_runner": suite.get("server_runner"),
+        "experiments": list(CONFORMANCE_EXPERIMENTS),
+    }
+    try:
+        validate_conformance_plan(conformance_plan)
+        summaries = suite.get("experiments")
+        if not isinstance(summaries, dict) or set(summaries) != set(CONFORMANCE_EXPERIMENTS):
+            return None
+        for experiment in CONFORMANCE_EXPERIMENTS:
+            experiment_asset = assets.get(f"{experiment}.json")
+            if not isinstance(experiment_asset, dict):
+                raise ConformanceError("durable conformance release is missing an experiment asset")
+            result, payload = validated_conformance_asset(client, experiment_asset)
+            validate_experiment_result(result, conformance_plan)
+            summary = summaries[experiment]
+            if (
+                not isinstance(result, dict)
+                or result.get("experiment") != experiment
+                or not isinstance(summary, dict)
+                or summary.get("result_sha256") != hashlib.sha256(payload).hexdigest()
+                or summary.get("outcome") != result.get("outcome")
+                or summary.get("classification") != result.get("classification")
+            ):
+                raise ConformanceError("durable conformance release has mismatched experiment evidence")
+    except ConformanceError:
+        return None
+    return {"release": release_url, "run": expected_run, "tag": tag}
+
+
+def conformance_evidence(
+    client: PublicClient,
+    plan: dict[str, Any],
+    *,
+    preferred: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     candidate = candidate_manifest(plan)
     releases = client.json(f"https://api.github.com/repos/{CONTROL_REPOSITORY}/releases?per_page=100")
+    if not isinstance(releases, list):
+        return None
     prefix = f"beta-conformance/{candidate['candidate']}/"
-    for release in releases:
-        if release.get("draft") or not str(release.get("tag_name", "")).startswith(prefix):
-            continue
-        assets = {
-            item.get("name"): item
-            for item in release.get("assets", [])
-            if isinstance(item, dict) and isinstance(item.get("name"), str)
-        }
-        suite_asset = assets.get("suite-result.json")
-        if not isinstance(suite_asset, dict):
-            continue
-        try:
-            suite, _suite_payload = validated_conformance_asset(client, suite_asset)
-        except ConformanceError:
-            continue
-        if (
-            not isinstance(suite, dict)
-            or suite.get("schema") != "durable-workflow.beta-conformance.suite-result/v1"
-        ):
-            continue
-        if (
-            suite.get("outcome") != "pass"
-            or not isinstance(suite.get("candidate"), dict)
-            or suite["candidate"].get("name") != candidate["candidate"]
-            or suite.get("artifact_tuple") != plan["components"]
-        ):
-            continue
-        conformance_plan = {
-            "schema": CONFORMANCE_PLAN_SCHEMA,
-            "candidate": suite.get("candidate"),
-            "artifact_tuple": suite.get("artifact_tuple"),
-            "source_identities": suite.get("source_identities"),
-            "distribution_identities": suite.get("distribution_identities"),
-            "runner": suite.get("runner"),
-            "server_runner": suite.get("server_runner"),
-            "experiments": list(CONFORMANCE_EXPERIMENTS),
-        }
-        try:
-            validate_conformance_plan(conformance_plan)
-            summaries = suite.get("experiments")
-            if not isinstance(summaries, dict) or set(summaries) != set(CONFORMANCE_EXPERIMENTS):
-                continue
-            for experiment in CONFORMANCE_EXPERIMENTS:
-                experiment_asset = assets.get(f"{experiment}.json")
-                if not isinstance(experiment_asset, dict):
-                    raise ConformanceError("durable conformance release is missing an experiment asset")
-                result, payload = validated_conformance_asset(client, experiment_asset)
-                validate_experiment_result(result, conformance_plan)
-                summary = summaries[experiment]
-                if (
-                    not isinstance(result, dict)
-                    or result.get("experiment") != experiment
-                    or not isinstance(summary, dict)
-                    or summary.get("result_sha256") != hashlib.sha256(payload).hexdigest()
-                    or summary.get("outcome") != result.get("outcome")
-                    or summary.get("classification") != result.get("classification")
-                ):
-                    raise ConformanceError("durable conformance release has mismatched experiment evidence")
-        except ConformanceError:
-            continue
-        return {
-            "release": release.get("html_url"),
-            "run": suite.get("github_run"),
-            "tag": release.get("tag_name"),
-        }
+    ranked_releases = sorted(
+        (
+            (rank, release)
+            for release in releases
+            if isinstance(release, dict)
+            and not release.get("draft")
+            and (rank := conformance_release_rank(prefix, release.get("tag_name"))) is not None
+        ),
+        key=lambda item: item[0],
+    )
+    if preferred is not None:
+        preferred_rank = conformance_release_rank(prefix, preferred.get("tag"))
+        if preferred_rank is None:
+            return None
+        preferred_release = next(
+            (release for rank, release in ranked_releases if rank == preferred_rank),
+            None,
+        )
+        if preferred_release is not None:
+            evidence = validated_conformance_release(client, plan, candidate, preferred_release, preferred_rank)
+            if evidence is not None:
+                return evidence
+        ranked_releases = [(rank, release) for rank, release in ranked_releases if rank > preferred_rank]
+
+    for rank, release in ranked_releases:
+        evidence = validated_conformance_release(client, plan, candidate, release, rank)
+        if evidence is not None:
+            return evidence
     return None
 
 
@@ -1494,15 +1578,14 @@ def exact_completion_authority(
     published, pending = component_publications(client, plan)
     if pending or set(published) != set(COMPONENTS):
         raise ContinuityError(f"completed continuity sources are not all public: pending={sorted(pending)}")
-    live_conformance = conformance_evidence(client, plan)
-    if live_conformance is None:
-        raise ContinuityError("completed continuity plan has no live exact-tuple conformance evidence")
 
     complete_evidence = read_public_json_file(client, complete_commit, "continuity-evidence.json")
     complete_plan = read_public_json_file(client, complete_commit, "release-plan.json")
     expected_phase_record = {"tag": completion_tag, "commit": completion_commit}
+    recorded_conformance = complete_evidence.get("conformance") if isinstance(complete_evidence, dict) else None
     if (
         canonical_json(complete_plan) != canonical_json(plan)
+        or not isinstance(complete_evidence, dict)
         or complete_evidence.get("schema") != EVIDENCE_SCHEMA
         or complete_evidence.get("drill") != config["drill"]
         or complete_evidence.get("phase") != "complete"
@@ -1513,10 +1596,13 @@ def exact_completion_authority(
         or complete_evidence.get("resumed_phase") != phase_tag(plan, "resumed")
         or complete_evidence.get("plan_record") != plan_record_value
         or complete_evidence.get("public_verification") != expected_phase_record
-        or complete_evidence.get("conformance") != live_conformance
+        or not exact_conformance_reference(plan, recorded_conformance)
         or complete_evidence.get("published_components") != published
     ):
         raise ContinuityError("immutable completion phase does not prove exact plan artifacts and sources")
+    live_conformance = conformance_evidence(client, plan, preferred=recorded_conformance)
+    if live_conformance is None:
+        raise ContinuityError("completed continuity plan has no live exact-tuple conformance evidence")
 
     noop_evidence = read_public_json_file(client, noop_commit, "continuity-evidence.json")
     noop_plan = read_public_json_file(client, noop_commit, "release-plan.json")
@@ -1553,6 +1639,7 @@ def exact_completion_authority(
         "plan_record": plan_record_value,
         "public_verification": expected_phase_record,
         "qualification": qualification,
+        "conformance": live_conformance,
         "sources": published,
     }
 
@@ -1562,6 +1649,7 @@ def completion_evidence_report(marker: str, completion: dict[str, Any], closing_
     plan_record_value = completion["plan_record"]
     verification = completion["public_verification"]
     qualification = completion["qualification"]
+    conformance = completion["conformance"]
     versions = ", ".join(f"{name} `{identity['version']}`" for name, identity in sorted(plan["components"].items()))
     lines = [
         marker,
@@ -1580,6 +1668,7 @@ def completion_evidence_report(marker: str, completion: dict[str, Any], closing_
             f"{urllib.parse.quote(qualification['tag'], safe='/')}) at `{qualification['commit']}` with SHA-256 "
             f"`{qualification['sha256']}`."
         ),
+        f"- Conformance: [`{conformance['tag']}`]({conformance['release']}).",
         f"- Published versions: {versions}.",
         *closing_lines,
     ]
