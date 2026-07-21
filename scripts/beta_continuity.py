@@ -1372,6 +1372,25 @@ def validated_conformance_release(
     return {"release": release_url, "run": expected_run, "tag": tag}
 
 
+def public_conformance_releases(client: PublicClient) -> list[dict[str, Any]]:
+    endpoint = f"https://api.github.com/repos/{CONTROL_REPOSITORY}/releases"
+    releases: list[dict[str, Any]] = []
+    full_page_digests: set[str] = set()
+    page = 1
+    while True:
+        page_releases = client.json(f"{endpoint}?per_page=100&page={page}")
+        if not isinstance(page_releases, list) or len(page_releases) > 100:
+            raise ContinuityError("GitHub conformance releases response is invalid")
+        releases.extend(release for release in page_releases if isinstance(release, dict))
+        if len(page_releases) < 100:
+            return releases
+        page_digest = hashlib.sha256(canonical_json(page_releases)).hexdigest()
+        if page_digest in full_page_digests:
+            raise ContinuityError("GitHub conformance release pagination did not advance")
+        full_page_digests.add(page_digest)
+        page += 1
+
+
 def conformance_evidence(
     client: PublicClient,
     plan: dict[str, Any],
@@ -1379,9 +1398,7 @@ def conformance_evidence(
     preferred: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     candidate = candidate_manifest(plan)
-    releases = client.json(f"https://api.github.com/repos/{CONTROL_REPOSITORY}/releases?per_page=100")
-    if not isinstance(releases, list):
-        return None
+    releases = public_conformance_releases(client)
     prefix = f"beta-conformance/{candidate['candidate']}/"
     ranked_releases = sorted(
         (
@@ -1398,7 +1415,7 @@ def conformance_evidence(
         if preferred_rank is None:
             return None
         preferred_release = next(
-            (release for rank, release in ranked_releases if rank == preferred_rank),
+            (release for _rank, release in ranked_releases if release.get("tag_name") == preferred["tag"]),
             None,
         )
         if preferred_release is not None:

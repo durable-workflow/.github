@@ -154,10 +154,12 @@ def conformance_release_fixture(
     plan: dict[str, Any],
     run_id: int,
     *,
+    run_attempt: int = 1,
     sensitive: bool = False,
 ) -> tuple[dict[str, Any], dict[str, bytes], dict[str, Any]]:
     candidate = candidate_manifest(plan)
-    tag = f"beta-conformance/{candidate['candidate']}/{run_id}.1"
+    tag = f"beta-conformance/{candidate['candidate']}/{run_id}.{run_attempt}"
+    fixture_id = str(run_id) if run_attempt == 1 else f"{run_id}.{run_attempt}"
     runtime_dependencies = {}
     for index, (name, selector) in enumerate(RUNTIME_DEPENDENCY_SELECTORS.items(), start=1):
         digest = f"sha256:{index:064x}"
@@ -207,7 +209,7 @@ def conformance_release_fixture(
     for name in CONFORMANCE_EXPERIMENTS:
         diagnostic = {
             "runner": "fixture",
-            "attempt": 1,
+            "attempt": run_attempt,
             "exit_code": 0,
             "timed_out": False,
             "native_outcome": "pass",
@@ -245,12 +247,12 @@ def conformance_release_fixture(
             list(COMPONENTS),
             "2026-07-20T10:00:00Z",
             "passed",
-            1,
+            run_attempt,
             [diagnostic],
         )
         if sensitive and name == "replay":
             result["diagnostics"][0]["stdout_tail"] = "password=published-secret"
-        payloads[f"https://downloads.example/{run_id}/{name}.json"] = json.dumps(
+        payloads[f"https://downloads.example/{fixture_id}/{name}.json"] = json.dumps(
             result,
             sort_keys=True,
             separators=(",", ":"),
@@ -258,7 +260,7 @@ def conformance_release_fixture(
     run = {
         "repository": "durable-workflow/.github",
         "run_id": run_id,
-        "run_attempt": 1,
+        "run_attempt": run_attempt,
         "evidence_tag": tag,
     }
     suite = {
@@ -276,12 +278,14 @@ def conformance_release_fixture(
             name: {
                 "classification": "passed",
                 "outcome": "pass",
-                "result_sha256": hashlib.sha256(payloads[f"https://downloads.example/{run_id}/{name}.json"]).hexdigest(),
+                "result_sha256": hashlib.sha256(
+                    payloads[f"https://downloads.example/{fixture_id}/{name}.json"]
+                ).hexdigest(),
             }
             for name in CONFORMANCE_EXPERIMENTS
         },
     }
-    suite_url = f"https://downloads.example/{run_id}/suite-result.json"
+    suite_url = f"https://downloads.example/{fixture_id}/suite-result.json"
     payloads[suite_url] = json.dumps(suite, sort_keys=True, separators=(",", ":")).encode()
     release_url = f"https://github.com/durable-workflow/.github/releases/tag/{tag}"
     release = {
@@ -293,6 +297,24 @@ def conformance_release_fixture(
         "tag_name": tag,
     }
     return release, payloads, {"release": release_url, "run": run, "tag": tag}
+
+
+class PaginatedReleaseClient:
+    def __init__(self, pages: dict[int, list[dict[str, Any]]], payloads: dict[str, bytes]) -> None:
+        self.pages = pages
+        self.payloads = payloads
+        self.requested_pages: list[int] = []
+
+    def json(self, url: str) -> list[dict[str, Any]]:
+        prefix = "https://api.github.com/repos/durable-workflow/.github/releases?per_page=100&page="
+        if not url.startswith(prefix):
+            raise AssertionError(f"unexpected JSON URL: {url}")
+        page = int(url.removeprefix(prefix))
+        self.requested_pages.append(page)
+        return self.pages.get(page, [])
+
+    def bytes(self, url: str) -> bytes:
+        return self.payloads[url]
 
 
 class BetaContinuityTest(unittest.TestCase):
@@ -1539,23 +1561,67 @@ class BetaContinuityTest(unittest.TestCase):
             sensitive=True,
         )
         replacement_release, replacement_payloads, replacement_reference = conformance_release_fixture(plan, 12346)
-
-        class ExistingReleaseClient:
-            @staticmethod
-            def json(_url: str) -> list[dict[str, object]]:
-                return [replacement_release, unsafe_release]
-
-            @staticmethod
-            def bytes(url: str) -> bytes:
-                return (unsafe_payloads | replacement_payloads)[url]
+        later_release, later_payloads, _later_reference = conformance_release_fixture(
+            plan,
+            12346,
+            run_attempt=2,
+        )
+        unrelated = [
+            {"draft": False, "tag_name": f"unrelated-release-{index}"}
+            for index in range(98)
+        ]
+        client = PaginatedReleaseClient(
+            {1: [later_release, unsafe_release, *unrelated], 2: [replacement_release]},
+            unsafe_payloads | replacement_payloads | later_payloads,
+        )
 
         self.assertEqual(
             replacement_reference,
             conformance_evidence(
-                ExistingReleaseClient(),  # type: ignore[arg-type]
+                client,  # type: ignore[arg-type]
                 plan,
                 preferred=unsafe_reference,
             ),
+        )
+        self.assertEqual([1, 2], client.requested_pages)
+
+    def test_valid_recorded_conformance_release_is_preserved_beyond_the_first_release_page(self) -> None:
+        plan = continuity_plan("paginated-conformance-authority-test")
+        preferred_release, preferred_payloads, preferred_reference = conformance_release_fixture(plan, 12346)
+        later_release, later_payloads, _later_reference = conformance_release_fixture(plan, 12347)
+        unrelated = [
+            {"draft": False, "tag_name": f"unrelated-release-{index}"}
+            for index in range(99)
+        ]
+        client = PaginatedReleaseClient(
+            {1: [later_release, *unrelated], 2: [preferred_release]},
+            preferred_payloads | later_payloads,
+        )
+
+        self.assertEqual(
+            preferred_reference,
+            conformance_evidence(client, plan, preferred=preferred_reference),  # type: ignore[arg-type]
+        )
+        self.assertEqual([1, 2], client.requested_pages)
+
+    def test_missing_recorded_conformance_release_uses_only_the_earliest_newer_run_attempt(self) -> None:
+        plan = continuity_plan("missing-conformance-authority-test")
+        older_release, older_payloads, _older_reference = conformance_release_fixture(plan, 12344)
+        _missing_release, _missing_payloads, missing_reference = conformance_release_fixture(plan, 12345)
+        replacement_release, replacement_payloads, replacement_reference = conformance_release_fixture(plan, 12346)
+        later_release, later_payloads, _later_reference = conformance_release_fixture(
+            plan,
+            12346,
+            run_attempt=2,
+        )
+        client = PaginatedReleaseClient(
+            {1: [later_release, older_release, replacement_release]},
+            older_payloads | replacement_payloads | later_payloads,
+        )
+
+        self.assertEqual(
+            replacement_reference,
+            conformance_evidence(client, plan, preferred=missing_reference),  # type: ignore[arg-type]
         )
 
     def test_multiple_valid_conformance_releases_preserve_recorded_authority(self) -> None:
