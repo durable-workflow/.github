@@ -179,11 +179,12 @@ def continuity_supersession_records(
     prior: dict[str, object],
     requested: dict[str, object],
     prior_commit: str,
+    *,
+    accepted_commit: str = "c" * 40,
+    interruption_commit: str = "d" * 40,
 ) -> dict[str, object]:
     accepted_tag = f"beta-continuity/{requested['plan']}/accepted"
-    accepted_commit = "c" * 40
     interruption_tag = f"beta-continuity/{prior['plan']}/interrupted"
-    interruption_commit = "d" * 40
     prior_tag = f"release-plan/{prior['plan']}"
     prior_digest = manifest_digest(prior)
     requested_digest = manifest_digest(requested)
@@ -837,11 +838,13 @@ class ReleasePlanValidationTest(unittest.TestCase):
         requested["plan"] = "plan-b"
 
         class FixtureClient:
-            def json(self, _url: str) -> list[dict[str, str]]:
+            def json(self, url: str) -> list[dict[str, str]]:
+                if url.endswith("matching-refs/tags/beta-continuity/"):
+                    return []
                 return [{"ref": "refs/tags/release-plan/plan-a"}]
 
         with (
-            mock.patch("scripts.release_plan.resolve_tag", side_effect=["a" * 40, None, None]),
+            mock.patch("scripts.release_plan.resolve_tag", side_effect=["a" * 40, None, None, None]),
             mock.patch("scripts.release_plan.read_public_record", return_value=prior),
             mock.patch("scripts.release_plan.load_public_supersession", return_value=None),
             self.assertRaisesRegex(CandidateError, "prior plan release-plan/plan-a is incomplete"),
@@ -889,6 +892,210 @@ class ReleasePlanValidationTest(unittest.TestCase):
             evidence["release-plan/plan-a"]["outcome"],
         )
         self.assertEqual(records["accepted_commit"], evidence["release-plan/plan-a"]["accepted_commit"])
+
+    def test_completed_continuity_successors_terminalize_the_interruption_for_a_future_plan(self) -> None:
+        interrupted = release_plan()
+        interrupted["plan"] = "plan-a"
+        first_successor = release_plan()
+        first_successor["plan"] = "plan-b"
+        second_successor = release_plan()
+        second_successor["plan"] = "plan-c"
+        ordinary = release_plan()
+        ordinary["plan"] = "plan-x"
+        future = release_plan("beta")
+        future["plan"] = "plan-d"
+        plan_commits = {
+            "release-plan/plan-a": "a" * 40,
+            "release-plan/plan-b": "b" * 40,
+            "release-plan/plan-c": "c" * 40,
+            "release-plan/plan-x": "3" * 40,
+        }
+        first_records = continuity_supersession_records(
+            interrupted,
+            first_successor,
+            plan_commits["release-plan/plan-a"],
+            accepted_commit="d" * 40,
+            interruption_commit="e" * 40,
+        )
+        second_records = continuity_supersession_records(
+            interrupted,
+            second_successor,
+            plan_commits["release-plan/plan-a"],
+            accepted_commit="f" * 40,
+            interruption_commit="e" * 40,
+        )
+        completion_commits = {
+            "release-candidate/alpha/plan-b": "1" * 40,
+            "release-candidate/alpha/plan-c": "2" * 40,
+            "release-candidate/alpha/plan-x": "4" * 40,
+        }
+        ordinary_records = continuity_supersession_records(
+            interrupted,
+            ordinary,
+            plan_commits["release-plan/plan-a"],
+            accepted_commit="5" * 40,
+            interruption_commit="e" * 40,
+        )
+        ordinary_records["accepted_evidence"].pop("superseded_interruption")
+
+        class FixtureClient:
+            def json(self, url: str) -> list[dict[str, str]]:
+                if url.endswith("matching-refs/tags/release-plan/"):
+                    return [{"ref": f"refs/tags/{tag}"} for tag in plan_commits]
+                raise AssertionError(f"unexpected registry request {url}")
+
+        def resolve(_client: object, _repository: str, tag: str) -> str | None:
+            return {
+                **plan_commits,
+                **completion_commits,
+                first_records["accepted_tag"]: first_records["accepted_commit"],
+                second_records["accepted_tag"]: second_records["accepted_commit"],
+                ordinary_records["accepted_tag"]: ordinary_records["accepted_commit"],
+                first_records["interruption_tag"]: first_records["interruption_commit"],
+            }.get(tag)
+
+        plans = {
+            "release-plan/plan-a": interrupted,
+            "release-plan/plan-b": first_successor,
+            "release-plan/plan-c": second_successor,
+            "release-plan/plan-x": ordinary,
+        }
+        accepted = {
+            first_records["accepted_tag"]: first_records,
+            second_records["accepted_tag"]: second_records,
+            ordinary_records["accepted_tag"]: ordinary_records,
+        }
+
+        def read_record(_client: object, tag: str, _commit: str, filename: str) -> dict[str, object]:
+            if tag in plans:
+                if filename == "release-preparation.json":
+                    raise CandidateError("public request failed (404)")
+                return plans[tag]
+            if tag in accepted:
+                records = accepted[tag]
+                return (
+                    records["accepted_evidence"]
+                    if filename == "continuity-evidence.json"
+                    else records["accepted_plan"]
+                )
+            if tag == first_records["interruption_tag"]:
+                return (
+                    first_records["interruption_evidence"]
+                    if filename == "continuity-evidence.json"
+                    else first_records["interruption_plan"]
+                )
+            if tag == "release-candidate/alpha/plan-b":
+                return completion_manifest(first_successor, plan_commits["release-plan/plan-b"])
+            if tag == "release-candidate/alpha/plan-c":
+                return completion_manifest(second_successor, plan_commits["release-plan/plan-c"])
+            if tag == "release-candidate/alpha/plan-x":
+                return completion_manifest(ordinary, plan_commits["release-plan/plan-x"])
+            raise AssertionError(f"unexpected public record {tag}:{filename}")
+
+        with (
+            mock.patch("scripts.release_plan.resolve_tag", side_effect=resolve),
+            mock.patch("scripts.release_plan.read_public_record", side_effect=read_record),
+            mock.patch("scripts.release_plan.load_public_supersession", return_value=None),
+        ):
+            evidence = require_prior_plans_completed(future, FixtureClient())
+
+        terminal = evidence["release-plan/plan-a"]
+        self.assertEqual("superseded-diagnostic-interruption", terminal["outcome"])
+        self.assertEqual(first_records["accepted_tag"], terminal["accepted_tag"])
+        self.assertEqual("2", terminal["completed_successor_count"])
+        self.assertEqual("release-plan/plan-b", terminal["successor_plan_tag"])
+        self.assertEqual("completed", evidence["release-plan/plan-b"]["outcome"])
+        self.assertEqual("completed", evidence["release-plan/plan-c"]["outcome"])
+        self.assertEqual("completed", evidence["release-plan/plan-x"]["outcome"])
+
+    def test_accepted_but_incomplete_continuity_successor_does_not_terminalize_the_interruption(self) -> None:
+        interrupted = release_plan()
+        interrupted["plan"] = "plan-a"
+        successor = release_plan()
+        successor["plan"] = "plan-b"
+        future = release_plan("beta")
+        future["plan"] = "plan-c"
+        prior_commit = "a" * 40
+        successor_commit = "b" * 40
+        records = continuity_supersession_records(interrupted, successor, prior_commit)
+
+        class FixtureClient:
+            def json(self, url: str) -> list[dict[str, str]]:
+                if url.endswith("matching-refs/tags/release-plan/"):
+                    return [
+                        {"ref": "refs/tags/release-plan/plan-a"},
+                        {"ref": "refs/tags/release-plan/plan-b"},
+                    ]
+                raise AssertionError(f"unexpected registry request {url}")
+
+        def resolve(_client: object, _repository: str, tag: str) -> str | None:
+            return {
+                "release-plan/plan-a": prior_commit,
+                "release-plan/plan-b": successor_commit,
+                records["accepted_tag"]: records["accepted_commit"],
+                records["interruption_tag"]: records["interruption_commit"],
+            }.get(tag)
+
+        def read_record(_client: object, tag: str, _commit: str, filename: str) -> dict[str, object]:
+            if tag == "release-plan/plan-a":
+                return interrupted
+            if tag == "release-plan/plan-b":
+                return successor
+            if tag == records["accepted_tag"]:
+                return records["accepted_evidence"] if filename == "continuity-evidence.json" else successor
+            if tag == records["interruption_tag"]:
+                return records["interruption_evidence"] if filename == "continuity-evidence.json" else interrupted
+            raise AssertionError(f"unexpected public record {tag}:{filename}")
+
+        with (
+            mock.patch("scripts.release_plan.resolve_tag", side_effect=resolve),
+            mock.patch("scripts.release_plan.read_public_record", side_effect=read_record),
+            mock.patch("scripts.release_plan.load_public_supersession", return_value=None),
+            self.assertRaisesRegex(CandidateError, "successor release-plan/plan-b has no immutable completion"),
+        ):
+            require_prior_plans_completed(future, FixtureClient())
+
+    def test_identity_mismatched_continuity_successor_does_not_terminalize_the_interruption(self) -> None:
+        interrupted = release_plan()
+        interrupted["plan"] = "plan-a"
+        successor = release_plan()
+        successor["plan"] = "plan-b"
+        future = release_plan("beta")
+        future["plan"] = "plan-c"
+        prior_commit = "a" * 40
+        records = continuity_supersession_records(interrupted, successor, prior_commit)
+        records["accepted_evidence"]["superseded_interruption"]["commit"] = "f" * 40
+
+        class FixtureClient:
+            def json(self, url: str) -> list[dict[str, str]]:
+                if url.endswith("matching-refs/tags/release-plan/"):
+                    return [
+                        {"ref": "refs/tags/release-plan/plan-a"},
+                        {"ref": "refs/tags/release-plan/plan-b"},
+                    ]
+                raise AssertionError(f"unexpected registry request {url}")
+
+        def resolve(_client: object, _repository: str, tag: str) -> str | None:
+            return {
+                "release-plan/plan-a": prior_commit,
+                records["accepted_tag"]: records["accepted_commit"],
+                records["interruption_tag"]: records["interruption_commit"],
+            }.get(tag)
+
+        def read_record(_client: object, tag: str, _commit: str, filename: str) -> dict[str, object]:
+            if tag == "release-plan/plan-a":
+                return interrupted
+            if tag == records["accepted_tag"]:
+                return records["accepted_evidence"] if filename == "continuity-evidence.json" else successor
+            raise AssertionError(f"unexpected public record {tag}:{filename}")
+
+        with (
+            mock.patch("scripts.release_plan.resolve_tag", side_effect=resolve),
+            mock.patch("scripts.release_plan.read_public_record", side_effect=read_record),
+            mock.patch("scripts.release_plan.load_public_supersession", return_value=None),
+            self.assertRaisesRegex(CandidateError, "superseded interruption .* resolves to"),
+        ):
+            require_prior_plans_completed(future, FixtureClient())
 
     def test_one_continuity_acceptance_cannot_clear_an_unrelated_incomplete_plan(self) -> None:
         prior = release_plan()
@@ -1063,6 +1270,8 @@ class ReleasePlanValidationTest(unittest.TestCase):
             return prior
 
         def resolve(_client: object, _repository: str, tag: str) -> str | None:
+            if tag.startswith("beta-continuity/"):
+                return None
             if tag == "release-candidate/alpha/plan-a":
                 return None
             return "b" * 40 if tag.startswith("release-candidate/") else "a" * 40

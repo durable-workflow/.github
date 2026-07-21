@@ -1135,44 +1135,33 @@ def load_public_supersession(
     return tag, commit, record, successor
 
 
-def load_continuity_supersession(
-    requested_plan: dict[str, Any],
+def validate_continuity_supersession(
+    successor_plan: dict[str, Any],
     prior_plan: dict[str, Any],
     prior_plan_commit: str,
     client: PublicClient,
-) -> dict[str, str] | None:
-    accepted_tag = f"{CONTINUITY_TAG_PREFIX}{requested_plan['plan']}/accepted"
-    accepted_commit = resolve_tag(client, CONTROL_REPOSITORY, accepted_tag)
-    if accepted_commit is None:
-        return None
-
-    accepted_evidence = read_public_record(
-        client,
-        accepted_tag,
-        accepted_commit,
-        "continuity-evidence.json",
-    )
-    accepted_plan = read_public_record(
-        client,
-        accepted_tag,
-        accepted_commit,
-        "release-plan.json",
-    )
+    *,
+    accepted_tag: str,
+    accepted_commit: str,
+    accepted_evidence: Any,
+    accepted_plan: Any,
+) -> dict[str, str]:
     validate_plan(accepted_plan)
-    requested_tag = f"{PLAN_TAG_PREFIX}{requested_plan['plan']}"
-    requested_digest = manifest_digest(requested_plan)
+    successor_tag = f"{PLAN_TAG_PREFIX}{successor_plan['plan']}"
+    successor_digest = manifest_digest(successor_plan)
     if (
         not isinstance(accepted_evidence, dict)
-        or canonical_json(accepted_plan) != canonical_json(requested_plan)
+        or accepted_tag != f"{CONTINUITY_TAG_PREFIX}{successor_plan['plan']}/accepted"
+        or canonical_json(accepted_plan) != canonical_json(successor_plan)
         or accepted_evidence.get("schema") != CONTINUITY_EVIDENCE_SCHEMA
         or accepted_evidence.get("phase") != "accepted"
         or accepted_evidence.get("outcome") != "accepted"
-        or accepted_evidence.get("release_plan") != {"tag": requested_tag, "sha256": requested_digest}
+        or accepted_evidence.get("release_plan") != {"tag": successor_tag, "sha256": successor_digest}
         or accepted_evidence.get("candidate_identity")
-        != {"components": requested_plan["components"], "plan_sha256": requested_digest}
+        != {"components": successor_plan["components"], "plan_sha256": successor_digest}
     ):
         raise CandidateError(
-            f"accepted continuity record {accepted_tag} does not prove exact requested plan {requested_tag}"
+            f"accepted continuity record {accepted_tag} does not prove exact requested plan {successor_tag}"
         )
 
     prior_tag = f"{PLAN_TAG_PREFIX}{prior_plan['plan']}"
@@ -1231,18 +1220,193 @@ def load_continuity_supersession(
     }
 
 
+def load_continuity_supersession(
+    requested_plan: dict[str, Any],
+    prior_plan: dict[str, Any],
+    prior_plan_commit: str,
+    client: PublicClient,
+) -> dict[str, str] | None:
+    accepted_tag = f"{CONTINUITY_TAG_PREFIX}{requested_plan['plan']}/accepted"
+    accepted_commit = resolve_tag(client, CONTROL_REPOSITORY, accepted_tag)
+    if accepted_commit is None:
+        return None
+
+    accepted_evidence = read_public_record(
+        client,
+        accepted_tag,
+        accepted_commit,
+        "continuity-evidence.json",
+    )
+    accepted_plan = read_public_record(
+        client,
+        accepted_tag,
+        accepted_commit,
+        "release-plan.json",
+    )
+    return validate_continuity_supersession(
+        requested_plan,
+        prior_plan,
+        prior_plan_commit,
+        client,
+        accepted_tag=accepted_tag,
+        accepted_commit=accepted_commit,
+        accepted_evidence=accepted_evidence,
+        accepted_plan=accepted_plan,
+    )
+
+
+def load_plan_completion(
+    plan: dict[str, Any],
+    plan_record_commit: str,
+    client: PublicClient,
+    *,
+    record_label: str,
+) -> dict[str, str] | None:
+    plan_tag = f"{PLAN_TAG_PREFIX}{plan['plan']}"
+    completion_tag = f"{COMPLETION_TAG_PREFIX}{plan['channel']}/{plan['plan']}"
+    completion_commit = resolve_tag(client, CONTROL_REPOSITORY, completion_tag)
+    if completion_commit is None:
+        return None
+    completion = read_public_record(
+        client,
+        completion_tag,
+        completion_commit,
+        "release-candidate.json",
+    )
+    try:
+        preparation = read_public_record(
+            client,
+            plan_tag,
+            plan_record_commit,
+            "release-preparation.json",
+        )
+    except CandidateError as error:
+        if "(404)" not in str(error):
+            raise
+        preparation = None
+    if preparation is not None:
+        validate_release_preparation(preparation, plan)
+    if completion != completion_manifest(plan, plan_record_commit, preparation):
+        raise CandidateError(f"{record_label} completion record {completion_tag} does not prove {plan_tag}")
+    if load_public_supersession(plan, plan_record_commit, client) is not None:
+        raise CandidateError(
+            f"{record_label} release plan {plan_tag} has conflicting completion and terminal-failure records"
+        )
+    return {
+        "completion_tag": completion_tag,
+        "completion_commit": completion_commit,
+        "outcome": "completed",
+    }
+
+
+def discover_completed_continuity_supersession(
+    prior_plan: dict[str, Any],
+    prior_plan_commit: str,
+    release_plan_tags: list[str],
+    client: PublicClient,
+) -> dict[str, str] | None:
+    interruption_tag = f"{CONTINUITY_TAG_PREFIX}{prior_plan['plan']}/interrupted"
+    matches: list[dict[str, str]] = []
+    for successor_tag in release_plan_tags:
+        successor_name = successor_tag.removeprefix(PLAN_TAG_PREFIX)
+        accepted_tag = f"{CONTINUITY_TAG_PREFIX}{successor_name}/accepted"
+        accepted_commit = resolve_tag(client, CONTROL_REPOSITORY, accepted_tag)
+        if accepted_commit is None:
+            continue
+        accepted_evidence = read_public_record(
+            client,
+            accepted_tag,
+            accepted_commit,
+            "continuity-evidence.json",
+        )
+        superseded = accepted_evidence.get("superseded_interruption") if isinstance(accepted_evidence, dict) else None
+        if not isinstance(superseded, dict) or superseded.get("tag") != interruption_tag:
+            continue
+
+        accepted_plan = read_public_record(
+            client,
+            accepted_tag,
+            accepted_commit,
+            "release-plan.json",
+        )
+        validate_plan(accepted_plan)
+        supersession = validate_continuity_supersession(
+            accepted_plan,
+            prior_plan,
+            prior_plan_commit,
+            client,
+            accepted_tag=accepted_tag,
+            accepted_commit=accepted_commit,
+            accepted_evidence=accepted_evidence,
+            accepted_plan=accepted_plan,
+        )
+
+        if successor_tag != f"{PLAN_TAG_PREFIX}{accepted_plan['plan']}":
+            raise CandidateError(f"accepted continuity successor {accepted_tag} has a different plan identity")
+        successor_commit = resolve_tag(client, CONTROL_REPOSITORY, successor_tag)
+        if successor_commit is None:
+            raise CandidateError(f"accepted continuity successor {successor_tag} has no immutable release plan record")
+        public_successor = read_public_record(
+            client,
+            successor_tag,
+            successor_commit,
+            "release-plan.json",
+        )
+        validate_plan(public_successor)
+        if canonical_json(public_successor) != canonical_json(accepted_plan):
+            raise CandidateError(f"recorded continuity successor {successor_tag} differs from {accepted_tag}")
+        completion = load_plan_completion(
+            accepted_plan,
+            successor_commit,
+            client,
+            record_label=f"continuity successor {successor_tag}",
+        )
+        if completion is None:
+            raise CandidateError(f"accepted continuity successor {successor_tag} has no immutable completion record")
+        matches.append(
+            {
+                **supersession,
+                "successor_plan_tag": successor_tag,
+                "successor_plan_commit": successor_commit,
+                "completion_tag": completion["completion_tag"],
+                "completion_commit": completion["completion_commit"],
+            }
+        )
+
+    if not matches:
+        return None
+    # More than one completed successor may prove the same immutable interruption.
+    # Every matching authority is validated above; select the first public tag for stable evidence.
+    selected = matches[0]
+    selected["completed_successor_count"] = str(len(matches))
+    return selected
+
+
 def require_prior_plans_completed(plan: dict[str, Any], client: PublicClient) -> dict[str, dict[str, str]]:
     refs = client.json(f"https://api.github.com/repos/{CONTROL_REPOSITORY}/git/matching-refs/tags/{PLAN_TAG_PREFIX}")
     if not isinstance(refs, list):
         raise CandidateError("GitHub did not return the immutable release-plan tag registry")
     requested_tag = f"{PLAN_TAG_PREFIX}{plan['plan']}"
-    completed: dict[str, dict[str, str]] = {}
+    release_plan_tags: list[str] = []
     for ref in refs:
-        name = str(ref.get("ref", ""))
-        if not name.startswith("refs/tags/"):
-            continue
-        tag = name.removeprefix("refs/tags/")
-        if not tag.startswith(PLAN_TAG_PREFIX) or tag == requested_tag:
+        if not isinstance(ref, dict) or not isinstance(ref.get("ref"), str):
+            raise CandidateError("GitHub returned a malformed immutable release-plan tag registry entry")
+        tag = ref["ref"].removeprefix("refs/tags/")
+        plan_name = tag.removeprefix(PLAN_TAG_PREFIX)
+        if (
+            ref["ref"] != f"refs/tags/{tag}"
+            or not tag.startswith(PLAN_TAG_PREFIX)
+            or not PLAN_PATTERN.fullmatch(plan_name)
+        ):
+            raise CandidateError("GitHub returned a malformed immutable release-plan tag registry entry")
+        release_plan_tags.append(tag)
+    if len(set(release_plan_tags)) != len(release_plan_tags):
+        raise CandidateError("immutable release-plan tag registry contains duplicate authorities")
+
+    completed: dict[str, dict[str, str]] = {}
+    release_plan_tags.sort()
+    for tag in release_plan_tags:
+        if tag == requested_tag:
             continue
         record_commit = resolve_tag(client, CONTROL_REPOSITORY, tag)
         if record_commit is None:
@@ -1251,9 +1415,13 @@ def require_prior_plans_completed(plan: dict[str, Any], client: PublicClient) ->
         validate_plan(prior)
         if tag != f"{PLAN_TAG_PREFIX}{prior['plan']}":
             raise CandidateError(f"prior release plan {tag} has a different document identity")
-        completion_tag = f"{COMPLETION_TAG_PREFIX}{prior['channel']}/{prior['plan']}"
-        completion_commit = resolve_tag(client, CONTROL_REPOSITORY, completion_tag)
-        if completion_commit is None:
+        completion = load_plan_completion(
+            prior,
+            record_commit,
+            client,
+            record_label="prior",
+        )
+        if completion is None:
             supersession = load_public_supersession(prior, record_commit, client)
             if supersession is None:
                 continuity_supersession = load_continuity_supersession(
@@ -1262,6 +1430,13 @@ def require_prior_plans_completed(plan: dict[str, Any], client: PublicClient) ->
                     record_commit,
                     client,
                 )
+                if continuity_supersession is None:
+                    continuity_supersession = discover_completed_continuity_supersession(
+                        prior,
+                        record_commit,
+                        release_plan_tags,
+                        client,
+                    )
                 if continuity_supersession is None:
                     raise CandidateError(
                         f"cannot record {requested_tag} while prior plan {tag} is incomplete; "
@@ -1295,34 +1470,7 @@ def require_prior_plans_completed(plan: dict[str, Any], client: PublicClient) ->
                 "successor_tag": successor_tag,
             }
             continue
-        completion = read_public_record(
-            client,
-            completion_tag,
-            completion_commit,
-            "release-candidate.json",
-        )
-        try:
-            preparation = read_public_record(
-                client,
-                tag,
-                record_commit,
-                "release-preparation.json",
-            )
-        except CandidateError as error:
-            if "(404)" not in str(error):
-                raise
-            preparation = None
-        if preparation is not None:
-            validate_release_preparation(preparation, prior)
-        if completion != completion_manifest(prior, record_commit, preparation):
-            raise CandidateError(f"prior completion record {completion_tag} does not prove {tag}")
-        if load_public_supersession(prior, record_commit, client) is not None:
-            raise CandidateError(f"prior release plan {tag} has conflicting completion and terminal-failure records")
-        completed[tag] = {
-            "completion_tag": completion_tag,
-            "completion_commit": completion_commit,
-            "outcome": "completed",
-        }
+        completed[tag] = completion
     return completed
 
 
