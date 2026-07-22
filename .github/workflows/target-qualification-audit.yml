@@ -21,9 +21,9 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: "3.13"
 
@@ -38,7 +38,7 @@ jobs:
           --evidence target-qualification-evidence.json
 
       - name: Retain exact-commit audit evidence
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: target-qualification-${{ github.run_id }}-${{ github.run_attempt }}
           path: target-qualification-evidence.json

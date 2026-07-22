@@ -7,6 +7,7 @@ import argparse
 import contextlib
 import email.utils
 import errno
+import fnmatch
 import http.client
 import json
 import os
@@ -28,6 +29,7 @@ COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 SUPPORTED_JAVASCRIPT_ACTION_RUNTIMES = ["node24"]
 EXPECTED_TARGETS = {
     "cli": ("cli", "main"),
+    "cloud": ("cloud", "main"),
     "documentation": ("durable-workflow.github.io", "main"),
     "github-control-plane": (".github", "main"),
     "sample-app": ("sample-app", "main"),
@@ -46,6 +48,17 @@ GITHUB_API_AUDIT_TIMEOUT_SECONDS = 600.0
 CHECK_RUN_MAX_ATTEMPTS = 20
 CHECK_RUN_POLL_SECONDS = 30.0
 INFRASTRUCTURE_EXIT_CODE = 75
+SAFE_VALIDATOR_ENVIRONMENT_NAMES = {
+    "GH_TOKEN",
+    "REQUESTED_RUN_ATTEMPT",
+    "REQUESTED_RUN_ID",
+}
+SAFE_VALIDATOR_ACTION_REPOSITORIES = {
+    "actions/checkout",
+    "actions/download-artifact",
+    "actions/setup-python",
+}
+SAFE_VALIDATOR_RUNNERS = {"ubuntu-latest"}
 
 
 class PolicyError(RuntimeError):
@@ -372,6 +385,7 @@ def validate_policy(policy: dict[str, Any]) -> None:
 
     action_runtime = policy.get("action_runtime")
     if not isinstance(action_runtime, dict) or set(action_runtime) != {
+        "allowed_container_images",
         "allowed_releases",
         "supported_javascript_runtimes",
     }:
@@ -383,19 +397,161 @@ def validate_policy(policy: dict[str, Any]) -> None:
     allowed_releases = action_runtime["allowed_releases"]
     if not isinstance(allowed_releases, dict) or not allowed_releases:
         raise PolicyError("qualification policy must declare allowed action releases")
-    for repository, references in allowed_releases.items():
+    for repository, releases in allowed_releases.items():
         if not isinstance(repository, str) or not re.fullmatch(r"[a-z0-9_.-]+/[a-z0-9_.-]+", repository):
             raise PolicyError(f"invalid action repository {repository!r}")
         if (
-            not isinstance(references, list)
-            or not references
-            or len(references) != len(set(references))
+            not isinstance(releases, dict)
+            or not releases
             or not all(
-                isinstance(reference, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", reference)
-                for reference in references
+                isinstance(commit, str)
+                and COMMIT_PATTERN.fullmatch(commit)
+                and isinstance(version, str)
+                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", version)
+                for commit, version in releases.items()
             )
         ):
-            raise PolicyError(f"{repository} must declare unique static action release references")
+            raise PolicyError(f"{repository} must map immutable action commits to readable versions")
+
+    allowed_containers = action_runtime["allowed_container_images"]
+    if not isinstance(allowed_containers, dict) or not allowed_containers:
+        raise PolicyError("qualification policy must declare allowed container image digests")
+    for image, releases in allowed_containers.items():
+        if not isinstance(image, str) or not re.fullmatch(r"[a-z0-9._/-]+", image):
+            raise PolicyError(f"invalid container image {image!r}")
+        if (
+            not isinstance(releases, dict)
+            or not releases
+            or not all(
+                isinstance(digest, str)
+                and re.fullmatch(r"sha256:[0-9a-f]{64}", digest)
+                and isinstance(version, str)
+                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", version)
+                for digest, version in releases.items()
+            )
+        ):
+            raise PolicyError(f"{image} must map immutable image digests to readable versions")
+
+    workflow_trust = policy.get("workflow_trust")
+    if not isinstance(workflow_trust, dict) or set(workflow_trust) != {
+        "privileged_workflow_run_consumers",
+        "pull_request_target_exceptions",
+    }:
+        raise PolicyError("qualification policy must declare the complete workflow trust contract")
+    if workflow_trust["pull_request_target_exceptions"] != []:
+        raise PolicyError("pull_request_target exceptions require a separately reviewed policy revision")
+    consumers = workflow_trust["privileged_workflow_run_consumers"]
+    if not isinstance(consumers, dict):
+        raise PolicyError("privileged workflow_run consumers must be an object")
+    required_consumer_fields = {
+        "artifact_digest_validator_command",
+        "artifact_digest_validator_environment",
+        "artifact_digest_validator_preceding_steps",
+        "event",
+        "identity_validator_command",
+        "identity_validator_environment",
+        "identity_validator_preceding_steps",
+        "protected_ref",
+        "repository",
+        "validator_runner",
+        "workflow",
+    }
+    for path, consumer in consumers.items():
+        if not isinstance(path, str) or not re.fullmatch(r"[a-z0-9-]+/[a-z0-9][a-z0-9.-]*\.yml", path):
+            raise PolicyError(f"invalid privileged workflow_run consumer path {path!r}")
+        if not isinstance(consumer, dict) or set(consumer) != required_consumer_fields:
+            raise PolicyError(f"{path} must declare the complete workflow_run trust binding")
+        if consumer["event"] != "workflow_dispatch":
+            raise PolicyError(f"{path} source event must be workflow_dispatch")
+        if (
+            not isinstance(consumer["validator_runner"], str)
+            or consumer["validator_runner"] not in SAFE_VALIDATOR_RUNNERS
+        ):
+            raise PolicyError(f"{path} validator runner must be a reviewed GitHub-hosted runner")
+        string_fields = required_consumer_fields - {
+            "artifact_digest_validator_environment",
+            "artifact_digest_validator_preceding_steps",
+            "identity_validator_environment",
+            "identity_validator_preceding_steps",
+        }
+        if not all(isinstance(consumer[field], str) and consumer[field].strip() for field in string_fields):
+            raise PolicyError(f"{path} workflow_run trust binding values must be non-empty strings")
+        for field in ("artifact_digest_validator_environment", "identity_validator_environment"):
+            environment = consumer[field]
+            if (
+                not isinstance(environment, list)
+                or not all(
+                    isinstance(name, str) and name in SAFE_VALIDATOR_ENVIRONMENT_NAMES for name in environment
+                )
+                or len(environment) != len(set(environment))
+            ):
+                raise PolicyError(f"{path} {field} must contain only reviewed safe environment names")
+        for field in (
+            "artifact_digest_validator_preceding_steps",
+            "identity_validator_preceding_steps",
+        ):
+            steps = consumer[field]
+            if not isinstance(steps, list) or not 1 <= len(steps) <= 4:
+                raise PolicyError(f"{path} {field} must declare one to four reviewed immutable action steps")
+            for step in steps:
+                if (
+                    not isinstance(step, dict)
+                    or set(step) != {"uses", "with"}
+                    or not isinstance(step["uses"], str)
+                    or not isinstance(step["with"], dict)
+                    or not step["with"]
+                    or not all(
+                        isinstance(name, str)
+                        and isinstance(value, str)
+                        and value
+                        for name, value in step["with"].items()
+                    )
+                ):
+                    raise PolicyError(f"{path} {field} must contain only reviewed immutable action steps")
+                parsed = _split_action_reference(step["uses"])
+                if parsed is None:
+                    raise PolicyError(f"{path} {field} must contain only reviewed immutable action steps")
+                repository, _manifest_directory, commit = parsed
+                releases = action_runtime["allowed_releases"].get(repository)
+                if (
+                    repository not in SAFE_VALIDATOR_ACTION_REPOSITORIES
+                    or not COMMIT_PATTERN.fullmatch(commit)
+                    or not isinstance(releases, dict)
+                    or commit not in releases
+                ):
+                    raise PolicyError(f"{path} {field} must contain only reviewed immutable action steps")
+                settings = step["with"]
+                if repository == "actions/checkout" and settings != {"persist-credentials": "false"}:
+                    raise PolicyError(f"{path} {field} checkout must select only the trusted controller")
+                if repository == "actions/setup-python" and (
+                    set(settings) != {"python-version"}
+                    or re.fullmatch(r"3\.\d+", settings["python-version"]) is None
+                ):
+                    raise PolicyError(f"{path} {field} Python setup must select one reviewed runtime")
+                if repository == "actions/download-artifact":
+                    selectors = {"artifact-ids", "name", "pattern"}.intersection(settings)
+                    if (
+                        len(selectors) != 1
+                        or set(settings) != selectors | {"github-token", "path", "run-id"}
+                        or settings["github-token"] != "${{ github.token }}"
+                        or re.fullmatch(r"[a-z0-9][a-z0-9_-]*", settings["path"]) is None
+                        or re.fullmatch(
+                            r"\$\{\{ needs\.[A-Za-z0-9_-]+\.outputs\.[A-Za-z0-9_-]+ }}",
+                            settings["run-id"],
+                        )
+                        is None
+                    ):
+                        raise PolicyError(f"{path} {field} artifact download must bind one exact source run")
+        if any(
+            _split_action_reference(step["uses"])[0] == "actions/download-artifact"
+            for step in consumer["identity_validator_preceding_steps"]
+        ):
+            raise PolicyError(f"{path} identity validation must precede artifact downloads")
+        if not any(
+            _split_action_reference(step["uses"])[0] == "actions/download-artifact"
+            for step in consumer["artifact_digest_validator_preceding_steps"]
+        ):
+            raise PolicyError(f"{path} artifact validation must follow a reviewed artifact download")
 
     targets = policy.get("targets")
     if not isinstance(targets, dict) or set(targets) != set(EXPECTED_TARGETS):
@@ -474,7 +630,7 @@ def _workflow_action_references(source: str, label: str) -> list[str]:
 
 
 def _split_action_reference(specification: str) -> tuple[str, str, str] | None:
-    if specification.startswith(("./", "docker://")) or "/.github/workflows/" in specification:
+    if specification.startswith(("./", "docker://")):
         return None
     action, separator, reference = specification.rpartition("@")
     if not separator or not reference or "${{" in specification:
@@ -485,6 +641,696 @@ def _split_action_reference(specification: str) -> tuple[str, str, str] | None:
     repository = "/".join(parts[:2]).lower()
     manifest_directory = "/".join(parts[2:])
     return repository, manifest_directory, reference
+
+
+def _split_container_reference(specification: str) -> tuple[str, str] | None:
+    if not specification.startswith("docker://"):
+        return None
+    image, separator, digest = specification.removeprefix("docker://").rpartition("@")
+    if not separator or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        raise PolicyError(f"container action must use an immutable sha256 digest: {specification!r}")
+    if not re.fullmatch(r"[a-z0-9._/-]+", image):
+        raise PolicyError(f"invalid container action image {image!r}")
+    return image, digest
+
+
+def _permissions_with_write(permissions: Any, label: str) -> set[str]:
+    if not isinstance(permissions, dict):
+        raise PolicyError(f"{label} permissions must be an explicit mapping")
+    writes: set[str] = set()
+    for scope, access in permissions.items():
+        if not isinstance(scope, str) or access not in {"read", "write", "none"}:
+            raise PolicyError(f"{label} has invalid permission {scope!r}: {access!r}")
+        if access == "write":
+            writes.add(scope)
+    return writes
+
+
+def _reference_source_lines(source: str, specification: str) -> list[str]:
+    pattern = re.compile(rf"(?:^|[{{,\s-])uses\s*:\s*['\"]?{re.escape(specification)}(?:['\"]|[\s,}}#]|$)")
+    return [line for line in source.splitlines() if pattern.search(line)]
+
+
+def _require_reference_comment(source: str, specification: str, version: str, label: str) -> None:
+    lines = _reference_source_lines(source, specification)
+    if not lines:
+        raise PolicyError(f"{label} cannot locate source for action reference {specification!r}")
+    comment = re.compile(rf"#\s*{re.escape(version)}(?:\s|$)")
+    if any(not comment.search(line) for line in lines):
+        raise PolicyError(f"{label} action {specification} must carry readable version comment '# {version}'")
+
+
+def _job_action_steps(job: dict[str, Any]) -> list[dict[str, Any]]:
+    steps = job.get("steps") or []
+    if not isinstance(steps, list):
+        return []
+    return [step for step in steps if isinstance(step, dict) and isinstance(step.get("uses"), str)]
+
+
+def _job_needs(job: dict[str, Any], label: str) -> set[str]:
+    needs = job.get("needs")
+    if needs is None:
+        return set()
+    if isinstance(needs, str) and needs:
+        return {needs}
+    if isinstance(needs, list) and all(isinstance(name, str) and name for name in needs):
+        return set(needs)
+    raise PolicyError(f"{label} has an invalid needs dependency")
+
+
+def _string_values(value: Any) -> list[str]:
+    values: list[str] = []
+    if isinstance(value, dict):
+        for nested in value.values():
+            values.extend(_string_values(nested))
+    elif isinstance(value, list):
+        for nested in value:
+            values.extend(_string_values(nested))
+    elif isinstance(value, str):
+        values.append(value)
+    return values
+
+
+def _references_secret_context(value: Any) -> bool:
+    for scalar in _string_values(value):
+        for expression in re.findall(r"\$\{\{(.*?)}}", scalar, flags=re.DOTALL):
+            if re.search(r"(?i)\bsecrets\b", expression):
+                return True
+    return False
+
+
+def _unsafe_cache_path(path: str) -> bool:
+    paths = [candidate.strip() for candidate in path.splitlines() if candidate.strip()]
+    if not paths:
+        return True
+    for candidate in paths:
+        candidate = candidate.removeprefix("!").strip().replace("\\", "/")
+        compact = re.sub(r"\s+", "", candidate)
+        if compact in {
+            ".",
+            "./",
+            "..",
+            "/",
+            "/*",
+            "/**",
+            "**",
+            "./**",
+            "~",
+            "~/",
+            "$HOME",
+            "${HOME}",
+            "$GITHUB_WORKSPACE",
+            "${GITHUB_WORKSPACE}",
+            "${{github.workspace}}",
+            "${{env.HOME}}",
+            "${{env.GITHUB_WORKSPACE}}",
+        }:
+            return True
+        broad_roots = (
+            "~",
+            "$HOME",
+            "${HOME}",
+            "$GITHUB_WORKSPACE",
+            "${GITHUB_WORKSPACE}",
+            "${{github.workspace}}",
+            "${{env.HOME}}",
+            "${{env.GITHUB_WORKSPACE}}",
+        )
+        if any(
+            compact.startswith(f"{root}/")
+            and compact.removeprefix(f"{root}/") in {"*", "**", "**/*"}
+            for root in broad_roots
+        ):
+            return True
+        if re.match(r"(?i)^[a-z]:/?$", candidate):
+            return True
+        if re.search(r"(?i)(secret|credential|\.ssh|\.npmrc|\.pypirc|\.docker)", candidate):
+            return True
+    return False
+
+
+def _cache_keys_partition_events(value: str) -> bool:
+    event_partition = re.compile(r"\$\{\{\s*github\.event_name\s*}}")
+    keys = [key.strip() for key in value.splitlines() if key.strip()]
+    return bool(keys) and all(event_partition.search(key) for key in keys)
+
+
+def _condition_without_expression_wrapper(condition: str) -> str:
+    condition = condition.strip()
+    if condition.startswith("${{") and condition.endswith("}}"):
+        return condition[3:-2].strip()
+    return condition
+
+
+def _strip_balanced_parentheses(expression: str) -> str:
+    expression = expression.strip()
+    while expression.startswith("(") and expression.endswith(")"):
+        depth = 0
+        quote: str | None = None
+        encloses_all = True
+        for index, character in enumerate(expression):
+            if quote is not None:
+                if character == quote:
+                    quote = None
+                continue
+            if character in {"'", '"'}:
+                quote = character
+            elif character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+                if depth == 0 and index != len(expression) - 1:
+                    encloses_all = False
+                    break
+        if not encloses_all or depth != 0 or quote is not None:
+            break
+        expression = expression[1:-1].strip()
+    return expression
+
+
+def _split_condition(expression: str, operator: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    quote: str | None = None
+    index = 0
+    while index < len(expression):
+        character = expression[index]
+        if quote is not None:
+            if character == quote:
+                quote = None
+            index += 1
+            continue
+        if character in {"'", '"'}:
+            quote = character
+            index += 1
+            continue
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+        elif depth == 0 and expression.startswith(operator, index):
+            parts.append(expression[start:index].strip())
+            start = index + len(operator)
+            index = start
+            continue
+        index += 1
+    if parts:
+        parts.append(expression[start:].strip())
+    return parts
+
+
+def _condition_truth_for_unprotected_dispatch(expression: str, protected_ref: str) -> tuple[bool, bool]:
+    """Return whether an expression can be true/false for a dispatch from another ref."""
+
+    expression = _strip_balanced_parentheses(expression)
+    disjunction = _split_condition(expression, "||")
+    if disjunction:
+        values = [_condition_truth_for_unprotected_dispatch(part, protected_ref) for part in disjunction]
+        return any(value[0] for value in values), all(value[1] for value in values)
+    conjunction = _split_condition(expression, "&&")
+    if conjunction:
+        values = [_condition_truth_for_unprotected_dispatch(part, protected_ref) for part in conjunction]
+        return all(value[0] for value in values), any(value[1] for value in values)
+    if expression.startswith("!") and not expression.startswith("!="):
+        can_be_true, can_be_false = _condition_truth_for_unprotected_dispatch(expression[1:], protected_ref)
+        return can_be_false, can_be_true
+
+    comparison = re.fullmatch(
+        r"github\.(event_name|ref)\s*(==|!=)\s*(['\"])(.*?)\3",
+        expression,
+        flags=re.DOTALL,
+    )
+    if comparison is None:
+        return True, True
+    field, operator, _quote, expected = comparison.groups()
+    if field == "event_name":
+        equality = expected == "workflow_dispatch"
+        value = equality if operator == "==" else not equality
+        return value, not value
+    if expected != protected_ref:
+        return True, True
+    equality = False
+    value = equality if operator == "==" else not equality
+    return value, not value
+
+
+def _protects_manual_dispatch(job: dict[str, Any], protected_ref: str) -> bool:
+    condition = job.get("if")
+    if not isinstance(condition, str) or not condition.strip():
+        return False
+    expression = _condition_without_expression_wrapper(condition)
+    can_run_unprotected, _can_skip_unprotected = _condition_truth_for_unprotected_dispatch(
+        expression,
+        protected_ref,
+    )
+    return not can_run_unprotected
+
+
+def _run_defaults(scope: Mapping[str, Any]) -> Mapping[str, Any]:
+    defaults = scope.get("defaults")
+    if not isinstance(defaults, dict):
+        return {}
+    run = defaults.get("run")
+    return run if isinstance(run, dict) else {}
+
+
+def _uses_only_allowed_environment(
+    scopes: tuple[Mapping[str, Any], ...], allowed_environment: object
+) -> bool:
+    if not isinstance(allowed_environment, list) or not all(isinstance(name, str) for name in allowed_environment):
+        return False
+    allowed_names = set(allowed_environment)
+    for scope in scopes:
+        environment = scope.get("env")
+        if environment is None:
+            continue
+        if not isinstance(environment, dict) or not set(environment).issubset(allowed_names):
+            return False
+    return True
+
+
+def _trusted_validator_action_step(step: object, expected_step: object) -> bool:
+    if (
+        not isinstance(step, dict)
+        or not isinstance(expected_step, dict)
+        or set(expected_step) != {"uses", "with"}
+        or not set(step).issubset({"name", "uses", "with"})
+    ):
+        return False
+    return step.get("uses") == expected_step["uses"] and step.get("with") == expected_step["with"]
+
+
+def _step_invokes(
+    workflow: Mapping[str, Any],
+    job: Mapping[str, Any],
+    step: dict[str, Any],
+    expected_command: str,
+    allowed_environment: object,
+) -> bool:
+    """Accept a reviewed validator only as the step's sole, unconditional command."""
+
+    command = step.get("run")
+    return (
+        isinstance(command, str)
+        and command == expected_command
+        and "if" not in step
+        and step.get("continue-on-error") in (None, False, "false")
+        and not any(
+            key in execution_scope
+            for key in ("shell", "working-directory")
+            for execution_scope in (step, _run_defaults(job), _run_defaults(workflow))
+        )
+        and _uses_only_allowed_environment((workflow, job, step), allowed_environment)
+    )
+
+
+def _reviewed_validator_step(
+    workflow: Mapping[str, Any],
+    job: dict[str, Any],
+    expected_command: str,
+    allowed_environment: object,
+    preceding_steps: object,
+    runner: object,
+) -> dict[str, Any] | None:
+    if job.get("runs-on") != runner or "container" in job or "services" in job:
+        return None
+    steps = job.get("steps") or []
+    if (
+        not isinstance(steps, list)
+        or not isinstance(preceding_steps, list)
+        or not all(isinstance(step, dict) for step in preceding_steps)
+        or len(steps) <= len(preceding_steps)
+    ):
+        return None
+    if not all(
+        _trusted_validator_action_step(step, expected_step)
+        for step, expected_step in zip(steps[: len(preceding_steps)], preceding_steps, strict=True)
+    ):
+        return None
+    validator = steps[len(preceding_steps)]
+    if not isinstance(validator, dict) or not _step_invokes(
+        workflow,
+        job,
+        validator,
+        expected_command,
+        allowed_environment,
+    ):
+        return None
+    return validator
+
+
+def _job_invokes_after_trusted_actions(
+    workflow: Mapping[str, Any],
+    job: dict[str, Any],
+    expected_command: str,
+    allowed_environment: object,
+    preceding_steps: object,
+    runner: object,
+) -> bool:
+    return _reviewed_validator_step(
+        workflow,
+        job,
+        expected_command,
+        allowed_environment,
+        preceding_steps,
+        runner,
+    ) is not None
+
+
+def _identity_validator_binds_requested_run(step: Mapping[str, Any]) -> bool:
+    environment = step.get("env")
+    if not isinstance(environment, dict):
+        return False
+
+    def normalized(value: object) -> str:
+        return re.sub(r"\s+", " ", value.strip()) if isinstance(value, str) else ""
+
+    return (
+        normalized(environment.get("GH_TOKEN")) == "${{ github.token }}"
+        and normalized(environment.get("REQUESTED_RUN_ID"))
+        == "${{ inputs.source_run_id || github.event.workflow_run.id }}"
+        and normalized(environment.get("REQUESTED_RUN_ATTEMPT"))
+        == "${{ inputs.source_run_attempt || github.event.workflow_run.run_attempt }}"
+    )
+
+
+def _artifact_name_shape(name: str) -> str:
+    return re.sub(r"\$\{\{.*?}}", "", name, flags=re.DOTALL).strip()
+
+
+def _upload_artifact_names(job: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    for step in _job_action_steps(job):
+        parsed = _split_action_reference(step["uses"])
+        if parsed is None or parsed[0] != "actions/upload-artifact":
+            continue
+        settings = step.get("with")
+        name = settings.get("name") if isinstance(settings, dict) else None
+        if isinstance(name, str) and name.strip():
+            names.append(name.strip())
+    return names
+
+
+def _producer_artifact_name_matches(
+    producer_name: str,
+    producer: dict[str, Any],
+    upload_name: str,
+    download_name: str,
+) -> bool:
+    if upload_name == download_name:
+        return True
+    references = re.findall(
+        rf"\bneeds\.{re.escape(producer_name)}\.outputs\.([A-Za-z0-9_-]+)",
+        download_name,
+    )
+    if not references or _artifact_name_shape(upload_name) != _artifact_name_shape(download_name):
+        return False
+    outputs = producer.get("outputs")
+    if not isinstance(outputs, dict):
+        return False
+    for output_name in references:
+        output = outputs.get(output_name)
+        if not isinstance(output, str):
+            return False
+        expression = re.fullmatch(r"\$\{\{\s*(.*?)\s*}}", output, flags=re.DOTALL)
+        if expression is None or expression.group(1).strip() not in upload_name:
+            return False
+    return True
+
+
+def _has_exact_artifact_producer(
+    jobs: dict[str, Any],
+    job: dict[str, Any],
+    settings: dict[str, Any],
+    label: str,
+) -> bool:
+    needs = _job_needs(job, label)
+    producers = {
+        name: jobs[name]
+        for name in needs
+        if name in jobs and isinstance(jobs[name], dict) and _upload_artifact_names(jobs[name])
+    }
+    if not producers:
+        return False
+
+    name = settings.get("name")
+    if isinstance(name, str) and name.strip():
+        referenced = set(re.findall(r"\bneeds\.([A-Za-z0-9_-]+)\.outputs\.", name))
+        if referenced and not referenced <= set(producers):
+            return False
+        candidates = referenced or set(producers)
+        shape = _artifact_name_shape(name)
+        return bool(shape) and any(
+            _producer_artifact_name_matches(producer, producers[producer], upload_name, name)
+            for producer in candidates
+            for upload_name in _upload_artifact_names(producers[producer])
+        )
+
+    pattern = settings.get("pattern")
+    if isinstance(pattern, str) and pattern.strip():
+        if "${{" in pattern:
+            return False
+        if pattern.strip() in {"*", "**"}:
+            return False
+        matches = {
+            producer_name
+            for producer_name, producer in jobs.items()
+            if isinstance(producer_name, str)
+            and isinstance(producer, dict)
+            and any(
+                fnmatch.fnmatchcase(upload_name, pattern.strip())
+                for upload_name in _upload_artifact_names(producer)
+            )
+        }
+        return bool(matches) and matches <= set(producers)
+
+    artifact_ids = settings.get("artifact-ids")
+    if not isinstance(artifact_ids, str) or not artifact_ids.strip():
+        return False
+    referenced_needs = set(re.findall(r"\bneeds\.([A-Za-z0-9_-]+)\.outputs\.", artifact_ids))
+    if referenced_needs:
+        return referenced_needs <= set(producers)
+    selector = re.fullmatch(r"\$\{\{\s*steps\.([A-Za-z0-9_-]+)\.outputs\.[A-Za-z0-9_-]+\s*}}", artifact_ids)
+    if selector is None:
+        return False
+    selector_id = selector.group(1)
+    for step in job.get("steps") or []:
+        if not isinstance(step, dict) or step.get("id") != selector_id or not isinstance(step.get("run"), str):
+            continue
+        selected_producers = set(re.findall(r"\bneeds\.([A-Za-z0-9_-]+)\.outputs\.", json.dumps(step)))
+        return bool(selected_producers) and selected_producers <= set(producers)
+    return False
+
+
+def _scan_workflow_trust(
+    policy: dict[str, Any],
+    target_name: str,
+    workflow_path: str,
+    source: str,
+) -> dict[str, Any]:
+    label = f"{target_name}/{workflow_path}"
+    document = _parse_yaml(source, label)
+    if not isinstance(document, dict):
+        raise PolicyError(f"{label} must contain a workflow mapping")
+    triggers = document.get("on")
+    if not isinstance(triggers, dict):
+        raise PolicyError(f"{label} must declare explicit workflow triggers")
+    if "pull_request_target" in triggers:
+        raise PolicyError(f"{label} uses forbidden pull_request_target execution")
+
+    top_writes = _permissions_with_write(document.get("permissions"), f"{label} top-level")
+    if top_writes:
+        raise PolicyError(f"{label} grants top-level write permissions {sorted(top_writes)}")
+
+    action_runtime = policy["action_runtime"]
+    references = _workflow_action_references(source, label)
+    external_actions: set[str] = set()
+    container_actions: set[str] = set()
+    local_actions: set[str] = set()
+    for specification in references:
+        if specification.startswith("./"):
+            local_actions.add(specification)
+            _require_reference_comment(source, specification, "local", label)
+            continue
+        container = _split_container_reference(specification)
+        if container is not None:
+            image, digest = container
+            releases = action_runtime["allowed_container_images"].get(image)
+            if not isinstance(releases, dict) or digest not in releases:
+                raise PolicyError(f"{label} container action {specification} is not centrally approved")
+            _require_reference_comment(source, specification, releases[digest], label)
+            container_actions.add(specification)
+            continue
+        parsed = _split_action_reference(specification)
+        if parsed is None:
+            raise PolicyError(f"{label} has unsupported action reference {specification!r}")
+        repository, _manifest_directory, commit = parsed
+        releases = action_runtime["allowed_releases"].get(repository)
+        if not COMMIT_PATTERN.fullmatch(commit):
+            raise PolicyError(f"{label} action {specification} is not pinned to a full commit SHA")
+        if not isinstance(releases, dict) or commit not in releases:
+            raise PolicyError(f"{label} action {specification} is not centrally approved")
+        _require_reference_comment(source, specification, releases[commit], label)
+        external_actions.add(specification)
+
+    pull_request = "pull_request" in triggers
+    manual_dispatch = "workflow_dispatch" in triggers
+    protected_ref = f"refs/heads/{policy['targets'][target_name]['branch']}"
+    workflow_run = triggers.get("workflow_run")
+    consumer_key = f"{target_name}/{Path(workflow_path).name}"
+    consumer_policy = policy["workflow_trust"]["privileged_workflow_run_consumers"].get(consumer_key)
+    reviewed_workflow_run = workflow_run is not None and consumer_policy is not None
+    workflow_values = {key: value for key, value in document.items() if key != "jobs"}
+    if pull_request and _references_secret_context(workflow_values):
+        raise PolicyError(f"{label} pull-request workflow references a secret")
+    jobs = document.get("jobs")
+    if not isinstance(jobs, dict) or not jobs:
+        raise PolicyError(f"{label} must declare jobs")
+    privileged_jobs: list[str] = []
+    for job_name, job in jobs.items():
+        if not isinstance(job_name, str) or not isinstance(job, dict):
+            raise PolicyError(f"{label} has an invalid job declaration")
+        job_permissions = job.get("permissions")
+        job_writes = (
+            _permissions_with_write(job_permissions, f"{label} job {job_name!r}")
+            if job_permissions is not None
+            else set()
+        )
+        job_privileged = bool(job_writes or "environment" in job or _references_secret_context(job))
+        if job_privileged:
+            privileged_jobs.append(job_name)
+        if manual_dispatch and job_privileged and not _protects_manual_dispatch(job, protected_ref):
+            raise PolicyError(
+                f"{label} privileged workflow_dispatch job {job_name!r} can run outside {protected_ref}"
+            )
+        if pull_request and job_writes:
+            raise PolicyError(f"{label} pull-request job {job_name!r} grants write permissions")
+        if pull_request and "environment" in job:
+            raise PolicyError(f"{label} pull-request job {job_name!r} requests an environment")
+        if pull_request and ("secrets" in job or _references_secret_context(job)):
+            raise PolicyError(f"{label} pull-request job {job_name!r} references a secret")
+
+        for step in _job_action_steps(job):
+            specification = step["uses"]
+            parsed = _split_action_reference(specification)
+            repository = parsed[0] if parsed is not None else None
+            if repository == "actions/cache":
+                settings = step.get("with")
+                if not isinstance(settings, dict):
+                    raise PolicyError(f"{label} cache step in job {job_name!r} must declare settings")
+                path = settings.get("path")
+                if not isinstance(path, str) or _unsafe_cache_path(path):
+                    raise PolicyError(f"{label} cache step in job {job_name!r} has an unsafe cache path")
+                if pull_request:
+                    for key_name in ("key", "restore-keys"):
+                        value = settings.get(key_name)
+                        if value is not None and (
+                            not isinstance(value, str) or not _cache_keys_partition_events(value)
+                        ):
+                            raise PolicyError(
+                                f"{label} pull-request cache {key_name} in job {job_name!r} "
+                                "must partition trusted and untrusted events"
+                            )
+                    if "key" not in settings:
+                        raise PolicyError(f"{label} pull-request cache in job {job_name!r} has no explicit key")
+            if repository == "actions/download-artifact" and job_privileged:
+                settings = step.get("with")
+                if not isinstance(settings, dict) or not ({"artifact-ids", "name", "pattern"} & set(settings)):
+                    raise PolicyError(
+                        f"{label} privileged artifact consumer {job_name!r} has no exact artifact selector"
+                    )
+                if not reviewed_workflow_run and not _has_exact_artifact_producer(
+                    jobs,
+                    job,
+                    settings,
+                    f"{label} privileged artifact consumer {job_name!r}",
+                ):
+                    raise PolicyError(
+                        f"{label} privileged artifact consumer {job_name!r} has no exact upload producer "
+                        "and artifact digest provenance"
+                    )
+
+    if workflow_run is not None:
+        if not isinstance(workflow_run, dict) or consumer_policy is None:
+            raise PolicyError(f"{label} has no reviewed privileged workflow_run trust binding")
+        if workflow_run.get("workflows") != [consumer_policy["workflow"]]:
+            raise PolicyError(f"{label} workflow_run source identity differs from policy")
+        if workflow_run.get("types") != ["completed"]:
+            raise PolicyError(f"{label} workflow_run must accept only completed runs")
+        binders: set[str] = set()
+        for job_name, job in jobs.items():
+            if not isinstance(job_name, str) or not isinstance(job, dict):
+                continue
+            validator_step = _reviewed_validator_step(
+                document,
+                job,
+                consumer_policy["identity_validator_command"],
+                consumer_policy["identity_validator_environment"],
+                consumer_policy["identity_validator_preceding_steps"],
+                consumer_policy["validator_runner"],
+            )
+            if validator_step is not None and _identity_validator_binds_requested_run(validator_step):
+                binders.add(job_name)
+        if not binders:
+            raise PolicyError(f"{label} does not invoke its reviewed source identity validator")
+        for job_name in privileged_jobs:
+            job = jobs[job_name]
+            needs = _job_needs(job, f"{label} privileged workflow_run job {job_name!r}")
+            if not needs.intersection(binders) or "environment" not in job:
+                raise PolicyError(f"{label} privileged workflow_run job {job_name!r} is not isolated behind a binder")
+            if not _job_invokes_after_trusted_actions(
+                document,
+                job,
+                consumer_policy["artifact_digest_validator_command"],
+                consumer_policy["artifact_digest_validator_environment"],
+                consumer_policy["artifact_digest_validator_preceding_steps"],
+                consumer_policy["validator_runner"],
+            ):
+                raise PolicyError(f"{label} does not invoke its reviewed artifact digest validator")
+            for step in _job_action_steps(job):
+                parsed = _split_action_reference(step["uses"])
+                if parsed is not None and parsed[0] == "actions/download-artifact":
+                    settings = step.get("with") or {}
+                    run_id = settings.get("run-id") if isinstance(settings, dict) else None
+                    source_binders = (
+                        set(re.findall(r"\bneeds\.([A-Za-z0-9_-]+)\.outputs\.", run_id))
+                        if isinstance(run_id, str)
+                        else set()
+                    )
+                    if not source_binders.intersection(binders):
+                        raise PolicyError(
+                            f"{label} privileged workflow_run job {job_name!r} does not select an exact run"
+                        )
+    elif consumer_policy is not None:
+        raise PolicyError(f"{label} is policy-bound as a workflow_run consumer but has no workflow_run trigger")
+
+    return {
+        "containers": sorted(container_actions),
+        "external_actions": sorted(external_actions),
+        "local_actions": sorted(local_actions),
+        "privileged_jobs": sorted(privileged_jobs),
+    }
+
+
+def scan_workflow_sources(
+    policy: dict[str, Any], target_name: str, workflow_sources: Mapping[str, str]
+) -> dict[str, dict[str, Any]]:
+    if target_name not in policy["targets"]:
+        raise PolicyError(f"unknown workflow trust target {target_name!r}")
+    evidence: dict[str, dict[str, Any]] = {}
+    for path, source in sorted(workflow_sources.items()):
+        evidence[path] = _scan_workflow_trust(policy, target_name, path, source)
+    expected_consumers = {
+        key.rsplit("/", 1)[1]
+        for key in policy["workflow_trust"]["privileged_workflow_run_consumers"]
+        if key.startswith(f"{target_name}/")
+    }
+    present = {Path(path).name for path in workflow_sources}
+    missing = expected_consumers - present
+    if missing:
+        raise PolicyError(f"{target_name} is missing policy-bound workflow_run consumers {sorted(missing)}")
+    return evidence
 
 
 def _action_runtime(source: str, specification: str) -> str:
@@ -531,6 +1377,17 @@ def _inspect_action_release(
     commit = commit_data.get("sha")
     if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise PolicyError(f"action {specification} did not resolve to an exact commit")
+    if reference != commit:
+        raise PolicyError(f"action {specification} resolved to unexpected commit {commit}")
+
+    if manifest_directory.startswith(".github/workflows/"):
+        return {
+            "action": f"{repository}/{manifest_directory}",
+            "commit": commit,
+            "reference": reference,
+            "repository": repository,
+            "runtime": "reusable-workflow",
+        }
 
     prefix = f"{manifest_directory}/" if manifest_directory else ""
     source = None
@@ -578,7 +1435,7 @@ def audit_action_releases(
         if reference not in allowed_releases[repository]:
             raise PolicyError(
                 f"action {specification} is not centrally approved; allowed references are "
-                f"{allowed_releases[repository]}"
+                f"{sorted(allowed_releases[repository])}"
             )
         if specification not in cache:
             cache[specification] = _inspect_action_release(
@@ -595,26 +1452,30 @@ def audit_action_releases(
                 f"action {specification}@{release['commit']} uses retired JavaScript runtime {runtime}; "
                 f"supported runtimes are {sorted(supported_runtimes)}"
             )
-        evidence.append({**release, "workflows": sorted(workflows)})
+        evidence.append(
+            {
+                **release,
+                "version": allowed_releases[repository][reference],
+                "workflows": sorted(workflows),
+            }
+        )
     return evidence
 
 
-def validate_local_action_references(policy: dict[str, Any], directory: Path) -> list[str]:
+def validate_local_action_references(
+    policy: dict[str, Any], directory: Path, target_name: str = "github-control-plane"
+) -> list[str]:
     sources = {
         path.as_posix(): path.read_text(encoding="utf-8") for path in sorted(directory.glob("*.y*ml")) if path.is_file()
     }
-    allowed_releases = policy["action_runtime"]["allowed_releases"]
-    specifications: set[str] = set()
-    for path, source in sources.items():
-        for specification in _workflow_action_references(source, path):
-            parsed = _split_action_reference(specification)
-            if parsed is None:
-                continue
-            repository, _manifest_directory, reference = parsed
-            if repository not in allowed_releases or reference not in allowed_releases[repository]:
-                raise PolicyError(f"local workflow action {specification} is not centrally approved")
-            specifications.add(specification)
-    return sorted(specifications)
+    evidence = scan_workflow_sources(policy, target_name, sources)
+    return sorted(
+        {
+            specification
+            for workflow in evidence.values()
+            for specification in workflow["external_actions"] + workflow["containers"]
+        }
+    )
 
 
 def _latest_check_runs(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -724,6 +1585,7 @@ def audit_policy(
             )
 
         workflow_sources = _load_workflow_sources(client, slug, head_sha)
+        workflow_trust = scan_workflow_sources(policy, name, workflow_sources)
         action_releases = audit_action_releases(policy, client, workflow_sources, action_cache)
         workflow_evidence = []
         for workflow in target["workflows"]:
@@ -782,6 +1644,7 @@ def audit_policy(
             "commit": head_sha,
             "protected_checks": sorted(required_checks),
             "successful_check_runs": successful_checks,
+            "workflow_trust": workflow_trust,
             "workflows": workflow_evidence,
         }
     return evidence
@@ -793,6 +1656,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--policy", type=Path, default=Path("qualification/policy.json"))
     parser.add_argument("--github-token", default=os.environ.get("GITHUB_TOKEN"))
     parser.add_argument("--evidence", type=Path)
+    parser.add_argument(
+        "--target",
+        default="github-control-plane",
+        help="public target name when validating a local workflow directory",
+    )
+    parser.add_argument(
+        "--workflow-directory",
+        type=Path,
+        default=Path(".github/workflows"),
+        help="portable local workflow inventory to validate",
+    )
     parser.add_argument(
         "--expected-commits",
         type=Path,
@@ -807,7 +1681,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         policy = load_policy(args.policy)
         if args.command == "validate":
-            actions = validate_local_action_references(policy, Path(".github/workflows"))
+            actions = validate_local_action_references(policy, args.workflow_directory, args.target)
             result: dict[str, Any] = {
                 "actions": actions,
                 "schema": policy["schema"],

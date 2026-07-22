@@ -245,7 +245,10 @@ class CliReleaseAuthorityTest(unittest.TestCase):
                     ]
                     self.assertGreaterEqual(len(checkouts), 1)
                     for checkout in checkouts:
-                        self.assertEqual("actions/checkout@v6", checkout["uses"])
+                        self.assertEqual(
+                            "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
+                            checkout["uses"],
+                        )
                         self.assertIs(checkout["with"]["persist-credentials"], False)
                         self.assertEqual("${{ github.sha }}", checkout["with"]["ref"])
 
@@ -256,11 +259,15 @@ class CliReleaseAuthorityTest(unittest.TestCase):
                 upload = next(
                     step
                     for step in verification_job["steps"]
-                    if step.get("uses") == "actions/upload-artifact@v7"
+                    if step.get("uses")
+                    == "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
                     and contract["handoff"].issubset(set(step["with"].get("path", "").splitlines()))
                 )
                 download = next(
-                    step for step in mutation_job["steps"] if step.get("uses") == "actions/download-artifact@v8"
+                    step
+                    for step in mutation_job["steps"]
+                    if step.get("uses")
+                    == "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
                 )
 
                 if contract["recoverable"]:

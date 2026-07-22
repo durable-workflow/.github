@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
@@ -60,6 +61,8 @@ NATIVE_FAILURE_COMPONENT_LIMIT = 6 * 1024
 FINDING_LIMIT = 20
 FINDING_TEXT_LIMIT = 2048
 MAX_INFRASTRUCTURE_ATTEMPTS = 2
+GITHUB_API_URL = "https://api.github.com"
+GITHUB_API_RESPONSE_LIMIT = 4 * 1024 * 1024
 RUNTIME_DEPENDENCY_SELECTORS = {
     "mysql": "docker.io/library/mysql:8.0",
     "redis": "docker.io/library/redis:7-alpine",
@@ -101,6 +104,54 @@ SYNTHETIC_CREDENTIAL_CANARY = "beta-00000000000000000000000000000000"
 
 class ConformanceError(RuntimeError):
     """The portable beta conformance contract is invalid or cannot run."""
+
+
+def github_api_json(path: str, token: str) -> Any:
+    """Retrieve one bounded GitHub API document with the workflow token."""
+
+    if not token:
+        raise ConformanceError("GitHub API authentication is required for conformance retention")
+    request = urllib.request.Request(
+        f"{GITHUB_API_URL}{path}",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = response.read(GITHUB_API_RESPONSE_LIMIT + 1)
+    except urllib.error.HTTPError as error:
+        raise ConformanceError(f"GitHub API metadata request failed with HTTP {error.code}") from error
+    except urllib.error.URLError as error:
+        raise ConformanceError("GitHub API metadata request failed") from error
+    if len(payload) > GITHUB_API_RESPONSE_LIMIT:
+        raise ConformanceError("GitHub API metadata response exceeds the retention limit")
+    try:
+        return json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ConformanceError("GitHub API metadata response is not valid JSON") from error
+
+
+def fetch_retention_source_metadata(
+    expected_run_id: int,
+    expected_run_attempt: int,
+    token: str,
+) -> tuple[Any, Any]:
+    """Retrieve the exact source attempt and reviewed workflow identity."""
+
+    if expected_run_id < 1 or expected_run_attempt < 1:
+        raise ConformanceError("conformance retention source identity must be positive")
+    run = github_api_json(
+        f"/repos/{CONTROL_REPOSITORY}/actions/runs/{expected_run_id}/attempts/{expected_run_attempt}",
+        token,
+    )
+    workflow = github_api_json(
+        f"/repos/{CONTROL_REPOSITORY}/actions/workflows/beta-conformance.yml",
+        token,
+    )
+    return run, workflow
 
 
 def now() -> str:
@@ -2912,10 +2963,16 @@ def aggregate_results(
     *,
     run_id: int,
     run_attempt: int,
+    source_candidate: str,
+    source_head_sha: str,
     generated_at: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Path]]:
     validate_plan(plan)
     validate_contract(contract)
+    if plan["candidate"]["name"] != source_candidate:
+        raise ConformanceError("execution plan does not bind the source workflow candidate")
+    if plan["runner"]["revision"] != source_head_sha:
+        raise ConformanceError("execution plan does not bind the source workflow commit")
     if run_id < 1 or run_attempt < 1:
         raise ConformanceError("GitHub run identity must be positive")
     discovered: dict[str, tuple[dict[str, Any], Path]] = {}
@@ -3054,14 +3111,14 @@ def parser() -> argparse.ArgumentParser:
     aggregate.add_argument("--contract", type=Path, required=True)
     aggregate.add_argument("--run-id", type=int, required=True)
     aggregate.add_argument("--run-attempt", type=int, required=True)
+    aggregate.add_argument("--source-candidate", required=True)
+    aggregate.add_argument("--source-head-sha", required=True)
     aggregate.add_argument("--generated-at")
     aggregate.add_argument("--github-output", type=Path)
 
     retention = commands.add_parser("retention-source", help="validate a completed conformance run")
-    retention.add_argument("run", type=Path)
-    retention.add_argument("workflow", type=Path)
     retention.add_argument("--expected-run-id", type=int, required=True)
-    retention.add_argument("--expected-run-attempt", type=int)
+    retention.add_argument("--expected-run-attempt", type=int, required=True)
     retention.add_argument("--github-output", type=Path)
 
     retention_ref = commands.add_parser("retention-ref", help="validate the durable conformance evidence ref")
@@ -3133,6 +3190,8 @@ def main(argv: list[str] | None = None) -> int:
                 arguments.result_root,
                 run_id=arguments.run_id,
                 run_attempt=arguments.run_attempt,
+                source_candidate=arguments.source_candidate,
+                source_head_sha=arguments.source_head_sha,
                 generated_at=arguments.generated_at,
             )
             write_json(arguments.output, suite)
@@ -3151,9 +3210,14 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"evidence_tag": suite["github_run"]["evidence_tag"], "outcome": suite["outcome"]}))
             return 0
         if arguments.command == "retention-source":
+            run, workflow = fetch_retention_source_metadata(
+                arguments.expected_run_id,
+                arguments.expected_run_attempt,
+                os.environ.get("GH_TOKEN", ""),
+            )
             source = validate_retention_source(
-                load_json(arguments.run),
-                load_json(arguments.workflow),
+                run,
+                workflow,
                 expected_run_id=arguments.expected_run_id,
                 expected_run_attempt=arguments.expected_run_attempt,
             )

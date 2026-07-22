@@ -16,8 +16,8 @@ on:
         required: true
         type: string
       source_run_attempt:
-        description: Exact attempt to retain; defaults to the completed run's current attempt
-        required: false
+        description: Exact completed attempt to retain
+        required: true
         type: string
 
 permissions:
@@ -47,12 +47,12 @@ jobs:
       source_run_id: ${{ steps.source.outputs.source_run_id }}
     steps:
       - name: Check out the trusted retention controller
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: "3.13"
 
@@ -64,32 +64,15 @@ jobs:
             ${{ inputs.source_run_attempt || github.event.workflow_run.run_attempt }}
           REQUESTED_RUN_ID: ${{ inputs.source_run_id || github.event.workflow_run.id }}
         run: |
-          set -euo pipefail
-          if ! [[ "$REQUESTED_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
-            printf 'source run id must be a positive integer\n' >&2
-            exit 1
-          fi
-          attempt=()
-          run_endpoint="/repos/$GITHUB_REPOSITORY/actions/runs/$REQUESTED_RUN_ID"
-          if [ -n "$REQUESTED_RUN_ATTEMPT" ]; then
-            if ! [[ "$REQUESTED_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]; then
-              printf 'source run attempt must be a positive integer\n' >&2
-              exit 1
-            fi
-            attempt+=(--expected-run-attempt "$REQUESTED_RUN_ATTEMPT")
-            run_endpoint="$run_endpoint/attempts/$REQUESTED_RUN_ATTEMPT"
-          fi
-          gh api "$run_endpoint" > source-run.json
-          gh api "/repos/$GITHUB_REPOSITORY/actions/workflows/beta-conformance.yml" \
-            > source-workflow.json
-          python scripts/beta_conformance.py retention-source source-run.json source-workflow.json \
+          python scripts/beta_conformance.py retention-source \
             --expected-run-id "$REQUESTED_RUN_ID" \
-            "${attempt[@]}" \
+            --expected-run-attempt "$REQUESTED_RUN_ATTEMPT" \
             --github-output "$GITHUB_OUTPUT"
 
   retain:
     name: Publish durable conformance evidence
     needs: bind
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: beta-conformance
@@ -98,17 +81,17 @@ jobs:
       contents: write
     steps:
       - name: Check out the trusted retention controller
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: "3.13"
 
       - name: Restore immutable execution plan from the completed run
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
         with:
           name: beta-conformance-plan-${{ needs.bind.outputs.source_run_id }}
           path: aggregate-input
@@ -116,7 +99,7 @@ jobs:
           run-id: ${{ needs.bind.outputs.source_run_id }}
 
       - name: Restore experiment evidence from the completed run
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
         with:
           pattern: >-
             beta-conformance-*-${{ needs.bind.outputs.source_run_id }}-${{
@@ -124,25 +107,6 @@ jobs:
           path: evidence
           github-token: ${{ github.token }}
           run-id: ${{ needs.bind.outputs.source_run_id }}
-
-      - name: Bind the plan artifact to the source workflow commit
-        env:
-          SOURCE_CANDIDATE: ${{ needs.bind.outputs.source_candidate }}
-          SOURCE_HEAD_SHA: ${{ needs.bind.outputs.source_head_sha }}
-        run: |
-          python - <<'PYTHON'
-          import json
-          import os
-          from pathlib import Path
-
-          plan = json.loads(Path("aggregate-input/execution-plan.json").read_bytes())
-          runner = plan.get("runner") if isinstance(plan, dict) else None
-          candidate = plan.get("candidate") if isinstance(plan, dict) else None
-          if not isinstance(runner, dict) or runner.get("revision") != os.environ["SOURCE_HEAD_SHA"]:
-              raise SystemExit("execution plan does not bind the source workflow commit")
-          if not isinstance(candidate, dict) or candidate.get("name") != os.environ["SOURCE_CANDIDATE"]:
-              raise SystemExit("execution plan does not bind the source workflow candidate")
-          PYTHON
 
       - name: Aggregate exact-tuple evidence
         id: aggregate
@@ -156,6 +120,8 @@ jobs:
             --run-id "${{ needs.bind.outputs.source_run_id }}" \
             --run-attempt "${{ needs.bind.outputs.source_run_attempt }}" \
             --generated-at "${{ needs.bind.outputs.source_completed_at }}" \
+            --source-candidate "${{ needs.bind.outputs.source_candidate }}" \
+            --source-head-sha "${{ needs.bind.outputs.source_head_sha }}" \
             --github-output "$GITHUB_OUTPUT"
 
       - name: Create or verify durable GitHub Release evidence
@@ -241,7 +207,7 @@ jobs:
           done
 
       - name: Retain Actions mirror
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: >-
             beta-conformance-suite-${{ needs.bind.outputs.source_run_id }}-${{

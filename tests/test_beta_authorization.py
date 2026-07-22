@@ -113,6 +113,15 @@ def qualification() -> dict[str, object]:
                 "successful_check_runs": {
                     workflow["required_check"]: index + 10 for workflow in target["workflows"]
                 },
+                "workflow_trust": {
+                    f".github/workflows/{workflow['path']}": {
+                        "containers": [],
+                        "external_actions": [],
+                        "local_actions": [],
+                        "privileged_jobs": [],
+                    }
+                    for workflow in target["workflows"]
+                },
                 "workflows": [
                     {
                         "path": f".github/workflows/{workflow['path']}",
@@ -868,10 +877,11 @@ class ImmutableAuthorizationRecordTest(unittest.TestCase):
         retained_qualification["targets"]["server"]["action_releases"] = [
             {
                 "action": "actions/checkout",
-                "commit": "b" * 40,
-                "reference": "v6",
+                "commit": "d23441a48e516b6c34aea4fa41551a30e30af803",
+                "reference": "d23441a48e516b6c34aea4fa41551a30e30af803",
                 "repository": "actions/checkout",
                 "runtime": "node24",
+                "version": "v6",
                 "workflows": [".github/workflows/phpunit-feature.yml"],
             }
         ]
@@ -967,10 +977,11 @@ class ImmutableAuthorizationRecordTest(unittest.TestCase):
         retained_qualification["targets"]["server"]["action_releases"] = [
             {
                 "action": "actions/checkout",
-                "commit": "b" * 40,
-                "reference": "v6",
+                "commit": "d23441a48e516b6c34aea4fa41551a30e30af803",
+                "reference": "d23441a48e516b6c34aea4fa41551a30e30af803",
                 "repository": "actions/checkout",
                 "runtime": "node24",
+                "version": "v6",
                 "workflows": [".github/workflows/phpunit-feature.yml"],
             }
         ]

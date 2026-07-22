@@ -40,3 +40,8 @@ New public product work and the deliberately selected unresolved beta backlog
 use [GitHub issue authority](issue-authority/README.md). Organization issue
 forms capture durable intake context, while a one-way lifecycle audit prevents
 an external mirror from reopening completed GitHub work.
+
+The [public target qualification policy](qualification/README.md) also enforces
+the organization-wide Actions trust boundary: immutable action and container
+references, job-scoped credentials, isolated pull requests and caches, and
+reviewed artifact consumers.

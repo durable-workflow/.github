@@ -22,11 +22,13 @@ from scripts.qualification_policy import (
     _latest_check_runs,
     audit_policy,
     main,
+    scan_workflow_sources,
     validate_policy,
     verify_workflow_source,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+CHECKOUT_PIN = "d23441a48e516b6c34aea4fa41551a30e30af803"
 
 
 class FakeResponse:
@@ -70,8 +72,8 @@ class FakeGitHubClient:
         return urllib.parse.unquote(match.group(1))
 
     def json(self, path: str) -> Any:
-        if path.startswith("/repos/actions/checkout/commits/"):
-            return {"sha": "b" * 40}
+        if re.match(r"/repos/[^/]+/[^/]+/commits/[0-9a-f]{40}$", path):
+            return {"sha": path.rsplit("/", 1)[1]}
         repository = self._repository(path)
         target = self.targets_by_repository[repository]
         if path == f"/repos/durable-workflow/{repository}":
@@ -79,6 +81,8 @@ class FakeGitHubClient:
         if "/contents/.github/workflows?" in path:
             paths = {f".github/workflows/{workflow['path']}" for workflow in target["workflows"]}
             paths.add(".github/workflows/release.yml")
+            if repository == ".github":
+                paths.add(".github/workflows/beta-conformance-retention.yml")
             return [{"path": workflow_path, "type": "file"} for workflow_path in sorted(paths)]
         if "/actions/workflows/" in path:
             workflow = urllib.parse.unquote(path.rsplit("/", 1)[1])
@@ -100,8 +104,82 @@ class FakeGitHubClient:
         raise AssertionError(f"unexpected API path: {path}")
 
     def bytes(self, path: str) -> bytes:
-        if path.startswith("/repos/actions/checkout/contents/action.yml?"):
+        if re.match(r"/repos/[^/]+/[^/]+/contents/action\.ya?ml\?", path):
             return b"name: checkout\nruns:\n  using: node24\n  main: dist/index.js\n"
+        if "/contents/.github/workflows/beta-conformance-retention.yml?" in path:
+            return f"""name: Beta conformance retention
+on:
+  workflow_run:
+    workflows: [Beta conformance]
+    types: [completed]
+permissions:
+  contents: read
+jobs:
+  bind:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      source_run_id: ${{{{ github.event.workflow_run.id }}}}
+      source_run_attempt: ${{{{ github.event.workflow_run.run_attempt }}}}
+    steps:
+      - uses: actions/checkout@{CHECKOUT_PIN} # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+      - env:
+          GH_TOKEN: ${{{{ github.token }}}}
+          REQUESTED_RUN_ID: ${{{{ inputs.source_run_id || github.event.workflow_run.id }}}}
+          REQUESTED_RUN_ATTEMPT: ${{{{ inputs.source_run_attempt || github.event.workflow_run.run_attempt }}}}
+        run: |
+          python scripts/beta_conformance.py retention-source \\
+            --expected-run-id "$REQUESTED_RUN_ID" \\
+            --expected-run-attempt "$REQUESTED_RUN_ATTEMPT" \\
+            --github-output "$GITHUB_OUTPUT"
+  retain:
+    needs: bind
+    runs-on: ubuntu-latest
+    environment: beta-conformance
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@{CHECKOUT_PIN} # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: beta-conformance-plan-${{{{ needs.bind.outputs.source_run_id }}}}
+          path: aggregate-input
+          github-token: ${{{{ github.token }}}}
+          run-id: ${{{{ needs.bind.outputs.source_run_id }}}}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: >-
+            beta-conformance-*-${{{{ needs.bind.outputs.source_run_id }}}}-${{{{
+            needs.bind.outputs.source_run_attempt }}}}
+          path: evidence
+          github-token: ${{{{ github.token }}}}
+          run-id: ${{{{ needs.bind.outputs.source_run_id }}}}
+      - run: |
+          python scripts/beta_conformance.py aggregate \\
+            aggregate-input/execution-plan.json \\
+            evidence \\
+            suite-result.json \\
+            release-assets \\
+            --contract beta-conformance/contract.json \\
+            --run-id "${{{{ needs.bind.outputs.source_run_id }}}}" \\
+            --run-attempt "${{{{ needs.bind.outputs.source_run_attempt }}}}" \\
+            --generated-at "${{{{ needs.bind.outputs.source_completed_at }}}}" \\
+            --source-candidate "${{{{ needs.bind.outputs.source_candidate }}}}" \\
+            --source-head-sha "${{{{ needs.bind.outputs.source_head_sha }}}}" \\
+            --github-output "$GITHUB_OUTPUT"
+""".encode()
         repository = self._repository(path)
         branch = self.targets_by_repository[repository]["branch"]
         return f"""name: qualification
@@ -111,6 +189,8 @@ on:
   pull_request:
     branches: [{branch}]
   workflow_dispatch:
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -118,7 +198,7 @@ jobs:
     strategy:
       fail-fast: false
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@{CHECKOUT_PIN} # v6
 """.encode()
 
     def collection(self, path: str, key: str) -> list[dict[str, Any]]:
@@ -144,6 +224,646 @@ jobs:
 
 
 class QualificationPolicyTest(unittest.TestCase):
+    @staticmethod
+    def trusted_pull_request_source() -> str:
+        return f"""name: trust fixture
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@{CHECKOUT_PIN} # v6
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: vendor
+          key: ${{{{ github.event_name }}}}-dependencies
+          restore-keys: ${{{{ github.event_name }}}}-
+"""
+
+    @staticmethod
+    def trusted_privileged_artifact_source() -> str:
+        return """name: trusted publication
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release
+          path: dist
+  publish:
+    needs: package
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release
+"""
+
+    def test_workflow_trust_accepts_partitioned_unprivileged_pull_requests(self) -> None:
+        evidence = scan_workflow_sources(
+            policy_fixture(),
+            "cli",
+            {".github/workflows/fixture.yml": self.trusted_pull_request_source()},
+        )
+        self.assertEqual([], evidence[".github/workflows/fixture.yml"]["privileged_jobs"])
+
+    def test_workflow_trust_rejects_mutable_actions_and_missing_version_comments(self) -> None:
+        source = self.trusted_pull_request_source()
+        cases = {
+            "mutable": (
+                source.replace(f"@{CHECKOUT_PIN} # v6", "@v6 # v6"),
+                "not pinned to a full commit SHA",
+            ),
+            "unlabeled": (source.replace(" # v6", "", 1), "readable version comment"),
+        }
+        for name, (candidate, message) in cases.items():
+            with self.subTest(name=name), self.assertRaisesRegex(PolicyError, message):
+                scan_workflow_sources(policy_fixture(), "cli", {"fixture.yml": candidate})
+
+    def test_workflow_trust_distinguishes_local_actions_and_pins_container_actions(self) -> None:
+        source = self.trusted_pull_request_source().replace(
+            f"- uses: actions/checkout@{CHECKOUT_PIN} # v6",
+            "- uses: ./actions/verify # local",
+        )
+        evidence = scan_workflow_sources(policy_fixture(), "cli", {"fixture.yml": source})
+        self.assertEqual(["./actions/verify"], evidence["fixture.yml"]["local_actions"])
+
+        with self.assertRaisesRegex(PolicyError, "readable version comment"):
+            scan_workflow_sources(
+                policy_fixture(),
+                "cli",
+                {"fixture.yml": source.replace(" # local", "")},
+            )
+
+        mutable_container = source.replace(
+            "- uses: ./actions/verify # local",
+            "- uses: docker://lycheeverse/lychee:0.24.2 # 0.24.2",
+        )
+        with self.assertRaisesRegex(PolicyError, "immutable sha256 digest"):
+            scan_workflow_sources(policy_fixture(), "cli", {"fixture.yml": mutable_container})
+
+    def test_workflow_trust_rejects_top_level_write_and_pull_request_target(self) -> None:
+        source = self.trusted_pull_request_source()
+        cases = {
+            "top-write": (source.replace("contents: read", "contents: write", 1), "top-level write"),
+            "target-event": (
+                source.replace("pull_request:", "pull_request_target:"),
+                "forbidden pull_request_target",
+            ),
+        }
+        for name, (candidate, message) in cases.items():
+            with self.subTest(name=name), self.assertRaisesRegex(PolicyError, message):
+                scan_workflow_sources(policy_fixture(), "cli", {"fixture.yml": candidate})
+
+    def test_workflow_trust_rejects_pull_request_credentials_and_shared_caches(self) -> None:
+        source = self.trusted_pull_request_source()
+        cases = {
+            "environment": (
+                source.replace("runs-on: ubuntu-latest", "runs-on: ubuntu-latest\n    environment: release\n"),
+                "requests an environment",
+            ),
+            "secret": (
+                source.replace(
+                    "runs-on: ubuntu-latest",
+                    "runs-on: ubuntu-latest\n    env:\n      TOKEN: ${{ secrets['RELEASE_TOKEN'] }}",
+                ),
+                "references a secret",
+            ),
+            "shared-cache": (
+                source.replace("${{ github.event_name }}-dependencies", "shared-dependencies"),
+                "must partition trusted and untrusted events",
+            ),
+            "constant-boolean-cache-key": (
+                source.replace(
+                    "${{ github.event_name }}-dependencies",
+                    "shared-${{ github.event_name != '' }}",
+                ),
+                "must partition trusted and untrusted events",
+            ),
+            "constant-boolean-cache-restore": (
+                source.replace(
+                    "${{ github.event_name }}-",
+                    "shared-${{ github.event_name != '' }}",
+                ),
+                "must partition trusted and untrusted events",
+            ),
+            "partially-shared-cache-restore": (
+                source.replace(
+                    "restore-keys: ${{ github.event_name }}-",
+                    "restore-keys: |\n            ${{ github.event_name }}-\n            shared-",
+                ),
+                "must partition trusted and untrusted events",
+            ),
+            "workspace-root-cache": (
+                source.replace("path: vendor", "path: /"),
+                "unsafe cache path",
+            ),
+        }
+        for name, (candidate, message) in cases.items():
+            with self.subTest(name=name), self.assertRaisesRegex(PolicyError, message):
+                scan_workflow_sources(policy_fixture(), "cli", {"fixture.yml": candidate})
+
+    def test_workflow_trust_rejects_whole_workspace_and_home_cache_aliases(self) -> None:
+        source = self.trusted_pull_request_source()
+        unsafe_paths = (
+            "${{ github.workspace }}",
+            "${{ github.workspace }}/**",
+            "${{ env.GITHUB_WORKSPACE }}",
+            "$GITHUB_WORKSPACE",
+            "${GITHUB_WORKSPACE}",
+            "${{ env.HOME }}",
+            "$HOME",
+            "${HOME}",
+            "**",
+            "~/**",
+            "$HOME/**",
+        )
+        for path in unsafe_paths:
+            with self.subTest(path=path), self.assertRaisesRegex(PolicyError, "unsafe cache path"):
+                scan_workflow_sources(
+                    policy_fixture(),
+                    "cli",
+                    {"fixture.yml": source.replace("path: vendor", f"path: '{path}'")},
+                )
+
+        narrow = source.replace(
+            "path: vendor",
+            "path: |\n            vendor\n            $HOME/.cache/composer\n            ~/.cache/pip",
+        )
+        scan_workflow_sources(policy_fixture(), "cli", {"fixture.yml": narrow})
+
+    def test_privileged_manual_dispatch_requires_a_protected_ref(self) -> None:
+        source = self.trusted_privileged_artifact_source()
+        cases = {
+            "missing": source.replace("    if: github.ref == 'refs/heads/main'\n", ""),
+            "wrong ref": source.replace("refs/heads/main", "refs/heads/topic"),
+            "bypass": source.replace(
+                "github.ref == 'refs/heads/main'",
+                "github.ref == 'refs/heads/main' || inputs.force",
+            ),
+        }
+        for name, candidate in cases.items():
+            with self.subTest(name=name), self.assertRaisesRegex(PolicyError, "outside refs/heads/main"):
+                scan_workflow_sources(policy_fixture(), "cli", {"unsafe.yml": candidate})
+
+        tag_or_dispatch = source.replace(
+            "github.ref == 'refs/heads/main'",
+            "(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || "
+            "(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')",
+        )
+        scan_workflow_sources(policy_fixture(), "cli", {"trusted.yml": tag_or_dispatch})
+
+    def test_protected_ref_guard_covers_recovery_and_docs_deployment_shapes(self) -> None:
+        fixtures = {
+            "server": f"""name: server recovery
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+    steps:
+      - uses: actions/checkout@{CHECKOUT_PIN} # v6
+""",
+            "documentation": """name: docs deployment
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: github-pages
+    permissions:
+      contents: read
+      id-token: write
+      pages: write
+    steps: []
+""",
+        }
+        for target, source in fixtures.items():
+            with self.subTest(target=target), self.assertRaisesRegex(PolicyError, "outside refs/heads/main"):
+                scan_workflow_sources(policy_fixture(), target, {"fixture.yml": source})
+            guarded = source.replace("    runs-on:", "    if: github.ref == 'refs/heads/main'\n    runs-on:")
+            scan_workflow_sources(policy_fixture(), target, {"fixture.yml": guarded})
+
+    def test_workflow_trust_rejects_unreviewed_workflow_run_consumers(self) -> None:
+        source = f"""name: unsafe retention
+on:
+  workflow_run:
+    workflows: [Build]
+    types: [completed]
+permissions:
+  contents: read
+jobs:
+  retain:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@{CHECKOUT_PIN} # v6
+"""
+        with self.assertRaisesRegex(PolicyError, "no reviewed privileged workflow_run trust binding"):
+            scan_workflow_sources(policy_fixture(), "cli", {"unsafe.yml": source})
+
+    def test_workflow_trust_binds_privileged_artifacts_to_their_upload_producer(self) -> None:
+        source = self.trusted_privileged_artifact_source()
+        evidence = scan_workflow_sources(policy_fixture(), "cli", {"trusted.yml": source})
+        self.assertEqual(["publish"], evidence["trusted.yml"]["privileged_jobs"])
+
+        cases = {
+            "unrelated dependency": source.replace("needs: package", "needs: unrelated"),
+            "dynamic pattern": source.replace(
+                "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8\n"
+                "        with:\n          name: release",
+                "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8\n"
+                "        with:\n          pattern: ${{ inputs.artifact_pattern }}",
+            ),
+            "missing digest provenance": source.replace(
+                "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7",
+                "uses: ./actions/package # local",
+            ),
+        }
+        for name, candidate in cases.items():
+            with self.subTest(name=name), self.assertRaisesRegex(
+                PolicyError,
+                "exact upload producer and artifact digest provenance",
+            ):
+                scan_workflow_sources(policy_fixture(), "cli", {"unsafe.yml": candidate})
+
+    def test_workflow_run_validators_must_be_executable_steps(self) -> None:
+        policy = policy_fixture()
+        source = (ROOT / ".github/workflows/beta-conformance-retention.yml").read_text(encoding="utf-8")
+        scan_workflow_sources(
+            policy,
+            "github-control-plane",
+            {".github/workflows/beta-conformance-retention.yml": source},
+        )
+
+        cases = {
+            "identity in comment": source.replace(
+                "          python scripts/beta_conformance.py retention-source \\",
+                "          # python scripts/beta_conformance.py retention-source \\",
+            ),
+            "digest in comment": source.replace(
+                "          python scripts/beta_conformance.py aggregate \\",
+                "          # python scripts/beta_conformance.py aggregate \\",
+            ),
+            "identity in output": source.replace(
+                "          python scripts/beta_conformance.py retention-source \\",
+                "          echo python scripts/beta_conformance.py retention-source \\",
+            ),
+            "identity from unreviewed path": source.replace(
+                "          python scripts/beta_conformance.py retention-source \\",
+                "          python shadow/scripts/beta_conformance.py retention-source \\",
+            ),
+            "identity short-circuited": source.replace(
+                "          python scripts/beta_conformance.py retention-source \\",
+                "          true || python scripts/beta_conformance.py retention-source \\",
+            ),
+            "identity multiline short-circuited": source.replace(
+                "          python scripts/beta_conformance.py retention-source \\",
+                "          true ||\n"
+                "          python scripts/beta_conformance.py retention-source \\",
+            ),
+            "identity in unreachable shell branch": source.replace(
+                "          python scripts/beta_conformance.py retention-source \\",
+                "          if false; then\n"
+                "            python scripts/beta_conformance.py retention-source \\",
+            ).replace(
+                '            --github-output "$GITHUB_OUTPUT"',
+                '            --github-output "$GITHUB_OUTPUT"\n          fi',
+                1,
+            ),
+            "digest short-circuited": source.replace(
+                "          python scripts/beta_conformance.py aggregate \\",
+                "          true || python scripts/beta_conformance.py aggregate \\",
+            ),
+            "identity conditionally skipped": source.replace(
+                "      - name: Resolve and validate the completed source run\n",
+                "      - name: Resolve and validate the completed source run\n        if: ${{ false }}\n",
+            ),
+            "digest failure ignored": source.replace(
+                "      - name: Aggregate exact-tuple evidence\n",
+                "      - name: Aggregate exact-tuple evidence\n        continue-on-error: true\n",
+            ),
+            "identity custom shell": source.replace(
+                "      - name: Resolve and validate the completed source run\n",
+                "      - name: Resolve and validate the completed source run\n"
+                "        shell: true {0}\n",
+            ),
+            "digest working directory": source.replace(
+                "      - name: Aggregate exact-tuple evidence\n",
+                "      - name: Aggregate exact-tuple evidence\n"
+                "        working-directory: shadow\n",
+            ),
+            "identity inherited job shell": source.replace(
+                "  bind:\n",
+                "  bind:\n    defaults:\n      run:\n        shell: true {0}\n",
+            ),
+            "digest inherited job working directory": source.replace(
+                "  retain:\n",
+                "  retain:\n    defaults:\n      run:\n        working-directory: shadow\n",
+            ),
+            "validators inherited workflow shell": source.replace(
+                "jobs:\n",
+                "defaults:\n  run:\n    shell: true {0}\n\njobs:\n",
+            ),
+            "validators inherited workflow working directory": source.replace(
+                "jobs:\n",
+                "defaults:\n  run:\n    working-directory: shadow\n\njobs:\n",
+            ),
+        }
+        for name, candidate in cases.items():
+            with self.subTest(name=name), self.assertRaisesRegex(PolicyError, "does not invoke its reviewed"):
+                scan_workflow_sources(
+                    policy,
+                    "github-control-plane",
+                    {".github/workflows/beta-conformance-retention.yml": candidate},
+                )
+
+    def test_workflow_run_validators_reject_preceding_injection_and_containers(self) -> None:
+        policy = policy_fixture()
+        source = (ROOT / ".github/workflows/beta-conformance-retention.yml").read_text(encoding="utf-8")
+        cases = {
+            "prior run writes shell startup": source.replace(
+                "      - name: Resolve and validate the completed source run\n",
+                "      - name: Inject shell startup\n"
+                "        run: echo 'BASH_ENV=/tmp/injected' >> \"$GITHUB_ENV\"\n\n"
+                "      - name: Resolve and validate the completed source run\n",
+            ),
+            "prior run shadows Python": source.replace(
+                "      - name: Aggregate exact-tuple evidence\n",
+                "      - name: Shadow Python\n"
+                "        run: echo '/tmp/shadow' >> \"$GITHUB_PATH\"\n\n"
+                "      - name: Aggregate exact-tuple evidence\n",
+            ),
+            "unreviewed preceding action": source.replace(
+                "      - name: Resolve and validate the completed source run\n",
+                "      - name: Extra setup action\n"
+                "        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6\n"
+                "        with:\n"
+                "          python-version: \"3.13\"\n\n"
+                "      - name: Resolve and validate the completed source run\n",
+            ),
+            "checkout selects a shadow path": source.replace(
+                "          persist-credentials: false\n",
+                "          persist-credentials: false\n"
+                "          path: shadow\n",
+                1,
+            ),
+            "checkout selects a contributor fork": source.replace(
+                "          persist-credentials: false\n",
+                "          persist-credentials: false\n"
+                "          repository: attacker/controller-fork\n",
+                1,
+            ),
+            "setup action receives environment": source.replace(
+                "      - name: Set up Python\n",
+                "      - name: Set up Python\n"
+                "        env:\n"
+                "          BASH_ENV: /tmp/injected\n",
+                1,
+            ),
+            "artifact overwrites the controller checkout": source.replace(
+                "          path: aggregate-input\n",
+                "          path: .\n",
+            ),
+            "artifact overwrites reviewed validators": source.replace(
+                "          path: aggregate-input\n",
+                "          path: scripts\n",
+            ),
+            "validator selects a different run": source.replace(
+                "          REQUESTED_RUN_ID: ${{ inputs.source_run_id || github.event.workflow_run.id }}\n",
+                "          REQUESTED_RUN_ID: 1\n",
+            ).replace(
+                '            --github-output "$GITHUB_OUTPUT"',
+                '            --github-output "$GITHUB_OUTPUT"\n'
+                "          # github.event.workflow_run.id",
+                1,
+            ),
+            "validator selects a different attempt": source.replace(
+                "          REQUESTED_RUN_ATTEMPT: >-\n"
+                "            ${{ inputs.source_run_attempt || github.event.workflow_run.run_attempt }}\n",
+                "          REQUESTED_RUN_ATTEMPT: 1\n",
+            ).replace(
+                '            --github-output "$GITHUB_OUTPUT"',
+                '            --github-output "$GITHUB_OUTPUT"\n'
+                "          # github.event.workflow_run.run_attempt",
+                1,
+            ),
+            "binder container environment": source.replace(
+                "  bind:\n",
+                "  bind:\n"
+                "    container:\n"
+                "      image: python:3.13\n"
+                "      env:\n"
+                "        BASH_ENV: /tmp/injected\n",
+            ),
+            "publisher container environment": source.replace(
+                "  retain:\n",
+                "  retain:\n"
+                "    container:\n"
+                "      image: python:3.13\n"
+                "      env:\n"
+                "        PYTHONPATH: /tmp/injected\n",
+            ),
+        }
+
+        for name, candidate in cases.items():
+            with self.subTest(name=name), self.assertRaisesRegex(PolicyError, "does not invoke its reviewed"):
+                scan_workflow_sources(
+                    policy,
+                    "github-control-plane",
+                    {".github/workflows/beta-conformance-retention.yml": candidate},
+                )
+
+    def test_workflow_run_validator_commands_bind_exact_run_selectors(self) -> None:
+        policy = policy_fixture()
+        source = (ROOT / ".github/workflows/beta-conformance-retention.yml").read_text(encoding="utf-8")
+        cases = {
+            "identity run ID replaced with a constant": source.replace(
+                '--expected-run-id "$REQUESTED_RUN_ID"',
+                '--expected-run-id "1"',
+            ),
+            "identity run attempt replaced with a constant": source.replace(
+                '--expected-run-attempt "$REQUESTED_RUN_ATTEMPT"',
+                '--expected-run-attempt "1"',
+            ),
+            "identity run ID replaced with shell expansion": source.replace(
+                '--expected-run-id "$REQUESTED_RUN_ID"',
+                '--expected-run-id "$(printf \'%s\' "$REQUESTED_RUN_ID")"',
+            ),
+            "artifact run ID replaced with a constant": source.replace(
+                '--run-id "${{ needs.bind.outputs.source_run_id }}"',
+                '--run-id "1"',
+            ),
+        }
+
+        for name, candidate in cases.items():
+            with self.subTest(name=name), self.assertRaisesRegex(PolicyError, "does not invoke its reviewed"):
+                scan_workflow_sources(
+                    policy,
+                    "github-control-plane",
+                    {".github/workflows/beta-conformance-retention.yml": candidate},
+                )
+
+    def test_workflow_run_validator_jobs_reject_services_and_unreviewed_runners(self) -> None:
+        policy = policy_fixture()
+        source = (ROOT / ".github/workflows/beta-conformance-retention.yml").read_text(encoding="utf-8")
+        cases = {
+            "binder service workspace bind": source.replace(
+                "  bind:\n",
+                "  bind:\n"
+                "    services:\n"
+                "      workspace-writer:\n"
+                "        image: alpine:3.20\n"
+                "        volumes:\n"
+                '          - "${{ github.workspace }}:/workspace"\n',
+            ),
+            "publisher service workspace bind": source.replace(
+                "  retain:\n",
+                "  retain:\n"
+                "    services:\n"
+                "      workspace-writer:\n"
+                "        image: alpine:3.20\n"
+                "        volumes:\n"
+                '          - "${{ github.workspace }}:/workspace"\n',
+            ),
+            "binder self-hosted runner": source.replace(
+                "    runs-on: ubuntu-latest\n",
+                "    runs-on: self-hosted\n",
+                1,
+            ),
+            "publisher self-hosted runner": source.replace(
+                "    runs-on: ubuntu-latest\n    timeout-minutes: 15\n",
+                "    runs-on: self-hosted\n    timeout-minutes: 15\n",
+            ),
+        }
+
+        for name, candidate in cases.items():
+            with self.subTest(name=name), self.assertRaisesRegex(PolicyError, "does not invoke its reviewed"):
+                scan_workflow_sources(
+                    policy,
+                    "github-control-plane",
+                    {".github/workflows/beta-conformance-retention.yml": candidate},
+                )
+
+    def test_workflow_run_validators_reject_unreviewed_effective_environment(self) -> None:
+        policy = policy_fixture()
+        source = (ROOT / ".github/workflows/beta-conformance-retention.yml").read_text(encoding="utf-8")
+        environment_names = (
+            "BASH_ENV",
+            "ENV",
+            "PATH",
+            "PYTHONPATH",
+            "PYTHONHOME",
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+        )
+
+        def at_workflow_scope(name: str) -> str:
+            return source.replace("jobs:\n", f"env:\n  {name}: /tmp/injected\n\njobs:\n")
+
+        def at_job_scope(name: str) -> str:
+            return source.replace("  bind:\n", f"  bind:\n    env:\n      {name}: /tmp/injected\n")
+
+        def at_step_scope(name: str) -> str:
+            return source.replace(
+                "        id: source\n        env:\n",
+                f"        id: source\n        env:\n          {name}: /tmp/injected\n",
+            )
+
+        for scope, inject in (
+            ("workflow", at_workflow_scope),
+            ("job", at_job_scope),
+            ("step", at_step_scope),
+        ):
+            for environment_name in environment_names:
+                with self.subTest(scope=scope, environment_name=environment_name), self.assertRaisesRegex(
+                    PolicyError,
+                    "does not invoke its reviewed source identity validator",
+                ):
+                    scan_workflow_sources(
+                        policy,
+                        "github-control-plane",
+                        {".github/workflows/beta-conformance-retention.yml": inject(environment_name)},
+                    )
+
+    def test_policy_rejects_execution_affecting_validator_environment_allowlist(self) -> None:
+        policy = policy_fixture()
+        consumer = policy["workflow_trust"]["privileged_workflow_run_consumers"][
+            "github-control-plane/beta-conformance-retention.yml"
+        ]
+        consumer["identity_validator_environment"].append("PYTHONPATH")
+
+        with self.assertRaisesRegex(PolicyError, "reviewed safe environment names"):
+            validate_policy(policy)
+
+    def test_policy_rejects_unreviewed_validator_runner(self) -> None:
+        policy = policy_fixture()
+        consumer = policy["workflow_trust"]["privileged_workflow_run_consumers"][
+            "github-control-plane/beta-conformance-retention.yml"
+        ]
+        consumer["validator_runner"] = "self-hosted"
+
+        with self.assertRaisesRegex(PolicyError, "reviewed GitHub-hosted runner"):
+            validate_policy(policy)
+
+    def test_policy_rejects_unreviewed_validator_setup_actions(self) -> None:
+        policy = policy_fixture()
+        consumer = policy["workflow_trust"]["privileged_workflow_run_consumers"][
+            "github-control-plane/beta-conformance-retention.yml"
+        ]
+        consumer["identity_validator_preceding_steps"].append(
+            "docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0"
+        )
+
+        with self.assertRaisesRegex(PolicyError, "reviewed immutable action steps"):
+            validate_policy(policy)
+
+    def test_artifact_digest_validator_rejects_unreviewed_effective_environment(self) -> None:
+        policy = policy_fixture()
+        source = (ROOT / ".github/workflows/beta-conformance-retention.yml").read_text(encoding="utf-8")
+        cases = {
+            "job shell startup": source.replace(
+                "  retain:\n",
+                "  retain:\n    env:\n      BASH_ENV: /tmp/injected\n",
+            ),
+            "step Python import path": source.replace(
+                "      - name: Aggregate exact-tuple evidence\n",
+                "      - name: Aggregate exact-tuple evidence\n"
+                "        env:\n"
+                "          PYTHONPATH: /tmp/injected\n",
+            ),
+        }
+
+        for name, candidate in cases.items():
+            with self.subTest(name=name), self.assertRaisesRegex(
+                PolicyError,
+                "does not invoke its reviewed artifact digest validator",
+            ):
+                scan_workflow_sources(
+                    policy,
+                    "github-control-plane",
+                    {".github/workflows/beta-conformance-retention.yml": candidate},
+                )
+
     def test_github_client_falls_back_without_forwarding_authorization(self) -> None:
         sleeps: list[float] = []
         client = GitHubClient("secret", max_attempts=3, retry_base_seconds=1, sleep=sleeps.append)
@@ -396,10 +1116,13 @@ class QualificationPolicyTest(unittest.TestCase):
             def bytes(self, path: str) -> bytes:
                 source = super().bytes(path)
                 if "/repos/durable-workflow/" in path and "/contents/.github/workflows/" in path:
-                    return source.replace(b"actions/checkout@v6", b"actions/checkout@v4")
+                    return source.replace(
+                        f"actions/checkout@{CHECKOUT_PIN} # v6".encode(),
+                        b"actions/checkout@v4 # v4",
+                    )
                 return source
 
-        with self.assertRaisesRegex(PolicyError, "actions/checkout@v4 is not centrally approved"):
+        with self.assertRaisesRegex(PolicyError, "is not pinned to a full commit SHA"):
             audit_policy(policy, RetiredReleaseClient(policy))
 
     def test_audit_rejects_a_flow_style_unapproved_action_release(self) -> None:
@@ -410,12 +1133,12 @@ class QualificationPolicyTest(unittest.TestCase):
                 source = super().bytes(path)
                 if "/repos/durable-workflow/" in path and "/contents/.github/workflows/" in path:
                     return source.replace(
-                        b"- uses: actions/checkout@v6",
-                        b"- { uses: actions/checkout@v4 }",
+                        f"- uses: actions/checkout@{CHECKOUT_PIN} # v6".encode(),
+                        b"- { uses: actions/checkout@v4 } # v4",
                     )
                 return source
 
-        with self.assertRaisesRegex(PolicyError, "actions/checkout@v4 is not centrally approved"):
+        with self.assertRaisesRegex(PolicyError, "is not pinned to a full commit SHA"):
             audit_policy(policy, FlowStyleReleaseClient(policy))
 
     def test_audit_rejects_a_retired_action_javascript_runtime(self) -> None:

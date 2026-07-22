@@ -50,12 +50,12 @@ jobs:
       manifest_sha256: ${{ steps.plan.outputs.manifest_sha256 }}
     steps:
       - name: Check out the public control plane
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: "3.13"
 
@@ -83,7 +83,7 @@ jobs:
 
       - name: Restore first-attempt immutable execution plan
         if: ${{ github.run_attempt > 1 }}
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
         with:
           name: beta-conformance-plan-${{ github.run_id }}
           path: .
@@ -98,7 +98,7 @@ jobs:
 
       - name: Retain the first-attempt execution plan for every recovery path
         if: ${{ github.run_attempt == 1 }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: beta-conformance-plan-${{ github.run_id }}
           path: execution-plan.json
@@ -116,15 +116,15 @@ jobs:
         experiment: ${{ fromJSON(needs.prepare.outputs.experiments) }}
     steps:
       - name: Check out the public conformance wrapper
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: "3.13"
 
       - name: Restore immutable execution plan
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
         with:
           name: beta-conformance-plan-${{ github.run_id }}
           path: conformance-input
@@ -162,7 +162,7 @@ jobs:
 
       - name: Retain bounded experiment evidence for aggregation
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: beta-conformance-${{ matrix.experiment }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/result/experiment-result.json

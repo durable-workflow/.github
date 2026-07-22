@@ -22,8 +22,11 @@
       "additionalProperties": {
         "$ref": "#/$defs/target"
       },
-      "minProperties": 10,
+      "minProperties": 11,
       "type": "object"
+    },
+    "workflow_trust": {
+      "$ref": "#/$defs/workflowTrust"
     }
   },
   "required": [
@@ -31,6 +34,7 @@
     "action_runtime",
     "organization",
     "required_status_checks_strict",
+    "workflow_trust",
     "targets"
   ],
   "type": "object",
@@ -38,15 +42,35 @@
     "actionRuntime": {
       "additionalProperties": false,
       "properties": {
-        "allowed_releases": {
+        "allowed_container_images": {
           "additionalProperties": {
-            "items": {
+            "additionalProperties": {
               "minLength": 1,
               "type": "string"
             },
-            "minItems": 1,
-            "type": "array",
-            "uniqueItems": true
+            "minProperties": 1,
+            "propertyNames": {
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "type": "object"
+          },
+          "minProperties": 1,
+          "propertyNames": {
+            "pattern": "^[a-z0-9._/-]+$"
+          },
+          "type": "object"
+        },
+        "allowed_releases": {
+          "additionalProperties": {
+            "additionalProperties": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minProperties": 1,
+            "propertyNames": {
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "type": "object"
           },
           "minProperties": 1,
           "propertyNames": {
@@ -61,6 +85,7 @@
         }
       },
       "required": [
+        "allowed_container_images",
         "allowed_releases",
         "supported_javascript_runtimes"
       ],
@@ -91,6 +116,131 @@
         "repository",
         "branch",
         "workflows"
+      ],
+      "type": "object"
+    },
+    "validatorPrecedingStep": {
+      "additionalProperties": false,
+      "properties": {
+        "uses": {
+          "pattern": "^[a-z0-9_.-]+/[a-z0-9_.-]+@[0-9a-f]{40}$",
+          "type": "string"
+        },
+        "with": {
+          "additionalProperties": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minProperties": 1,
+          "type": "object"
+        }
+      },
+      "required": [
+        "uses",
+        "with"
+      ],
+      "type": "object"
+    },
+    "workflowRunConsumer": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_digest_validator_command": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "artifact_digest_validator_environment": {
+          "items": {
+            "enum": [
+              "GH_TOKEN",
+              "REQUESTED_RUN_ATTEMPT",
+              "REQUESTED_RUN_ID"
+            ]
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "artifact_digest_validator_preceding_steps": {
+          "items": {
+            "$ref": "#/$defs/validatorPrecedingStep"
+          },
+          "maxItems": 4,
+          "minItems": 1,
+          "type": "array"
+        },
+        "event": {
+          "const": "workflow_dispatch"
+        },
+        "identity_validator_command": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "identity_validator_environment": {
+          "items": {
+            "enum": [
+              "GH_TOKEN",
+              "REQUESTED_RUN_ATTEMPT",
+              "REQUESTED_RUN_ID"
+            ]
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "identity_validator_preceding_steps": {
+          "items": {
+            "$ref": "#/$defs/validatorPrecedingStep"
+          },
+          "maxItems": 4,
+          "minItems": 1,
+          "type": "array"
+        },
+        "protected_ref": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "repository": {
+          "pattern": "^[a-z0-9_.-]+/[a-z0-9_.-]+$",
+          "type": "string"
+        },
+        "validator_runner": {
+          "const": "ubuntu-latest"
+        },
+        "workflow": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository",
+        "workflow",
+        "event",
+        "protected_ref",
+        "identity_validator_command",
+        "identity_validator_environment",
+        "identity_validator_preceding_steps",
+        "artifact_digest_validator_command",
+        "artifact_digest_validator_environment",
+        "artifact_digest_validator_preceding_steps",
+        "validator_runner"
+      ],
+      "type": "object"
+    },
+    "workflowTrust": {
+      "additionalProperties": false,
+      "properties": {
+        "privileged_workflow_run_consumers": {
+          "additionalProperties": {
+            "$ref": "#/$defs/workflowRunConsumer"
+          },
+          "type": "object"
+        },
+        "pull_request_target_exceptions": {
+          "maxItems": 0,
+          "type": "array"
+        }
+      },
+      "required": [
+        "privileged_workflow_run_consumers",
+        "pull_request_target_exceptions"
       ],
       "type": "object"
     },

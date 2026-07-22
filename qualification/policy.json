@@ -1,80 +1,86 @@
 {
   "$schema": "./schema.json",
   "action_runtime": {
+    "allowed_container_images": {
+      "lycheeverse/lychee": {
+        "sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d": "0.24.2"
+      }
+    },
     "allowed_releases": {
-      "actions/attest-build-provenance": [
-        "v4"
-      ],
-      "actions/cache": [
-        "v5"
-      ],
-      "actions/checkout": [
-        "v6"
-      ],
-      "actions/configure-pages": [
-        "v6"
-      ],
-      "actions/deploy-pages": [
-        "v5"
-      ],
-      "actions/download-artifact": [
-        "v8"
-      ],
-      "actions/setup-node": [
-        "v6"
-      ],
-      "actions/setup-python": [
-        "v6"
-      ],
-      "actions/upload-artifact": [
-        "v7"
-      ],
-      "actions/upload-pages-artifact": [
-        "v5"
-      ],
-      "azure/setup-helm": [
-        "v5"
-      ],
-      "codecov/codecov-action": [
-        "v7"
-      ],
-      "docker/build-push-action": [
-        "v7"
-      ],
-      "docker/login-action": [
-        "v4"
-      ],
-      "docker/metadata-action": [
-        "v6"
-      ],
-      "docker/setup-buildx-action": [
-        "v4"
-      ],
-      "docker/setup-qemu-action": [
-        "v4"
-      ],
-      "dtolnay/rust-toolchain": [
-        "1.86.0",
-        "stable"
-      ],
-      "helm/chart-testing-action": [
-        "v2.8.0"
-      ],
-      "helm/kind-action": [
-        "v1.14.0"
-      ],
-      "peaceiris/actions-gh-pages": [
-        "v4"
-      ],
-      "pypa/gh-action-pypi-publish": [
-        "release/v1"
-      ],
-      "shivammathur/setup-php": [
-        "v2"
-      ],
-      "softprops/action-gh-release": [
-        "v3"
-      ]
+      "actions/attest-build-provenance": {
+        "0f67c3f4856b2e3261c31976d6725780e5e4c373": "v4"
+      },
+      "actions/cache": {
+        "caa296126883cff596d87d8935842f9db880ef25": "v5"
+      },
+      "actions/checkout": {
+        "11d5960a326750d5838078e36cf38b85af677262": "v4",
+        "d23441a48e516b6c34aea4fa41551a30e30af803": "v6"
+      },
+      "actions/configure-pages": {
+        "45bfe0192ca1faeb007ade9deae92b16b8254a0d": "v6"
+      },
+      "actions/deploy-pages": {
+        "cd2ce8fcbc39b97be8ca5fce6e763baed58fa128": "v5"
+      },
+      "actions/download-artifact": {
+        "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c": "v8"
+      },
+      "actions/setup-node": {
+        "249970729cb0ef3589644e2896645e5dc5ba9c38": "v6"
+      },
+      "actions/setup-python": {
+        "ece7cb06caefa5fff74198d8649806c4678c61a1": "v6"
+      },
+      "actions/upload-artifact": {
+        "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a": "v7"
+      },
+      "actions/upload-pages-artifact": {
+        "fc324d3547104276b827a68afc52ff2a11cc49c9": "v5"
+      },
+      "azure/setup-helm": {
+        "9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310": "v5"
+      },
+      "codecov/codecov-action": {
+        "fb8b3582c8e4def4969c97caa2f19720cb33a72f": "v7"
+      },
+      "docker/build-push-action": {
+        "53b7df96c91f9c12dcc8a07bcb9ccacbed38856a": "v7"
+      },
+      "docker/login-action": {
+        "af1e73f918a031802d376d3c8bbc3fe56130a9b0": "v4"
+      },
+      "docker/metadata-action": {
+        "dc802804100637a589fabce1cb79ff13a1411302": "v6"
+      },
+      "docker/setup-buildx-action": {
+        "bb05f3f5519dd87d3ba754cc423b652a5edd6d2c": "v4"
+      },
+      "docker/setup-qemu-action": {
+        "96fe6ef7f33517b61c61be40b68a1882f3264fb8": "v4"
+      },
+      "dtolnay/rust-toolchain": {
+        "4cda84d5c5c54efe2404f9d843567869ab1699d4": "stable",
+        "4d407b29186a635f0cc27475ef0bc0ae605a8866": "1.86.0"
+      },
+      "helm/chart-testing-action": {
+        "6ec842c01de15ebb84c8627d2744a0c2f2755c9f": "v2.8.0"
+      },
+      "helm/kind-action": {
+        "ef37e7f390d99f746eb8b610417061a60e82a6cc": "v1.14.0"
+      },
+      "peaceiris/actions-gh-pages": {
+        "84c30a85c19949d7eee79c4ff27748b70285e453": "v4"
+      },
+      "pypa/gh-action-pypi-publish": {
+        "ba38be9e461d3875417946c167d0b5f3d385a247": "release/v1"
+      },
+      "shivammathur/setup-php": {
+        "f3e473d116dcccaddc5834248c87452386958240": "v2"
+      },
+      "softprops/action-gh-release": {
+        "3d0d9888cb7fd7b750713d6e236d1fcb99157228": "v3"
+      }
     },
     "supported_javascript_runtimes": [
       "node24"
@@ -83,6 +89,72 @@
   "organization": "durable-workflow",
   "required_status_checks_strict": true,
   "schema": "durable-workflow.github-target-qualification/v1",
+  "workflow_trust": {
+    "privileged_workflow_run_consumers": {
+      "github-control-plane/beta-conformance-retention.yml": {
+        "artifact_digest_validator_command": "python scripts/beta_conformance.py aggregate \\\n  aggregate-input/execution-plan.json \\\n  evidence \\\n  suite-result.json \\\n  release-assets \\\n  --contract beta-conformance/contract.json \\\n  --run-id \"${{ needs.bind.outputs.source_run_id }}\" \\\n  --run-attempt \"${{ needs.bind.outputs.source_run_attempt }}\" \\\n  --generated-at \"${{ needs.bind.outputs.source_completed_at }}\" \\\n  --source-candidate \"${{ needs.bind.outputs.source_candidate }}\" \\\n  --source-head-sha \"${{ needs.bind.outputs.source_head_sha }}\" \\\n  --github-output \"$GITHUB_OUTPUT\"\n",
+        "artifact_digest_validator_environment": [],
+        "artifact_digest_validator_preceding_steps": [
+          {
+            "uses": "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
+            "with": {
+              "persist-credentials": "false"
+            }
+          },
+          {
+            "uses": "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
+            "with": {
+              "python-version": "3.13"
+            }
+          },
+          {
+            "uses": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+            "with": {
+              "github-token": "${{ github.token }}",
+              "name": "beta-conformance-plan-${{ needs.bind.outputs.source_run_id }}",
+              "path": "aggregate-input",
+              "run-id": "${{ needs.bind.outputs.source_run_id }}"
+            }
+          },
+          {
+            "uses": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+            "with": {
+              "github-token": "${{ github.token }}",
+              "path": "evidence",
+              "pattern": "beta-conformance-*-${{ needs.bind.outputs.source_run_id }}-${{ needs.bind.outputs.source_run_attempt }}",
+              "run-id": "${{ needs.bind.outputs.source_run_id }}"
+            }
+          }
+        ],
+        "event": "workflow_dispatch",
+        "identity_validator_command": "python scripts/beta_conformance.py retention-source \\\n  --expected-run-id \"$REQUESTED_RUN_ID\" \\\n  --expected-run-attempt \"$REQUESTED_RUN_ATTEMPT\" \\\n  --github-output \"$GITHUB_OUTPUT\"\n",
+        "identity_validator_environment": [
+          "GH_TOKEN",
+          "REQUESTED_RUN_ATTEMPT",
+          "REQUESTED_RUN_ID"
+        ],
+        "identity_validator_preceding_steps": [
+          {
+            "uses": "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
+            "with": {
+              "persist-credentials": "false"
+            }
+          },
+          {
+            "uses": "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
+            "with": {
+              "python-version": "3.13"
+            }
+          }
+        ],
+        "protected_ref": "main",
+        "repository": "durable-workflow/.github",
+        "validator_runner": "ubuntu-latest",
+        "workflow": "Beta conformance"
+      }
+    },
+    "pull_request_target_exceptions": []
+  },
   "targets": {
     "cli": {
       "branch": "main",
@@ -92,6 +164,17 @@
           "matrix_independent": true,
           "path": "build.yml",
           "required_check": "Target branch qualification"
+        }
+      ]
+    },
+    "cloud": {
+      "branch": "main",
+      "repository": "cloud",
+      "workflows": [
+        {
+          "matrix_independent": false,
+          "path": "ci.yml",
+          "required_check": "Route Drift Guard"
         }
       ]
     },

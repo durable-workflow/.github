@@ -420,23 +420,37 @@ def verify_candidate_evidence(client: PublicClient, request: dict[str, Any]) -> 
 
 
 def validate_qualification_policy_contract(value: Any, context: str) -> dict[str, Any]:
-    policy = require_exact_keys(
-        value,
-        {
-            "$schema",
-            "action_runtime",
-            "organization",
-            "required_status_checks_strict",
-            "schema",
-            "targets",
-        },
-        context,
-    )
-    action_runtime = require_exact_keys(
-        policy["action_runtime"],
-        {"allowed_releases", "supported_javascript_runtimes"},
-        f"{context} action runtime",
-    )
+    if not isinstance(value, dict) or set(value) not in {
+        frozenset(
+            {
+                "$schema",
+                "action_runtime",
+                "organization",
+                "required_status_checks_strict",
+                "schema",
+                "targets",
+            }
+        ),
+        frozenset(
+            {
+                "$schema",
+                "action_runtime",
+                "organization",
+                "required_status_checks_strict",
+                "schema",
+                "targets",
+                "workflow_trust",
+            }
+        ),
+    }:
+        raise CandidateError(f"{context} has an invalid immutable contract")
+    policy = value
+    action_runtime = policy["action_runtime"]
+    if not isinstance(action_runtime, dict) or set(action_runtime) not in {
+        frozenset({"allowed_releases", "supported_javascript_runtimes"}),
+        frozenset({"allowed_container_images", "allowed_releases", "supported_javascript_runtimes"}),
+    }:
+        raise CandidateError(f"{context} action runtime has an invalid immutable contract")
     allowed_releases = action_runtime["allowed_releases"]
     supported_runtimes = action_runtime["supported_javascript_runtimes"]
     targets = policy["targets"]
@@ -450,13 +464,31 @@ def validate_qualification_policy_contract(value: Any, context: str) -> dict[str
         or any(
             not isinstance(repository, str)
             or not ACTION_REPOSITORY_PATTERN.fullmatch(repository)
-            or not isinstance(references, list)
+            or (
+                not isinstance(references, list)
+                and not isinstance(references, dict)
+            )
             or not references
-            or len(references) != len(set(references))
-            or any(
-                not isinstance(reference, str)
-                or not ACTION_REFERENCE_PATTERN.fullmatch(reference)
-                for reference in references
+            or (
+                isinstance(references, list)
+                and (
+                    len(references) != len(set(references))
+                    or any(
+                        not isinstance(reference, str)
+                        or not ACTION_REFERENCE_PATTERN.fullmatch(reference)
+                        for reference in references
+                    )
+                )
+            )
+            or (
+                isinstance(references, dict)
+                and any(
+                    not isinstance(commit, str)
+                    or not COMMIT_PATTERN.fullmatch(commit)
+                    or not isinstance(version, str)
+                    or not ACTION_REFERENCE_PATTERN.fullmatch(version)
+                    for commit, version in references.items()
+                )
             )
             for repository, references in allowed_releases.items()
         )
@@ -475,6 +507,38 @@ def validate_qualification_policy_contract(value: Any, context: str) -> dict[str
         )
     ):
         raise CandidateError(f"{context} has an invalid immutable contract")
+
+    if "allowed_container_images" in action_runtime:
+        containers = action_runtime["allowed_container_images"]
+        if (
+            not isinstance(containers, dict)
+            or not containers
+            or any(
+                not isinstance(image, str)
+                or not image
+                or not isinstance(releases, dict)
+                or not releases
+                or any(
+                    not isinstance(digest, str)
+                    or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest)
+                    or not isinstance(version, str)
+                    or not ACTION_REFERENCE_PATTERN.fullmatch(version)
+                    for digest, version in releases.items()
+                )
+                for image, releases in containers.items()
+            )
+        ):
+            raise CandidateError(f"{context} has invalid immutable container releases")
+    if "workflow_trust" in policy:
+        workflow_trust = policy["workflow_trust"]
+        if (
+            not isinstance(workflow_trust, dict)
+            or set(workflow_trust)
+            != {"privileged_workflow_run_consumers", "pull_request_target_exceptions"}
+            or workflow_trust["pull_request_target_exceptions"] != []
+            or not isinstance(workflow_trust["privileged_workflow_run_consumers"], dict)
+        ):
+            raise CandidateError(f"{context} has an invalid workflow trust contract")
 
     repositories: set[str] = set()
     for name, value in targets.items():
@@ -586,17 +650,22 @@ def valid_recorded_action_releases(
     )
     identities: set[tuple[str, str]] = set()
     for release in value:
-        if not isinstance(release, dict) or set(release) != {
+        repository = release.get("repository") if isinstance(release, dict) else None
+        approved = allowed_releases.get(repository) if allowed_releases is not None else None
+        immutable = isinstance(approved, dict)
+        expected_fields = {
             "action",
             "commit",
             "reference",
             "repository",
             "runtime",
             "workflows",
-        }:
+        }
+        if immutable:
+            expected_fields.add("version")
+        if not isinstance(release, dict) or set(release) != expected_fields:
             return False
         action = release["action"]
-        repository = release["repository"]
         reference = release["reference"]
         runtime = release["runtime"]
         workflows = release["workflows"]
@@ -616,6 +685,14 @@ def valid_recorded_action_releases(
             or not reference.strip()
             or reference != reference.strip()
             or "${{" in reference
+            or (immutable and reference != release["commit"])
+            or (
+                immutable
+                and (
+                    not isinstance(release.get("version"), str)
+                    or approved.get(reference) != release["version"]
+                )
+            )
             or not isinstance(runtime, str)
             or not ACTION_RUNTIME_PATTERN.fullmatch(runtime)
             or not isinstance(workflows, list)
@@ -629,7 +706,7 @@ def valid_recorded_action_releases(
             or (action, reference) in identities
             or (
                 allowed_releases is not None
-                and reference not in allowed_releases.get(repository, [])
+                and reference not in (approved or {})
             )
             or (
                 supported_runtimes is not None
@@ -639,6 +716,41 @@ def valid_recorded_action_releases(
         ):
             return False
         identities.add((action, reference))
+    return True
+
+
+def valid_recorded_workflow_trust(value: Any) -> bool:
+    if not isinstance(value, dict) or not value:
+        return False
+    expected_fields = {"containers", "external_actions", "local_actions", "privileged_jobs"}
+    for path, record in value.items():
+        if (
+            not isinstance(path, str)
+            or not QUALIFICATION_WORKFLOW_PATH_PATTERN.fullmatch(path)
+            or not isinstance(record, dict)
+            or set(record) != expected_fields
+        ):
+            return False
+        for field in expected_fields:
+            entries = record[field]
+            if (
+                not isinstance(entries, list)
+                or len(entries) != len(set(entries))
+                or any(not isinstance(entry, str) or not entry for entry in entries)
+            ):
+                return False
+        if any(
+            not re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", specification)
+            for specification in record["external_actions"]
+        ):
+            return False
+        if any(
+            not re.fullmatch(r"docker://[^@\s]+@sha256:[0-9a-f]{64}", specification)
+            for specification in record["containers"]
+        ):
+            return False
+        if any(not specification.startswith("./") for specification in record["local_actions"]):
+            return False
     return True
 
 
@@ -733,17 +845,23 @@ def validate_qualification_evidence(
             else None
         )
         branch = target.get("branch") if isinstance(target, dict) else None
+        requires_workflow_trust = target_policy is not None and "workflow_trust" in policy
+        records_workflow_trust = requires_workflow_trust or (
+            policy is None and isinstance(target, dict) and "workflow_trust" in target
+        )
+        target_fields = {
+            "action_releases",
+            "branch",
+            "commit",
+            "protected_checks",
+            "successful_check_runs",
+            "workflows",
+        }
+        if records_workflow_trust:
+            target_fields.add("workflow_trust")
         if (
             not isinstance(target, dict)
-            or set(target)
-            != {
-                "action_releases",
-                "branch",
-                "commit",
-                "protected_checks",
-                "successful_check_runs",
-                "workflows",
-            }
+            or set(target) != target_fields
             or not isinstance(branch, str)
             or not QUALIFICATION_BRANCH_PATTERN.fullmatch(branch)
             or (target_policy is not None and branch != target_policy["branch"])
@@ -760,6 +878,13 @@ def validate_qualification_evidence(
             or not valid_recorded_action_releases(
                 target.get("action_releases"),
                 action_runtime=policy["action_runtime"] if policy is not None else None,
+            )
+            or (
+                records_workflow_trust
+                and (
+                    not valid_recorded_workflow_trust(target.get("workflow_trust"))
+                    or not recorded_paths <= set(target["workflow_trust"])
+                )
             )
             or not workflows_are_valid
             or set(protected) != recorded_checks

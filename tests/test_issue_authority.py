@@ -277,12 +277,14 @@ class ContractValidationTest(unittest.TestCase):
             conditions["validate"],
         )
         self.assertEqual(
-            "${{ github.server_url == 'https://github.com' && (github.event_name == 'push' || "
+            "${{ github.ref == 'refs/heads/main' && github.server_url == 'https://github.com' && "
+            "(github.event_name == 'push' || "
             "(github.event_name == 'workflow_dispatch' && inputs.mode == 'apply')) }}",
             conditions["apply"],
         )
         self.assertEqual(
-            "${{ github.server_url == 'https://github.com' && (github.event_name == 'schedule' || "
+            "${{ github.ref == 'refs/heads/main' && github.server_url == 'https://github.com' && "
+            "(github.event_name == 'schedule' || "
             "github.event_name == 'issues' || "
             "(github.event_name == 'workflow_dispatch' && inputs.mode == 'audit')) }}",
             conditions["audit"],

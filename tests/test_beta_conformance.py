@@ -32,6 +32,7 @@ from scripts.beta_conformance import (
     bounded_text,
     classify_attempt,
     experiment_result,
+    fetch_retention_source_metadata,
     inject_distribution_identity_mismatch,
     injected_failure_result,
     load_contract,
@@ -230,6 +231,29 @@ class RetentionSourceTest(unittest.TestCase):
             source,
         )
 
+    def test_retention_entrypoint_fetches_the_exact_attempt_and_workflow(self) -> None:
+        responses = []
+        for document in (self.completed_run(), self.workflow()):
+            response = mock.MagicMock()
+            response.__enter__.return_value = response
+            response.read.return_value = json.dumps(document).encode()
+            responses.append(response)
+
+        with mock.patch("scripts.beta_conformance.urllib.request.urlopen", side_effect=responses) as urlopen:
+            run, workflow = fetch_retention_source_metadata(29775218461, 1, "retention-token")
+
+        self.assertEqual(self.completed_run(), run)
+        self.assertEqual(self.workflow(), workflow)
+        requests = [call.args[0] for call in urlopen.call_args_list]
+        self.assertEqual(
+            [
+                "https://api.github.com/repos/durable-workflow/.github/actions/runs/29775218461/attempts/1",
+                "https://api.github.com/repos/durable-workflow/.github/actions/workflows/beta-conformance.yml",
+            ],
+            [request.full_url for request in requests],
+        )
+        self.assertTrue(all(request.get_header("Authorization") == "Bearer retention-token" for request in requests))
+
     def test_retention_rejects_a_different_execution_authority(self) -> None:
         mutations = {
             "display_title": "Unbound retention source",
@@ -313,8 +337,8 @@ class RetentionSourceTest(unittest.TestCase):
         )
         self.assertEqual("beta-conformance", retention["jobs"]["retain"]["environment"])
         retention_scripts = "\n".join(step.get("run", "") for step in retention["jobs"]["retain"]["steps"])
-        self.assertIn('runner.get("revision") != os.environ["SOURCE_HEAD_SHA"]', retention_scripts)
-        self.assertIn('candidate.get("name") != os.environ["SOURCE_CANDIDATE"]', retention_scripts)
+        self.assertIn("--source-head-sha", retention_scripts)
+        self.assertIn("--source-candidate", retention_scripts)
         self.assertIn("evidence-ref.json evidence-ref-comparison.json", retention_scripts)
         self.assertIn("for attempt in 1 2 3", retention_scripts)
 
@@ -327,9 +351,17 @@ class RetentionSourceTest(unittest.TestCase):
         )
         prepare_steps = execution["jobs"]["prepare"]["steps"]
         create = next(step for step in prepare_steps if " prepare " in f" {step.get('run', '')} ")
-        restore = next(step for step in prepare_steps if step.get("uses") == "actions/download-artifact@v8")
+        restore = next(
+            step
+            for step in prepare_steps
+            if step.get("uses") == "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+        )
         expose = next(step for step in prepare_steps if step.get("id") == "plan")
-        retain = next(step for step in prepare_steps if step.get("uses") == "actions/upload-artifact@v7")
+        retain = next(
+            step
+            for step in prepare_steps
+            if step.get("uses") == "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+        )
         plan_name = "beta-conformance-plan-${{ github.run_id }}"
 
         self.assertEqual("${{ github.run_attempt == 1 }}", create["if"])
@@ -343,12 +375,13 @@ class RetentionSourceTest(unittest.TestCase):
         conformance_restore = next(
             step
             for step in execution["jobs"]["conformance"]["steps"]
-            if step.get("uses") == "actions/download-artifact@v8"
+            if step.get("uses") == "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
         )
         retention_restore = next(
             step
             for step in retention["jobs"]["retain"]["steps"]
-            if step.get("uses") == "actions/download-artifact@v8" and "name" in step.get("with", {})
+            if step.get("uses") == "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+            and "name" in step.get("with", {})
         )
         self.assertEqual(plan_name, conformance_restore["with"]["name"])
         self.assertEqual(
@@ -2610,6 +2643,8 @@ class EvidenceTest(unittest.TestCase):
                 root,
                 run_id=12345,
                 run_attempt=2,
+                source_candidate=self.plan["candidate"]["name"],
+                source_head_sha=self.plan["runner"]["revision"],
                 generated_at="2026-07-20T20:20:06Z",
             )
 
@@ -2630,12 +2665,39 @@ class EvidenceTest(unittest.TestCase):
                 Path(temporary),
                 run_id=12345,
                 run_attempt=1,
+                source_candidate=self.plan["candidate"]["name"],
+                source_head_sha=self.plan["runner"]["revision"],
             )
         self.assertEqual({}, retained)
         self.assertEqual("fail", suite["outcome"])
         for experiment in EXPERIMENTS:
             self.assertEqual("infrastructure_failure", suite["experiments"][experiment]["classification"])
             self.assertRegex(suite["experiments"][experiment]["failure_fingerprint"], r"^[0-9a-f]{64}$")
+
+    def test_aggregate_rejects_a_plan_from_another_source_run(self) -> None:
+        cases = {
+            "candidate": {
+                "source_candidate": "another-candidate",
+                "source_head_sha": self.plan["runner"]["revision"],
+            },
+            "commit": {
+                "source_candidate": self.plan["candidate"]["name"],
+                "source_head_sha": "f" * 40,
+            },
+        }
+        for name, source in cases.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary, self.assertRaisesRegex(
+                ConformanceError,
+                "execution plan does not bind the source workflow",
+            ):
+                aggregate_results(
+                    self.plan,
+                    self.contract,
+                    Path(temporary),
+                    run_id=12345,
+                    run_attempt=1,
+                    **source,
+                )
 
     def test_green_suite_retains_executed_identities_for_all_seven_distributions(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2663,6 +2725,8 @@ class EvidenceTest(unittest.TestCase):
                 root,
                 run_id=12345,
                 run_attempt=1,
+                source_candidate=self.plan["candidate"]["name"],
+                source_head_sha=self.plan["runner"]["revision"],
             )
 
         self.assertEqual("pass", suite["outcome"])
@@ -2696,6 +2760,8 @@ class EvidenceTest(unittest.TestCase):
                     Path(temporary),
                     run_id=12345,
                     run_attempt=1,
+                    source_candidate=self.plan["candidate"]["name"],
+                    source_head_sha=self.plan["runner"]["revision"],
                 )
 
     def test_retained_runtime_version_is_bound_without_a_runtime_execution_identity(self) -> None:
@@ -2787,6 +2853,8 @@ class EvidenceTest(unittest.TestCase):
                     Path(temporary),
                     run_id=12345,
                     run_attempt=1,
+                    source_candidate=self.plan["candidate"]["name"],
+                    source_head_sha=self.plan["runner"]["revision"],
                 )
 
     def test_aggregate_rejects_a_peer_only_identity_without_an_extra_version(self) -> None:
@@ -2839,6 +2907,8 @@ class EvidenceTest(unittest.TestCase):
                     Path(temporary),
                     run_id=12345,
                     run_attempt=1,
+                    source_candidate=self.plan["candidate"]["name"],
+                    source_head_sha=self.plan["runner"]["revision"],
                 )
 
     def test_aggregate_rejects_an_unknown_runner(self) -> None:
@@ -2922,6 +2992,8 @@ class EvidenceTest(unittest.TestCase):
                         Path(temporary),
                         run_id=12345,
                         run_attempt=1,
+                        source_candidate=self.plan["candidate"]["name"],
+                        source_head_sha=self.plan["runner"]["revision"],
                     )
 
     def test_contract_validator_accepts_a_transient_then_pass_runner_lifecycle(self) -> None:
