@@ -1,7 +1,7 @@
 {
   "$schema": "./schema.json",
   "schema": "durable-workflow.product-train/v1",
-  "current": "2.0.0-beta.3",
+  "current": "2.0.0-beta.4",
   "components": [
     "workflow",
     "waterline",
@@ -12,35 +12,35 @@
     "sdk-rust"
   ],
   "trains": {
-    "2.0.0-beta.3": {
+    "2.0.0-beta.4": {
       "channel": "beta",
       "status": "supported",
       "versions": {
-        "workflow": "2.0.0-beta.3",
-        "sdk-php": "2.0.0-beta.3",
-        "waterline": "2.0.0-beta.3",
-        "server": "2.0.0-beta.3",
-        "cli": "2.0.0-beta.3",
-        "sdk-python": "2.0.0-beta.3",
-        "sdk-rust": "2.0.0-beta.3"
+        "workflow": "2.0.0-beta.4",
+        "sdk-php": "2.0.0-beta.4",
+        "waterline": "2.0.0-beta.4",
+        "server": "2.0.0-beta.4",
+        "cli": "2.0.0-beta.4",
+        "sdk-python": "2.0.0-beta.4",
+        "sdk-rust": "2.0.0-beta.4"
       },
       "registry_versions": {
-        "workflow": "2.0.0-beta.3",
-        "sdk-php": "2.0.0-beta.3",
-        "waterline": "2.0.0-beta.3",
-        "server": "2.0.0-beta.3",
-        "cli": "2.0.0-beta.3",
-        "sdk-python": "2.0.0b3",
-        "sdk-rust": "2.0.0-beta.3"
+        "workflow": "2.0.0-beta.4",
+        "sdk-php": "2.0.0-beta.4",
+        "waterline": "2.0.0-beta.4",
+        "server": "2.0.0-beta.4",
+        "cli": "2.0.0-beta.4",
+        "sdk-python": "2.0.0b4",
+        "sdk-rust": "2.0.0-beta.4"
       },
       "install": {
-        "workflow": "composer require durable-workflow/workflow:2.0.0-beta.3@beta",
-        "sdk-php": "composer require durable-workflow/sdk:2.0.0-beta.3@beta",
-        "waterline": "composer require durable-workflow/waterline:2.0.0-beta.3@beta durable-workflow/workflow:2.0.0-beta.3@beta",
-        "server": "docker pull durableworkflow/server:2.0.0-beta.3",
-        "cli": "curl -fsSL https://durable-workflow.com/install.sh | VERSION=2.0.0-beta.3 sh",
-        "sdk-python": "pip install durable-workflow==2.0.0-beta.3",
-        "sdk-rust": "cargo add durable-workflow@2.0.0-beta.3 --exact"
+        "workflow": "composer require durable-workflow/workflow:2.0.0-beta.4@beta",
+        "sdk-php": "composer require durable-workflow/sdk:2.0.0-beta.4@beta",
+        "waterline": "composer require durable-workflow/waterline:2.0.0-beta.4@beta durable-workflow/workflow:2.0.0-beta.4@beta durable-workflow/sdk:2.0.0-beta.4@beta",
+        "server": "docker pull durableworkflow/server:2.0.0-beta.4",
+        "cli": "curl -fsSL https://durable-workflow.com/install.sh | VERSION=2.0.0-beta.4 sh",
+        "sdk-python": "pip install durable-workflow==2.0.0-beta.4",
+        "sdk-rust": "cargo add durable-workflow@=2.0.0-beta.4"
       }
     }
   },
