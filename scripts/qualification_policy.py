@@ -1278,7 +1278,9 @@ def _scan_workflow_trust(
             if job_permissions is not None
             else set()
         )
-        job_privileged = bool(job_writes or "environment" in job or _references_secret_context(job))
+        job_privileged = bool(
+            job_writes or "environment" in job or "secrets" in job or _references_secret_context(job)
+        )
         if job_privileged:
             privileged_jobs.append(job_name)
         if manual_dispatch and job_privileged and not _protects_manual_dispatch(job, protected_ref):

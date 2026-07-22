@@ -461,6 +461,71 @@ jobs:
         )
         scan_workflow_sources(policy_fixture(), "cli", {"trusted.yml": tag_or_dispatch})
 
+    def test_reusable_workflow_credentials_require_a_protected_dispatch_ref(self) -> None:
+        local_call = "uses: ./.github/workflows/release.yml # local"
+        external_call = (
+            "uses: actions/checkout/.github/workflows/release.yml@"
+            f"{CHECKOUT_PIN} # v6"
+        )
+
+        def reusable_call(uses: str, secrets: str = "", condition: str = "") -> str:
+            return f"""name: reusable workflow caller
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  release:
+    {uses}
+{condition}{secrets}"""
+
+        unguarded = {
+            "local inherit": reusable_call(local_call, "    secrets: inherit\n"),
+            "external inherit": reusable_call(external_call, "    secrets: inherit\n"),
+            "explicit map": reusable_call(
+                external_call,
+                "    secrets:\n      package-token: ${{ github.token }}\n",
+            ),
+            "empty map": reusable_call(local_call, "    secrets: {}\n"),
+        }
+        for name, source in unguarded.items():
+            with self.subTest(name=name), self.assertRaisesRegex(PolicyError, "outside refs/heads/main"):
+                scan_workflow_sources(policy_fixture(), "cli", {"unsafe.yml": source})
+
+        protected = reusable_call(
+            local_call,
+            "    secrets: inherit\n",
+            "    if: github.ref == 'refs/heads/main'\n",
+        )
+        protected_evidence = scan_workflow_sources(policy_fixture(), "cli", {"protected.yml": protected})
+        self.assertEqual(["release"], protected_evidence["protected.yml"]["privileged_jobs"])
+
+        credential_free = reusable_call(local_call)
+        credential_free_evidence = scan_workflow_sources(
+            policy_fixture(),
+            "cli",
+            {"credential-free.yml": credential_free},
+        )
+        self.assertEqual([], credential_free_evidence["credential-free.yml"]["privileged_jobs"])
+
+    def test_pull_request_reusable_workflows_cannot_receive_credentials(self) -> None:
+        source = """name: untrusted reusable workflow caller
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  release:
+    uses: ./.github/workflows/release.yml # local
+"""
+        declarations = {
+            "inherit": "    secrets: inherit\n",
+            "explicit map": "    secrets:\n      package-token: ${{ github.token }}\n",
+        }
+        for name, declaration in declarations.items():
+            with self.subTest(name=name), self.assertRaisesRegex(PolicyError, "references a secret"):
+                scan_workflow_sources(policy_fixture(), "cli", {"unsafe.yml": source + declaration})
+
     def test_protected_ref_guard_covers_recovery_and_docs_deployment_shapes(self) -> None:
         fixtures = {
             "server": f"""name: server recovery

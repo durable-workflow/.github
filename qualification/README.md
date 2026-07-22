@@ -30,11 +30,13 @@ python scripts/qualification_policy.py validate \
 Every workflow must declare read-only or empty top-level token permissions.
 Write access is job-local, pull-request jobs cannot reference environments or
 secrets, and pull-request caches have separate event namespaces and narrow
-dependency paths rather than workspace or home-directory roots. Privileged
-manual-dispatch jobs must fail closed outside the repository's protected target
-ref. The scanner rejects `pull_request_target`, mutable container images,
-unreviewed `workflow_run` consumers, and privileged artifact consumers without
-an exact producer and digest provenance. Reviewed source-identity and artifact
+dependency paths rather than workspace or home-directory roots. Any job-level
+secrets declaration, including reusable-workflow inheritance and explicit
+maps, is privileged. Privileged manual-dispatch jobs must fail closed outside
+the repository's protected target ref. The scanner rejects
+`pull_request_target`, mutable container images, unreviewed `workflow_run`
+consumers, and privileged artifact consumers without an exact producer and
+digest provenance. Reviewed source-identity and artifact
 digest validators must be the first shell execution after their exact
 policy-declared sequence of immutable setup or download Action steps, including
 each step's complete input map. Each validator's complete shell command and
