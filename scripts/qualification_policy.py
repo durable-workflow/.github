@@ -29,7 +29,6 @@ COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 SUPPORTED_JAVASCRIPT_ACTION_RUNTIMES = ["node24"]
 EXPECTED_TARGETS = {
     "cli": ("cli", "main"),
-    "cloud": ("cloud", "main"),
     "documentation": ("durable-workflow.github.io", "main"),
     "github-control-plane": (".github", "main"),
     "sample-app": ("sample-app", "main"),

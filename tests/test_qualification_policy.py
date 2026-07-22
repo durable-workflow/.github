@@ -1034,6 +1034,26 @@ jobs:
         actual = {name: (target["repository"], target["branch"]) for name, target in policy["targets"].items()}
         self.assertEqual(EXPECTED_TARGETS, actual)
 
+    def test_private_cloud_is_rejected_from_the_public_target_inventory(self) -> None:
+        policy = policy_fixture()
+        self.assertEqual(10, len(EXPECTED_TARGETS))
+        self.assertNotIn("cloud", EXPECTED_TARGETS)
+        self.assertNotIn("cloud", policy["targets"])
+
+        policy["targets"]["cloud"] = {
+            "branch": "main",
+            "repository": "cloud",
+            "workflows": [
+                {
+                    "matrix_independent": False,
+                    "path": "ci.yml",
+                    "required_check": "Route Drift Guard",
+                }
+            ],
+        }
+        with self.assertRaisesRegex(PolicyError, "target inventory mismatch"):
+            validate_policy(policy)
+
     def test_policy_rejects_a_missing_public_target(self) -> None:
         policy = policy_fixture()
         del policy["targets"]["sdk-rust"]

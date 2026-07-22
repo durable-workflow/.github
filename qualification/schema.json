@@ -22,7 +22,7 @@
       "additionalProperties": {
         "$ref": "#/$defs/target"
       },
-      "minProperties": 11,
+      "minProperties": 10,
       "type": "object"
     },
     "workflow_trust": {

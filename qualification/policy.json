@@ -167,17 +167,6 @@
         }
       ]
     },
-    "cloud": {
-      "branch": "main",
-      "repository": "cloud",
-      "workflows": [
-        {
-          "matrix_independent": false,
-          "path": "ci.yml",
-          "required_check": "Route Drift Guard"
-        }
-      ]
-    },
     "documentation": {
       "branch": "main",
       "repository": "durable-workflow.github.io",
