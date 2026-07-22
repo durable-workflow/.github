@@ -7,7 +7,6 @@ import argparse
 import contextlib
 import email.utils
 import errno
-import fnmatch
 import http.client
 import json
 import os
@@ -433,12 +432,61 @@ def validate_policy(policy: dict[str, Any]) -> None:
 
     workflow_trust = policy.get("workflow_trust")
     if not isinstance(workflow_trust, dict) or set(workflow_trust) != {
+        "privileged_artifact_handoffs",
         "privileged_workflow_run_consumers",
         "pull_request_target_exceptions",
     }:
         raise PolicyError("qualification policy must declare the complete workflow trust contract")
     if workflow_trust["pull_request_target_exceptions"] != []:
         raise PolicyError("pull_request_target exceptions require a separately reviewed policy revision")
+    artifact_handoffs = workflow_trust["privileged_artifact_handoffs"]
+    if not isinstance(artifact_handoffs, dict) or set(artifact_handoffs) != {
+        "validator_command",
+        "validator_environment",
+        "validator_preceding_steps",
+        "validator_runner",
+    }:
+        raise PolicyError("qualification policy must declare the complete privileged artifact handoff contract")
+    if (
+        not isinstance(artifact_handoffs["validator_command"], str)
+        or not artifact_handoffs["validator_command"].strip()
+        or artifact_handoffs["validator_environment"]
+        != [
+            "ARTIFACT_DIRECTORY",
+            "EXPECTED_ARTIFACT_DIGEST",
+            "EXPECTED_ARTIFACT_ID",
+            "EXPECTED_SOURCE_RUN_ATTEMPT",
+            "EXPECTED_SOURCE_RUN_ID",
+        ]
+        or artifact_handoffs["validator_runner"] not in SAFE_VALIDATOR_RUNNERS
+    ):
+        raise PolicyError("qualification policy has an invalid privileged artifact handoff contract")
+    preceding_steps = artifact_handoffs["validator_preceding_steps"]
+    if not isinstance(preceding_steps, list) or len(preceding_steps) != 1:
+        raise PolicyError("privileged artifact validation must have one reviewed predecessor")
+    checkout = preceding_steps[0]
+    if (
+        not isinstance(checkout, dict)
+        or set(checkout) != {"uses", "with"}
+        or not isinstance(checkout["uses"], str)
+        or _split_action_reference(checkout["uses"]) is None
+        or _split_action_reference(checkout["uses"])[0] != "actions/checkout"
+        or checkout["with"]
+        != {
+            "fetch-depth": "0",
+            "persist-credentials": "false",
+            "ref": "${{ github.sha }}",
+        }
+    ):
+        raise PolicyError("privileged artifact validation predecessor must be the reviewed safe checkout")
+    _checkout_repository, _checkout_directory, checkout_commit = _split_action_reference(checkout["uses"])
+    checkout_releases = action_runtime["allowed_releases"].get("actions/checkout")
+    if (
+        not COMMIT_PATTERN.fullmatch(checkout_commit)
+        or not isinstance(checkout_releases, dict)
+        or checkout_commit not in checkout_releases
+    ):
+        raise PolicyError("privileged artifact validation predecessor must use an approved checkout release")
     consumers = workflow_trust["privileged_workflow_run_consumers"]
     if not isinstance(consumers, dict):
         raise PolicyError("privileged workflow_run consumers must be an object")
@@ -531,7 +579,9 @@ def validate_policy(policy: dict[str, Any]) -> None:
                     selectors = {"artifact-ids", "name", "pattern"}.intersection(settings)
                     if (
                         len(selectors) != 1
-                        or set(settings) != selectors | {"github-token", "path", "run-id"}
+                        or set(settings)
+                        != selectors | {"digest-mismatch", "github-token", "path", "run-id"}
+                        or settings["digest-mismatch"] != "error"
                         or settings["github-token"] != "${{ github.token }}"
                         or re.fullmatch(r"[a-z0-9][a-z0-9_-]*", settings["path"]) is None
                         or re.fullmatch(
@@ -1014,112 +1064,144 @@ def _identity_validator_binds_requested_run(step: Mapping[str, Any]) -> bool:
     )
 
 
-def _artifact_name_shape(name: str) -> str:
-    return re.sub(r"\$\{\{.*?}}", "", name, flags=re.DOTALL).strip()
+def _exact_expression(value: object, pattern: str) -> re.Match[str] | None:
+    if not isinstance(value, str):
+        return None
+    expression = re.fullmatch(r"\$\{\{\s*(.*?)\s*}}", value, flags=re.DOTALL)
+    if expression is None:
+        return None
+    return re.fullmatch(pattern, expression.group(1).strip())
 
 
-def _upload_artifact_names(job: dict[str, Any]) -> list[str]:
-    names: list[str] = []
-    for step in _job_action_steps(job):
-        parsed = _split_action_reference(step["uses"])
-        if parsed is None or parsed[0] != "actions/upload-artifact":
-            continue
-        settings = step.get("with")
-        name = settings.get("name") if isinstance(settings, dict) else None
-        if isinstance(name, str) and name.strip():
-            names.append(name.strip())
-    return names
-
-
-def _producer_artifact_name_matches(
-    producer_name: str,
-    producer: dict[str, Any],
-    upload_name: str,
-    download_name: str,
+def _direct_artifact_handoff(
+    workflow: dict[str, Any],
+    jobs: dict[str, Any],
+    job: dict[str, Any],
+    download_index: int,
+    settings: dict[str, Any],
+    handoff_policy: dict[str, Any],
+    label: str,
 ) -> bool:
-    if upload_name == download_name:
-        return True
-    references = re.findall(
-        rf"\bneeds\.{re.escape(producer_name)}\.outputs\.([A-Za-z0-9_-]+)",
-        download_name,
+    """Prove one direct, digest-bound artifact handoff before privileged use."""
+
+    if job.get("runs-on") != handoff_policy["validator_runner"] or "container" in job or "services" in job:
+        return False
+    if workflow.get("env") is not None or job.get("env") is not None:
+        return False
+    if set(settings) != {
+        "artifact-ids",
+        "digest-mismatch",
+        "github-token",
+        "path",
+        "repository",
+        "run-id",
+    }:
+        return False
+    download_directory = settings.get("path")
+    if (
+        settings.get("digest-mismatch") != "error"
+        or settings.get("github-token") != "${{ github.token }}"
+        or settings.get("repository") != "${{ github.repository }}"
+        or not isinstance(download_directory, str)
+        or re.fullmatch(r"isolated-[a-z0-9][a-z0-9._-]*", download_directory) is None
+    ):
+        return False
+
+    artifact_id = _exact_expression(
+        settings.get("artifact-ids"),
+        r"needs\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)",
     )
-    if not references or _artifact_name_shape(upload_name) != _artifact_name_shape(download_name):
+    if artifact_id is None:
+        return False
+    producer_name, artifact_id_output = artifact_id.groups()
+    needs = _job_needs(job, label)
+    producer = jobs.get(producer_name)
+    if producer_name not in needs or not isinstance(producer, dict):
         return False
     outputs = producer.get("outputs")
     if not isinstance(outputs, dict):
         return False
-    for output_name in references:
-        output = outputs.get(output_name)
-        if not isinstance(output, str):
-            return False
-        expression = re.fullmatch(r"\$\{\{\s*(.*?)\s*}}", output, flags=re.DOTALL)
-        if expression is None or expression.group(1).strip() not in upload_name:
-            return False
-    return True
-
-
-def _has_exact_artifact_producer(
-    jobs: dict[str, Any],
-    job: dict[str, Any],
-    settings: dict[str, Any],
-    label: str,
-) -> bool:
-    needs = _job_needs(job, label)
-    producers = {
-        name: jobs[name]
-        for name in needs
-        if name in jobs and isinstance(jobs[name], dict) and _upload_artifact_names(jobs[name])
-    }
-    if not producers:
+    upload_reference = _exact_expression(
+        outputs.get(artifact_id_output),
+        r"steps\.([A-Za-z0-9_-]+)\.outputs\.artifact-id",
+    )
+    if upload_reference is None:
         return False
-
-    name = settings.get("name")
-    if isinstance(name, str) and name.strip():
-        referenced = set(re.findall(r"\bneeds\.([A-Za-z0-9_-]+)\.outputs\.", name))
-        if referenced and not referenced <= set(producers):
-            return False
-        candidates = referenced or set(producers)
-        shape = _artifact_name_shape(name)
-        return bool(shape) and any(
-            _producer_artifact_name_matches(producer, producers[producer], upload_name, name)
-            for producer in candidates
-            for upload_name in _upload_artifact_names(producers[producer])
-        )
-
-    pattern = settings.get("pattern")
-    if isinstance(pattern, str) and pattern.strip():
-        if "${{" in pattern:
-            return False
-        if pattern.strip() in {"*", "**"}:
-            return False
-        matches = {
-            producer_name
-            for producer_name, producer in jobs.items()
-            if isinstance(producer_name, str)
-            and isinstance(producer, dict)
-            and any(
-                fnmatch.fnmatchcase(upload_name, pattern.strip())
-                for upload_name in _upload_artifact_names(producer)
-            )
-        }
-        return bool(matches) and matches <= set(producers)
-
-    artifact_ids = settings.get("artifact-ids")
-    if not isinstance(artifact_ids, str) or not artifact_ids.strip():
-        return False
-    referenced_needs = set(re.findall(r"\bneeds\.([A-Za-z0-9_-]+)\.outputs\.", artifact_ids))
-    if referenced_needs:
-        return referenced_needs <= set(producers)
-    selector = re.fullmatch(r"\$\{\{\s*steps\.([A-Za-z0-9_-]+)\.outputs\.[A-Za-z0-9_-]+\s*}}", artifact_ids)
-    if selector is None:
-        return False
-    selector_id = selector.group(1)
-    for step in job.get("steps") or []:
-        if not isinstance(step, dict) or step.get("id") != selector_id or not isinstance(step.get("run"), str):
+    upload_id = upload_reference.group(1)
+    upload_step = None
+    for step in producer.get("steps") or []:
+        if not isinstance(step, dict) or step.get("id") != upload_id:
             continue
-        selected_producers = set(re.findall(r"\bneeds\.([A-Za-z0-9_-]+)\.outputs\.", json.dumps(step)))
-        return bool(selected_producers) and selected_producers <= set(producers)
-    return False
+        parsed = _split_action_reference(step.get("uses")) if isinstance(step.get("uses"), str) else None
+        if parsed is not None and parsed[0] == "actions/upload-artifact":
+            upload_step = step
+            break
+    if upload_step is None or not set(upload_step).issubset({"id", "name", "uses", "with"}):
+        return False
+    upload_settings = upload_step.get("with")
+    if (
+        not isinstance(upload_settings, dict)
+        or set(upload_settings) != {"archive", "if-no-files-found", "path"}
+        or upload_settings.get("archive") != "false"
+        or upload_settings.get("if-no-files-found") != "error"
+        or not isinstance(upload_settings.get("path"), str)
+        or re.fullmatch(r"[a-z0-9][a-z0-9._-]*", upload_settings["path"]) is None
+    ):
+        return False
+
+    def output_name_for(expected: str) -> str | None:
+        names = [
+            name
+            for name, value in outputs.items()
+            if isinstance(name, str)
+            and _exact_expression(value, re.escape(expected)) is not None
+        ]
+        return names[0] if len(names) == 1 else None
+
+    digest_output = output_name_for(f"steps.{upload_id}.outputs.artifact-digest")
+    run_id_output = output_name_for("github.run_id")
+    run_attempt_output = output_name_for("github.run_attempt")
+    if None in {digest_output, run_id_output, run_attempt_output}:
+        return False
+    expected_run_id = f"${{{{ needs.{producer_name}.outputs.{run_id_output} }}}}"
+    if settings.get("run-id") != expected_run_id:
+        return False
+
+    steps = job.get("steps") or []
+    preceding_steps = handoff_policy["validator_preceding_steps"]
+    if (
+        not isinstance(steps, list)
+        or not isinstance(preceding_steps, list)
+        or download_index != len(preceding_steps)
+        or download_index + 1 >= len(steps)
+        or not all(
+            _trusted_validator_action_step(step, expected_step)
+            for step, expected_step in zip(steps[:download_index], preceding_steps, strict=True)
+        )
+    ):
+        return False
+    download_step = steps[download_index]
+    if not isinstance(download_step, dict) or not set(download_step).issubset({"name", "uses", "with"}):
+        return False
+    validator = steps[download_index + 1]
+    if not isinstance(validator, dict) or not set(validator).issubset({"env", "name", "run"}):
+        return False
+    expected_environment = {
+        "ARTIFACT_DIRECTORY": download_directory,
+        "EXPECTED_ARTIFACT_DIGEST": f"${{{{ needs.{producer_name}.outputs.{digest_output} }}}}",
+        "EXPECTED_ARTIFACT_ID": settings["artifact-ids"],
+        "EXPECTED_SOURCE_RUN_ATTEMPT": f"${{{{ needs.{producer_name}.outputs.{run_attempt_output} }}}}",
+        "EXPECTED_SOURCE_RUN_ID": expected_run_id,
+    }
+    if validator.get("env") != expected_environment:
+        return False
+    return _step_invokes(
+        workflow,
+        job,
+        validator,
+        handoff_policy["validator_command"],
+        handoff_policy["validator_environment"],
+    )
 
 
 def _scan_workflow_trust(
@@ -1210,6 +1292,7 @@ def _scan_workflow_trust(
         if pull_request and ("secrets" in job or _references_secret_context(job)):
             raise PolicyError(f"{label} pull-request job {job_name!r} references a secret")
 
+        action_steps_by_identity = {id(step): index for index, step in enumerate(job.get("steps") or [])}
         for step in _job_action_steps(job):
             specification = step["uses"]
             parsed = _split_action_reference(specification)
@@ -1239,15 +1322,18 @@ def _scan_workflow_trust(
                     raise PolicyError(
                         f"{label} privileged artifact consumer {job_name!r} has no exact artifact selector"
                     )
-                if not reviewed_workflow_run and not _has_exact_artifact_producer(
+                if not reviewed_workflow_run and not _direct_artifact_handoff(
+                    document,
                     jobs,
                     job,
+                    action_steps_by_identity[id(step)],
                     settings,
+                    policy["workflow_trust"]["privileged_artifact_handoffs"],
                     f"{label} privileged artifact consumer {job_name!r}",
                 ):
                     raise PolicyError(
-                        f"{label} privileged artifact consumer {job_name!r} has no exact upload producer "
-                        "and artifact digest provenance"
+                        f"{label} privileged artifact consumer {job_name!r} has no exact producer, "
+                        "immutable artifact identity, and pre-use digest validation"
                     )
 
     if workflow_run is not None:

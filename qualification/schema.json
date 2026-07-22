@@ -227,6 +227,9 @@
     "workflowTrust": {
       "additionalProperties": false,
       "properties": {
+        "privileged_artifact_handoffs": {
+          "$ref": "#/$defs/artifactHandoff"
+        },
         "privileged_workflow_run_consumers": {
           "additionalProperties": {
             "$ref": "#/$defs/workflowRunConsumer"
@@ -239,8 +242,45 @@
         }
       },
       "required": [
+        "privileged_artifact_handoffs",
         "privileged_workflow_run_consumers",
         "pull_request_target_exceptions"
+      ],
+      "type": "object"
+    },
+    "artifactHandoff": {
+      "additionalProperties": false,
+      "properties": {
+        "validator_command": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "validator_environment": {
+          "const": [
+            "ARTIFACT_DIRECTORY",
+            "EXPECTED_ARTIFACT_DIGEST",
+            "EXPECTED_ARTIFACT_ID",
+            "EXPECTED_SOURCE_RUN_ATTEMPT",
+            "EXPECTED_SOURCE_RUN_ID"
+          ]
+        },
+        "validator_preceding_steps": {
+          "items": {
+            "$ref": "#/$defs/validatorPrecedingStep"
+          },
+          "maxItems": 1,
+          "minItems": 1,
+          "type": "array"
+        },
+        "validator_runner": {
+          "const": "ubuntu-latest"
+        }
+      },
+      "required": [
+        "validator_command",
+        "validator_environment",
+        "validator_preceding_steps",
+        "validator_runner"
       ],
       "type": "object"
     },

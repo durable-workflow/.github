@@ -97,6 +97,7 @@ jobs:
           path: aggregate-input
           github-token: ${{ github.token }}
           run-id: ${{ needs.bind.outputs.source_run_id }}
+          digest-mismatch: error
 
       - name: Restore experiment evidence from the completed run
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
@@ -107,6 +108,7 @@ jobs:
           path: evidence
           github-token: ${{ github.token }}
           run-id: ${{ needs.bind.outputs.source_run_id }}
+          digest-mismatch: error
 
       - name: Aggregate exact-tuple evidence
         id: aggregate

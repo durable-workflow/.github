@@ -90,6 +90,27 @@
   "required_status_checks_strict": true,
   "schema": "durable-workflow.github-target-qualification/v1",
   "workflow_trust": {
+    "privileged_artifact_handoffs": {
+      "validator_command": "set -euo pipefail\nif [[ ! \"$EXPECTED_ARTIFACT_DIGEST\" =~ ^[0-9a-f]{64}$ ]]; then\n  printf 'producer artifact digest is not an exact SHA-256 digest\\n' >&2\n  exit 1\nfi\nfor identity in \"$EXPECTED_ARTIFACT_ID\" \"$EXPECTED_SOURCE_RUN_ID\" \"$EXPECTED_SOURCE_RUN_ATTEMPT\"; do\n  if [[ ! \"$identity\" =~ ^[1-9][0-9]*$ ]]; then\n    printf 'producer artifact identity is invalid\\n' >&2\n    exit 1\n  fi\ndone\nif [[ ! \"$ARTIFACT_DIRECTORY\" =~ ^isolated-[a-z0-9][a-z0-9._-]*$ ]]; then\n  printf 'artifact validation directory is unsafe\\n' >&2\n  exit 1\nfi\nmapfile -d '' entries < <(\n  /usr/bin/find \"$ARTIFACT_DIRECTORY\" -mindepth 1 -maxdepth 1 -print0\n)\nif [ \"${#entries[@]}\" -ne 1 ] || [ ! -f \"${entries[0]}\" ] || [ -L \"${entries[0]}\" ]; then\n  printf 'artifact handoff must contain exactly one regular file\\n' >&2\n  exit 1\nfi\nobserved_digest=\"$(/usr/bin/sha256sum \"${entries[0]}\")\"\nobserved_digest=\"${observed_digest%% *}\"\nif [ \"$observed_digest\" != \"$EXPECTED_ARTIFACT_DIGEST\" ]; then\n  printf 'artifact digest mismatch: expected %s, got %s\\n' \\\n    \"$EXPECTED_ARTIFACT_DIGEST\" \"$observed_digest\" >&2\n  exit 1\nfi\nprintf 'validated artifact %s from run %s attempt %s\\n' \\\n  \"$EXPECTED_ARTIFACT_ID\" \"$EXPECTED_SOURCE_RUN_ID\" \"$EXPECTED_SOURCE_RUN_ATTEMPT\"\n",
+      "validator_environment": [
+        "ARTIFACT_DIRECTORY",
+        "EXPECTED_ARTIFACT_DIGEST",
+        "EXPECTED_ARTIFACT_ID",
+        "EXPECTED_SOURCE_RUN_ATTEMPT",
+        "EXPECTED_SOURCE_RUN_ID"
+      ],
+      "validator_preceding_steps": [
+        {
+          "uses": "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
+          "with": {
+            "fetch-depth": "0",
+            "persist-credentials": "false",
+            "ref": "${{ github.sha }}"
+          }
+        }
+      ],
+      "validator_runner": "ubuntu-latest"
+    },
     "privileged_workflow_run_consumers": {
       "github-control-plane/beta-conformance-retention.yml": {
         "artifact_digest_validator_command": "python scripts/beta_conformance.py aggregate \\\n  aggregate-input/execution-plan.json \\\n  evidence \\\n  suite-result.json \\\n  release-assets \\\n  --contract beta-conformance/contract.json \\\n  --run-id \"${{ needs.bind.outputs.source_run_id }}\" \\\n  --run-attempt \"${{ needs.bind.outputs.source_run_attempt }}\" \\\n  --generated-at \"${{ needs.bind.outputs.source_completed_at }}\" \\\n  --source-candidate \"${{ needs.bind.outputs.source_candidate }}\" \\\n  --source-head-sha \"${{ needs.bind.outputs.source_head_sha }}\" \\\n  --github-output \"$GITHUB_OUTPUT\"\n",
@@ -113,7 +134,8 @@
               "github-token": "${{ github.token }}",
               "name": "beta-conformance-plan-${{ needs.bind.outputs.source_run_id }}",
               "path": "aggregate-input",
-              "run-id": "${{ needs.bind.outputs.source_run_id }}"
+              "run-id": "${{ needs.bind.outputs.source_run_id }}",
+              "digest-mismatch": "error"
             }
           },
           {
@@ -122,7 +144,8 @@
               "github-token": "${{ github.token }}",
               "path": "evidence",
               "pattern": "beta-conformance-*-${{ needs.bind.outputs.source_run_id }}-${{ needs.bind.outputs.source_run_attempt }}",
-              "run-id": "${{ needs.bind.outputs.source_run_id }}"
+              "run-id": "${{ needs.bind.outputs.source_run_id }}",
+              "digest-mismatch": "error"
             }
           }
         ],

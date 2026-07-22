@@ -31,7 +31,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
+      artifact-digest: ${{ steps.privileged-handoff.outputs.artifact-digest }}
+      artifact-id: ${{ steps.privileged-handoff.outputs.artifact-id }}
       handoff-attempt: ${{ steps.handoff.outputs.producer_attempt }}
+      source-run-attempt: ${{ github.run_attempt }}
+      source-run-id: ${{ github.run_id }}
     permissions:
       actions: read
       attestations: read
@@ -133,6 +137,17 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Package the privileged recorder handoff as one immutable file
+        run: tar -cf candidate-recorder-handoff.tar candidate.json verification.json handoff.json
+
+      - name: Bind the privileged recorder handoff identity and digest
+        id: privileged-handoff
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          archive: false
+          if-no-files-found: error
+          path: candidate-recorder-handoff.tar
+
   record:
     name: Record qualified immutable candidate from a fresh checkout
     needs: qualify
@@ -151,32 +166,65 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
 
+      - name: Restore isolated candidate verification evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          artifact-ids: ${{ needs.qualify.outputs.artifact-id }}
+          digest-mismatch: error
+          github-token: ${{ github.token }}
+          path: isolated-candidate-handoff
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.qualify.outputs.source-run-id }}
+
+      - name: Validate the exact producer artifact before use
+        env:
+          ARTIFACT_DIRECTORY: isolated-candidate-handoff
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.qualify.outputs.artifact-digest }}
+          EXPECTED_ARTIFACT_ID: ${{ needs.qualify.outputs.artifact-id }}
+          EXPECTED_SOURCE_RUN_ATTEMPT: ${{ needs.qualify.outputs.source-run-attempt }}
+          EXPECTED_SOURCE_RUN_ID: ${{ needs.qualify.outputs.source-run-id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$EXPECTED_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]; then
+            printf 'producer artifact digest is not an exact SHA-256 digest\n' >&2
+            exit 1
+          fi
+          for identity in "$EXPECTED_ARTIFACT_ID" "$EXPECTED_SOURCE_RUN_ID" "$EXPECTED_SOURCE_RUN_ATTEMPT"; do
+            if [[ ! "$identity" =~ ^[1-9][0-9]*$ ]]; then
+              printf 'producer artifact identity is invalid\n' >&2
+              exit 1
+            fi
+          done
+          if [[ ! "$ARTIFACT_DIRECTORY" =~ ^isolated-[a-z0-9][a-z0-9._-]*$ ]]; then
+            printf 'artifact validation directory is unsafe\n' >&2
+            exit 1
+          fi
+          mapfile -d '' entries < <(
+            /usr/bin/find "$ARTIFACT_DIRECTORY" -mindepth 1 -maxdepth 1 -print0
+          )
+          if [ "${#entries[@]}" -ne 1 ] || [ ! -f "${entries[0]}" ] || [ -L "${entries[0]}" ]; then
+            printf 'artifact handoff must contain exactly one regular file\n' >&2
+            exit 1
+          fi
+          observed_digest="$(/usr/bin/sha256sum "${entries[0]}")"
+          observed_digest="${observed_digest%% *}"
+          if [ "$observed_digest" != "$EXPECTED_ARTIFACT_DIGEST" ]; then
+            printf 'artifact digest mismatch: expected %s, got %s\n' \
+              "$EXPECTED_ARTIFACT_DIGEST" "$observed_digest" >&2
+            exit 1
+          fi
+          printf 'validated artifact %s from run %s attempt %s\n' \
+            "$EXPECTED_ARTIFACT_ID" "$EXPECTED_SOURCE_RUN_ID" "$EXPECTED_SOURCE_RUN_ATTEMPT"
+
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: "3.13"
 
-      - name: Select the newest exact handoff from this workflow run
-        id: handoff
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+      - name: Extract the validated candidate handoff
         run: |
-          python scripts/handoff_recovery.py select candidate \
-            --repository "$GITHUB_REPOSITORY" \
-            --source-sha "$GITHUB_SHA" \
-            --run-id "$GITHUB_RUN_ID" \
-            --run-attempt "$GITHUB_RUN_ATTEMPT" \
-            --producer-attempt "${{ needs.qualify.outputs.handoff-attempt }}" \
-            --github-output "$GITHUB_OUTPUT"
-
-      - name: Restore isolated candidate verification evidence
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
-        with:
-          artifact-ids: ${{ steps.handoff.outputs.artifact_id }}
-          path: isolated-verification
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ github.run_id }}
+          mkdir isolated-verification
+          tar -xf isolated-candidate-handoff/candidate-recorder-handoff.tar -C isolated-verification
 
       - name: Validate the selected attempt-bound handoff
         run: |
@@ -188,7 +236,7 @@ jobs:
             --source-sha "$GITHUB_SHA" \
             --run-id "$GITHUB_RUN_ID" \
             --current-attempt "$GITHUB_RUN_ATTEMPT" \
-            --producer-attempt "${{ steps.handoff.outputs.producer_attempt }}"
+            --producer-attempt "${{ needs.qualify.outputs.handoff-attempt }}"
 
       - name: Rebuild and validate the authorized verification handoff
         env:

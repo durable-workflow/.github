@@ -531,14 +531,70 @@ def validate_qualification_policy_contract(value: Any, context: str) -> dict[str
             raise CandidateError(f"{context} has invalid immutable container releases")
     if "workflow_trust" in policy:
         workflow_trust = policy["workflow_trust"]
+        trust_fields = set(workflow_trust) if isinstance(workflow_trust, dict) else set()
         if (
             not isinstance(workflow_trust, dict)
-            or set(workflow_trust)
-            != {"privileged_workflow_run_consumers", "pull_request_target_exceptions"}
+            or trust_fields
+            not in {
+                frozenset({"privileged_workflow_run_consumers", "pull_request_target_exceptions"}),
+                frozenset(
+                    {
+                        "privileged_artifact_handoffs",
+                        "privileged_workflow_run_consumers",
+                        "pull_request_target_exceptions",
+                    }
+                ),
+            }
             or workflow_trust["pull_request_target_exceptions"] != []
             or not isinstance(workflow_trust["privileged_workflow_run_consumers"], dict)
         ):
             raise CandidateError(f"{context} has an invalid workflow trust contract")
+        if "privileged_artifact_handoffs" in workflow_trust:
+            handoffs = workflow_trust["privileged_artifact_handoffs"]
+            preceding = handoffs.get("validator_preceding_steps") if isinstance(handoffs, dict) else None
+            checkout = preceding[0] if isinstance(preceding, list) and len(preceding) == 1 else None
+            checkout_reference = checkout.get("uses") if isinstance(checkout, dict) else None
+            checkout_settings = checkout.get("with") if isinstance(checkout, dict) else None
+            checkout_release = (
+                checkout_reference.rsplit("@", 1)[1]
+                if isinstance(checkout_reference, str) and "@" in checkout_reference
+                else None
+            )
+            if (
+                not isinstance(handoffs, dict)
+                or set(handoffs)
+                != {
+                    "validator_command",
+                    "validator_environment",
+                    "validator_preceding_steps",
+                    "validator_runner",
+                }
+                or not isinstance(handoffs["validator_command"], str)
+                or not handoffs["validator_command"].strip()
+                or handoffs["validator_environment"]
+                != [
+                    "ARTIFACT_DIRECTORY",
+                    "EXPECTED_ARTIFACT_DIGEST",
+                    "EXPECTED_ARTIFACT_ID",
+                    "EXPECTED_SOURCE_RUN_ATTEMPT",
+                    "EXPECTED_SOURCE_RUN_ID",
+                ]
+                or handoffs["validator_runner"] != "ubuntu-latest"
+                or not isinstance(checkout, dict)
+                or set(checkout) != {"uses", "with"}
+                or not isinstance(checkout_reference, str)
+                or not checkout_reference.startswith("actions/checkout@")
+                or not isinstance(checkout_release, str)
+                or not COMMIT_PATTERN.fullmatch(checkout_release)
+                or checkout_release not in allowed_releases.get("actions/checkout", {})
+                or checkout_settings
+                != {
+                    "fetch-depth": "0",
+                    "persist-credentials": "false",
+                    "ref": "${{ github.sha }}",
+                }
+            ):
+                raise CandidateError(f"{context} has an invalid privileged artifact handoff contract")
 
     repositories: set[str] = set()
     for name, value in targets.items():

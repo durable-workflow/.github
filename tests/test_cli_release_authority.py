@@ -263,17 +263,53 @@ class CliReleaseAuthorityTest(unittest.TestCase):
                     == "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
                     and contract["handoff"].issubset(set(step["with"].get("path", "").splitlines()))
                 )
+                bound_upload = next(
+                    step for step in verification_job["steps"] if step.get("id") == "privileged-handoff"
+                )
                 download = next(
                     step
                     for step in mutation_job["steps"]
                     if step.get("uses")
                     == "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
                 )
+                digest_validator = mutation_job["steps"][mutation_job["steps"].index(download) + 1]
+
+                self.assertEqual(
+                    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+                    bound_upload["uses"],
+                )
+                self.assertIs(bound_upload["with"]["archive"], False)
+                self.assertEqual("error", bound_upload["with"]["if-no-files-found"])
+                self.assertRegex(bound_upload["with"]["path"], r"^[a-z0-9][a-z0-9._-]*\.tar$")
+                self.assertEqual(
+                    "${{ steps.privileged-handoff.outputs.artifact-id }}",
+                    verification_job["outputs"]["artifact-id"],
+                )
+                self.assertEqual(
+                    "${{ steps.privileged-handoff.outputs.artifact-digest }}",
+                    verification_job["outputs"]["artifact-digest"],
+                )
+                self.assertEqual("${{ github.run_id }}", verification_job["outputs"]["source-run-id"])
+                self.assertEqual("${{ github.run_attempt }}", verification_job["outputs"]["source-run-attempt"])
+                self.assertEqual(
+                    f"${{{{ needs.{verification_name}.outputs.artifact-id }}}}",
+                    download["with"]["artifact-ids"],
+                )
+                self.assertEqual("error", download["with"]["digest-mismatch"])
+                self.assertEqual("${{ github.token }}", download["with"]["github-token"])
+                self.assertEqual("${{ github.repository }}", download["with"]["repository"])
+                self.assertEqual(
+                    f"${{{{ needs.{verification_name}.outputs.source-run-id }}}}",
+                    download["with"]["run-id"],
+                )
+                self.assertEqual("Validate the exact producer artifact before use", digest_validator["name"])
+                self.assertEqual(
+                    f"${{{{ needs.{verification_name}.outputs.artifact-digest }}}}",
+                    digest_validator["env"]["EXPECTED_ARTIFACT_DIGEST"],
+                )
+                self.assertLess(mutation_job["steps"].index(digest_validator), mutation_job["steps"].index(mutation))
 
                 if contract["recoverable"]:
-                    selector = next(
-                        step for step in mutation_job["steps"] if "handoff_recovery.py select" in step.get("run", "")
-                    )
                     validator = next(
                         step for step in mutation_job["steps"] if "handoff_recovery.py validate" in step.get("run", "")
                     )
@@ -286,18 +322,8 @@ class CliReleaseAuthorityTest(unittest.TestCase):
                     self.assertIn("${{ github.run_attempt }}", upload["with"]["name"])
                     self.assertEqual(30, upload["with"]["retention-days"])
                     self.assertNotIn("name", download["with"])
-                    selector_id = selector["id"]
-                    self.assertEqual(
-                        f"${{{{ steps.{selector_id}.outputs.artifact_id }}}}",
-                        download["with"]["artifact-ids"],
-                    )
-                    self.assertEqual("${{ github.token }}", download["with"]["github-token"])
-                    self.assertEqual("${{ github.run_id }}", download["with"]["run-id"])
-                    self.assertIn('--run-id "$GITHUB_RUN_ID"', selector["run"])
-                    self.assertIn('--run-attempt "$GITHUB_RUN_ATTEMPT"', selector["run"])
-                    self.assertIn("--producer-attempt", selector["run"])
                     self.assertIn(
-                        f"${{{{ steps.{selector_id}.outputs.producer_attempt }}}}",
+                        f"${{{{ needs.{verification_name}.outputs.handoff-attempt }}}}",
                         validator["run"],
                     )
                     self.assertEqual(
@@ -315,8 +341,6 @@ class CliReleaseAuthorityTest(unittest.TestCase):
                     )
                     self.assertLess(mutation_job["steps"].index(validator), mutation_job["steps"].index(probe))
                     self.assertLess(mutation_job["steps"].index(probe), mutation_job["steps"].index(mutation))
-                else:
-                    self.assertEqual(upload["with"]["name"], download["with"]["name"])
                 self.assertEqual(
                     contract["handoff"],
                     set(upload["with"]["path"].splitlines()),

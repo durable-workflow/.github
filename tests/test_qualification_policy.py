@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import io
 import json
+import os
 import re
+import subprocess
+import tempfile
+import textwrap
 import unittest
 import urllib.error
 import urllib.parse
@@ -158,6 +163,7 @@ jobs:
           path: aggregate-input
           github-token: ${{{{ github.token }}}}
           run-id: ${{{{ needs.bind.outputs.source_run_id }}}}
+          digest-mismatch: error
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: >-
@@ -166,6 +172,7 @@ jobs:
           path: evidence
           github-token: ${{{{ github.token }}}}
           run-id: ${{{{ needs.bind.outputs.source_run_id }}}}
+          digest-mismatch: error
       - run: |
           python scripts/beta_conformance.py aggregate \\
             aggregate-input/execution-plan.json \\
@@ -245,7 +252,11 @@ jobs:
 
     @staticmethod
     def trusted_privileged_artifact_source() -> str:
-        return """name: trusted publication
+        validator = textwrap.indent(
+            policy_fixture()["workflow_trust"]["privileged_artifact_handoffs"]["validator_command"].rstrip(),
+            "          ",
+        )
+        return f"""name: trusted publication
 on:
   workflow_dispatch:
 permissions:
@@ -253,11 +264,18 @@ permissions:
 jobs:
   package:
     runs-on: ubuntu-latest
+    outputs:
+      artifact_id: ${{{{ steps.release.outputs.artifact-id }}}}
+      artifact_digest: ${{{{ steps.release.outputs.artifact-digest }}}}
+      source_run_id: ${{{{ github.run_id }}}}
+      source_run_attempt: ${{{{ github.run_attempt }}}}
     steps:
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - id: release
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: release
-          path: dist
+          archive: false
+          if-no-files-found: error
+          path: release.tar
   publish:
     needs: package
     if: github.ref == 'refs/heads/main'
@@ -265,9 +283,28 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@{CHECKOUT_PIN} # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{{{ github.sha }}}}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: release
+          artifact-ids: ${{{{ needs.package.outputs.artifact_id }}}}
+          digest-mismatch: error
+          github-token: ${{{{ github.token }}}}
+          path: isolated-release
+          repository: ${{{{ github.repository }}}}
+          run-id: ${{{{ needs.package.outputs.source_run_id }}}}
+      - name: Validate the exact producer artifact before use
+        env:
+          ARTIFACT_DIRECTORY: isolated-release
+          EXPECTED_ARTIFACT_DIGEST: ${{{{ needs.package.outputs.artifact_digest }}}}
+          EXPECTED_ARTIFACT_ID: ${{{{ needs.package.outputs.artifact_id }}}}
+          EXPECTED_SOURCE_RUN_ATTEMPT: ${{{{ needs.package.outputs.source_run_attempt }}}}
+          EXPECTED_SOURCE_RUN_ID: ${{{{ needs.package.outputs.source_run_id }}}}
+        run: |
+{validator}
 """
 
     def test_workflow_trust_accepts_partitioned_unprivileged_pull_requests(self) -> None:
@@ -488,23 +525,116 @@ jobs:
 
         cases = {
             "unrelated dependency": source.replace("needs: package", "needs: unrelated"),
-            "dynamic pattern": source.replace(
-                "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8\n"
-                "        with:\n          name: release",
-                "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8\n"
-                "        with:\n          pattern: ${{ inputs.artifact_pattern }}",
+            "matching name without digest": source.replace(
+                "          artifact-ids: ${{ needs.package.outputs.artifact_id }}\n",
+                "          name: release.tar\n",
             ),
-            "missing digest provenance": source.replace(
-                "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7",
-                "uses: ./actions/package # local",
+            "wrong digest": source.replace(
+                "artifact_digest: ${{ steps.release.outputs.artifact-digest }}",
+                "artifact_digest: ${{ steps.release.outputs.artifact-id }}",
+            ),
+            "digest check after first consumer": source.replace(
+                "      - name: Validate the exact producer artifact before use\n",
+                "      - run: tar -xf isolated-release/release.tar\n"
+                "      - name: Validate the exact producer artifact before use\n",
             ),
         }
         for name, candidate in cases.items():
             with self.subTest(name=name), self.assertRaisesRegex(
                 PolicyError,
-                "exact upload producer and artifact digest provenance",
+                "exact producer, immutable artifact identity, and pre-use digest validation",
             ):
                 scan_workflow_sources(policy_fixture(), "cli", {"unsafe.yml": candidate})
+
+    def test_privileged_artifact_validation_rejects_execution_overrides(self) -> None:
+        source = self.trusted_privileged_artifact_source()
+        cases = {
+            "download can ignore digest mismatch": source.replace("digest-mismatch: error", "digest-mismatch: warn"),
+            "download changes repository": source.replace(
+                "repository: ${{ github.repository }}", "repository: attacker/fork"
+            ),
+            "validator can be skipped": source.replace(
+                "      - name: Validate the exact producer artifact before use\n",
+                "      - name: Validate the exact producer artifact before use\n        if: ${{ false }}\n",
+            ),
+            "validator custom shell": source.replace(
+                "        run: |\n          set -euo pipefail",
+                "        shell: true {0}\n        run: |\n          set -euo pipefail",
+            ),
+            "job container": source.replace(
+                "  publish:\n", "  publish:\n    container: python:3.13\n"
+            ),
+            "job service": source.replace(
+                "  publish:\n", "  publish:\n    services:\n      writer:\n        image: alpine:3.20\n"
+            ),
+            "download path override": source.replace("path: isolated-release", "path: scripts"),
+            "checkout persists credentials": source.replace("persist-credentials: false", "persist-credentials: true"),
+            "checkout selects a different ref": source.replace(
+                "ref: ${{ github.sha }}", "ref: ${{ inputs.unreviewed_ref }}"
+            ),
+            "predecessor run shadows tools": source.replace(
+                "      - uses: actions/download-artifact@",
+                "      - run: echo '/tmp/shadow' >> \"$GITHUB_PATH\"\n"
+                "      - uses: actions/download-artifact@",
+            ),
+            "extra predecessor action": source.replace(
+                "      - uses: actions/download-artifact@",
+                f"      - uses: actions/checkout@{CHECKOUT_PIN} # v6\n"
+                "        with:\n"
+                "          fetch-depth: 0\n"
+                "          persist-credentials: false\n"
+                "          ref: ${{ github.sha }}\n"
+                "      - uses: actions/download-artifact@",
+            ),
+            "download can be skipped": source.replace(
+                "      - uses: actions/download-artifact@",
+                "      - if: ${{ false }}\n        uses: actions/download-artifact@",
+            ),
+        }
+        for name, candidate in cases.items():
+            with self.subTest(name=name), self.assertRaisesRegex(
+                PolicyError,
+                "exact producer, immutable artifact identity, and pre-use digest validation",
+            ):
+                scan_workflow_sources(policy_fixture(), "cli", {"unsafe.yml": candidate})
+
+    def test_privileged_artifact_validator_compares_the_downloaded_bytes(self) -> None:
+        command = policy_fixture()["workflow_trust"]["privileged_artifact_handoffs"]["validator_command"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact_directory = root / "isolated-release"
+            artifact_directory.mkdir()
+            payload = b"exact artifact bytes"
+            (artifact_directory / "release.tar").write_bytes(payload)
+            environment = {
+                **os.environ,
+                "ARTIFACT_DIRECTORY": artifact_directory.name,
+                "EXPECTED_ARTIFACT_DIGEST": hashlib.sha256(payload).hexdigest(),
+                "EXPECTED_ARTIFACT_ID": "101",
+                "EXPECTED_SOURCE_RUN_ATTEMPT": "2",
+                "EXPECTED_SOURCE_RUN_ID": "303",
+            }
+            exact = subprocess.run(
+                ["bash", "-c", command],
+                cwd=root,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(0, exact.returncode, exact.stderr)
+
+            environment["EXPECTED_ARTIFACT_DIGEST"] = "0" * 64
+            wrong = subprocess.run(
+                ["bash", "-c", command],
+                cwd=root,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(0, wrong.returncode)
+            self.assertIn("artifact digest mismatch", wrong.stderr)
 
     def test_workflow_run_validators_must_be_executable_steps(self) -> None:
         policy = policy_fixture()
