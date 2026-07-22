@@ -32,6 +32,15 @@ credentials. Each component repository discovers these records on its own
 schedule and uses its own GitHub token and publication environment to resume
 its release.
 
+The current beta source selection is prepared in
+[`current-source-preparation.json`](current-source-preparation.json). It binds
+the exact seven source commits and the digests of their Unreleased changelogs
+or source commit messages before protected beta authorization. A beta plan must
+match that source tuple, authorization name, and note authority exactly. The
+release-plan action then re-reads the public sources and creates the dated,
+immutable preparation record; source preparation does not bypass or impersonate
+the protected authorization decision.
+
 For the workspace-unavailable continuity drill, scheduled component recovery
 recognizes the public `beta-continuity/<plan>/accepted` record and waits until
 the matching `resumed` record exists. An explicit recovery dispatch naming the
@@ -48,10 +57,12 @@ The fixed dependency order is enforced through public artifact verification:
 | 1 | Waterline, server | Workflow; Waterline also requires the PHP SDK |
 | 2 | CLI, Python SDK, Rust SDK | server |
 
-Workflow and Waterline use exact `2.0.0-alpha.N` versions in an alpha plan and
-exact `2.0.0-beta.N` versions in a beta plan. A beta plan additionally names an
-immutable `beta-authorization/*` record whose candidate and seven-component
-tuple match the plan exactly. The protected
+Historical alpha plans retain their recorded component identities. Every new
+beta plan must use the exact seven-component tuple selected by the
+[product-train authority](../product-train/README.md); a user-facing beta
+increment advances Workflow, Waterline, server, CLI, and all three SDKs
+together. A beta plan additionally names an immutable `beta-authorization/*`
+record whose candidate and seven-component tuple match the plan exactly. The protected
 [`Beta authorization`](../beta-authorization/README.md) action is the
 repository-owned producer and recovery path for that record. An alpha plan
 cannot name or satisfy that gate.

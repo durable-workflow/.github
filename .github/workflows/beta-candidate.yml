@@ -94,7 +94,12 @@ jobs:
           else
             cp candidates/main.json requested-candidate.json
           fi
-          python scripts/beta_candidate.py validate requested-candidate.json candidate.json
+          validation_args=()
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            validation_args+=(--require-supported-train)
+          fi
+          python scripts/beta_candidate.py validate \
+            requested-candidate.json candidate.json "${validation_args[@]}"
 
       - name: Reject mutation of an existing candidate identity
         run: python scripts/beta_candidate.py check candidate.json

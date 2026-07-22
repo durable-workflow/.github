@@ -4,6 +4,11 @@ Welcome to the Durable Workflow project! This project is dedicated to creating t
 
 ## Public release control plane
 
+The machine-readable [product-train authority](product-train/README.md) maps
+one Durable Workflow 2.0 choice to the exact seven public artifacts and their
+ecosystem install commands. It also defines synchronized beta progression and
+the historical-prerelease policy.
+
 This repository also owns the organization-level automation that records
 verified, immutable beta candidate tuples on GitHub. See the
 [candidate record contract](candidates/README.md) for the public artifact

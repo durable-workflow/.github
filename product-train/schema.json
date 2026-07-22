@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/durable-workflow/.github/blob/main/product-train/schema.json",
+  "title": "Durable Workflow supported product train",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schema",
+    "current",
+    "components",
+    "trains",
+    "progression",
+    "historical_prereleases"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "./schema.json"
+    },
+    "schema": {
+      "const": "durable-workflow.product-train/v1"
+    },
+    "current": {
+      "type": "string",
+      "pattern": "^2\\.0\\.0-beta\\.[1-9][0-9]*$"
+    },
+    "components": {
+      "const": [
+        "workflow",
+        "waterline",
+        "server",
+        "cli",
+        "sdk-php",
+        "sdk-python",
+        "sdk-rust"
+      ]
+    },
+    "trains": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/train"
+      }
+    },
+    "progression": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prerelease", "stable", "compatibility_shims"],
+      "properties": {
+        "prerelease": {"const": "synchronized_beta_increment"},
+        "stable": {"const": "semantic_versioning"},
+        "compatibility_shims": {"const": "forbidden_between_2_0_prereleases"}
+      }
+    },
+    "historical_prereleases": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["support", "guidance", "registry_action"],
+      "properties": {
+        "support": {"const": "unsupported"},
+        "guidance": {"const": "de_emphasize"},
+        "registry_action": {"enum": ["yank_where_supported", "retain_immutable_history"]}
+      }
+    }
+  },
+  "$defs": {
+    "componentVersions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workflow",
+        "sdk-php",
+        "waterline",
+        "server",
+        "cli",
+        "sdk-python",
+        "sdk-rust"
+      ],
+      "properties": {
+        "workflow": {"type": "string"},
+        "sdk-php": {"type": "string"},
+        "waterline": {"type": "string"},
+        "server": {"type": "string"},
+        "cli": {"type": "string"},
+        "sdk-python": {"type": "string"},
+        "sdk-rust": {"type": "string"}
+      }
+    },
+    "installCommands": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workflow",
+        "sdk-php",
+        "waterline",
+        "server",
+        "cli",
+        "sdk-python",
+        "sdk-rust"
+      ],
+      "properties": {
+        "workflow": {"type": "string", "minLength": 1},
+        "sdk-php": {"type": "string", "minLength": 1},
+        "waterline": {"type": "string", "minLength": 1},
+        "server": {"type": "string", "minLength": 1},
+        "cli": {"type": "string", "minLength": 1},
+        "sdk-python": {"type": "string", "minLength": 1},
+        "sdk-rust": {"type": "string", "minLength": 1}
+      }
+    },
+    "train": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["channel", "status", "versions", "registry_versions", "install"],
+      "properties": {
+        "channel": {"const": "beta"},
+        "status": {"enum": ["supported", "historical"]},
+        "versions": {"$ref": "#/$defs/componentVersions"},
+        "registry_versions": {"$ref": "#/$defs/componentVersions"},
+        "install": {"$ref": "#/$defs/installCommands"}
+      }
+    }
+  }
+}

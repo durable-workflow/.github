@@ -1016,7 +1016,9 @@ def verify_pypi(
     encoded_version = urllib.parse.quote(version, safe="")
     api_url = f"https://pypi.org/pypi/{encoded_package}/{encoded_version}/json"
     payload = client.json(api_url)
-    if payload.get("info", {}).get("version") != version:
+    published_version = payload.get("info", {}).get("version")
+    normalized_expected = re.sub(r"(?i)^([0-9]+\.[0-9]+\.[0-9]+)-beta\.([0-9]+)$", r"\1b\2", version)
+    if published_version not in {version, normalized_expected}:
         raise CandidateError(f"PyPI does not expose {component.package}=={version}")
     project_urls = payload.get("info", {}).get("project_urls") or {}
     repository_urls = {str(value).rstrip("/") for value in project_urls.values()}
@@ -1452,6 +1454,10 @@ def record_candidate(
 
 def command_validate(arguments: argparse.Namespace) -> None:
     manifest = load_manifest(arguments.manifest)
+    if arguments.require_supported_train:
+        from scripts.product_train import require_current_product_train
+
+        require_current_product_train(manifest["components"])
     arguments.output.write_bytes(canonical_json(manifest))
 
 
@@ -1499,6 +1505,7 @@ def build_parser() -> argparse.ArgumentParser:
     validate = subparsers.add_parser("validate", help="validate and canonicalize a candidate manifest")
     validate.add_argument("manifest", type=Path)
     validate.add_argument("output", type=Path)
+    validate.add_argument("--require-supported-train", action="store_true")
     validate.set_defaults(handler=command_validate)
 
     compare = subparsers.add_parser("compare", help="prove two manifests have the same identity")
