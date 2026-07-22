@@ -35,6 +35,7 @@ from scripts.component_release_recovery import (
     verify_composer,
     verify_recovery_workflow_source,
 )
+from scripts.recovery_workflow_authority import normalized_source_sha256
 
 
 def github_http_error(status: int, body: bytes = b"error", **headers: str) -> urllib.error.HTTPError:
@@ -406,16 +407,19 @@ jobs:
           gh workflow run {workflow} --ref "$RELEASE_TAG" \\
             -f {tag_input}="$RELEASE_TAG" -f release_plan="$PLAN_TAG"
 '''
-                verify_recovery_workflow_source(name, source)
-                with self.assertRaisesRegex(RecoveryError, "exact tag context"):
+                expected_sha256 = normalized_source_sha256(source)
+                verify_recovery_workflow_source(name, source, expected_sha256)
+                with self.assertRaisesRegex(RecoveryError, "protected source identity"):
                     verify_recovery_workflow_source(
                         name,
                         source.replace('"$RELEASE_TAG" \\\n', '"$DEFAULT_BRANCH" \\\n', 1),
+                        expected_sha256,
                     )
-                with self.assertRaisesRegex(RecoveryError, "release tag input"):
+                with self.assertRaisesRegex(RecoveryError, "protected source identity"):
                     verify_recovery_workflow_source(
                         name,
                         source.replace(f'-f {tag_input}="$RELEASE_TAG"', f'-f {tag_input}="$DEFAULT_BRANCH"'),
+                        expected_sha256,
                     )
 
     def test_publication_run_selection_adopts_tag_triggered_runs(self) -> None:
@@ -592,6 +596,41 @@ jobs:
                 self.assertEqual(record_commit, evidence["plan_record_commit"])
                 self.assertEqual(plan_tag, evidence["durable_evidence"]["release_plan"])
                 self.assertTrue(evidence["resume_action"].endswith(f" for {plan_tag}"))
+
+    def test_scheduled_discovery_without_a_pending_plan_is_a_truthful_no_op(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            evidence_output = root / "release-recovery-evidence.json"
+            github_output = root / "github-output"
+            arguments = [
+                "component_release_recovery.py",
+                "resolve",
+                "--component",
+                "server",
+                "--plan-output",
+                str(root / "release-plan.json"),
+                "--preparation-output",
+                str(root / "release-preparation.json"),
+                "--evidence",
+                str(evidence_output),
+                "--github-output",
+                str(github_output),
+                "--allow-empty",
+            ]
+
+            with (
+                mock.patch.object(sys, "argv", arguments),
+                mock.patch(
+                    "scripts.component_release_recovery.discover_plan",
+                    side_effect=RecoveryError("no public release plan is available", "plan-discovery"),
+                ),
+            ):
+                self.assertEqual(0, main())
+
+            evidence = json.loads(evidence_output.read_bytes())
+            self.assertEqual("plan-discovery", evidence["phase"])
+            self.assertEqual("idle", evidence["outcome"])
+            self.assertEqual("action=none\n", github_output.read_text())
 
 
 if __name__ == "__main__":

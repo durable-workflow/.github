@@ -1,0 +1,59 @@
+{
+  "schema": "durable-workflow.component-release-recovery-authority/v1",
+  "source": {
+    "repository": "durable-workflow/.github",
+    "ref": "refs/heads/main",
+    "path": "release-recovery/authority.json"
+  },
+  "workflows": {
+    "workflow": {
+      "repository": "durable-workflow/workflow",
+      "ref": "refs/heads/v2",
+      "path": ".github/workflows/release-plan-recovery.yml",
+      "state": "active",
+      "sha256": "07843a0cb5396114b276024782551c6786d9a944a1045132796652220388a2b2"
+    },
+    "waterline": {
+      "repository": "durable-workflow/waterline",
+      "ref": "refs/heads/v2",
+      "path": ".github/workflows/release-plan-recovery.yml",
+      "state": "active",
+      "sha256": "70709457d17c017a2368058f543c88863425f9c0805027e1926e7f2520840379"
+    },
+    "server": {
+      "repository": "durable-workflow/server",
+      "ref": "refs/heads/main",
+      "path": ".github/workflows/release-plan-recovery.yml",
+      "state": "active",
+      "sha256": "d8425e770a753dab9b73e468405f7089e362967a398789a71eb50de96ab0eb2b"
+    },
+    "cli": {
+      "repository": "durable-workflow/cli",
+      "ref": "refs/heads/main",
+      "path": ".github/workflows/release-plan-recovery.yml",
+      "state": "active",
+      "sha256": "3b3d1be70f3624fc3e0785986e0e483a0a6d2b56c1e2561667a17afa8b74a2f7"
+    },
+    "sdk-php": {
+      "repository": "durable-workflow/sdk-php",
+      "ref": "refs/heads/main",
+      "path": ".github/workflows/release-plan-recovery.yml",
+      "state": "active",
+      "sha256": "328938650ca4cf9fac2d5a305fec2c781428f03e6b581cf46e80b710ddada06a"
+    },
+    "sdk-python": {
+      "repository": "durable-workflow/sdk-python",
+      "ref": "refs/heads/main",
+      "path": ".github/workflows/release-plan-recovery.yml",
+      "state": "active",
+      "sha256": "2e409f834a8f1390252f0b795cb563ff3f2d3ae441104d467b6fe9655dbf5bc4"
+    },
+    "sdk-rust": {
+      "repository": "durable-workflow/sdk-rust",
+      "ref": "refs/heads/main",
+      "path": ".github/workflows/release-plan-recovery.yml",
+      "state": "active",
+      "sha256": "c43b0e100c388301af12b9f5e9354955ff6c31b3156b4a0b66a8c3379516645c"
+    }
+  }
+}

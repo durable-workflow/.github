@@ -45,6 +45,14 @@ from scripts.beta_candidate import (
     write_github_output,
 )
 from scripts.product_train import require_current_product_train
+from scripts.recovery_workflow_authority import (
+    SOURCE_IDENTITY as RECOVERY_WORKFLOW_AUTHORITY_SOURCE,
+)
+from scripts.recovery_workflow_authority import (
+    RecoveryWorkflowAuthorityError,
+    validate_authority,
+    verify_workflow_source,
+)
 
 SCHEMA = "durable-workflow.release-plan/v1"
 PREPARATION_SCHEMA = "durable-workflow.release-preparation/v1"
@@ -117,8 +125,23 @@ SOURCE_CHANGELOGS = {
 }
 
 SOURCE_PREPARATION_PATH = Path(__file__).resolve().parent.parent / "release-plans" / "current-source-preparation.json"
+RECOVERY_WORKFLOW_AUTHORITY_PATH = (
+    Path(__file__).resolve().parent.parent / "release-recovery" / "authority.json"
+)
 
 MARKDOWN_MEDIA_TYPE = "text/markdown"
+
+
+def load_recovery_workflow_authority() -> dict[str, dict[str, str]]:
+    identities = {
+        name: (component.repository, EXPECTED_DEFAULT_BRANCHES[name])
+        for name, component in COMPONENTS.items()
+    }
+    try:
+        value = json.loads(RECOVERY_WORKFLOW_AUTHORITY_PATH.read_bytes())
+        return validate_authority(value, identities)
+    except (OSError, json.JSONDecodeError, RecoveryWorkflowAuthorityError) as error:
+        raise CandidateError(f"invalid component release recovery authority: {error}") from error
 
 
 def load_plan(path: Path, *, require_current: bool = False) -> dict[str, Any]:
@@ -1606,6 +1629,7 @@ def preflight_plan(plan: dict[str, Any], client: PublicClient, *, release_date: 
             )
 
     prior_plans = require_prior_plans_completed(plan, client)
+    recovery_authority = load_recovery_workflow_authority()
     branches: dict[str, str] = {}
     recovery_workflows: dict[str, dict[str, Any]] = {}
     source_manifests: dict[str, dict[str, Any]] = {}
@@ -1621,11 +1645,12 @@ def preflight_plan(plan: dict[str, Any], client: PublicClient, *, release_date: 
             )
         branches[name] = default_branch
 
+        expected_workflow = recovery_authority[name]
         workflow = client.json(
             f"https://api.github.com/repos/{component.repository}/actions/workflows/release-plan-recovery.yml"
         )
-        expected_path = ".github/workflows/release-plan-recovery.yml"
-        if workflow.get("path") != expected_path or workflow.get("state") != "active":
+        expected_path = expected_workflow["path"]
+        if workflow.get("path") != expected_path or workflow.get("state") != expected_workflow["state"]:
             raise CandidateError(
                 f"{component.repository} does not expose an active {expected_path} on its default branch"
             )
@@ -1633,15 +1658,10 @@ def preflight_plan(plan: dict[str, Any], client: PublicClient, *, release_date: 
             f"https://api.github.com/repos/{component.repository}/contents/{expected_path}?ref={expected_branch}"
         )
         workflow_source = client.bytes(contents_url, accept="application/vnd.github.raw+json").decode("utf-8")
-        if (
-            not re.search(r"(?m)^  schedule:\s*$", workflow_source)
-            or not re.search(r"(?m)^  workflow_dispatch:\s*$", workflow_source)
-            or "--preparation-output" not in workflow_source
-        ):
-            raise CandidateError(
-                f"{component.repository} recovery workflow lacks prepared-plan schedule/manual dispatch "
-                f"on {expected_branch}"
-            )
+        try:
+            workflow_sha256 = verify_workflow_source(name, workflow_source, expected_workflow["sha256"])
+        except RecoveryWorkflowAuthorityError as error:
+            raise CandidateError(str(error)) from error
         helper_path = "scripts/ci/component-release-recovery.py"
         helper_source = client.bytes(
             f"https://api.github.com/repos/{component.repository}/contents/{helper_path}?ref={expected_branch}",
@@ -1658,9 +1678,11 @@ def preflight_plan(plan: dict[str, Any], client: PublicClient, *, release_date: 
                 "with exact-plan manual recovery"
             )
         recovery_workflows[name] = {
+            "authority": RECOVERY_WORKFLOW_AUTHORITY_SOURCE,
             "continuity_gate": "scheduled-pause-with-exact-plan-recovery",
             "default_branch": expected_branch,
             "path": expected_path,
+            "sha256": workflow_sha256,
             "state": workflow["state"],
             "workflow_id": workflow.get("id"),
             "url": workflow.get("html_url"),

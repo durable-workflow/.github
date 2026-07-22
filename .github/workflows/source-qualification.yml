@@ -39,6 +39,9 @@ jobs:
           python -m json.tool qualification/policy.json >/dev/null
           python -m json.tool qualification/schema.json >/dev/null
           python -m jsonschema -i qualification/policy.json qualification/schema.json
+          python -m json.tool release-recovery/authority.json >/dev/null
+          python -m json.tool release-recovery/schema.json >/dev/null
+          python -m jsonschema -i release-recovery/authority.json release-recovery/schema.json
           python -m json.tool beta-authorization/request-schema.json >/dev/null
           python -m json.tool beta-authorization/record-schema.json >/dev/null
           python -m json.tool beta-authorization/evidence-schema.json >/dev/null

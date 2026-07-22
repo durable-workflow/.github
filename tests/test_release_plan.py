@@ -801,6 +801,21 @@ class ReleasePlanValidationTest(unittest.TestCase):
     def test_preflight_rejects_python_source_manifest_version_mismatch(self) -> None:
         plan = release_plan()
         plan["components"]["sdk-python"]["version"] = "0.4.100"
+        workflow_source = (
+            b"on:\n  schedule:\n  workflow_dispatch:\n"
+            b"steps:\n  - run: recovery resolve --preparation-output release-preparation.json\n"
+        )
+        workflow_digest = hashlib.sha256(workflow_source).hexdigest()
+        recovery_authority = {
+            name: {
+                "repository": component.repository,
+                "ref": f"refs/heads/{'v2' if name in {'workflow', 'waterline'} else 'main'}",
+                "path": ".github/workflows/release-plan-recovery.yml",
+                "state": "active",
+                "sha256": workflow_digest,
+            }
+            for name, component in COMPONENTS.items()
+        }
 
         class FixtureClient:
             def bytes(self, url: str, **_kwargs: object) -> bytes:
@@ -811,10 +826,7 @@ class ReleasePlanValidationTest(unittest.TestCase):
                 if url.endswith("release-plan-recovery.yml?ref=v2") or url.endswith(
                     "release-plan-recovery.yml?ref=main"
                 ):
-                    return (
-                        b"on:\n  schedule:\n  workflow_dispatch:\n"
-                        b"steps:\n  - run: recovery resolve --preparation-output release-preparation.json\n"
-                    )
+                    return workflow_source
                 if url.endswith("scripts/ci/component-release-recovery.py?ref=v2") or url.endswith(
                     "scripts/ci/component-release-recovery.py?ref=main"
                 ):
@@ -845,6 +857,10 @@ class ReleasePlanValidationTest(unittest.TestCase):
             ),
             mock.patch("scripts.release_plan.resolve_tag", return_value=None),
             mock.patch("scripts.release_plan.require_prior_plans_completed", return_value={}),
+            mock.patch(
+                "scripts.release_plan.load_recovery_workflow_authority",
+                return_value=recovery_authority,
+            ),
             self.assertRaisesRegex(CandidateError, "sdk-python source manifest declares 0.4.99"),
         ):
             preflight_plan(plan, FixtureClient())
