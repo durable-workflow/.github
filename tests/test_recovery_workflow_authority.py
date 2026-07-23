@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import unittest
 from pathlib import Path
@@ -14,8 +15,12 @@ from scripts.component_release_recovery import (
 from scripts.recovery_workflow_authority import (
     AUTHORITY_PATH,
     AUTHORITY_REF,
-    CONTROL_REPOSITORY,
+    QUALIFICATION_EVENT,
+    QUALIFICATION_WORKFLOW,
+    authority_ref_url,
+    authority_url,
     normalized_source_sha256,
+    qualification_runs_url,
     validate_authority,
 )
 
@@ -27,14 +32,46 @@ IDENTITIES = {
 }
 
 
+AUTHORITY_COMMIT = "a" * 40
+
+
+def qualification_run(
+    status: str = "completed",
+    conclusion: str | None = "success",
+    *,
+    head_sha: str = AUTHORITY_COMMIT,
+) -> dict[str, object]:
+    return {
+        "id": 71,
+        "run_attempt": 2,
+        "path": QUALIFICATION_WORKFLOW,
+        "event": QUALIFICATION_EVENT,
+        "head_branch": AUTHORITY_REF,
+        "head_sha": head_sha,
+        "status": status,
+        "conclusion": conclusion,
+    }
+
+
 class FixtureClient:
-    def __init__(self, value: object) -> None:
-        self.value = value
-        self.requests: list[tuple[str, str | None]] = []
+    def __init__(self, value: object, runs: list[dict[str, object]] | None = None) -> None:
+        self.raw = json.dumps(value).encode("utf-8")
+        self.runs = [qualification_run()] if runs is None else runs
+        self.requests: list[tuple[str, str, str | None]] = []
+
+    def json(self, url: str) -> dict[str, object]:
+        self.requests.append(("json", url, None))
+        if url == authority_ref_url():
+            return {"sha": AUTHORITY_COMMIT}
+        if url == qualification_runs_url(AUTHORITY_COMMIT):
+            return {"workflow_runs": self.runs}
+        raise AssertionError(f"unexpected fixture URL: {url}")
 
     def bytes(self, url: str, *, accept: str | None = None) -> bytes:
-        self.requests.append((url, accept))
-        return json.dumps(self.value).encode("utf-8")
+        self.requests.append(("bytes", url, accept))
+        if url != authority_url(AUTHORITY_COMMIT):
+            raise AssertionError(f"unexpected fixture URL: {url}")
+        return self.raw
 
 
 class RecoveryWorkflowAuthorityTest(unittest.TestCase):
@@ -47,21 +84,47 @@ class RecoveryWorkflowAuthorityTest(unittest.TestCase):
                 self.assertEqual(component.repository, workflows[name]["repository"])
                 self.assertEqual(f"refs/heads/{component.default_branch}", workflows[name]["ref"])
                 self.assertEqual("active", workflows[name]["state"])
+        self.assertEqual(
+            {"workflow": QUALIFICATION_WORKFLOW, "event": QUALIFICATION_EVENT},
+            AUTHORITY["source"]["qualification"],
+        )
 
-    def test_component_loader_reads_only_the_protected_control_plane_source(self) -> None:
+    def test_component_loader_reads_only_the_successfully_qualified_exact_revision(self) -> None:
         client = FixtureClient(AUTHORITY)
 
-        self.assertEqual(AUTHORITY["workflows"], load_recovery_workflow_authority(client))
+        workflows, source = load_recovery_workflow_authority(client)
+        self.assertEqual(AUTHORITY["workflows"], workflows)
+        self.assertEqual(AUTHORITY_COMMIT, source["commit"])
+        self.assertEqual(hashlib.sha256(client.raw).hexdigest(), source["sha256"])
+        self.assertEqual(AUTHORITY_COMMIT, source["qualification"]["head_sha"])
+        self.assertEqual("success", source["qualification"]["conclusion"])
         self.assertEqual(
             [
+                ("json", authority_ref_url(), None),
+                ("json", qualification_runs_url(AUTHORITY_COMMIT), None),
                 (
-                    f"https://api.github.com/repos/{CONTROL_REPOSITORY}/contents/{AUTHORITY_PATH}"
-                    f"?ref={AUTHORITY_REF}",
+                    "bytes",
+                    authority_url(AUTHORITY_COMMIT),
                     "application/vnd.github.raw+json",
-                )
+                ),
             ],
             client.requests,
         )
+
+    def test_non_green_or_mismatched_qualification_fails_before_manifest_download(self) -> None:
+        cases = (
+            ("pending", [qualification_run("in_progress", None)], "pending"),
+            ("failed", [qualification_run("completed", "failure")], "failed"),
+            ("cancelled", [qualification_run("completed", "cancelled")], "cancelled"),
+            ("absent", [], "absent"),
+            ("revision-mismatch", [qualification_run(head_sha="b" * 40)], "another commit"),
+        )
+        for label, runs, message in cases:
+            with self.subTest(state=label):
+                client = FixtureClient(AUTHORITY, runs)
+                with self.assertRaisesRegex(RecoveryError, message):
+                    load_recovery_workflow_authority(client)
+                self.assertFalse(any(method == "bytes" for method, _url, _accept in client.requests))
 
     def test_mismatched_authority_and_workflow_source_fail_closed(self) -> None:
         wrong_branch = copy.deepcopy(AUTHORITY)

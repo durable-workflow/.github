@@ -859,7 +859,17 @@ class ReleasePlanValidationTest(unittest.TestCase):
             mock.patch("scripts.release_plan.require_prior_plans_completed", return_value={}),
             mock.patch(
                 "scripts.release_plan.load_recovery_workflow_authority",
-                return_value=recovery_authority,
+                return_value=(
+                    recovery_authority,
+                    {
+                        "repository": "durable-workflow/.github",
+                        "ref": "refs/heads/main",
+                        "commit": "a" * 40,
+                        "path": "release-recovery/authority.json",
+                        "sha256": "b" * 64,
+                        "qualification": {"conclusion": "success"},
+                    },
+                ),
             ),
             self.assertRaisesRegex(CandidateError, "sdk-python source manifest declares 0.4.99"),
         ):

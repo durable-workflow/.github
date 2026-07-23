@@ -46,11 +46,8 @@ from scripts.beta_candidate import (
 )
 from scripts.product_train import require_current_product_train
 from scripts.recovery_workflow_authority import (
-    SOURCE_IDENTITY as RECOVERY_WORKFLOW_AUTHORITY_SOURCE,
-)
-from scripts.recovery_workflow_authority import (
     RecoveryWorkflowAuthorityError,
-    validate_authority,
+    load_qualified_authority,
     verify_workflow_source,
 )
 
@@ -125,22 +122,20 @@ SOURCE_CHANGELOGS = {
 }
 
 SOURCE_PREPARATION_PATH = Path(__file__).resolve().parent.parent / "release-plans" / "current-source-preparation.json"
-RECOVERY_WORKFLOW_AUTHORITY_PATH = (
-    Path(__file__).resolve().parent.parent / "release-recovery" / "authority.json"
-)
 
 MARKDOWN_MEDIA_TYPE = "text/markdown"
 
 
-def load_recovery_workflow_authority() -> dict[str, dict[str, str]]:
+def load_recovery_workflow_authority(
+    client: PublicClient,
+) -> tuple[dict[str, dict[str, str]], dict[str, Any]]:
     identities = {
         name: (component.repository, EXPECTED_DEFAULT_BRANCHES[name])
         for name, component in COMPONENTS.items()
     }
     try:
-        value = json.loads(RECOVERY_WORKFLOW_AUTHORITY_PATH.read_bytes())
-        return validate_authority(value, identities)
-    except (OSError, json.JSONDecodeError, RecoveryWorkflowAuthorityError) as error:
+        return load_qualified_authority(client, identities)
+    except RecoveryWorkflowAuthorityError as error:
         raise CandidateError(f"invalid component release recovery authority: {error}") from error
 
 
@@ -1629,7 +1624,7 @@ def preflight_plan(plan: dict[str, Any], client: PublicClient, *, release_date: 
             )
 
     prior_plans = require_prior_plans_completed(plan, client)
-    recovery_authority = load_recovery_workflow_authority()
+    recovery_authority, recovery_authority_source = load_recovery_workflow_authority(client)
     branches: dict[str, str] = {}
     recovery_workflows: dict[str, dict[str, Any]] = {}
     source_manifests: dict[str, dict[str, Any]] = {}
@@ -1678,7 +1673,7 @@ def preflight_plan(plan: dict[str, Any], client: PublicClient, *, release_date: 
                 "with exact-plan manual recovery"
             )
         recovery_workflows[name] = {
-            "authority": RECOVERY_WORKFLOW_AUTHORITY_SOURCE,
+            "authority": recovery_authority_source,
             "continuity_gate": "scheduled-pause-with-exact-plan-recovery",
             "default_branch": expected_branch,
             "path": expected_path,

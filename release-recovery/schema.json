@@ -7,16 +7,25 @@
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "durable-workflow.component-release-recovery-authority/v1"
+      "const": "durable-workflow.component-release-recovery-authority/v2"
     },
     "source": {
       "type": "object",
-      "required": ["repository", "ref", "path"],
+      "required": ["repository", "ref", "path", "qualification"],
       "additionalProperties": false,
       "properties": {
         "repository": {"const": "durable-workflow/.github"},
         "ref": {"const": "refs/heads/main"},
-        "path": {"const": "release-recovery/authority.json"}
+        "path": {"const": "release-recovery/authority.json"},
+        "qualification": {
+          "type": "object",
+          "required": ["workflow", "event"],
+          "additionalProperties": false,
+          "properties": {
+            "workflow": {"const": ".github/workflows/beta-candidate.yml"},
+            "event": {"const": "push"}
+          }
+        }
       }
     },
     "workflows": {

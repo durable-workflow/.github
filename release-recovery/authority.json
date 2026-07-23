@@ -1,9 +1,13 @@
 {
-  "schema": "durable-workflow.component-release-recovery-authority/v1",
+  "schema": "durable-workflow.component-release-recovery-authority/v2",
   "source": {
     "repository": "durable-workflow/.github",
     "ref": "refs/heads/main",
-    "path": "release-recovery/authority.json"
+    "path": "release-recovery/authority.json",
+    "qualification": {
+      "workflow": ".github/workflows/beta-candidate.yml",
+      "event": "push"
+    }
   },
   "workflows": {
     "workflow": {
