@@ -336,7 +336,7 @@ class PublicClient:
             request_headers["Accept"] = accept
         if self.token and urllib.parse.urlsplit(url).hostname == "api.github.com":
             request_headers["Authorization"] = f"Bearer {self.token}"
-            request_headers["X-GitHub-Api-Version"] = "2022-11-28"
+            request_headers.setdefault("X-GitHub-Api-Version", "2022-11-28")
 
         for attempt in range(1, attempt_limit + 1):
             if endpoint_class is not None and self._remaining_time() <= 0:
@@ -1237,13 +1237,41 @@ def protected_run_approval_evidence(
             "plan-discovery",
         )
     review = history[0]
+    environments = review.get("environments")
+    user = review.get("user")
+    if (
+        not isinstance(review.get("comment"), str)
+        or not isinstance(environments, list)
+        or len(environments) != 1
+        or not isinstance(environments[0], dict)
+        or not isinstance(user, dict)
+    ):
+        raise RecoveryError(
+            "protected supersession approval history is malformed",
+            "plan-discovery",
+        )
+    environment = environments[0]
     evidence = {
-        "comment": review.get("comment"),
-        "environments": review.get("environments"),
+        "comment": review["comment"],
+        "environments": [
+            {
+                "html_url": environment.get("html_url"),
+                "id": environment.get("id"),
+                "name": environment.get("name"),
+                "node_id": environment.get("node_id"),
+                "url": environment.get("url"),
+            }
+        ],
         "run_attempt": run_attempt,
         "run_id": run_id,
-        "state": review.get("state"),
-        "user": review.get("user"),
+        "state": review["state"],
+        "user": {
+            "html_url": user.get("html_url"),
+            "id": user.get("id"),
+            "login": user.get("login"),
+            "node_id": user.get("node_id"),
+            "url": user.get("url"),
+        },
     }
     validate_environment_approval_evidence(
         evidence,

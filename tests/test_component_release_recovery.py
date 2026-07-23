@@ -19,6 +19,7 @@ from scripts.component_release_recovery import (
     FOUNDATION_TAG,
     PREPARATION_SCHEMA,
     SCHEMA,
+    SUPERSESSION_API_VERSION,
     NotFound,
     PublicClient,
     PublicInfrastructureError,
@@ -249,9 +250,21 @@ def captured_github_authority(
             [
                 {
                     "comment": approval["comment"],
-                    "environments": approval["environments"],
+                    "environments": [
+                        {
+                            **approval["environments"][0],
+                            "can_admins_bypass": True,
+                            "created_at": "2026-07-23T00:00:00Z",
+                            "updated_at": "2026-07-23T00:00:00Z",
+                        }
+                    ],
                     "state": approval["state"],
-                    "user": approval["user"],
+                    "user": {
+                        **approval["user"],
+                        "avatar_url": "https://avatars.githubusercontent.com/u/55?v=4",
+                        "site_admin": False,
+                        "type": "User",
+                    },
                 }
             ]
         )
@@ -463,7 +476,7 @@ class ComponentRecoveryContractTest(unittest.TestCase):
                 None,
             )
 
-    def test_terminal_failure_resolves_exact_github_authority(self) -> None:
+    def test_terminal_failure_resolves_and_normalizes_captured_github_authority(self) -> None:
         failed = plan()
         successor = json.loads(json.dumps(failed))
         successor["plan"] = "successor-plan"
@@ -738,6 +751,32 @@ class ComponentRecoveryContractTest(unittest.TestCase):
         self.assertEqual([], result)
         self.assertEqual([4, 2], sleeps)
         self.assertEqual(3, open_url.call_count)
+
+    def test_authenticated_requests_preserve_endpoint_api_versions(self) -> None:
+        cases = (
+            ({"X-GitHub-Api-Version": SUPERSESSION_API_VERSION}, SUPERSESSION_API_VERSION),
+            ({}, "2022-11-28"),
+        )
+        for headers, expected_version in cases:
+            with self.subTest(expected_version=expected_version):
+                client = PublicClient(token="test-token")
+                response = mock.Mock()
+                with mock.patch(
+                    "scripts.component_release_recovery.urllib.request.urlopen",
+                    return_value=response,
+                ) as open_url:
+                    self.assertIs(
+                        response,
+                        client.request(
+                            "https://api.github.com/repos/durable-workflow/.github/actions/runs/456",
+                            headers=headers,
+                        ),
+                    )
+
+                request = open_url.call_args.args[0]
+                request_headers = {key.lower(): value for key, value in request.header_items()}
+                self.assertEqual("Bearer test-token", request_headers["authorization"])
+                self.assertEqual(expected_version, request_headers["x-github-api-version"])
 
     def test_recovery_public_client_never_retries_authentication_with_rate_limit_guidance(self) -> None:
         sleeps: list[float] = []
