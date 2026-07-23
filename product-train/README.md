@@ -4,7 +4,7 @@
 supported Durable Workflow 2.0 product train. Selecting its `current` value
 selects exact server, CLI, Workflow, Waterline operator, PHP SDK, Python SDK,
 and Rust SDK artifacts together. The Python registry normalizes the SemVer tag
-`2.0.0-beta.6` to the PEP 440 spelling `2.0.0b6`; both identify the same train.
+`2.0.0-beta.10` to the PEP 440 spelling `2.0.0b10`; both identify the same train.
 
 New beta release plans must use every version in the current train. A beta
 increment advances all seven component identities together. After stable 2.0,
