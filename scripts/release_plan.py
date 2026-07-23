@@ -1238,20 +1238,7 @@ def revalidate_supersession_public_evidence(
                 f"{existing_successor_version}"
             )
 
-    authorization = record["authorization"]
-    live_protection = protected_environment_evidence(client)
-    if live_protection != authorization["environment_protection"]:
-        raise CandidateError("release plan failure protected environment policy no longer matches GitHub")
-    live_approval = protected_run_approval_evidence(
-        client,
-        actor=authorization["actor"],
-        run_id=authorization["run_id"],
-        run_attempt=authorization["run_attempt"],
-        workflow_commit=authorization["workflow_commit"],
-        environment_protection=live_protection,
-    )
-    if live_approval != authorization["environment_approval"]:
-        raise CandidateError("release plan failure approved deployment evidence no longer matches GitHub")
+    revalidate_supersession_authority(record, client, require_success=False)
 
 
 def load_public_supersession(
@@ -1265,6 +1252,7 @@ def load_public_supersession(
     successor = read_public_record(client, tag, commit, "successor-release-plan.json")
     validate_plan(successor)
     validate_supersession_record(record, failed_plan, failed_plan_commit, successor)
+    revalidate_supersession_authority(record, client, require_success=True)
     return tag, commit, record, successor
 
 
@@ -1960,6 +1948,7 @@ def protected_run_approval_evidence(
     run_attempt: int,
     workflow_commit: str,
     environment_protection: dict[str, Any],
+    require_success: bool = False,
 ) -> dict[str, Any]:
     run = client.json(
         f"https://api.github.com/repos/{CONTROL_REPOSITORY}/actions/runs/{run_id}",
@@ -1985,6 +1974,10 @@ def protected_run_approval_evidence(
         or run.get("head_branch") != "main"
         or run.get("head_sha") != workflow_commit
         or run.get("html_url") != f"https://github.com/{CONTROL_REPOSITORY}/actions/runs/{run_id}"
+        or (
+            require_success
+            and (run.get("status") != "completed" or run.get("conclusion") != "success")
+        )
     ):
         raise CandidateError("protected supersession workflow run evidence does not match GitHub")
 
@@ -2044,6 +2037,29 @@ def protected_run_approval_evidence(
         },
     )
     return evidence
+
+
+def revalidate_supersession_authority(
+    record: dict[str, Any],
+    client: PublicClient,
+    *,
+    require_success: bool,
+) -> None:
+    authorization = record["authorization"]
+    live_protection = protected_environment_evidence(client)
+    if live_protection != authorization["environment_protection"]:
+        raise CandidateError("release plan failure protected environment policy no longer matches GitHub")
+    live_approval = protected_run_approval_evidence(
+        client,
+        actor=authorization["actor"],
+        run_id=authorization["run_id"],
+        run_attempt=authorization["run_attempt"],
+        workflow_commit=authorization["workflow_commit"],
+        environment_protection=live_protection,
+        require_success=require_success,
+    )
+    if live_approval != authorization["environment_approval"]:
+        raise CandidateError("release plan failure approved deployment evidence no longer matches GitHub")
 
 
 def prove_publication_absence(

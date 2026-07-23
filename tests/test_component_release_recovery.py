@@ -30,6 +30,7 @@ from scripts.component_release_recovery import (
     main,
     manifest_digest,
     resolve_component,
+    revalidate_supersession_authority,
     scheduled_continuity_pause,
     select_implicit_plan_authority,
     select_publication_run,
@@ -203,6 +204,81 @@ def supersession_record(
     }
 
 
+def captured_github_authority(
+    record: dict[str, object],
+) -> tuple[mock.Mock, dict[str, object]]:
+    authorization = record["authorization"]
+    protection = authorization["environment_protection"]
+    approval = authorization["environment_approval"]
+    environment = {
+        "id": protection["environment_id"],
+        "html_url": protection["environment_url"],
+        "protection_rules": [
+            {
+                "id": protection["required_reviewer_rule_ids"][0],
+                "type": "required_reviewers",
+                "reviewers": [{"type": "User"}],
+            }
+        ],
+        "deployment_branch_policy": protection["deployment_branch_policy"],
+    }
+    policies = {
+        "total_count": 1,
+        "branch_policies": [
+            {
+                **protection["custom_branch_policies"][0],
+                "type": "branch",
+            }
+        ],
+    }
+    run = {
+        "actor": {"login": authorization["actor"]},
+        "conclusion": "success",
+        "event": "workflow_dispatch",
+        "head_branch": "main",
+        "head_sha": authorization["workflow_commit"],
+        "html_url": authorization["run_url"],
+        "id": authorization["run_id"],
+        "path": ".github/workflows/release-plan-supersession.yml@main",
+        "repository": {"full_name": "durable-workflow/.github"},
+        "run_attempt": authorization["run_attempt"],
+        "status": "completed",
+    }
+    history = json.loads(
+        json.dumps(
+            [
+                {
+                    "comment": approval["comment"],
+                    "environments": approval["environments"],
+                    "state": approval["state"],
+                    "user": approval["user"],
+                }
+            ]
+        )
+    )
+    responses = {
+        "environment": environment,
+        "policies": policies,
+        "run": run,
+        "history": history,
+    }
+    client = mock.Mock()
+
+    def respond(url: str, **_kwargs: object) -> object:
+        if url.endswith("deployment-branch-policies?per_page=100"):
+            return responses["policies"]
+        if url.endswith("/approvals"):
+            return responses["history"]
+        if "/actions/runs/" in url:
+            return responses["run"]
+        if "/environments/" in url:
+            return responses["environment"]
+        raise AssertionError(f"unexpected GitHub authority request: {url}")
+
+    client.json.side_effect = respond
+    return client, responses
+
+
 class ComponentRecoveryContractTest(unittest.TestCase):
     def test_immutable_plan_registry_is_consumed_as_one_complete_authority_set(self) -> None:
         client = mock.Mock()
@@ -286,6 +362,9 @@ class ComponentRecoveryContractTest(unittest.TestCase):
             mock.patch(
                 "scripts.component_release_recovery.read_record",
                 side_effect=[failure, authorized_successor],
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.revalidate_supersession_authority",
             ),
         ):
             lifecycle, successor_identity = direct_plan_lifecycle(
@@ -383,6 +462,39 @@ class ComponentRecoveryContractTest(unittest.TestCase):
                 failed,
                 None,
             )
+
+    def test_terminal_failure_resolves_exact_github_authority(self) -> None:
+        failed = plan()
+        successor = json.loads(json.dumps(failed))
+        successor["plan"] = "successor-plan"
+        successor["components"]["workflow"]["version"] = "2.0.0-alpha.2"
+        record = supersession_record(failed, successor, "a" * 40)
+        client, _responses = captured_github_authority(record)
+
+        revalidate_supersession_authority(record, client)
+
+        mutations = (
+            ("run", "id", 999),
+            ("run", "run_attempt", 2),
+            ("run", "path", ".github/workflows/release-plan-observer.yml@main"),
+            ("run", "head_sha", "0" * 40),
+            ("run", "conclusion", "failure"),
+            ("environment", "id", 999),
+            ("history", "state", "rejected"),
+            ("reviewer", "id", 999),
+        )
+        for target, field, value in mutations:
+            with self.subTest(target=target, field=field):
+                changed = json.loads(json.dumps(record))
+                client, responses = captured_github_authority(changed)
+                if target == "history":
+                    responses["history"][0][field] = value
+                elif target == "reviewer":
+                    responses["history"][0]["user"][field] = value
+                else:
+                    responses[target][field] = value
+                with self.assertRaises(RecoveryError):
+                    revalidate_supersession_authority(changed, client)
 
     def test_scheduled_discovery_fails_closed_on_ambiguous_or_incomplete_history(self) -> None:
         first = plan()

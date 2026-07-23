@@ -295,6 +295,7 @@ def github_environment() -> dict[str, object]:
 def workflow_run() -> dict[str, object]:
     return {
         "actor": {"login": "release-operator"},
+        "conclusion": "success",
         "event": "workflow_dispatch",
         "head_branch": "main",
         "head_sha": "f" * 40,
@@ -303,6 +304,7 @@ def workflow_run() -> dict[str, object]:
         "path": ".github/workflows/release-plan-supersession.yml@main",
         "repository": {"full_name": "durable-workflow/.github"},
         "run_attempt": 1,
+        "status": "completed",
     }
 
 
@@ -1432,11 +1434,11 @@ class ReleasePlanValidationTest(unittest.TestCase):
             ),
             mock.patch(
                 "scripts.release_plan.protected_environment_evidence",
-                side_effect=AssertionError("historical records must not reload environment policy"),
+                return_value=environment_protection_evidence(),
             ),
             mock.patch(
                 "scripts.release_plan.protected_run_approval_evidence",
-                side_effect=AssertionError("historical records must not reload approval history"),
+                return_value=environment_approval_evidence(),
             ),
         ):
             evidence = require_prior_plans_completed(successor, FixtureClient())
@@ -1452,6 +1454,14 @@ class ReleasePlanValidationTest(unittest.TestCase):
             mock.patch(
                 "scripts.release_plan.read_public_record",
                 side_effect=[failed, failure, successor],
+            ),
+            mock.patch(
+                "scripts.release_plan.protected_environment_evidence",
+                return_value=environment_protection_evidence(),
+            ),
+            mock.patch(
+                "scripts.release_plan.protected_run_approval_evidence",
+                return_value=environment_approval_evidence(),
             ),
             self.assertRaisesRegex(CandidateError, "admits only exact successor"),
         ):
@@ -1470,11 +1480,11 @@ class ReleasePlanValidationTest(unittest.TestCase):
             ),
             mock.patch(
                 "scripts.release_plan.protected_environment_evidence",
-                side_effect=AssertionError("historical records must not reload environment policy"),
+                return_value=environment_protection_evidence(),
             ),
             mock.patch(
                 "scripts.release_plan.protected_run_approval_evidence",
-                side_effect=AssertionError("historical records must not reload approval history"),
+                return_value=environment_approval_evidence(),
             ),
         ):
             evidence = require_prior_plans_completed(later, FixtureClient())
@@ -1554,7 +1564,7 @@ class ReleasePlanValidationTest(unittest.TestCase):
                 with self.assertRaisesRegex(CandidateError, error):
                     validate_supersession_record(record, failed, "a" * 40, successor)
 
-    def test_loading_terminal_record_uses_only_immutable_evidence(self) -> None:
+    def test_loading_terminal_record_requires_live_github_authority(self) -> None:
         failed = release_plan()
         successor = successor_plan(failed)
         record = supersession_record(failed, successor)
@@ -1567,18 +1577,18 @@ class ReleasePlanValidationTest(unittest.TestCase):
             ),
             mock.patch(
                 "scripts.release_plan.protected_environment_evidence",
-                side_effect=CandidateError("environment policy changed"),
+                return_value=environment_protection_evidence(),
             ),
             mock.patch(
                 "scripts.release_plan.protected_run_approval_evidence",
-                side_effect=CandidateError("approval history unavailable"),
+                return_value=environment_approval_evidence(),
             ),
         ):
             loaded = load_public_supersession(failed, "a" * 40, object())
         self.assertEqual(record, loaded[2])
         self.assertEqual(successor, loaded[3])
 
-    def test_terminal_record_remains_durable_after_public_source_tag_moves(self) -> None:
+    def test_terminal_record_rejects_unverifiable_github_authority(self) -> None:
         failed = release_plan()
         successor = successor_plan(failed)
         record = supersession_record(failed, successor)
@@ -1588,9 +1598,13 @@ class ReleasePlanValidationTest(unittest.TestCase):
                 "scripts.release_plan.read_public_record",
                 side_effect=[record, successor],
             ),
+            mock.patch(
+                "scripts.release_plan.protected_environment_evidence",
+                side_effect=CandidateError("environment policy unavailable"),
+            ),
+            self.assertRaisesRegex(CandidateError, "environment policy unavailable"),
         ):
-            loaded = load_public_supersession(failed, "a" * 40, object())
-        self.assertEqual("release-plan-failure/recovery-proof-1", loaded[0])
+            load_public_supersession(failed, "a" * 40, object())
 
     def test_terminal_record_rejects_fabricated_authorization_identity(self) -> None:
         failed = release_plan()
@@ -1750,6 +1764,7 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
                 run_attempt=1,
                 workflow_commit="f" * 40,
                 environment_protection=environment_protection_evidence(),
+                require_success=True,
             )
 
         self.assertEqual(environment_approval_evidence(), evidence(workflow_run(), approval_history()))
@@ -1760,6 +1775,12 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
         wrong_environment[0]["environments"][0]["name"] = "staging"
         wrong_run = workflow_run()
         wrong_run["id"] = 999
+        wrong_attempt = workflow_run()
+        wrong_attempt["run_attempt"] = 2
+        wrong_revision = workflow_run()
+        wrong_revision["head_sha"] = "0" * 40
+        failed_run = workflow_run()
+        failed_run["conclusion"] = "failure"
         malformed = approval_history()
         malformed[0]["environments"] = "release-plan-supersession"
 
@@ -1768,6 +1789,9 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
             ("rejected", workflow_run(), rejected, "exactly one approved review"),
             ("wrong environment", workflow_run(), wrong_environment, "wrong protected environment"),
             ("wrong run", wrong_run, approval_history(), "workflow run evidence does not match"),
+            ("wrong attempt", wrong_attempt, approval_history(), "workflow run evidence does not match"),
+            ("wrong revision", wrong_revision, approval_history(), "workflow run evidence does not match"),
+            ("failed run", failed_run, approval_history(), "workflow run evidence does not match"),
             ("malformed", workflow_run(), malformed, "approval history is malformed"),
         )
         for name, run, history, error in failures:
@@ -2067,6 +2091,14 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
             mock.patch(
                 "scripts.release_plan.resolve_github_tag",
                 side_effect=AssertionError("historical records must not reload source tags"),
+            ),
+            mock.patch(
+                "scripts.release_plan.protected_environment_evidence",
+                return_value=environment_protection_evidence(),
+            ),
+            mock.patch(
+                "scripts.release_plan.protected_run_approval_evidence",
+                return_value=environment_approval_evidence(),
             ),
         ):
             loaded = load_public_supersession(failed, failed_commit, object())
