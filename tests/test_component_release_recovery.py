@@ -336,7 +336,11 @@ class ComponentRecoveryContractTest(unittest.TestCase):
             ),
             mock.patch(
                 "scripts.component_release_recovery.direct_plan_lifecycle",
-                side_effect=[("completed", None), ("completed", None)],
+                side_effect=[
+                    ("completed", None),
+                    ("completed", None),
+                    ("completed", None),
+                ],
             ),
             mock.patch(
                 "scripts.component_release_recovery.immutable_plan_recorded_at",
@@ -351,6 +355,103 @@ class ComponentRecoveryContractTest(unittest.TestCase):
 
         self.assertEqual(tags[1], selected["tag"])
         self.assertEqual("completed", selected["lifecycle"])
+
+    def test_scheduled_discovery_retries_concurrent_terminal_supersession(self) -> None:
+        older = plan()
+        older["plan"] = "older-plan"
+        successor = plan()
+        successor["plan"] = "successor-plan"
+        successor["components"]["workflow"]["version"] = "2.0.0-alpha.2"
+        older_tag = f"release-plan/{older['plan']}"
+        successor_tag = f"release-plan/{successor['plan']}"
+        older_commit = "a" * 40
+        successor_commit = "b" * 40
+        failure_commit = "c" * 40
+        failure = supersession_record(older, successor, older_commit)
+        registry_reads = 0
+        superseded = False
+
+        def list_tags(_client: mock.Mock) -> list[str]:
+            nonlocal registry_reads, superseded
+            registry_reads += 1
+            if registry_reads == 2:
+                superseded = True
+            return [older_tag, successor_tag] if superseded else [older_tag]
+
+        def resolve(_client: mock.Mock, _repository: str, tag: str) -> str | None:
+            if tag == older_tag:
+                return older_commit
+            if tag == successor_tag:
+                return successor_commit if superseded else None
+            if tag == f"release-plan-failure/{older['plan']}":
+                return failure_commit if superseded else None
+            return None
+
+        def read_authority(
+            _client: mock.Mock, tag: str, _commit: str
+        ) -> tuple[dict[str, object], dict[str, object]]:
+            candidate = successor if tag == successor_tag else older
+            return candidate, preparation(candidate)
+
+        def read_lifecycle_record(
+            _client: mock.Mock, _tag: str, _commit: str, filename: str
+        ) -> dict[str, object]:
+            if filename == "release-plan-failure.json":
+                return failure
+            if filename == "successor-release-plan.json":
+                return successor
+            raise AssertionError(f"unexpected lifecycle record: {filename}")
+
+        recorded = {
+            older_commit: dt.datetime(2026, 7, 20, tzinfo=dt.UTC),
+            successor_commit: dt.datetime(2026, 7, 21, tzinfo=dt.UTC),
+        }
+        with (
+            mock.patch(
+                "scripts.component_release_recovery.list_release_plan_tags",
+                side_effect=list_tags,
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.resolve_tag",
+                side_effect=resolve,
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.read_plan_authority",
+                side_effect=read_authority,
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.read_record",
+                side_effect=read_lifecycle_record,
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.immutable_plan_recorded_at",
+                side_effect=lambda _client, commit: recorded[commit],
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.revalidate_supersession_authority",
+            ),
+        ):
+            selected = select_implicit_plan_authority(mock.Mock())
+
+        self.assertEqual(successor_tag, selected["tag"])
+        self.assertEqual("actionable", selected["lifecycle"])
+        self.assertEqual(4, registry_reads)
+
+    def test_scheduled_discovery_fails_closed_after_bounded_churn(self) -> None:
+        with (
+            mock.patch(
+                "scripts.component_release_recovery.classify_implicit_plan_authority",
+                return_value=({"tag": "release-plan/unconverged"}, ["release-plan/unconverged"]),
+            ) as classify,
+            mock.patch(
+                "scripts.component_release_recovery.implicit_plan_authority_converged",
+                return_value=False,
+            ),
+            self.assertRaisesRegex(RecoveryError, "did not converge after 3 attempts"),
+        ):
+            select_implicit_plan_authority(mock.Mock())
+
+        self.assertEqual(3, classify.call_count)
 
     def test_terminal_failure_successor_requires_exact_authorized_plan_identity(self) -> None:
         failed = plan()
@@ -614,6 +715,7 @@ class ComponentRecoveryContractTest(unittest.TestCase):
                 "scripts.component_release_recovery.direct_plan_lifecycle",
                 side_effect=[
                     ("interrupted", interruption_tag),
+                    ("completed", None),
                     ("completed", None),
                     ("completed", None),
                 ],
