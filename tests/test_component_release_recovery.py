@@ -343,11 +343,17 @@ class ComponentRecoveryContractTest(unittest.TestCase):
             ),
             mock.patch(
                 "scripts.component_release_recovery.read_plan_authority",
-                side_effect=[(older, preparation(older)), (newer, preparation(newer))],
+                side_effect=[
+                    (older, preparation(older)),
+                    (newer, preparation(newer)),
+                    (older, preparation(older)),
+                    (newer, preparation(newer)),
+                ],
             ),
             mock.patch(
                 "scripts.component_release_recovery.direct_plan_lifecycle",
                 side_effect=[
+                    ("completed", None),
                     ("completed", None),
                     ("completed", None),
                     ("completed", None),
@@ -463,6 +469,87 @@ class ComponentRecoveryContractTest(unittest.TestCase):
             select_implicit_plan_authority(mock.Mock())
 
         self.assertEqual(3, classify.call_count)
+
+    def test_convergence_rechecks_nonselected_lifecycle_authority(self) -> None:
+        older = {"tag": "release-plan/older", "lifecycle": "completed"}
+        changed_older = {**older, "lifecycle": "superseded"}
+        latest = {"tag": "release-plan/latest", "lifecycle": "actionable"}
+        current_snapshot = [changed_older, latest]
+
+        with mock.patch(
+            "scripts.component_release_recovery.classify_implicit_plan_authority",
+            side_effect=[
+                (latest, [older, latest]),
+                (latest, current_snapshot),
+                (latest, current_snapshot),
+                (latest, current_snapshot),
+            ],
+        ) as classify:
+            selected = select_implicit_plan_authority(mock.Mock())
+
+        self.assertEqual(4, classify.call_count)
+        self.assertEqual(current_snapshot, selected["authority_snapshot"])
+
+    def test_final_implicit_boundary_rejects_stale_publish_but_manual_recovery_does_not(self) -> None:
+        candidate = plan()
+        candidate_preparation = preparation(candidate)
+        component = COMPONENTS["workflow"]
+        publication_preflight = mock.Mock(side_effect=NotFound("not published"))
+        implicit_authority = {
+            "authority_snapshot": [
+                {"tag": "release-plan/older", "lifecycle": "actionable"}
+            ]
+        }
+        current_snapshot = [
+            {"tag": "release-plan/older", "lifecycle": "superseded"},
+            {"tag": "release-plan/successor", "lifecycle": "actionable"},
+        ]
+
+        with (
+            mock.patch(
+                "scripts.component_release_recovery.verify_plan_authority",
+                return_value=({}, {}),
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.validate_release_preparation",
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.resolve_tag",
+                return_value=None,
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.classify_implicit_plan_authority",
+                return_value=(current_snapshot[-1], current_snapshot),
+            ) as classify,
+            mock.patch.dict(
+                "scripts.component_release_recovery.VERIFIERS",
+                {component.distribution: publication_preflight},
+            ),
+        ):
+            with self.assertRaisesRegex(RecoveryError, "refusing a stale recovery action"):
+                resolve_component(
+                    mock.Mock(),
+                    "workflow",
+                    "release-plan/older",
+                    "a" * 40,
+                    candidate,
+                    candidate_preparation,
+                    implicit_authority,
+                )
+
+            state, outputs = resolve_component(
+                mock.Mock(),
+                "workflow",
+                "release-plan/older",
+                "a" * 40,
+                candidate,
+                candidate_preparation,
+            )
+
+        self.assertEqual("publish", outputs["action"])
+        self.assertEqual("publication", state["phase"])
+        self.assertEqual(1, classify.call_count)
+        self.assertEqual(2, publication_preflight.call_count)
 
     def test_terminal_failure_successor_requires_exact_authorized_plan_identity(self) -> None:
         failed = plan()
@@ -735,13 +822,18 @@ class ComponentRecoveryContractTest(unittest.TestCase):
             ),
             mock.patch(
                 "scripts.component_release_recovery.read_plan_authority",
-                side_effect=[(candidate, preparation(candidate)) for candidate in plans],
+                side_effect=[
+                    (candidate, preparation(candidate))
+                    for candidate in [*plans, *plans]
+                ],
             ),
             mock.patch(
                 "scripts.component_release_recovery.direct_plan_lifecycle",
                 side_effect=[
                     ("interrupted", interruption_tag),
                     ("completed", None),
+                    ("completed", None),
+                    ("interrupted", interruption_tag),
                     ("completed", None),
                     ("completed", None),
                 ],
@@ -752,7 +844,7 @@ class ComponentRecoveryContractTest(unittest.TestCase):
             ),
             mock.patch(
                 "scripts.component_release_recovery.accepted_continuity_supersession",
-                side_effect=[None, superseded, superseded],
+                side_effect=[None, superseded, superseded, None, superseded, superseded],
             ),
             mock.patch(
                 "scripts.component_release_recovery.read_record",
@@ -1249,7 +1341,7 @@ jobs:
                     mock.patch.object(sys, "argv", arguments),
                     mock.patch(
                         "scripts.component_release_recovery.discover_plan",
-                        return_value=(plan_tag, record_commit, candidate, preparation(candidate)),
+                        return_value=(plan_tag, record_commit, candidate, preparation(candidate), None),
                     ) as discover,
                     mock.patch(
                         "scripts.component_release_recovery.resolve_component",
