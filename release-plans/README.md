@@ -123,3 +123,15 @@ rerun never needs an Actions artifact or a local checkout from an earlier run.
 When an observer encounters a terminal record, `release-state.json` identifies
 all conflicting components and their evidence and directs recovery to the exact
 stored successor plan rather than retrying an unrecoverable publication.
+
+Scheduled recovery discovers the complete `release-plan/*` Git tag registry,
+not the mutable ordering of GitHub Releases. It validates every plan together
+with its completion, terminal-failure, and continuity lifecycle records, then
+orders plans by the committer time embedded in each immutable plan-record
+commit. Every plan older than the selected record must be completed or
+superseded. The newest record may be completed (a scheduled no-op),
+interrupted, or currently actionable. Duplicate record times, malformed or
+conflicting lifecycle records, an older nonterminal plan, and a superseded
+record without its exact successor all fail closed. An explicit manual
+recovery tag continues to select only that exact immutable plan and its
+matching Release mirrors.

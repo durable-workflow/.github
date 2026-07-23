@@ -28,6 +28,7 @@ from scripts.release_plan import (
     check_plan_compatibility,
     completion_manifest,
     conflict_component_names,
+    discover_plan,
     failed_observation_state,
     is_immediate_version_successor,
     load_continuity_supersession,
@@ -374,6 +375,44 @@ def supersession_record(
 
 
 class ReleasePlanEntryPointTest(unittest.TestCase):
+    def test_observer_uses_the_shared_immutable_discovery_contract(self) -> None:
+        candidate = release_plan("beta")
+        tag = f"{PLAN_TAG_PREFIX}{candidate['plan']}"
+        commit = "a" * 40
+        prepared = release_preparation(candidate)
+        release = {
+            "tag_name": tag,
+            "assets": [
+                {"name": "release-plan.json", "browser_download_url": "https://example.test/plan"},
+                {
+                    "name": "release-preparation.json",
+                    "browser_download_url": "https://example.test/preparation",
+                },
+            ],
+        }
+        client = mock.Mock()
+        client.json.return_value = release
+        client.bytes.side_effect = [canonical_json(candidate), canonical_json(prepared)]
+
+        with (
+            mock.patch(
+                "scripts.release_plan.recovery_discovery.select_implicit_plan_authority",
+                return_value={"tag": tag},
+            ) as select,
+            mock.patch("scripts.release_plan.resolve_tag", return_value=commit),
+            mock.patch(
+                "scripts.release_plan.read_public_record",
+                side_effect=[candidate, prepared],
+            ),
+        ):
+            selected_tag, selected_plan, selected_preparation = discover_plan(client, None)
+
+        self.assertEqual(tag, selected_tag)
+        self.assertEqual(candidate, selected_plan)
+        self.assertEqual(prepared, selected_preparation)
+        select.assert_called_once()
+        self.assertNotIn("/releases?per_page=", client.json.call_args.args[0])
+
     def test_supersession_components_are_canonicalized_in_release_order(self) -> None:
         self.assertEqual(
             ["waterline", "sdk-rust"],
@@ -427,7 +466,7 @@ class ReleasePlanValidationTest(unittest.TestCase):
     def test_new_beta_plan_requires_current_product_train(self) -> None:
         plan = release_plan("beta")
         plan["components"] = {
-            name: {"version": "2.0.0-beta.5", "commit": identity["commit"]}
+            name: {"version": "2.0.0-beta.6", "commit": identity["commit"]}
             for name, identity in plan["components"].items()
         }
 
@@ -438,7 +477,7 @@ class ReleasePlanValidationTest(unittest.TestCase):
 
             plan["components"]["server"]["version"] = "0.2.701"
             path.write_bytes(canonical_json(plan))
-            with self.assertRaisesRegex(CandidateError, "supported product train 2.0.0-beta.5"):
+            with self.assertRaisesRegex(CandidateError, "supported product train 2.0.0-beta.6"):
                 load_plan(path, require_current=True)
 
     def test_supersession_handoff_binds_dispatch_identities(self) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import io
 import json
@@ -23,11 +24,14 @@ from scripts.component_release_recovery import (
     PublicInfrastructureError,
     RecoveryError,
     canonical_json,
+    direct_plan_lifecycle,
     discover_plan,
+    list_release_plan_tags,
     main,
     manifest_digest,
     resolve_component,
     scheduled_continuity_pause,
+    select_implicit_plan_authority,
     select_publication_run,
     validate_plan,
     validate_release_preparation,
@@ -106,7 +110,407 @@ def preparation(candidate: dict[str, object]) -> dict[str, object]:
     }
 
 
+def supersession_record(
+    failed: dict[str, object],
+    successor: dict[str, object],
+    failed_commit: str,
+) -> dict[str, object]:
+    identity = failed["components"]["workflow"]
+    observed_commit = "e" * 40
+    environment_url = (
+        "https://github.com/durable-workflow/.github/deployments/activity_log?"
+        "environments_filter=release-plan-supersession"
+    )
+    protection = {
+        "custom_branch_policies": [{"id": 22, "name": "main"}],
+        "deployment_branch_policy": {
+            "custom_branch_policies": True,
+            "protected_branches": False,
+        },
+        "environment_id": 11,
+        "environment_url": environment_url,
+        "required_reviewer_rule_ids": [33],
+    }
+    return {
+        "schema": "durable-workflow.release-plan-failure/v1",
+        "outcome": "terminal-failure",
+        "failed_plan": {
+            "tag": f"release-plan/{failed['plan']}",
+            "commit": failed_commit,
+            "sha256": manifest_digest(failed),
+        },
+        "conflicts": [
+            {
+                "component": "workflow",
+                "version": identity["version"],
+                "planned_commit": identity["commit"],
+                "observed_commit": observed_commit,
+                "reason": "published-version-source-conflict",
+                "github_release": {
+                    "id": 44,
+                    "url": "https://github.com/durable-workflow/workflow/releases/44",
+                },
+                "distribution": {
+                    "kind": "composer",
+                    "source_reference": observed_commit,
+                    "dist_reference": observed_commit,
+                },
+            }
+        ],
+        "successor_plan": {
+            "tag": f"release-plan/{successor['plan']}",
+            "sha256": manifest_digest(successor),
+        },
+        "authorization": {
+            "actor": "release-operator",
+            "environment": "release-plan-supersession",
+            "environment_approval": {
+                "comment": "approved",
+                "environments": [
+                    {
+                        "html_url": environment_url,
+                        "id": 11,
+                        "name": "release-plan-supersession",
+                        "node_id": "environment-node",
+                        "url": (
+                            "https://api.github.com/repos/durable-workflow/.github/"
+                            "environments/release-plan-supersession"
+                        ),
+                    }
+                ],
+                "run_attempt": 1,
+                "run_id": 456,
+                "state": "approved",
+                "user": {
+                    "html_url": "https://github.com/release-reviewer",
+                    "id": 55,
+                    "login": "release-reviewer",
+                    "node_id": "reviewer-node",
+                    "url": "https://api.github.com/users/release-reviewer",
+                },
+            },
+            "environment_protection": protection,
+            "repository": "durable-workflow/.github",
+            "run_attempt": 1,
+            "run_id": 456,
+            "run_url": "https://github.com/durable-workflow/.github/actions/runs/456",
+            "workflow_commit": "f" * 40,
+            "workflow_ref": (
+                "durable-workflow/.github/.github/workflows/"
+                "release-plan-supersession.yml@refs/heads/main"
+            ),
+        },
+    }
+
+
 class ComponentRecoveryContractTest(unittest.TestCase):
+    def test_immutable_plan_registry_is_consumed_as_one_complete_authority_set(self) -> None:
+        client = mock.Mock()
+        client.json.return_value = [
+            {"ref": f"refs/tags/release-plan/completed-{index:03d}"}
+            for index in range(125)
+        ]
+
+        tags = list_release_plan_tags(client)
+
+        self.assertEqual(125, len(tags))
+        client.json.assert_called_once_with(
+            "https://api.github.com/repos/durable-workflow/.github/"
+            "git/matching-refs/tags/release-plan/"
+        )
+
+    def test_scheduled_discovery_uses_immutable_plan_time_not_updated_release_order(self) -> None:
+        older = plan()
+        older["plan"] = "older-alpha"
+        newer = plan("beta")
+        newer["plan"] = "newer-beta"
+        tags = [f"release-plan/{older['plan']}", f"release-plan/{newer['plan']}"]
+        commits = {tags[0]: "a" * 40, tags[1]: "b" * 40}
+        recorded = {
+            "a" * 40: dt.datetime(2026, 7, 20, tzinfo=dt.UTC),
+            "b" * 40: dt.datetime(2026, 7, 22, tzinfo=dt.UTC),
+        }
+
+        with (
+            mock.patch(
+                "scripts.component_release_recovery.list_release_plan_tags",
+                # Mutable Releases API order after the older Release was edited.
+                return_value=[tags[0], tags[1]],
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.resolve_tag",
+                side_effect=lambda _client, _repository, tag: commits[tag],
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.read_plan_authority",
+                side_effect=[(older, preparation(older)), (newer, preparation(newer))],
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.direct_plan_lifecycle",
+                side_effect=[("completed", None), ("completed", None)],
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.immutable_plan_recorded_at",
+                side_effect=lambda _client, commit: recorded[commit],
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.accepted_continuity_supersession",
+                return_value=None,
+            ),
+        ):
+            selected = select_implicit_plan_authority(mock.Mock())
+
+        self.assertEqual(tags[1], selected["tag"])
+        self.assertEqual("completed", selected["lifecycle"])
+
+    def test_terminal_failure_successor_requires_exact_authorized_plan_identity(self) -> None:
+        failed = plan()
+        failed["plan"] = "failed-plan"
+        authorized_successor = json.loads(json.dumps(failed))
+        authorized_successor["plan"] = "successor-plan"
+        authorized_successor["components"]["workflow"]["version"] = "2.0.0-alpha.2"
+        recorded_successor = json.loads(json.dumps(authorized_successor))
+        recorded_successor["components"]["workflow"]["commit"] = "e" * 40
+        failed_tag = f"release-plan/{failed['plan']}"
+        successor_tag = f"release-plan/{authorized_successor['plan']}"
+        failed_commit = "a" * 40
+        successor_commit = "b" * 40
+        failure_commit = "c" * 40
+        failure = supersession_record(failed, authorized_successor, failed_commit)
+
+        with (
+            mock.patch(
+                "scripts.component_release_recovery.resolve_tag",
+                side_effect=[None, failure_commit],
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.read_record",
+                side_effect=[failure, authorized_successor],
+            ),
+        ):
+            lifecycle, successor_identity = direct_plan_lifecycle(
+                mock.Mock(),
+                failed_tag,
+                failed_commit,
+                failed,
+                None,
+            )
+
+        self.assertEqual("superseded", lifecycle)
+        self.assertEqual(
+            {
+                "tag": successor_tag,
+                "sha256": manifest_digest(authorized_successor),
+                "plan": authorized_successor,
+            },
+            successor_identity,
+        )
+
+        commits = {failed_tag: failed_commit, successor_tag: successor_commit}
+        recorded = {
+            failed_commit: dt.datetime(2026, 7, 20, tzinfo=dt.UTC),
+            successor_commit: dt.datetime(2026, 7, 21, tzinfo=dt.UTC),
+        }
+        with (
+            mock.patch(
+                "scripts.component_release_recovery.list_release_plan_tags",
+                return_value=[failed_tag, successor_tag],
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.resolve_tag",
+                side_effect=lambda _client, _repository, tag: commits[tag],
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.read_plan_authority",
+                side_effect=[(failed, None), (recorded_successor, None)],
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.direct_plan_lifecycle",
+                side_effect=[
+                    (lifecycle, successor_identity),
+                    ("completed", None),
+                ],
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.immutable_plan_recorded_at",
+                side_effect=lambda _client, commit: recorded[commit],
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.accepted_continuity_supersession",
+                return_value=None,
+            ),
+            self.assertRaisesRegex(RecoveryError, "conflicting successor identity"),
+        ):
+            select_implicit_plan_authority(mock.Mock())
+
+    def test_terminal_failure_rejects_incomplete_lifecycle_authority(self) -> None:
+        failed = plan()
+        failed["plan"] = "failed-plan"
+        successor = json.loads(json.dumps(failed))
+        successor["plan"] = "successor-plan"
+        successor["components"]["workflow"]["version"] = "2.0.0-alpha.2"
+        failed_tag = f"release-plan/{failed['plan']}"
+        failed_commit = "a" * 40
+        incomplete = {
+            "schema": "durable-workflow.release-plan-failure/v1",
+            "outcome": "terminal-failure",
+            "failed_plan": {
+                "tag": failed_tag,
+                "commit": failed_commit,
+                "sha256": manifest_digest(failed),
+            },
+            "successor_plan": {
+                "tag": f"release-plan/{successor['plan']}",
+                "sha256": manifest_digest(successor),
+            },
+        }
+
+        with (
+            mock.patch(
+                "scripts.component_release_recovery.resolve_tag",
+                side_effect=[None, "c" * 40],
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.read_record",
+                side_effect=[incomplete, successor],
+            ),
+            self.assertRaisesRegex(RecoveryError, "record keys must be exactly"),
+        ):
+            direct_plan_lifecycle(
+                mock.Mock(),
+                failed_tag,
+                failed_commit,
+                failed,
+                None,
+            )
+
+    def test_scheduled_discovery_fails_closed_on_ambiguous_or_incomplete_history(self) -> None:
+        first = plan()
+        first["plan"] = "first"
+        second = plan("beta")
+        second["plan"] = "second"
+        tags = [f"release-plan/{first['plan']}", f"release-plan/{second['plan']}"]
+        commits = {tags[0]: "a" * 40, tags[1]: "b" * 40}
+
+        cases = (
+            (
+                "ambiguous immutable Git recorded-at",
+                [("completed", None), ("completed", None)],
+                {
+                    "a" * 40: dt.datetime(2026, 7, 20, tzinfo=dt.UTC),
+                    "b" * 40: dt.datetime(2026, 7, 20, tzinfo=dt.UTC),
+                },
+            ),
+            (
+                "remains actionable",
+                [("actionable", None), ("completed", None)],
+                {
+                    "a" * 40: dt.datetime(2026, 7, 20, tzinfo=dt.UTC),
+                    "b" * 40: dt.datetime(2026, 7, 21, tzinfo=dt.UTC),
+                },
+            ),
+        )
+        for message, lifecycles, recorded in cases:
+            with (
+                self.subTest(message=message),
+                mock.patch(
+                    "scripts.component_release_recovery.list_release_plan_tags",
+                    return_value=tags,
+                ),
+                mock.patch(
+                    "scripts.component_release_recovery.resolve_tag",
+                    side_effect=lambda _client, _repository, tag: commits[tag],
+                ),
+                mock.patch(
+                    "scripts.component_release_recovery.read_plan_authority",
+                    side_effect=[(first, preparation(first)), (second, preparation(second))],
+                ),
+                mock.patch(
+                    "scripts.component_release_recovery.direct_plan_lifecycle",
+                    side_effect=lifecycles,
+                ),
+                mock.patch(
+                    "scripts.component_release_recovery.immutable_plan_recorded_at",
+                    side_effect=lambda _client, commit, recorded=recorded: recorded[commit],
+                ),
+                mock.patch(
+                    "scripts.component_release_recovery.accepted_continuity_supersession",
+                    return_value=None,
+                ),
+                self.assertRaisesRegex(RecoveryError, message),
+            ):
+                select_implicit_plan_authority(mock.Mock())
+
+    def test_completed_continuity_successors_deterministically_supersede_one_interruption(self) -> None:
+        interrupted = plan()
+        interrupted["plan"] = "interrupted"
+        first_successor = plan()
+        first_successor["plan"] = "first-successor"
+        latest = plan("beta")
+        latest["plan"] = "latest"
+        plans = [interrupted, first_successor, latest]
+        tags = [f"release-plan/{candidate['plan']}" for candidate in plans]
+        interruption_tag = "beta-continuity/interrupted/interrupted"
+        interruption_commit = "d" * 40
+        interruption_evidence = {"outcome": "intentionally-interrupted"}
+        superseded = {
+            "tag": interruption_tag,
+            "commit": interruption_commit,
+            "evidence_sha256": manifest_digest(interruption_evidence),
+            "plan_sha256": manifest_digest(interrupted),
+            "reason": "missing-post-acceptance-publication-trigger",
+        }
+        commits = {
+            tags[0]: "a" * 40,
+            tags[1]: "b" * 40,
+            tags[2]: "c" * 40,
+            interruption_tag: interruption_commit,
+        }
+        recorded = {
+            "a" * 40: dt.datetime(2026, 7, 20, tzinfo=dt.UTC),
+            "b" * 40: dt.datetime(2026, 7, 21, tzinfo=dt.UTC),
+            "c" * 40: dt.datetime(2026, 7, 22, tzinfo=dt.UTC),
+        }
+
+        with (
+            mock.patch(
+                "scripts.component_release_recovery.list_release_plan_tags",
+                return_value=tags,
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.resolve_tag",
+                side_effect=lambda _client, _repository, tag: commits[tag],
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.read_plan_authority",
+                side_effect=[(candidate, preparation(candidate)) for candidate in plans],
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.direct_plan_lifecycle",
+                side_effect=[
+                    ("interrupted", interruption_tag),
+                    ("completed", None),
+                    ("completed", None),
+                ],
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.immutable_plan_recorded_at",
+                side_effect=lambda _client, commit: recorded[commit],
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.accepted_continuity_supersession",
+                side_effect=[None, superseded, superseded],
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.read_record",
+                return_value=interruption_evidence,
+            ),
+        ):
+            selected = select_implicit_plan_authority(mock.Mock())
+
+        self.assertEqual(tags[2], selected["tag"])
+        self.assertEqual("completed", selected["lifecycle"])
+
     def test_recovery_composer_verification_expands_minified_exact_version_strictly(self) -> None:
         component = COMPONENTS["sdk-php"]
         commit = "a" * 40

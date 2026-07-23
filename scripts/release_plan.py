@@ -23,6 +23,7 @@ from typing import Any
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from scripts import component_release_recovery as recovery_discovery
 from scripts.beta_candidate import (
     COMPONENTS,
     INFRASTRUCTURE_EXIT_CODE,
@@ -2899,17 +2900,28 @@ def discover_plan(client: PublicClient, requested_tag: str | None) -> tuple[str,
         if not tag.startswith(PLAN_TAG_PREFIX):
             raise CandidateError(f"release plan tag must start with {PLAN_TAG_PREFIX}")
     else:
-        releases = client.json(f"https://api.github.com/repos/{CONTROL_REPOSITORY}/releases?per_page=100")
-        tag = next(
-            (
-                str(release.get("tag_name"))
-                for release in releases
-                if not release.get("draft") and str(release.get("tag_name", "")).startswith(PLAN_TAG_PREFIX)
-            ),
-            "",
-        )
-        if not tag:
-            raise CandidateError("no public release plan is available")
+
+        class DiscoveryClient:
+            def json(self, url: str, **options: Any) -> Any:
+                try:
+                    return client.json(url, **options)
+                except CandidateError as error:
+                    if "(404)" in str(error):
+                        raise recovery_discovery.NotFound(str(error), "plan-discovery") from error
+                    raise
+
+            def bytes(self, url: str, **options: Any) -> bytes:
+                try:
+                    return client.bytes(url, **options)
+                except CandidateError as error:
+                    if "(404)" in str(error):
+                        raise recovery_discovery.NotFound(str(error), "plan-discovery") from error
+                    raise
+
+        try:
+            tag = recovery_discovery.select_implicit_plan_authority(DiscoveryClient())["tag"]
+        except recovery_discovery.RecoveryError as error:
+            raise CandidateError(str(error)) from error
     commit = resolve_tag(client, CONTROL_REPOSITORY, tag)
     if commit is None:
         raise CandidateError(f"release plan tag {tag} does not exist")
