@@ -978,7 +978,7 @@ def validate_supersession_record(
         or type(authorization.get("run_id")) is not int
         or authorization["run_id"] < 1
         or type(authorization.get("run_attempt")) is not int
-        or authorization["run_attempt"] < 1
+        or authorization["run_attempt"] != 1
         or authorization.get("run_url")
         != f"https://github.com/{CONTROL_REPOSITORY}/actions/runs/{authorization.get('run_id')}"
     ):
@@ -1864,7 +1864,9 @@ def record_plan(
         index_path.unlink(missing_ok=True)
 
 
-def protected_environment_evidence(client: PublicClient) -> dict[str, Any]:
+def protected_environment_evidence(
+    client: PublicClient,
+) -> tuple[dict[str, Any], set[tuple[int, str]]]:
     encoded = urllib.parse.quote(SUPERSESSION_ENVIRONMENT, safe="")
     environment = client.json(
         f"https://api.github.com/repos/{CONTROL_REPOSITORY}/environments/{encoded}",
@@ -1882,9 +1884,32 @@ def protected_environment_evidence(client: PublicClient) -> dict[str, Any]:
         if isinstance(rule, dict) and rule.get("type") == "required_reviewers" and rule.get("reviewers")
     ]
     rule_ids = sorted(rule["id"] for rule in reviewer_rules if type(rule.get("id")) is int and rule["id"] > 0)
-    if not rule_ids:
+    if len(reviewer_rules) != 1 or len(rule_ids) != 1:
         raise CandidateError(
-            f"GitHub environment {SUPERSESSION_ENVIRONMENT} must require a reviewer before supersession"
+            f"GitHub environment {SUPERSESSION_ENVIRONMENT} must contain one explicit reviewer policy"
+        )
+    reviewer_user_ids: list[int] = []
+    required_reviewers: set[tuple[int, str]] = set()
+    for reviewer in reviewer_rules[0]["reviewers"]:
+        identity = reviewer.get("reviewer") if isinstance(reviewer, dict) else None
+        if (
+            not isinstance(identity, dict)
+            or reviewer.get("type") != "User"
+            or type(identity.get("id")) is not int
+            or identity["id"] < 1
+            or not isinstance(identity.get("login"), str)
+            or not re.fullmatch(r"[A-Za-z0-9-]{1,39}", identity["login"])
+        ):
+            raise CandidateError(
+                f"GitHub environment {SUPERSESSION_ENVIRONMENT} has an unverifiable required reviewer"
+            )
+        reviewer_user_ids.append(identity["id"])
+        required_reviewers.add((identity["id"], identity["login"]))
+    reviewer_user_ids = sorted(set(reviewer_user_ids))
+    prevent_self_review = reviewer_rules[0].get("prevent_self_review")
+    if not reviewer_user_ids or type(prevent_self_review) is not bool:
+        raise CandidateError(
+            f"GitHub environment {SUPERSESSION_ENVIRONMENT} has an invalid required reviewer policy"
         )
     environment_id = environment.get("id")
     environment_url = environment.get("html_url")
@@ -1937,7 +1962,7 @@ def protected_environment_evidence(client: PublicClient) -> dict[str, Any]:
         "required_reviewer_rule_ids": rule_ids,
     }
     validate_environment_protection_evidence(evidence)
-    return evidence
+    return evidence, required_reviewers
 
 
 def protected_run_approval_evidence(
@@ -1948,6 +1973,7 @@ def protected_run_approval_evidence(
     run_attempt: int,
     workflow_commit: str,
     environment_protection: dict[str, Any],
+    required_reviewers: set[tuple[int, str]],
     require_success: bool = False,
 ) -> dict[str, Any]:
     run = client.json(
@@ -1980,6 +2006,10 @@ def protected_run_approval_evidence(
         )
     ):
         raise CandidateError("protected supersession workflow run evidence does not match GitHub")
+    if run_attempt != 1:
+        raise CandidateError(
+            "GitHub approval history cannot prove protected approval for a rerun attempt"
+        )
 
     history = client.json(
         f"https://api.github.com/repos/{CONTROL_REPOSITORY}/actions/runs/{run_id}/approvals",
@@ -2036,6 +2066,10 @@ def protected_run_approval_evidence(
             "run_id": run_id,
         },
     )
+    if (evidence["user"]["id"], evidence["user"]["login"]) not in required_reviewers:
+        raise CandidateError(
+            "protected supersession approving user is not authorized by the current reviewer policy"
+        )
     return evidence
 
 
@@ -2046,7 +2080,7 @@ def revalidate_supersession_authority(
     require_success: bool,
 ) -> None:
     authorization = record["authorization"]
-    live_protection = protected_environment_evidence(client)
+    live_protection, required_reviewers = protected_environment_evidence(client)
     if live_protection != authorization["environment_protection"]:
         raise CandidateError("release plan failure protected environment policy no longer matches GitHub")
     live_approval = protected_run_approval_evidence(
@@ -2056,6 +2090,7 @@ def revalidate_supersession_authority(
         run_attempt=authorization["run_attempt"],
         workflow_commit=authorization["workflow_commit"],
         environment_protection=live_protection,
+        required_reviewers=required_reviewers,
         require_success=require_success,
     )
     if live_approval != authorization["environment_approval"]:
@@ -2244,7 +2279,7 @@ def prepare_supersession(
         run_attempt_value = int(run_attempt)
     except ValueError as error:
         raise CandidateError("protected workflow run identity must be numeric") from error
-    protection = protected_environment_evidence(client)
+    protection, required_reviewers = protected_environment_evidence(client)
     approval = protected_run_approval_evidence(
         client,
         actor=actor,
@@ -2252,6 +2287,7 @@ def prepare_supersession(
         run_attempt=run_attempt_value,
         workflow_commit=workflow_commit,
         environment_protection=protection,
+        required_reviewers=required_reviewers,
     )
     record = {
         "schema": "durable-workflow.release-plan-failure/v1",

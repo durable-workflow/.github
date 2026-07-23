@@ -249,6 +249,10 @@ def environment_protection_evidence() -> dict[str, object]:
     }
 
 
+def environment_protection_authority() -> tuple[dict[str, object], set[tuple[int, str]]]:
+    return environment_protection_evidence(), {(29, "release-reviewer")}
+
+
 def environment_approval_evidence() -> dict[str, object]:
     return {
         "comment": "Supersession reviewed",
@@ -284,7 +288,28 @@ def github_environment() -> dict[str, object]:
             "https://github.com/durable-workflow/.github/deployments/activity_log"
             "?environments_filter=release-plan-supersession"
         ),
-        "protection_rules": [{"id": 19, "type": "required_reviewers", "reviewers": [{"type": "User"}]}],
+        "protection_rules": [
+            {
+                "id": 19,
+                "prevent_self_review": False,
+                "type": "required_reviewers",
+                "reviewers": [
+                    {
+                        "type": "User",
+                        "reviewer": {
+                            "avatar_url": "https://avatars.githubusercontent.com/u/29?v=4",
+                            "html_url": "https://github.com/release-reviewer",
+                            "id": 29,
+                            "login": "release-reviewer",
+                            "node_id": "U_kgDOReviewer",
+                            "site_admin": False,
+                            "type": "User",
+                            "url": "https://api.github.com/users/release-reviewer",
+                        },
+                    }
+                ],
+            }
+        ],
         "deployment_branch_policy": {
             "custom_branch_policies": True,
             "protected_branches": False,
@@ -313,9 +338,21 @@ def approval_history() -> list[dict[str, object]]:
     return [
         {
             "comment": approval["comment"],
-            "environments": approval["environments"],
+            "environments": [
+                {
+                    **approval["environments"][0],
+                    "can_admins_bypass": True,
+                    "created_at": "2026-07-23T00:00:00Z",
+                    "updated_at": "2026-07-23T00:00:00Z",
+                }
+            ],
             "state": approval["state"],
-            "user": approval["user"],
+            "user": {
+                **approval["user"],
+                "avatar_url": "https://avatars.githubusercontent.com/u/29?v=4",
+                "site_admin": False,
+                "type": "User",
+            },
         }
     ]
 
@@ -1434,7 +1471,7 @@ class ReleasePlanValidationTest(unittest.TestCase):
             ),
             mock.patch(
                 "scripts.release_plan.protected_environment_evidence",
-                return_value=environment_protection_evidence(),
+                return_value=environment_protection_authority(),
             ),
             mock.patch(
                 "scripts.release_plan.protected_run_approval_evidence",
@@ -1457,7 +1494,7 @@ class ReleasePlanValidationTest(unittest.TestCase):
             ),
             mock.patch(
                 "scripts.release_plan.protected_environment_evidence",
-                return_value=environment_protection_evidence(),
+                return_value=environment_protection_authority(),
             ),
             mock.patch(
                 "scripts.release_plan.protected_run_approval_evidence",
@@ -1480,7 +1517,7 @@ class ReleasePlanValidationTest(unittest.TestCase):
             ),
             mock.patch(
                 "scripts.release_plan.protected_environment_evidence",
-                return_value=environment_protection_evidence(),
+                return_value=environment_protection_authority(),
             ),
             mock.patch(
                 "scripts.release_plan.protected_run_approval_evidence",
@@ -1577,7 +1614,7 @@ class ReleasePlanValidationTest(unittest.TestCase):
             ),
             mock.patch(
                 "scripts.release_plan.protected_environment_evidence",
-                return_value=environment_protection_evidence(),
+                return_value=environment_protection_authority(),
             ),
             mock.patch(
                 "scripts.release_plan.protected_run_approval_evidence",
@@ -1713,7 +1750,7 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
                         return policies
                     return environment
 
-            return protected_environment_evidence(FixtureClient())
+            return protected_environment_evidence(FixtureClient())[0]
 
         environment = github_environment()
         policies = {
@@ -1747,6 +1784,14 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
         with self.assertRaisesRegex(CandidateError, "allow only the main branch"):
             evidence(environment, extra_policy)
 
+        unsupported_reviewer = copy.deepcopy(environment)
+        unsupported_reviewer["protection_rules"][0]["reviewers"][0] = {
+            "type": "Team",
+            "reviewer": {"id": 29},
+        }
+        with self.assertRaisesRegex(CandidateError, "unverifiable required reviewer"):
+            evidence(unsupported_reviewer, policies)
+
     def test_approval_history_rejects_absent_rejected_wrong_environment_wrong_run_and_malformed(self) -> None:
         def evidence(run: object, history: object) -> dict[str, object]:
             class FixtureClient:
@@ -1764,6 +1809,7 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
                 run_attempt=1,
                 workflow_commit="f" * 40,
                 environment_protection=environment_protection_evidence(),
+                required_reviewers={(29, "release-reviewer")},
                 require_success=True,
             )
 
@@ -1783,6 +1829,8 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
         failed_run["conclusion"] = "failure"
         malformed = approval_history()
         malformed[0]["environments"] = "release-plan-supersession"
+        outside_policy = approval_history()
+        outside_policy[0]["user"]["id"] = 999
 
         failures = (
             ("absent", workflow_run(), [], "exactly one approved review"),
@@ -1793,6 +1841,12 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
             ("wrong revision", wrong_revision, approval_history(), "workflow run evidence does not match"),
             ("failed run", failed_run, approval_history(), "workflow run evidence does not match"),
             ("malformed", workflow_run(), malformed, "approval history is malformed"),
+            (
+                "outside reviewer policy",
+                workflow_run(),
+                outside_policy,
+                "not authorized by the current reviewer policy",
+            ),
         )
         for name, run, history, error in failures:
             with self.subTest(name=name), self.assertRaisesRegex(CandidateError, error):
@@ -1813,6 +1867,25 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
                 self.assertRaisesRegex(CandidateError, "workflow run evidence does not match"),
             ):
                 evidence(run, approval_history())
+
+    def test_run_scoped_approval_history_cannot_authorize_a_rerun_attempt(self) -> None:
+        client = mock.Mock()
+        rerun = workflow_run()
+        rerun["run_attempt"] = 2
+        client.json.side_effect = [rerun]
+
+        with self.assertRaisesRegex(CandidateError, "cannot prove protected approval for a rerun"):
+            protected_run_approval_evidence(
+                client,
+                actor="release-operator",
+                run_id=456,
+                run_attempt=2,
+                workflow_commit="f" * 40,
+                environment_protection=environment_protection_evidence(),
+                required_reviewers={(29, "release-reviewer")},
+                require_success=True,
+            )
+        self.assertEqual(1, client.json.call_count)
 
     def test_prepare_proves_real_public_conflict_and_protected_run(self) -> None:
         failed = release_plan()
@@ -2094,7 +2167,7 @@ class ReleasePlanSupersessionTest(unittest.TestCase):
             ),
             mock.patch(
                 "scripts.release_plan.protected_environment_evidence",
-                return_value=environment_protection_evidence(),
+                return_value=environment_protection_authority(),
             ),
             mock.patch(
                 "scripts.release_plan.protected_run_approval_evidence",
@@ -2357,7 +2430,7 @@ class ReleasePlanRecordTest(unittest.TestCase):
             ),
             mock.patch(
                 "scripts.release_plan.protected_environment_evidence",
-                return_value=environment_protection_evidence(),
+                return_value=environment_protection_authority(),
             ) as protection,
             mock.patch(
                 "scripts.release_plan.protected_run_approval_evidence",
@@ -2470,7 +2543,7 @@ class ReleasePlanRecordTest(unittest.TestCase):
                     ),
                     mock.patch(
                         "scripts.release_plan.protected_environment_evidence",
-                        return_value=protection,
+                        return_value=(protection, {(29, "release-reviewer")}),
                     ),
                     mock.patch(
                         "scripts.release_plan.protected_run_approval_evidence",

@@ -217,8 +217,19 @@ def captured_github_authority(
         "protection_rules": [
             {
                 "id": protection["required_reviewer_rule_ids"][0],
+                "prevent_self_review": False,
                 "type": "required_reviewers",
-                "reviewers": [{"type": "User"}],
+                "reviewers": [
+                    {
+                        "type": "User",
+                        "reviewer": {
+                            **approval["user"],
+                            "avatar_url": "https://avatars.githubusercontent.com/u/55?v=4",
+                            "site_admin": False,
+                            "type": "User",
+                        },
+                    }
+                ],
             }
         ],
         "deployment_branch_policy": protection["deployment_branch_policy"],
@@ -609,6 +620,21 @@ class ComponentRecoveryContractTest(unittest.TestCase):
                     responses[target][field] = value
                 with self.assertRaises(RecoveryError):
                     revalidate_supersession_authority(changed, client)
+
+    def test_run_scoped_approval_history_cannot_authorize_a_rerun_attempt(self) -> None:
+        failed = plan()
+        successor = json.loads(json.dumps(failed))
+        successor["plan"] = "successor-plan"
+        successor["components"]["workflow"]["version"] = "2.0.0-alpha.2"
+        record = supersession_record(failed, successor, "a" * 40)
+        record["authorization"]["run_attempt"] = 2
+        record["authorization"]["environment_approval"]["run_attempt"] = 2
+        client, responses = captured_github_authority(record)
+        responses["run"]["run_attempt"] = 2
+
+        with self.assertRaisesRegex(RecoveryError, "cannot prove protected approval for a rerun"):
+            revalidate_supersession_authority(record, client)
+        self.assertFalse(any(call.args[0].endswith("/approvals") for call in client.json.call_args_list))
 
     def test_scheduled_discovery_fails_closed_on_ambiguous_or_incomplete_history(self) -> None:
         first = plan()
