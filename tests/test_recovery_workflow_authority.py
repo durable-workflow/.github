@@ -14,7 +14,6 @@ from scripts.component_release_recovery import (
 )
 from scripts.recovery_workflow_authority import (
     AUTHORITY_PATH,
-    AUTHORITY_REF,
     QUALIFICATION_EVENT,
     QUALIFICATION_WORKFLOW,
     authority_ref_url,
@@ -40,16 +39,22 @@ def qualification_run(
     conclusion: str | None = "success",
     *,
     head_sha: str = AUTHORITY_COMMIT,
+    head_branch: str = "main",
+    path: str = ".github/workflows/beta-candidate.yml",
 ) -> dict[str, object]:
     return {
         "id": 71,
         "run_attempt": 2,
-        "path": QUALIFICATION_WORKFLOW,
-        "event": QUALIFICATION_EVENT,
-        "head_branch": AUTHORITY_REF,
+        "name": "Beta candidate",
+        "workflow_id": 37,
+        "path": path,
+        "event": "push",
+        "head_branch": head_branch,
         "head_sha": head_sha,
         "status": status,
         "conclusion": conclusion,
+        "url": "https://api.github.com/repos/durable-workflow/.github/actions/runs/71",
+        "html_url": "https://github.com/durable-workflow/.github/actions/runs/71",
     }
 
 
@@ -64,7 +69,7 @@ class FixtureClient:
         if url == authority_ref_url():
             return {"sha": AUTHORITY_COMMIT}
         if url == qualification_runs_url(AUTHORITY_COMMIT):
-            return {"workflow_runs": self.runs}
+            return {"total_count": len(self.runs), "workflow_runs": self.runs}
         raise AssertionError(f"unexpected fixture URL: {url}")
 
     def bytes(self, url: str, *, accept: str | None = None) -> bytes:
@@ -97,6 +102,8 @@ class RecoveryWorkflowAuthorityTest(unittest.TestCase):
         self.assertEqual(AUTHORITY_COMMIT, source["commit"])
         self.assertEqual(hashlib.sha256(client.raw).hexdigest(), source["sha256"])
         self.assertEqual(AUTHORITY_COMMIT, source["qualification"]["head_sha"])
+        self.assertEqual(".github/workflows/beta-candidate.yml", source["qualification"]["path"])
+        self.assertEqual("main", source["qualification"]["head_branch"])
         self.assertEqual("success", source["qualification"]["conclusion"])
         self.assertEqual(
             [
@@ -125,6 +132,38 @@ class RecoveryWorkflowAuthorityTest(unittest.TestCase):
                 with self.assertRaisesRegex(RecoveryError, message):
                     load_recovery_workflow_authority(client)
                 self.assertFalse(any(method == "bytes" for method, _url, _accept in client.requests))
+
+    def test_qualification_accepts_the_documented_protected_workflow_ref_suffix(self) -> None:
+        client = FixtureClient(
+            AUTHORITY,
+            [qualification_run(path=".github/workflows/beta-candidate.yml@main")],
+        )
+
+        _workflows, source = load_recovery_workflow_authority(client)
+
+        self.assertEqual(
+            ".github/workflows/beta-candidate.yml@main",
+            source["qualification"]["path"],
+        )
+        self.assertEqual("main", source["qualification"]["head_branch"])
+
+    def test_qualification_rejects_wrong_workflow_or_ref_before_manifest_download(self) -> None:
+        paths = (
+            ".github/workflows/source-qualification.yml@main",
+            ".github/workflows/source-qualification.yml",
+            ".github/workflows/beta-candidate.yml@v2",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                client = FixtureClient(AUTHORITY, [qualification_run(path=path)])
+                with self.assertRaisesRegex(RecoveryError, "absent"):
+                    load_recovery_workflow_authority(client)
+                self.assertFalse(any(method == "bytes" for method, _url, _accept in client.requests))
+
+        client = FixtureClient(AUTHORITY, [qualification_run(head_branch="v2")])
+        with self.assertRaisesRegex(RecoveryError, "absent"):
+            load_recovery_workflow_authority(client)
+        self.assertFalse(any(method == "bytes" for method, _url, _accept in client.requests))
 
     def test_mismatched_authority_and_workflow_source_fail_closed(self) -> None:
         wrong_branch = copy.deepcopy(AUTHORITY)
