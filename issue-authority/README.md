@@ -19,7 +19,8 @@ Before any environment-backed job is considered, a metadata-only, read-only
 pass reconstructs these decisions from the issue author, last edit time, and
 approval-label timeline. It fetches title and body only after that pass accepts
 the revision, then binds the content digest. The resulting manifest contains
-issue coordinates, approval evidence, and revision digests, but no issue text.
+issue coordinates, approval evidence, revision digests, and the structured
+completion-hold decision, but no issue text.
 The lifecycle job directly refetches every manifest-selected issue and requires
 its identity, approval actor, approval time, approval mode, and revision digest
 to remain exact before processing the vetted issue bodies. A selected issue's
@@ -30,9 +31,11 @@ Lifecycle evidence retains the matched approval records and revision digests
 for review, but later runs reconstruct authority from GitHub instead of
 consuming an earlier artifact.
 
-Only issue title and body revisions participate in intake. Comments,
-pull-request text, workflow logs, artifacts, and attachments are not queried or
-interpreted as issue instructions.
+Only the issue title, body revision, and explicit completion-hold label
+participate in intake. Headings such as `Completion`, `Delete when`, or
+`Acceptance` do not create a hold. Comments, pull-request text, workflow logs,
+artifacts, and attachments are not queried or interpreted as issue
+instructions.
 
 `policy.json` owns the public repository inventory and the shared label and
 milestone vocabulary. `backlog.json` records the deliberate review of the
@@ -42,22 +45,23 @@ to GitHub.
 
 ## State direction
 
-GitHub owns both lifecycle state and completion approval. Every new or still-open
-authoritative issue carries `completion:evidence-required`. Landing source or
-passing qualification does not satisfy that gate when the issue's acceptance
-criteria also require publication, installable-artifact verification, an
-operational drill, or another later observation. After those criteria are
-publicly demonstrated, a maintainer records `completion:evidence-verified`; for
-a defect, the public report must name the fixed version or source identity.
+GitHub owns both lifecycle state and completion approval. Ordinary authoritative
+issues close when their source has landed and required repository qualification
+has passed. A product owner may exceptionally add
+`completion:evidence-required` during approved intake when completion also
+requires publication, installable-artifact verification, an operational drill,
+a live workflow, or another later observation. After that evidence is publicly
+demonstrated, a maintainer records `completion:evidence-verified`; for a defect,
+the public report must name the fixed version or source identity.
 
 Status labels remain derived triage aids. The audit changes stale labels to
-`status:done` only when a closed issue has satisfied its explicit completion
-gate. A premature close is reopened on GitHub and remains in its previous open
-status (or returns to triage when that status is unavailable). Closed issues
-that predate the gate are preserved unless they are reopened, at which point
-the audit enrolls them in the current completion contract. External automation
-may read or mirror GitHub state; it must not send lifecycle state back to this
-workflow.
+`status:done` when an ordinary issue closes or an explicitly held issue has
+satisfied its completion gate. A prematurely closed held issue is reopened on
+GitHub and remains in its previous open status (or returns to triage when that
+status is unavailable). Removing a default or obsolete hold remains effective;
+the audit restores the label only when the approved intake manifest explicitly
+declared it. External automation may read or mirror GitHub state; it must not
+send lifecycle state back to this workflow.
 
 Every migrated issue contains exactly one stable `beta-work-id` marker, and each
 work ID identifies exactly one issue. Migration first searches open and closed

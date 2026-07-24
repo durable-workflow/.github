@@ -23,7 +23,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 
 POLICY_SCHEMA = "durable-workflow.github-issue-authority/v1"
 BACKLOG_SCHEMA = "durable-workflow.github-beta-backlog/v1"
-INTAKE_SCHEMA = "durable-workflow.github-issue-intake/v1"
+INTAKE_SCHEMA = "durable-workflow.github-issue-intake/v2"
 MARKER_PATTERN = re.compile(r"<!-- beta-work-id: ([a-z0-9][a-z0-9-]{2,79}) -->")
 UNBLOCK_CONTEXT_START = "<!-- beta-unblock-condition:start -->"
 UNBLOCK_CONTEXT_END = "<!-- beta-unblock-condition:end -->"
@@ -547,6 +547,14 @@ def _manifest_core(manifest: Mapping[str, Any]) -> dict[str, Any]:
     return {key: manifest.get(key) for key in ("schema", "organization", "policy_digest", "issues")}
 
 
+def _manifest_completion_holds(manifest: Mapping[str, Any]) -> set[tuple[str, int]]:
+    return {
+        (record["repository"], record["number"])
+        for record in manifest["issues"]
+        if record["completion_evidence_required"] is True
+    }
+
+
 def reconstruct_intake(
     policy: dict[str, Any],
     client: Any,
@@ -617,6 +625,7 @@ def reconstruct_intake(
                     "approval_actor": assessment["approval_actor"],
                     "approval_at": assessment["approval_at"],
                     "approval_mode": assessment["approval_mode"],
+                    "completion_evidence_required": COMPLETION_REQUIRED_LABEL in _intake_label_names(issue),
                     "number": number,
                     "repository": repository,
                     "revision": assessment["revision"],
@@ -663,6 +672,7 @@ def verify_intake_manifest(
         "approval_actor",
         "approval_at",
         "approval_mode",
+        "completion_evidence_required",
         "number",
         "repository",
         "revision",
@@ -681,8 +691,9 @@ def verify_intake_manifest(
             or not isinstance(number, int)
             or isinstance(number, bool)
             or number < 1
+            or not isinstance(record.get("completion_evidence_required"), bool)
         ):
-            raise AuthorityError("issue-intake manifest contains an invalid issue identity")
+            raise AuthorityError("issue-intake manifest contains invalid issue authority")
         identity = (repository, number)
         if identity in identities:
             raise AuthorityError("issue-intake manifest contains a duplicate issue identity")
@@ -699,6 +710,7 @@ def verify_intake_manifest(
             "approval_actor": assessment.get("approval_actor"),
             "approval_at": assessment.get("approval_at"),
             "approval_mode": assessment.get("approval_mode"),
+            "completion_evidence_required": record["completion_evidence_required"],
             "number": issue.get("number"),
             "repository": repository,
             "revision": assessment.get("revision"),
@@ -907,7 +919,6 @@ def _item_labels(item: dict[str, Any]) -> list[str]:
     return sorted(
         {
             "authority:github",
-            COMPLETION_REQUIRED_LABEL,
             f"kind:{item['kind']}",
             f"priority:{item['priority']}",
             f"status:{item['status']}",
@@ -1152,6 +1163,7 @@ def _audit_state_labels(
     policy: dict[str, Any],
     client: Any,
     inventory: Mapping[str, list[dict[str, Any]]],
+    approved_completion_holds: set[tuple[str, int]],
 ) -> list[str]:
     organization = policy["organization"]
     failures: list[str] = []
@@ -1165,7 +1177,12 @@ def _audit_state_labels(
             statuses = labels & STATUS_LABELS
             state = issue.get("state")
             replacement = set(labels)
-            if state == "open" and COMPLETION_REQUIRED_LABEL not in labels:
+            approved_completion_hold = (repository, number) in approved_completion_holds
+            if (
+                approved_completion_hold
+                and COMPLETION_REQUIRED_LABEL not in labels
+                and COMPLETION_VERIFIED_LABEL not in labels
+            ):
                 replacement.add(COMPLETION_REQUIRED_LABEL)
                 client.replace_issue_labels(organization, repository, number, sorted(replacement))
                 issue["labels"] = [{"name": label} for label in sorted(replacement)]
@@ -1238,6 +1255,7 @@ def apply_backlog(
     client: Any,
     *,
     inventory: dict[str, list[dict[str, Any]]] | None = None,
+    approved_completion_holds: set[tuple[str, int]] | None = None,
 ) -> dict[str, Any]:
     organization = policy["organization"]
     inventory = inventory if inventory is not None else _inventory(policy, client)
@@ -1303,7 +1321,7 @@ def apply_backlog(
             "url": dependency_urls[item["id"]],
         }
 
-    failures = _audit_state_labels(policy, client, inventory)
+    failures = _audit_state_labels(policy, client, inventory, approved_completion_holds or set())
     failures.extend(_audit_migrated_classification(backlog, resolved))
     if failures:
         raise AuthorityError("GitHub issue state drift was corrected or flagged: " + "; ".join(failures))
@@ -1322,13 +1340,14 @@ def audit_backlog(
     client: Any,
     *,
     inventory: dict[str, list[dict[str, Any]]] | None = None,
+    approved_completion_holds: set[tuple[str, int]] | None = None,
 ) -> dict[str, Any]:
     inventory = inventory if inventory is not None else _inventory(policy, client)
     resolved = _preflight_markers(policy, backlog, client, inventory, allow_missing=False)
     _preflight_unblock_context_layouts(backlog, inventory)
     _plan_unblock_context_updates(backlog, resolved)
     _milestones, metadata_evidence = sync_metadata(policy, client)
-    failures = _audit_state_labels(policy, client, inventory)
+    failures = _audit_state_labels(policy, client, inventory, approved_completion_holds or set())
     failures.extend(_audit_migrated_classification(backlog, resolved))
     if failures:
         raise AuthorityError("GitHub issue state drift was corrected or flagged: " + "; ".join(failures))
@@ -1427,12 +1446,25 @@ def main(argv: list[str] | None = None) -> int:
 
         manifest = _load_json(arguments.intake_manifest, "issue-intake manifest")
         inventory = verify_intake_manifest(policy, manifest, discovery)
+        approved_completion_holds = _manifest_completion_holds(manifest)
         token = os.environ.get("BETA_PRODUCT_WORK_TOKEN") or ""
         client = GitHubApi(token, os.environ.get("GITHUB_API_URL", "https://api.github.com"))
         if arguments.command == "apply":
-            evidence = apply_backlog(policy, backlog, client, inventory=inventory)
+            evidence = apply_backlog(
+                policy,
+                backlog,
+                client,
+                inventory=inventory,
+                approved_completion_holds=approved_completion_holds,
+            )
         else:
-            evidence = audit_backlog(policy, backlog, client, inventory=inventory)
+            evidence = audit_backlog(
+                policy,
+                backlog,
+                client,
+                inventory=inventory,
+                approved_completion_holds=approved_completion_holds,
+            )
         evidence["intake"] = _manifest_core(manifest)
         _write_evidence(evidence_path, evidence)
         return 0

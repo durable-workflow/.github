@@ -355,12 +355,12 @@ class ContractValidationTest(unittest.TestCase):
 
         self.assertTrue(expected <= set(forms))
         self.assertFalse(forms["config.yml"]["blank_issues_enabled"])
-        for name in expected:
-            form = forms[name]
-            self.assertTrue(set(form["labels"]) <= policy_labels)
-            self.assertIn("authority:github", form["labels"])
-            self.assertIn(COMPLETION_REQUIRED_LABEL, form["labels"])
-            self.assertIn("priority:untriaged", form["labels"])
+        for name, form in forms.items():
+            if name != "config.yml":
+                self.assertTrue(set(form["labels"]) <= policy_labels)
+                self.assertIn("authority:github", form["labels"])
+                self.assertNotIn(COMPLETION_REQUIRED_LABEL, form["labels"])
+                self.assertIn("priority:untriaged", form["labels"])
 
     def test_authority_jobs_are_limited_to_the_canonical_github_host(self) -> None:
         workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "issue-authority.yml").read_text(encoding="utf-8"))
@@ -544,6 +544,36 @@ class IssueIntakeTest(unittest.TestCase):
         verified = verify_intake_manifest(policy, first, FakeDiscovery(policy, issues))
         self.assertEqual(first_inventory, verified)
 
+    def test_completion_hold_is_bound_as_structured_intake_authority(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
+        issue = intake_issue(author="rmcdaniel", labels=[COMPLETION_REQUIRED_LABEL])
+        manifest, _inventory = reconstruct_intake(
+            policy,
+            FakeDiscovery(policy, {".github": [(issue, [])]}),
+        )
+
+        self.assertTrue(manifest["issues"][0]["completion_evidence_required"])
+
+        current = copy.deepcopy(issue)
+        current["labels"] = []
+        verified = verify_intake_manifest(
+            policy,
+            manifest,
+            FakeDiscovery(policy, {".github": [(current, [])]}),
+        )
+
+        self.assertNotIn(COMPLETION_REQUIRED_LABEL, label_names(verified[".github"][0]))
+
+    def test_completion_hold_manifest_field_must_be_boolean(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
+        issue = intake_issue(author="rmcdaniel")
+        discovery = FakeDiscovery(policy, {".github": [(issue, [])]})
+        manifest, _inventory = reconstruct_intake(policy, discovery)
+        manifest["issues"][0]["completion_evidence_required"] = "false"
+
+        with self.assertRaisesRegex(AuthorityError, "invalid issue authority"):
+            verify_intake_manifest(policy, manifest, discovery)
+
     def test_concurrent_unselected_trusted_issue_remains_inert_during_revalidation(self) -> None:
         policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
         selected = intake_issue(author="rmcdaniel")
@@ -712,6 +742,7 @@ class MigrationTest(unittest.TestCase):
             self.assertEqual("open", issue["state"])
             self.assertEqual("2.0 beta", issue["milestone"]["title"])
             self.assertIn(OWNER_LABELS[repository], label_names(issue))
+            self.assertNotIn(COMPLETION_REQUIRED_LABEL, label_names(issue))
 
         _repository, authorization = find_work_item(self.client, "authorize-2-0-beta")
         _drill_repository, drill = find_work_item(self.client, "github-only-beta-continuity-drill")
@@ -962,9 +993,10 @@ class MigrationTest(unittest.TestCase):
         with self.assertRaisesRegex(AuthorityError, "has no GitHub issue"):
             audit_backlog(self.policy, self.backlog, self.client)
 
-    def test_unverified_close_is_reopened_and_fails_visibly(self) -> None:
+    def test_explicit_unverified_completion_hold_is_reopened_and_fails_visibly(self) -> None:
         apply_backlog(self.policy, self.backlog, self.client)
         repository, issue = find_work_item(self.client, "github-only-beta-continuity-drill")
+        issue["labels"].append({"name": COMPLETION_REQUIRED_LABEL})
         issue["state"] = "closed"
 
         with self.assertRaisesRegex(
@@ -993,13 +1025,47 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual("closed", evidence["issues"]["github-only-beta-continuity-drill"]["state"])
         self.assert_no_github_mutations()
 
-    def test_open_authoritative_issue_is_enrolled_in_the_completion_gate(self) -> None:
+    def test_completion_shaped_prose_does_not_create_an_evidence_hold(self) -> None:
         apply_backlog(self.policy, self.backlog, self.client)
-        repository, issue = find_work_item(self.client, "github-only-beta-continuity-drill")
+        _repository, issue = find_work_item(self.client, "github-only-beta-continuity-drill")
+        issue["body"] = "## Completion\n\n## Delete when\n\n## Acceptance\n\n" + issue["body"]
+        issue["state"] = "closed"
+        issue["labels"] = [
+            {"name": "status:done" if label["name"] in STATUS_LABELS else label["name"]} for label in issue["labels"]
+        ]
+        self.clear_mutation_spies()
+
+        evidence = audit_backlog(self.policy, self.backlog, self.client)
+
+        self.assertEqual("pass", evidence["outcome"])
+        self.assertEqual("closed", evidence["issues"]["github-only-beta-continuity-drill"]["state"])
+        self.assertNotIn(COMPLETION_REQUIRED_LABEL, label_names(issue))
+        self.assert_no_github_mutations()
+
+    def test_removed_completion_hold_is_not_readded_by_default(self) -> None:
+        apply_backlog(self.policy, self.backlog, self.client)
+        _repository, issue = find_work_item(self.client, "github-only-beta-continuity-drill")
+        issue["labels"].append({"name": COMPLETION_REQUIRED_LABEL})
         issue["labels"] = [label for label in issue["labels"] if label["name"] != COMPLETION_REQUIRED_LABEL]
         self.clear_mutation_spies()
 
         evidence = audit_backlog(self.policy, self.backlog, self.client)
+
+        self.assertEqual("pass", evidence["outcome"])
+        self.assertNotIn(COMPLETION_REQUIRED_LABEL, label_names(issue))
+        self.assert_no_github_mutations()
+
+    def test_approved_intake_completion_hold_is_restored(self) -> None:
+        apply_backlog(self.policy, self.backlog, self.client)
+        repository, issue = find_work_item(self.client, "github-only-beta-continuity-drill")
+        self.clear_mutation_spies()
+
+        evidence = audit_backlog(
+            self.policy,
+            self.backlog,
+            self.client,
+            approved_completion_holds={(repository, issue["number"])},
+        )
 
         self.assertEqual("pass", evidence["outcome"])
         self.assertIn(COMPLETION_REQUIRED_LABEL, label_names(issue))

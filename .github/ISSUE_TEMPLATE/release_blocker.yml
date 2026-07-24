@@ -3,7 +3,6 @@ description: Record a defect or missing decision that blocks a public release.
 title: "[release blocker] <short description>"
 labels:
   - "authority:github"
-  - "completion:evidence-required"
   - "kind:release-blocker"
   - "priority:untriaged"
   - "status:triage"
