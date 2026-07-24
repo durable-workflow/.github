@@ -1,0 +1,57 @@
+{
+  "interruption": {
+    "evidence": {
+      "commit": "d327e15fa3732aebae9a584c61f1541ec53d3693",
+      "sha256": "435c2456c36f534b1755d00bfb280c9ec07e20ee2d2a7f8be9748877b8b99132",
+      "tag": "beta-continuity/workspace-unavailable-0b191da0d140/interrupted"
+    },
+    "plan": {
+      "commit": "9ba2f315431dae56a52ec1a5ba5dd29de898f5e4",
+      "sha256": "80e88698fa37b6d738d111dd2be3e3c145607973f8147c54cc25e5d91d415b17",
+      "tag": "release-plan/workspace-unavailable-0b191da0d140"
+    }
+  },
+  "qualification": {
+    "conclusion": "success",
+    "event": "push",
+    "head_branch": "main",
+    "head_sha": "9db871bd3cb3cfa0e60dfd2816ba78b72a31dc75",
+    "repository": "durable-workflow/.github",
+    "run_attempt": 1,
+    "run_id": 30065182166,
+    "status": "completed",
+    "workflow": ".github/workflows/beta-candidate.yml"
+  },
+  "schema": "durable-workflow.release-plan-continuity-resolution/v2",
+  "selected_successor": {
+    "commit": "fa40b58d3ead510b9e730a008ac0b9a1bf59c381",
+    "sha256": "498804a2c7fd5b0e34f93ef080bea3073bc98e420e8bf84a98ca4cdb94729973",
+    "tag": "release-plan/workspace-unavailable-release-pages-24ea45b0acb8"
+  },
+  "successor_claims": [
+    {
+      "acceptance": {
+        "commit": "f488d18850d46bc15f63224b759166be9faed57b",
+        "sha256": "1682541c56582c651fbcec520c4f9f901be54462547782aa427e758a73d5c2f7",
+        "tag": "beta-continuity/workspace-unavailable-recovery-f46818553161/accepted"
+      },
+      "plan": {
+        "commit": "820d0e0f96e8ef930ceb5c1e727bfc60eb4a291d",
+        "sha256": "295a3f654716ea8cd8dc693c1cd15a4b487737e5f01184bad7363fbde6717c40",
+        "tag": "release-plan/workspace-unavailable-recovery-f46818553161"
+      }
+    },
+    {
+      "acceptance": {
+        "commit": "b466de7c88a98b93335b2aec326a742e193e2a92",
+        "sha256": "d666b5a82611f75f00fcbf2190abd4b57137e77a72c5c7f4f26e4068acb19b84",
+        "tag": "beta-continuity/workspace-unavailable-release-pages-24ea45b0acb8/accepted"
+      },
+      "plan": {
+        "commit": "fa40b58d3ead510b9e730a008ac0b9a1bf59c381",
+        "sha256": "498804a2c7fd5b0e34f93ef080bea3073bc98e420e8bf84a98ca4cdb94729973",
+        "tag": "release-plan/workspace-unavailable-release-pages-24ea45b0acb8"
+      }
+    }
+  ]
+}
