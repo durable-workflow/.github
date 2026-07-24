@@ -9,7 +9,7 @@ import unittest
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from scripts.beta_candidate import COMPONENTS, manifest_digest
 from scripts.beta_conformance import (
@@ -44,12 +44,14 @@ from scripts.beta_continuity import (
     phase_tag,
     plan_command,
     public_release_tags,
+    record_continuity_resolution,
     record_phase,
     recovery_publication_triggers,
     require_partial_publication,
     route_blockers,
     select_versions,
     validate_interrupted_evidence,
+    validate_resolution_source,
 )
 from scripts.release_plan import candidate_manifest
 from tests.verification_fixture import candidate_verification
@@ -1879,8 +1881,128 @@ class BetaContinuityTest(unittest.TestCase):
             )
             self.assertEqual(evidence, recorded)
 
+    def test_continuity_resolution_record_is_append_only_and_digest_named(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            remote = root / "remote.git"
+            checkout = root / "checkout"
+            run(["git", "init", "--bare", str(remote)], root)
+            run(["git", "clone", str(remote), str(checkout)], root)
+            selection_path = ROOT / "release-plans" / "continuity-successor-selection.json"
+            selection = json.loads(selection_path.read_text(encoding="utf-8"))
+            qualification = {
+                "repository": "durable-workflow/.github",
+                "workflow": ".github/workflows/beta-candidate.yml",
+                "event": "push",
+                "head_branch": "main",
+                "head_sha": "9" * 40,
+                "run_id": 987,
+                "run_attempt": 2,
+                "status": "completed",
+                "conclusion": "success",
+            }
+            resolution = {
+                **selection,
+                "schema": "durable-workflow.release-plan-continuity-resolution/v2",
+                "qualification": qualification,
+            }
+            public_client = Mock()
+            public_client.json.return_value = []
+
+            with (
+                patch(
+                    "scripts.beta_continuity.qualified_resolution_source",
+                    return_value=qualification,
+                ),
+                patch(
+                    "scripts.beta_continuity.validate_continuity_resolution_authority",
+                    return_value=resolution,
+                ),
+                patch(
+                    "scripts.beta_continuity.PublicClient",
+                    return_value=public_client,
+                ),
+            ):
+                first = record_continuity_resolution(
+                    checkout,
+                    selection_path,
+                    source_sha=qualification["head_sha"],
+                    run_id=qualification["run_id"],
+                    run_attempt=qualification["run_attempt"],
+                )
+                second = record_continuity_resolution(
+                    checkout,
+                    selection_path,
+                    source_sha=qualification["head_sha"],
+                    run_id=qualification["run_id"],
+                    run_attempt=qualification["run_attempt"],
+                )
+
+            self.assertEqual("created", first["status"])
+            self.assertEqual("existing", second["status"])
+            self.assertEqual(first["commit"], second["commit"])
+            self.assertTrue(first["tag"].endswith(manifest_digest(resolution)))
+            self.assertEqual(
+                first["commit"],
+                run(
+                    ["git", "ls-remote", "--refs", "origin", f"refs/tags/{first['tag']}"],
+                    checkout,
+                ).split()[0],
+            )
+
+    def test_continuity_resolution_source_requires_completed_candidate_push(self) -> None:
+        workflow = {
+            "id": 41,
+            "name": "Beta candidate",
+            "path": ".github/workflows/beta-candidate.yml",
+            "state": "active",
+        }
+        run = {
+            "id": 987,
+            "run_attempt": 2,
+            "workflow_id": workflow["id"],
+            "repository": {"full_name": "durable-workflow/.github"},
+            "head_repository": {"full_name": "durable-workflow/.github"},
+            "path": ".github/workflows/beta-candidate.yml@main",
+            "event": "push",
+            "head_branch": "main",
+            "head_sha": "9" * 40,
+            "status": "completed",
+            "conclusion": "success",
+        }
+        source = validate_resolution_source(
+            run,
+            workflow,
+            expected_run_id=987,
+            expected_run_attempt=2,
+        )
+        self.assertEqual("9" * 40, source["head_sha"])
+        failures = (
+            ("absent", None, "qualification is absent"),
+            ("pending", {**run, "status": "in_progress", "conclusion": None}, "qualification is pending"),
+            ("failed", {**run, "conclusion": "failure"}, "qualification failed"),
+            ("cancelled", {**run, "conclusion": "cancelled"}, "qualification was cancelled"),
+            ("mismatched SHA", {**run, "head_sha": "invalid"}, "invalid source revision"),
+            (
+                "untrusted workflow",
+                {**run, "path": ".github/workflows/untrusted.yml@main"},
+                "untrusted workflow",
+            ),
+        )
+        for label, candidate_run, message in failures:
+            with self.subTest(label=label), self.assertRaisesRegex(ContinuityError, message):
+                validate_resolution_source(
+                    candidate_run,
+                    workflow,
+                    expected_run_id=987,
+                    expected_run_attempt=2,
+                )
+
     def test_workflow_is_scheduled_and_uses_protected_github_authority(self) -> None:
         source = (ROOT / ".github" / "workflows" / "beta-continuity.yml").read_text(encoding="utf-8")
+        retention = (
+            ROOT / ".github" / "workflows" / "beta-continuity-resolution.yml"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("schedule:", source)
         self.assertIn("plan_tag:", source)
@@ -1888,6 +2010,13 @@ class BetaContinuityTest(unittest.TestCase):
         self.assertIn("--expected-plan-tag", source)
         self.assertIn("scripts/beta_continuity.py advance", source)
         self.assertIn("scripts/beta_continuity.py route-blockers", source)
+        self.assertNotIn("scripts/beta_continuity.py record-resolution", source)
+        self.assertIn("workflow_run:", retention)
+        self.assertIn("workflows: [Beta candidate]", retention)
+        self.assertIn("scripts/beta_continuity.py resolution-source", retention)
+        self.assertIn("scripts/beta_continuity.py record-resolution", retention)
+        self.assertIn("release-plans/continuity-successor-selection.json", retention)
+        self.assertIn("needs.bind.outputs.source_head_sha", retention)
         self.assertIn("if: ${{ steps.plan.outcome == 'success' }}", source)
         self.assertNotIn("run: exit 1", source)
         self.assertNotIn("/workspace", source)

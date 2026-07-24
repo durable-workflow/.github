@@ -1,0 +1,99 @@
+name: Beta continuity resolution
+
+run-name: >-
+  Retain continuity resolution from
+  ${{ inputs.source_run_id || github.event.workflow_run.id }}.${{
+  inputs.source_run_attempt || github.event.workflow_run.run_attempt }}
+
+on:
+  workflow_run:
+    workflows: [Beta candidate]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Completed Beta candidate push run to retain
+        required: true
+        type: string
+      source_run_attempt:
+        description: Exact completed attempt to retain
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: beta-continuity-successor-resolution
+  cancel-in-progress: false
+
+jobs:
+  bind:
+    name: Bind completed Beta candidate qualification
+    if: ${{ github.server_url == 'https://github.com' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      source_head_sha: ${{ steps.source.outputs.source_head_sha }}
+      source_run_attempt: ${{ steps.source.outputs.source_run_attempt }}
+      source_run_id: ${{ steps.source.outputs.source_run_id }}
+    steps:
+      - name: Check out the trusted resolution controller
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.13"
+
+      - name: Resolve and validate the completed qualification run
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_RUN_ATTEMPT: >-
+            ${{ inputs.source_run_attempt || github.event.workflow_run.run_attempt }}
+          REQUESTED_RUN_ID: ${{ inputs.source_run_id || github.event.workflow_run.id }}
+        run: |
+          python scripts/beta_continuity.py resolution-source \
+            --expected-run-id "$REQUESTED_RUN_ID" \
+            --expected-run-attempt "$REQUESTED_RUN_ATTEMPT" \
+            --github-output "$GITHUB_OUTPUT"
+
+  record:
+    name: Publish the resolution from qualified source
+    needs: bind
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      github.sha == needs.bind.outputs.source_head_sha
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: beta-product-work
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Check out the exact qualified controller revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.bind.outputs.source_head_sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.13"
+
+      - name: Retain the exact qualified continuity successor resolution
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/beta_continuity.py record-resolution \
+            release-plans/continuity-successor-selection.json \
+            --source-sha "${{ needs.bind.outputs.source_head_sha }}" \
+            --run-id "${{ needs.bind.outputs.source_run_id }}" \
+            --run-attempt "${{ needs.bind.outputs.source_run_attempt }}"

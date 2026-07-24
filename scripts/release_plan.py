@@ -66,6 +66,8 @@ FAILURE_TAG_PREFIX = "release-plan-failure/"
 CONTINUITY_TAG_PREFIX = "beta-continuity/"
 CONTINUITY_EVIDENCE_SCHEMA = "durable-workflow.beta-continuity.evidence/v1"
 CONTINUITY_SUPERSESSION_REASON = "missing-post-acceptance-publication-trigger"
+CONTINUITY_RESOLUTION_TAG_PREFIX = "release-plan-continuity-resolution/"
+CONTINUITY_RESOLUTION_SCHEMA = recovery_discovery.CONTINUITY_RESOLUTION_SCHEMA
 FOUNDATION_TAG = "beta-candidate/beta-continuity-foundation"
 FOUNDATION_COMMIT = "4995052410bd4301c5796ffba54e0b6d2f490ed1"
 CONTROL_REPOSITORY = "durable-workflow/.github"
@@ -1376,6 +1378,256 @@ def load_continuity_supersession(
     )
 
 
+def validate_continuity_resolution_authority(
+    resolution: Any,
+    client: PublicClient,
+) -> dict[str, Any]:
+    if (
+        not isinstance(resolution, dict)
+        or set(resolution)
+        != {
+            "interruption",
+            "qualification",
+            "schema",
+            "selected_successor",
+            "successor_claims",
+        }
+        or resolution.get("schema") != CONTINUITY_RESOLUTION_SCHEMA
+    ):
+        raise CandidateError("continuity successor resolution has an invalid document shape")
+    interruption = resolution.get("interruption")
+    claims = resolution.get("successor_claims")
+    selected = resolution.get("selected_successor")
+    if (
+        not isinstance(interruption, dict)
+        or set(interruption) != {"evidence", "plan"}
+        or not isinstance(claims, list)
+        or len(claims) < 2
+    ):
+        raise CandidateError("continuity successor resolution does not describe an interrupted fork")
+
+    def require_identity(value: Any, label: str) -> dict[str, str]:
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"commit", "sha256", "tag"}
+            or not isinstance(value.get("tag"), str)
+            or not isinstance(value.get("commit"), str)
+            or not COMMIT_PATTERN.fullmatch(value["commit"])
+            or not isinstance(value.get("sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", value["sha256"])
+        ):
+            raise CandidateError(f"continuity successor resolution has an invalid {label} identity")
+        return value
+
+    interrupted_plan_identity = require_identity(interruption.get("plan"), "interrupted plan")
+    interruption_identity = require_identity(interruption.get("evidence"), "interruption evidence")
+    interrupted_name = interrupted_plan_identity["tag"].removeprefix(PLAN_TAG_PREFIX)
+    if (
+        interrupted_plan_identity["tag"] != f"{PLAN_TAG_PREFIX}{interrupted_name}"
+        or not PLAN_PATTERN.fullmatch(interrupted_name)
+        or interruption_identity["tag"] != f"{CONTINUITY_TAG_PREFIX}{interrupted_name}/interrupted"
+    ):
+        raise CandidateError("continuity successor resolution has conflicting interruption tags")
+    interrupted_commit = resolve_tag(client, CONTROL_REPOSITORY, interrupted_plan_identity["tag"])
+    if interrupted_commit != interrupted_plan_identity["commit"]:
+        raise CandidateError("continuity successor resolution names a moved interrupted plan")
+    interrupted_plan = read_public_record(
+        client,
+        interrupted_plan_identity["tag"],
+        interrupted_commit,
+        "release-plan.json",
+    )
+    validate_plan(interrupted_plan)
+    if (
+        interrupted_plan["plan"] != interrupted_name
+        or manifest_digest(interrupted_plan) != interrupted_plan_identity["sha256"]
+    ):
+        raise CandidateError("continuity successor resolution has a mismatched interrupted plan")
+    interruption_commit = resolve_tag(client, CONTROL_REPOSITORY, interruption_identity["tag"])
+    if interruption_commit != interruption_identity["commit"]:
+        raise CandidateError("continuity successor resolution names moved interruption evidence")
+    interruption_evidence = read_public_record(
+        client,
+        interruption_identity["tag"],
+        interruption_commit,
+        "continuity-evidence.json",
+    )
+    if manifest_digest(interruption_evidence) != interruption_identity["sha256"]:
+        raise CandidateError("continuity successor resolution has mismatched interruption evidence")
+
+    validated_claims: list[dict[str, dict[str, str]]] = []
+    for claim in claims:
+        if not isinstance(claim, dict) or set(claim) != {"acceptance", "plan"}:
+            raise CandidateError("continuity successor resolution has an invalid successor claim")
+        plan_identity = require_identity(claim.get("plan"), "successor plan")
+        acceptance_identity = require_identity(claim.get("acceptance"), "successor acceptance")
+        successor_name = plan_identity["tag"].removeprefix(PLAN_TAG_PREFIX)
+        if (
+            plan_identity["tag"] != f"{PLAN_TAG_PREFIX}{successor_name}"
+            or not PLAN_PATTERN.fullmatch(successor_name)
+            or acceptance_identity["tag"] != f"{CONTINUITY_TAG_PREFIX}{successor_name}/accepted"
+        ):
+            raise CandidateError("continuity successor resolution has conflicting successor tags")
+        successor_commit = resolve_tag(client, CONTROL_REPOSITORY, plan_identity["tag"])
+        if successor_commit != plan_identity["commit"]:
+            raise CandidateError("continuity successor resolution names a moved successor plan")
+        successor_plan = read_public_record(
+            client,
+            plan_identity["tag"],
+            successor_commit,
+            "release-plan.json",
+        )
+        validate_plan(successor_plan)
+        if successor_plan["plan"] != successor_name or manifest_digest(successor_plan) != plan_identity["sha256"]:
+            raise CandidateError("continuity successor resolution has a mismatched successor plan")
+        accepted_commit = resolve_tag(client, CONTROL_REPOSITORY, acceptance_identity["tag"])
+        if accepted_commit != acceptance_identity["commit"]:
+            raise CandidateError("continuity successor resolution names moved acceptance evidence")
+        accepted_evidence = read_public_record(
+            client,
+            acceptance_identity["tag"],
+            accepted_commit,
+            "continuity-evidence.json",
+        )
+        accepted_plan = read_public_record(
+            client,
+            acceptance_identity["tag"],
+            accepted_commit,
+            "release-plan.json",
+        )
+        if manifest_digest(accepted_evidence) != acceptance_identity["sha256"]:
+            raise CandidateError("continuity successor resolution has mismatched acceptance evidence")
+        validate_continuity_supersession(
+            successor_plan,
+            interrupted_plan,
+            interrupted_plan_identity["commit"],
+            client,
+            accepted_tag=acceptance_identity["tag"],
+            accepted_commit=accepted_commit,
+            accepted_evidence=accepted_evidence,
+            accepted_plan=accepted_plan,
+        )
+        validated_claims.append({"plan": plan_identity, "acceptance": acceptance_identity})
+
+    if (
+        validated_claims != sorted(validated_claims, key=lambda claim: claim["plan"]["tag"])
+        or len({claim["plan"]["tag"] for claim in validated_claims}) != len(validated_claims)
+        or selected not in [claim["plan"] for claim in validated_claims]
+    ):
+        raise CandidateError("continuity successor resolution does not select one exact sorted successor claim")
+    try:
+        recovery_discovery.validate_continuity_resolution_qualification(
+            resolution["qualification"],
+            client,
+        )
+    except recovery_discovery.RecoveryError as error:
+        raise CandidateError(str(error)) from error
+    return resolution
+
+
+def continuity_resolution_tag(resolution: dict[str, Any]) -> str:
+    interrupted_plan = resolution["interruption"]["plan"]["tag"].removeprefix(PLAN_TAG_PREFIX)
+    return f"{CONTINUITY_RESOLUTION_TAG_PREFIX}{interrupted_plan}/{manifest_digest(resolution)}"
+
+
+def select_completed_continuity_resolution(
+    prior_plan: dict[str, Any],
+    prior_plan_commit: str,
+    matches: list[dict[str, str]],
+    client: PublicClient,
+) -> dict[str, str]:
+    prefix = f"{CONTINUITY_RESOLUTION_TAG_PREFIX}{prior_plan['plan']}/"
+    refs = client.json(f"https://api.github.com/repos/{CONTROL_REPOSITORY}/git/matching-refs/tags/{prefix}")
+    if not isinstance(refs, list):
+        raise CandidateError("GitHub did not return the immutable continuity-resolution tag registry")
+    resolution_tags: list[str] = []
+    for ref in refs:
+        value = ref.get("ref") if isinstance(ref, dict) else None
+        tag = value.removeprefix("refs/tags/") if isinstance(value, str) else ""
+        if (
+            value != f"refs/tags/{tag}"
+            or not tag.startswith(prefix)
+            or not re.fullmatch(r"[0-9a-f]{64}", tag.removeprefix(prefix))
+        ):
+            raise CandidateError("GitHub returned a malformed immutable continuity-resolution tag registry entry")
+        resolution_tags.append(tag)
+    if not resolution_tags:
+        raise CandidateError(f"release plan {PLAN_TAG_PREFIX}{prior_plan['plan']} has multiple continuity successors")
+    if len(resolution_tags) != 1 or len(set(resolution_tags)) != 1:
+        raise CandidateError(
+            f"release plan {PLAN_TAG_PREFIX}{prior_plan['plan']} has multiple continuity successor resolutions"
+        )
+    resolution_tag = resolution_tags[0]
+    resolution_commit = resolve_tag(client, CONTROL_REPOSITORY, resolution_tag)
+    if resolution_commit is None:
+        raise CandidateError(f"continuity successor resolution {resolution_tag} is absent")
+    resolution = read_public_record(
+        client,
+        resolution_tag,
+        resolution_commit,
+        "continuity-successor-resolution.json",
+    )
+    expected_claims = sorted(
+        (
+            {
+                "plan": {
+                    "tag": match["successor_plan_tag"],
+                    "commit": match["successor_plan_commit"],
+                    "sha256": match["successor_plan_sha256"],
+                },
+                "acceptance": {
+                    "tag": match["accepted_tag"],
+                    "commit": match["accepted_commit"],
+                    "sha256": match["acceptance_sha256"],
+                },
+            }
+            for match in matches
+        ),
+        key=lambda claim: claim["plan"]["tag"],
+    )
+    expected_interruption = {
+        "plan": {
+            "tag": f"{PLAN_TAG_PREFIX}{prior_plan['plan']}",
+            "commit": prior_plan_commit,
+            "sha256": manifest_digest(prior_plan),
+        },
+        "evidence": {
+            "tag": matches[0]["interruption_tag"],
+            "commit": matches[0]["interruption_commit"],
+            "sha256": matches[0]["interruption_evidence_sha256"],
+        },
+    }
+    selected = resolution.get("selected_successor") if isinstance(resolution, dict) else None
+    if (
+        not isinstance(resolution, dict)
+        or set(resolution)
+        != {
+            "interruption",
+            "qualification",
+            "schema",
+            "selected_successor",
+            "successor_claims",
+        }
+        or resolution.get("schema") != CONTINUITY_RESOLUTION_SCHEMA
+        or resolution.get("interruption") != expected_interruption
+        or resolution.get("successor_claims") != expected_claims
+        or selected not in [claim["plan"] for claim in expected_claims]
+        or resolution_tag != continuity_resolution_tag(resolution)
+    ):
+        raise CandidateError(
+            f"release plan {PLAN_TAG_PREFIX}{prior_plan['plan']} has an invalid immutable "
+            "continuity successor resolution"
+        )
+    try:
+        recovery_discovery.validate_continuity_resolution_qualification(
+            resolution["qualification"],
+            client,
+        )
+    except recovery_discovery.RecoveryError as error:
+        raise CandidateError(str(error)) from error
+    return next(match for match in matches if match["successor_plan_tag"] == selected["tag"])
+
+
 def load_plan_completion(
     plan: dict[str, Any],
     plan_record_commit: str,
@@ -1487,8 +1739,11 @@ def discover_completed_continuity_supersession(
         matches.append(
             {
                 **supersession,
+                "interruption_evidence_sha256": str(accepted_evidence["superseded_interruption"]["evidence_sha256"]),
                 "successor_plan_tag": successor_tag,
                 "successor_plan_commit": successor_commit,
+                "successor_plan_sha256": manifest_digest(accepted_plan),
+                "acceptance_sha256": manifest_digest(accepted_evidence),
                 "completion_tag": completion["completion_tag"],
                 "completion_commit": completion["completion_commit"],
             }
@@ -1496,11 +1751,9 @@ def discover_completed_continuity_supersession(
 
     if not matches:
         return None
-    # More than one completed successor may prove the same immutable interruption.
-    # Every matching authority is validated above; select the first public tag for stable evidence.
-    selected = matches[0]
-    selected["completed_successor_count"] = str(len(matches))
-    return selected
+    if len(matches) == 1:
+        return matches[0]
+    return select_completed_continuity_resolution(prior_plan, prior_plan_commit, matches, client)
 
 
 def require_prior_plans_completed(plan: dict[str, Any], client: PublicClient) -> dict[str, dict[str, str]]:

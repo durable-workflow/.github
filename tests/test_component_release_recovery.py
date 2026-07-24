@@ -15,6 +15,8 @@ from unittest import mock
 from scripts.component_release_recovery import (
     CLI_ASSETS,
     COMPONENTS,
+    CONTINUITY_RESOLUTION_SCHEMA,
+    CONTINUITY_RESOLUTION_TAG_PREFIX,
     FOUNDATION_COMMIT,
     FOUNDATION_TAG,
     PREPARATION_SCHEMA,
@@ -31,10 +33,12 @@ from scripts.component_release_recovery import (
     main,
     manifest_digest,
     resolve_component,
+    resolve_continuity_successor_fork,
     revalidate_supersession_authority,
     scheduled_continuity_pause,
     select_implicit_plan_authority,
     select_publication_run,
+    validate_continuity_resolution_qualification,
     validate_plan,
     validate_release_preparation,
     verify_cli,
@@ -71,6 +75,36 @@ def plan(channel: str = "alpha") -> dict[str, object]:
         "beta_authorization": (
             {"tag": "beta-authorization/component-recovery", "commit": "f" * 40} if channel == "beta" else None
         ),
+    }
+
+
+def continuity_resolution_qualification() -> dict[str, object]:
+    return {
+        "repository": "durable-workflow/.github",
+        "workflow": ".github/workflows/beta-candidate.yml",
+        "event": "push",
+        "head_branch": "main",
+        "head_sha": "9" * 40,
+        "run_id": 987,
+        "run_attempt": 2,
+        "status": "completed",
+        "conclusion": "success",
+    }
+
+
+def continuity_resolution_qualification_run() -> dict[str, object]:
+    qualification = continuity_resolution_qualification()
+    return {
+        "id": qualification["run_id"],
+        "run_attempt": qualification["run_attempt"],
+        "repository": {"full_name": "durable-workflow/.github"},
+        "head_repository": {"full_name": "durable-workflow/.github"},
+        "path": ".github/workflows/beta-candidate.yml@main",
+        "event": qualification["event"],
+        "head_branch": qualification["head_branch"],
+        "head_sha": qualification["head_sha"],
+        "status": qualification["status"],
+        "conclusion": qualification["conclusion"],
     }
 
 
@@ -780,7 +814,7 @@ class ComponentRecoveryContractTest(unittest.TestCase):
             ):
                 select_implicit_plan_authority(mock.Mock())
 
-    def test_completed_continuity_successors_deterministically_supersede_one_interruption(self) -> None:
+    def test_completed_continuity_successor_fork_fails_closed_regardless_of_ordering(self) -> None:
         interrupted = plan()
         interrupted["plan"] = "interrupted"
         first_successor = plan()
@@ -789,6 +823,7 @@ class ComponentRecoveryContractTest(unittest.TestCase):
         latest["plan"] = "latest"
         plans = [interrupted, first_successor, latest]
         tags = [f"release-plan/{candidate['plan']}" for candidate in plans]
+        plans_by_tag = dict(zip(tags, plans, strict=True))
         interruption_tag = "beta-continuity/interrupted/interrupted"
         interruption_commit = "d" * 40
         interruption_evidence = {"outcome": "intentionally-interrupted"}
@@ -805,56 +840,199 @@ class ComponentRecoveryContractTest(unittest.TestCase):
             tags[2]: "c" * 40,
             interruption_tag: interruption_commit,
         }
-        recorded = {
-            "a" * 40: dt.datetime(2026, 7, 20, tzinfo=dt.UTC),
-            "b" * 40: dt.datetime(2026, 7, 21, tzinfo=dt.UTC),
-            "c" * 40: dt.datetime(2026, 7, 22, tzinfo=dt.UTC),
+        orderings = [
+            (
+                tags,
+                {
+                    commits[tags[0]]: dt.datetime(2026, 7, 20, tzinfo=dt.UTC),
+                    commits[tags[1]]: dt.datetime(2026, 7, 21, tzinfo=dt.UTC),
+                    commits[tags[2]]: dt.datetime(2026, 7, 22, tzinfo=dt.UTC),
+                },
+            ),
+            (
+                list(reversed(tags)),
+                {
+                    commits[tags[0]]: dt.datetime(2026, 7, 20, tzinfo=dt.UTC),
+                    commits[tags[1]]: dt.datetime(2026, 7, 22, tzinfo=dt.UTC),
+                    commits[tags[2]]: dt.datetime(2026, 7, 21, tzinfo=dt.UTC),
+                },
+            ),
+        ]
+
+        for discovered_tags, recorded in orderings:
+            with (
+                self.subTest(tags=discovered_tags, recorded=recorded),
+                mock.patch(
+                    "scripts.component_release_recovery.list_release_plan_tags",
+                    return_value=discovered_tags,
+                ),
+                mock.patch(
+                    "scripts.component_release_recovery.resolve_tag",
+                    side_effect=lambda _client, _repository, tag: commits[tag],
+                ),
+                mock.patch(
+                    "scripts.component_release_recovery.read_plan_authority",
+                    side_effect=lambda _client, tag, _commit: (
+                        plans_by_tag[tag],
+                        preparation(plans_by_tag[tag]),
+                    ),
+                ),
+                mock.patch(
+                    "scripts.component_release_recovery.direct_plan_lifecycle",
+                    side_effect=lambda _client, tag, *_args: (
+                        ("interrupted", interruption_tag) if tag == tags[0] else ("completed", None)
+                    ),
+                ),
+                mock.patch(
+                    "scripts.component_release_recovery.immutable_plan_recorded_at",
+                    side_effect=lambda _client, commit, recorded=recorded: recorded[commit],
+                ),
+                mock.patch(
+                    "scripts.component_release_recovery.accepted_continuity_supersession",
+                    side_effect=lambda _client, authority: (None if authority["tag"] == tags[0] else superseded),
+                ),
+                mock.patch(
+                    "scripts.component_release_recovery.list_continuity_resolution_tags",
+                    return_value=[],
+                ),
+                mock.patch(
+                    "scripts.component_release_recovery.read_record",
+                    return_value=interruption_evidence,
+                ),
+                self.assertRaisesRegex(RecoveryError, "multiple continuity successors"),
+            ):
+                select_implicit_plan_authority(mock.Mock())
+
+    def test_continuity_successor_fork_requires_exact_digest_bound_resolution(self) -> None:
+        interrupted_plan = plan()
+        interrupted_plan["plan"] = "interrupted"
+        interrupted = {
+            "tag": "release-plan/interrupted",
+            "commit": "a" * 40,
+            "plan": interrupted_plan,
         }
+        interruption = {
+            "tag": "beta-continuity/interrupted/interrupted",
+            "commit": "b" * 40,
+            "evidence_sha256": "c" * 64,
+        }
+        successors = []
+        for index, name in enumerate(("first-successor", "second-successor"), start=1):
+            successor_plan = plan()
+            successor_plan["plan"] = name
+            successors.append(
+                {
+                    "tag": f"release-plan/{name}",
+                    "supersession": {
+                        **interruption,
+                        "continuity_claim": {
+                            "plan": {
+                                "tag": f"release-plan/{name}",
+                                "commit": str(index) * 40,
+                                "sha256": manifest_digest(successor_plan),
+                            },
+                            "acceptance": {
+                                "tag": f"beta-continuity/{name}/accepted",
+                                "commit": str(index + 2) * 40,
+                                "sha256": str(index + 4) * 64,
+                            },
+                        },
+                    },
+                }
+            )
+        claims = [successor["supersession"]["continuity_claim"] for successor in successors]
+        resolution = {
+            "schema": CONTINUITY_RESOLUTION_SCHEMA,
+            "qualification": continuity_resolution_qualification(),
+            "interruption": {
+                "plan": {
+                    "tag": interrupted["tag"],
+                    "commit": interrupted["commit"],
+                    "sha256": manifest_digest(interrupted_plan),
+                },
+                "evidence": {
+                    "tag": interruption["tag"],
+                    "commit": interruption["commit"],
+                    "sha256": interruption["evidence_sha256"],
+                },
+            },
+            "successor_claims": claims,
+            "selected_successor": claims[1]["plan"],
+        }
+        resolution_tag = f"{CONTINUITY_RESOLUTION_TAG_PREFIX}{interrupted_plan['plan']}/{manifest_digest(resolution)}"
+        client = mock.Mock()
+        client.json.return_value = continuity_resolution_qualification_run()
 
         with (
             mock.patch(
-                "scripts.component_release_recovery.list_release_plan_tags",
-                return_value=tags,
+                "scripts.component_release_recovery.list_continuity_resolution_tags",
+                return_value=[resolution_tag],
             ),
             mock.patch(
                 "scripts.component_release_recovery.resolve_tag",
-                side_effect=lambda _client, _repository, tag: commits[tag],
-            ),
-            mock.patch(
-                "scripts.component_release_recovery.read_plan_authority",
-                side_effect=[
-                    (candidate, preparation(candidate))
-                    for candidate in [*plans, *plans]
-                ],
-            ),
-            mock.patch(
-                "scripts.component_release_recovery.direct_plan_lifecycle",
-                side_effect=[
-                    ("interrupted", interruption_tag),
-                    ("completed", None),
-                    ("completed", None),
-                    ("interrupted", interruption_tag),
-                    ("completed", None),
-                    ("completed", None),
-                ],
-            ),
-            mock.patch(
-                "scripts.component_release_recovery.immutable_plan_recorded_at",
-                side_effect=lambda _client, commit: recorded[commit],
-            ),
-            mock.patch(
-                "scripts.component_release_recovery.accepted_continuity_supersession",
-                side_effect=[None, superseded, superseded, None, superseded, superseded],
+                return_value="f" * 40,
             ),
             mock.patch(
                 "scripts.component_release_recovery.read_record",
-                return_value=interruption_evidence,
+                return_value=resolution,
             ),
         ):
-            selected = select_implicit_plan_authority(mock.Mock())
+            self.assertEqual(
+                "release-plan/second-successor",
+                resolve_continuity_successor_fork(client, interrupted, successors),
+            )
 
-        self.assertEqual(tags[2], selected["tag"])
-        self.assertEqual("completed", selected["lifecycle"])
+        failure_cases = (
+            ([], resolution, "multiple continuity successors"),
+            ([resolution_tag, resolution_tag[:-1] + "0"], resolution, "multiple continuity successor resolutions"),
+            ([resolution_tag], {**resolution, "successor_claims": list(reversed(claims))}, "invalid immutable"),
+            ([resolution_tag[:-1] + "0"], resolution, "invalid immutable"),
+        )
+        for resolution_tags, record, message in failure_cases:
+            with (
+                self.subTest(message=message),
+                mock.patch(
+                    "scripts.component_release_recovery.list_continuity_resolution_tags",
+                    return_value=resolution_tags,
+                ),
+                mock.patch(
+                    "scripts.component_release_recovery.resolve_tag",
+                    return_value="f" * 40,
+                ),
+                mock.patch(
+                    "scripts.component_release_recovery.read_record",
+                    return_value=record,
+                ),
+                self.assertRaisesRegex(RecoveryError, message),
+            ):
+                resolve_continuity_successor_fork(client, interrupted, successors)
+
+    def test_continuity_resolution_requires_exact_successful_candidate_qualification(self) -> None:
+        qualification = continuity_resolution_qualification()
+        valid_run = continuity_resolution_qualification_run()
+        client = mock.Mock()
+        client.json.return_value = valid_run
+        self.assertEqual(
+            qualification,
+            validate_continuity_resolution_qualification(qualification, client),
+        )
+        failures = (
+            ("absent", None, "qualification is absent"),
+            ("pending", {**valid_run, "status": "in_progress", "conclusion": None}, "qualification is pending"),
+            ("failed", {**valid_run, "conclusion": "failure"}, "qualification failed"),
+            ("cancelled", {**valid_run, "conclusion": "cancelled"}, "qualification was cancelled"),
+            ("mismatched SHA", {**valid_run, "head_sha": "8" * 40}, "another source revision"),
+            (
+                "untrusted workflow",
+                {**valid_run, "path": ".github/workflows/untrusted.yml@main"},
+                "untrusted workflow",
+            ),
+        )
+        for label, run, message in failures:
+            with self.subTest(label=label):
+                client.json.return_value = run
+                with self.assertRaisesRegex(RecoveryError, message):
+                    validate_continuity_resolution_qualification(qualification, client)
 
     def test_recovery_composer_verification_expands_minified_exact_version_strictly(self) -> None:
         component = COMPONENTS["sdk-php"]

@@ -51,13 +51,17 @@ from scripts.beta_conformance import (
     validate_plan as validate_conformance_plan,
 )
 from scripts.release_plan import (
+    CONTINUITY_RESOLUTION_SCHEMA,
     EXPECTED_DEFAULT_BRANCHES,
     FOUNDATION_COMMIT,
     FOUNDATION_TAG,
     PLAN_TAG_PREFIX,
     candidate_manifest,
+    continuity_resolution_tag,
     discover_plan,
+    read_public_record,
     resolve_tag,
+    validate_continuity_resolution_authority,
     validate_plan,
 )
 
@@ -71,8 +75,13 @@ RELEASE_WORKFLOW = "release-plan.yml"
 CONTINUITY_WORKFLOW = "beta-continuity.yml"
 OBSERVER_WORKFLOW = "release-plan-observer.yml"
 CANDIDATE_WORKFLOW = "beta-candidate.yml"
+BETA_CANDIDATE_WORKFLOW_NAME = "Beta candidate"
+BETA_CANDIDATE_WORKFLOW_PATH = f".github/workflows/{CANDIDATE_WORKFLOW}"
 CONFORMANCE_WORKFLOW = "beta-conformance.yml"
 CONFORMANCE_RETENTION_WORKFLOW = "beta-conformance-retention.yml"
+CONTINUITY_RESOLUTION_SELECTION_SCHEMA = (
+    "durable-workflow.release-plan-continuity-resolution-selection/v1"
+)
 WORK_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,79}$")
 BETA_WORK_ID_MARKER_PREFIX = "<!-- beta-work-id: "
 BETA_WORK_ID_MARKER = re.compile(r"<!-- beta-work-id: (?P<work_id>[a-z0-9][a-z0-9._-]{0,79}) -->")
@@ -199,6 +208,112 @@ def load_json(path: Path, label: str) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise ContinuityError(f"cannot read {label} {path}: {error}") from error
+
+
+def validate_resolution_source(
+    run: Any,
+    workflow: Any,
+    *,
+    expected_run_id: int,
+    expected_run_attempt: int,
+) -> dict[str, Any]:
+    if (
+        not isinstance(workflow, dict)
+        or type(workflow.get("id")) is not int
+        or workflow["id"] < 1
+        or workflow.get("name") != BETA_CANDIDATE_WORKFLOW_NAME
+        or workflow.get("path") != BETA_CANDIDATE_WORKFLOW_PATH
+        or workflow.get("state") != "active"
+    ):
+        raise ContinuityError("trusted Beta candidate workflow metadata is invalid")
+    if not isinstance(run, dict):
+        raise ContinuityError("continuity resolution qualification is absent")
+    repository = run.get("repository")
+    head_repository = run.get("head_repository")
+    if (
+        type(run.get("id")) is not int
+        or run.get("id") != expected_run_id
+        or type(run.get("run_attempt")) is not int
+        or run.get("run_attempt") != expected_run_attempt
+        or not isinstance(repository, dict)
+        or repository.get("full_name") != CONTROL_REPOSITORY
+        or not isinstance(head_repository, dict)
+        or head_repository.get("full_name") != CONTROL_REPOSITORY
+        or run.get("workflow_id") != workflow["id"]
+        or run.get("path")
+        not in {
+            BETA_CANDIDATE_WORKFLOW_PATH,
+            f"{BETA_CANDIDATE_WORKFLOW_PATH}@main",
+            f"{BETA_CANDIDATE_WORKFLOW_PATH}@refs/heads/main",
+        }
+        or run.get("event") != "push"
+        or run.get("head_branch") != "main"
+    ):
+        raise ContinuityError("continuity resolution qualification is from an untrusted workflow")
+    head_sha = run.get("head_sha")
+    if not isinstance(head_sha, str) or not COMMIT_PATTERN.fullmatch(head_sha):
+        raise ContinuityError("continuity resolution qualification has an invalid source revision")
+    if run.get("status") != "completed":
+        raise ContinuityError("continuity resolution qualification is pending")
+    if run.get("conclusion") == "cancelled":
+        raise ContinuityError("continuity resolution qualification was cancelled")
+    if run.get("conclusion") != "success":
+        raise ContinuityError("continuity resolution qualification failed")
+    return {
+        "repository": CONTROL_REPOSITORY,
+        "workflow": BETA_CANDIDATE_WORKFLOW_PATH,
+        "event": "push",
+        "head_branch": "main",
+        "head_sha": head_sha,
+        "run_id": expected_run_id,
+        "run_attempt": expected_run_attempt,
+        "status": "completed",
+        "conclusion": "success",
+    }
+
+
+def qualified_resolution_source(
+    expected_run_id: int,
+    expected_run_attempt: int,
+    token: str,
+) -> dict[str, Any]:
+    if expected_run_id < 1 or expected_run_attempt < 1:
+        raise ContinuityError("continuity resolution qualification identity must be positive")
+    writer = GitHubWriter(token, os.environ.get("GITHUB_API_URL", "https://api.github.com"))
+    run = writer.get(
+        f"/repos/{CONTROL_REPOSITORY}/actions/runs/{expected_run_id}/"
+        f"attempts/{expected_run_attempt}"
+    )
+    workflow = writer.get(
+        f"/repos/{CONTROL_REPOSITORY}/actions/workflows/{CANDIDATE_WORKFLOW}"
+    )
+    return validate_resolution_source(
+        run,
+        workflow,
+        expected_run_id=expected_run_id,
+        expected_run_attempt=expected_run_attempt,
+    )
+
+
+def resolution_source_command(
+    expected_run_id: int,
+    expected_run_attempt: int,
+    output: Path | None,
+) -> dict[str, Any]:
+    source = qualified_resolution_source(
+        expected_run_id,
+        expected_run_attempt,
+        os.environ.get("GH_TOKEN", ""),
+    )
+    write_github_output(
+        output,
+        {
+            "source_head_sha": source["head_sha"],
+            "source_run_attempt": str(source["run_attempt"]),
+            "source_run_id": str(source["run_id"]),
+        },
+    )
+    return source
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -829,6 +944,101 @@ def record_phase(
         files,
         f"Record {phase} continuity phase for {plan['plan']}",
         "continuity phase",
+        remote=remote,
+    )
+
+
+def record_continuity_resolution(
+    repository: Path,
+    selection_path: Path,
+    *,
+    source_sha: str,
+    run_id: int,
+    run_attempt: int,
+    remote: str = "origin",
+) -> dict[str, str]:
+    selection = load_json(selection_path, "continuity successor selection")
+    if (
+        not isinstance(selection, dict)
+        or set(selection)
+        != {"interruption", "schema", "selected_successor", "successor_claims"}
+        or selection.get("schema") != CONTINUITY_RESOLUTION_SELECTION_SCHEMA
+    ):
+        raise ContinuityError("continuity successor selection has an invalid document shape")
+    qualification = qualified_resolution_source(
+        run_id,
+        run_attempt,
+        os.environ.get("GITHUB_TOKEN", ""),
+    )
+    if qualification["head_sha"] != source_sha:
+        raise ContinuityError(
+            "continuity resolution qualification is bound to another source revision"
+        )
+    resolution = {
+        **selection,
+        "schema": CONTINUITY_RESOLUTION_SCHEMA,
+        "qualification": qualification,
+    }
+    client = PublicClient(os.environ.get("GITHUB_TOKEN"))
+    validate_continuity_resolution_authority(
+        resolution,
+        client,
+    )
+    interrupted_plan = resolution["interruption"]["plan"]["tag"].removeprefix(PLAN_TAG_PREFIX)
+    prefix = f"release-plan-continuity-resolution/{interrupted_plan}/"
+    refs = client.json(
+        f"https://api.github.com/repos/{CONTROL_REPOSITORY}/git/matching-refs/tags/{prefix}"
+    )
+    if not isinstance(refs, list):
+        raise ContinuityError(
+            "GitHub did not return the immutable continuity-resolution tag registry"
+        )
+    tags: list[str] = []
+    for ref in refs:
+        value = ref.get("ref") if isinstance(ref, dict) else None
+        tag = value.removeprefix("refs/tags/") if isinstance(value, str) else ""
+        if (
+            value != f"refs/tags/{tag}"
+            or not tag.startswith(prefix)
+            or not re.fullmatch(r"[0-9a-f]{64}", tag.removeprefix(prefix))
+        ):
+            raise ContinuityError(
+                "immutable continuity-resolution registry is malformed or ambiguous"
+            )
+        tags.append(tag)
+    if len(tags) != len(refs) or len(tags) > 1:
+        raise ContinuityError(
+            "immutable continuity-resolution registry is malformed or ambiguous"
+        )
+    if tags:
+        commit = resolve_tag(client, CONTROL_REPOSITORY, tags[0])
+        if commit is None:
+            raise ContinuityError("existing continuity successor resolution is absent")
+        existing = read_public_record(
+            client,
+            tags[0],
+            commit,
+            "continuity-successor-resolution.json",
+        )
+        validate_continuity_resolution_authority(existing, client)
+        comparable = {
+            field: existing.get(field)
+            for field in ("interruption", "selected_successor", "successor_claims")
+        }
+        if comparable != {
+            field: selection[field]
+            for field in ("interruption", "selected_successor", "successor_claims")
+        }:
+            raise ContinuityError(
+                "existing continuity successor resolution selects different authority"
+            )
+        return {"status": "existing", "tag": tags[0], "commit": commit}
+    return record_immutable_tag(
+        repository,
+        continuity_resolution_tag(resolution),
+        [("continuity-successor-resolution.json", canonical_json(resolution))],
+        f"Resolve continuity successor fork for {interrupted_plan}",
+        "continuity successor resolution",
         remote=remote,
     )
 
@@ -2524,6 +2734,18 @@ def main() -> int:
     blockers.add_argument("config", type=Path)
     blockers.add_argument("state", type=Path)
 
+    source = commands.add_parser("resolution-source")
+    source.add_argument("--expected-run-id", type=int, required=True)
+    source.add_argument("--expected-run-attempt", type=int, required=True)
+    source.add_argument("--github-output", type=Path)
+
+    resolution = commands.add_parser("record-resolution")
+    resolution.add_argument("selection", type=Path)
+    resolution.add_argument("--source-sha", required=True)
+    resolution.add_argument("--run-id", type=int, required=True)
+    resolution.add_argument("--run-attempt", type=int, required=True)
+    resolution.add_argument("--remote", default="origin")
+
     args = parser.parse_args()
     try:
         if args.command == "plan":
@@ -2545,8 +2767,25 @@ def main() -> int:
                 args.qualification,
                 args.github_output,
             )
-        else:
+        elif args.command == "route-blockers":
             route_blockers(args.config, args.state)
+        elif args.command == "resolution-source":
+            result = resolution_source_command(
+                args.expected_run_id,
+                args.expected_run_attempt,
+                args.github_output,
+            )
+            print(json.dumps(result, sort_keys=True))
+        else:
+            result = record_continuity_resolution(
+                Path.cwd(),
+                args.selection,
+                source_sha=args.source_sha,
+                run_id=args.run_id,
+                run_attempt=args.run_attempt,
+                remote=args.remote,
+            )
+            print(json.dumps(result, sort_keys=True))
     except PlanBlocked as error:
         print(f"beta continuity planning blocked: {error}", file=sys.stderr)
         return 2

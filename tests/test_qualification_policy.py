@@ -88,6 +88,7 @@ class FakeGitHubClient:
             paths.add(".github/workflows/release.yml")
             if repository == ".github":
                 paths.add(".github/workflows/beta-conformance-retention.yml")
+                paths.add(".github/workflows/beta-continuity-resolution.yml")
             return [{"path": workflow_path, "type": "file"} for workflow_path in sorted(paths)]
         if "/actions/workflows/" in path:
             workflow = urllib.parse.unquote(path.rsplit("/", 1)[1])
@@ -111,6 +112,10 @@ class FakeGitHubClient:
     def bytes(self, path: str) -> bytes:
         if re.match(r"/repos/[^/]+/[^/]+/contents/action\.ya?ml\?", path):
             return b"name: checkout\nruns:\n  using: node24\n  main: dist/index.js\n"
+        if "/contents/.github/workflows/beta-continuity-resolution.yml?" in path:
+            return (
+                ROOT / ".github" / "workflows" / "beta-continuity-resolution.yml"
+            ).read_bytes()
         if "/contents/.github/workflows/beta-conformance-retention.yml?" in path:
             return f"""name: Beta conformance retention
 on:
@@ -146,6 +151,7 @@ jobs:
             --github-output "$GITHUB_OUTPUT"
   retain:
     needs: bind
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: beta-conformance
     permissions:
@@ -704,10 +710,16 @@ jobs:
     def test_workflow_run_validators_must_be_executable_steps(self) -> None:
         policy = policy_fixture()
         source = (ROOT / ".github/workflows/beta-conformance-retention.yml").read_text(encoding="utf-8")
+        resolution_source = (
+            ROOT / ".github/workflows/beta-continuity-resolution.yml"
+        ).read_text(encoding="utf-8")
         scan_workflow_sources(
             policy,
             "github-control-plane",
-            {".github/workflows/beta-conformance-retention.yml": source},
+            {
+                ".github/workflows/beta-conformance-retention.yml": source,
+                ".github/workflows/beta-continuity-resolution.yml": resolution_source,
+            },
         )
 
         cases = {
@@ -916,6 +928,52 @@ jobs:
                     policy,
                     "github-control-plane",
                     {".github/workflows/beta-conformance-retention.yml": candidate},
+                )
+
+    def test_resolution_publisher_requires_exact_qualified_controller_revision(self) -> None:
+        policy = policy_fixture()
+        source = (
+            ROOT / ".github/workflows/beta-continuity-resolution.yml"
+        ).read_text(encoding="utf-8")
+        retention_source = (
+            ROOT / ".github/workflows/beta-conformance-retention.yml"
+        ).read_text(encoding="utf-8")
+        scan_workflow_sources(
+            policy,
+            "github-control-plane",
+            {
+                ".github/workflows/beta-conformance-retention.yml": retention_source,
+                ".github/workflows/beta-continuity-resolution.yml": source,
+            },
+        )
+
+        cases = {
+            "controller binding absent": source.replace(
+                "      github.ref == 'refs/heads/main' &&\n"
+                "      github.sha == needs.bind.outputs.source_head_sha",
+                "      github.ref == 'refs/heads/main'",
+            ),
+            "controller binding uses event source": source.replace(
+                "github.sha == needs.bind.outputs.source_head_sha",
+                "github.event.workflow_run.head_sha == needs.bind.outputs.source_head_sha",
+            ),
+            "controller binding uses another output": source.replace(
+                "github.sha == needs.bind.outputs.source_head_sha",
+                "github.sha == needs.bind.outputs.source_run_id",
+            ),
+        }
+        for name, candidate in cases.items():
+            with self.subTest(name=name), self.assertRaisesRegex(
+                PolicyError,
+                "does not enforce its reviewed privilege condition",
+            ):
+                scan_workflow_sources(
+                    policy,
+                    "github-control-plane",
+                    {
+                        ".github/workflows/beta-conformance-retention.yml": retention_source,
+                        ".github/workflows/beta-continuity-resolution.yml": candidate,
+                    },
                 )
 
     def test_workflow_run_validator_jobs_reject_services_and_unreviewed_runners(self) -> None:

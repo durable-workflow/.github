@@ -10,11 +10,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, ValidationError
 
 from scripts.beta_candidate import CandidateError, canonical_json
 from scripts.release_plan import (
     COMPONENTS,
+    CONTINUITY_RESOLUTION_SCHEMA,
+    CONTINUITY_RESOLUTION_TAG_PREFIX,
     FOUNDATION_COMMIT,
     FOUNDATION_TAG,
     OBSERVATION_FAILURE_REASON,
@@ -60,6 +62,36 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 def cargo_manifest(version: str) -> bytes:
     return f'[package]\nname = "durable-workflow"\nversion = "{version}"\n'.encode()
+
+
+def continuity_resolution_qualification() -> dict[str, object]:
+    return {
+        "repository": "durable-workflow/.github",
+        "workflow": ".github/workflows/beta-candidate.yml",
+        "event": "push",
+        "head_branch": "main",
+        "head_sha": "9" * 40,
+        "run_id": 987,
+        "run_attempt": 2,
+        "status": "completed",
+        "conclusion": "success",
+    }
+
+
+def continuity_resolution_qualification_run() -> dict[str, object]:
+    qualification = continuity_resolution_qualification()
+    return {
+        "id": qualification["run_id"],
+        "run_attempt": qualification["run_attempt"],
+        "repository": {"full_name": "durable-workflow/.github"},
+        "head_repository": {"full_name": "durable-workflow/.github"},
+        "path": ".github/workflows/beta-candidate.yml@main",
+        "event": qualification["event"],
+        "head_branch": qualification["head_branch"],
+        "head_sha": qualification["head_sha"],
+        "status": qualification["status"],
+        "conclusion": qualification["conclusion"],
+    }
 
 
 def python_manifest(version: str) -> bytes:
@@ -846,6 +878,26 @@ class ReleasePlanValidationTest(unittest.TestCase):
         Draft202012Validator.check_schema(schema)
         Draft202012Validator(schema).validate(release_preparation(release_plan()))
 
+    def test_continuity_resolution_schema_requires_qualified_producer_identity(self) -> None:
+        schema = json.loads(
+            (REPOSITORY_ROOT / "release-plans" / "continuity-resolution-schema.json").read_bytes()
+        )
+        selection = json.loads(
+            (REPOSITORY_ROOT / "release-plans" / "continuity-successor-selection.json").read_bytes()
+        )
+        resolution = {
+            **selection,
+            "schema": CONTINUITY_RESOLUTION_SCHEMA,
+            "qualification": continuity_resolution_qualification(),
+        }
+        Draft202012Validator.check_schema(schema)
+        Draft202012Validator(schema).validate(resolution)
+        for field in ("workflow", "head_sha", "run_id", "run_attempt", "status", "conclusion"):
+            invalid = copy.deepcopy(resolution)
+            del invalid["qualification"][field]
+            with self.subTest(field=field), self.assertRaises(ValidationError):
+                Draft202012Validator(schema).validate(invalid)
+
     def test_alpha_plan_is_channel_bound(self) -> None:
         plan = release_plan()
         validate_plan(plan)
@@ -1060,10 +1112,72 @@ class ReleasePlanValidationTest(unittest.TestCase):
         )
         ordinary_records["accepted_evidence"].pop("superseded_interruption")
 
+        resolution = {
+            "schema": CONTINUITY_RESOLUTION_SCHEMA,
+            "qualification": continuity_resolution_qualification(),
+            "interruption": {
+                "plan": {
+                    "tag": "release-plan/plan-a",
+                    "commit": plan_commits["release-plan/plan-a"],
+                    "sha256": manifest_digest(interrupted),
+                },
+                "evidence": {
+                    "tag": first_records["interruption_tag"],
+                    "commit": first_records["interruption_commit"],
+                    "sha256": manifest_digest(first_records["interruption_evidence"]),
+                },
+            },
+            "successor_claims": [
+                {
+                    "plan": {
+                        "tag": "release-plan/plan-b",
+                        "commit": plan_commits["release-plan/plan-b"],
+                        "sha256": manifest_digest(first_successor),
+                    },
+                    "acceptance": {
+                        "tag": first_records["accepted_tag"],
+                        "commit": first_records["accepted_commit"],
+                        "sha256": manifest_digest(first_records["accepted_evidence"]),
+                    },
+                },
+                {
+                    "plan": {
+                        "tag": "release-plan/plan-c",
+                        "commit": plan_commits["release-plan/plan-c"],
+                        "sha256": manifest_digest(second_successor),
+                    },
+                    "acceptance": {
+                        "tag": second_records["accepted_tag"],
+                        "commit": second_records["accepted_commit"],
+                        "sha256": manifest_digest(second_records["accepted_evidence"]),
+                    },
+                },
+            ],
+        }
+        resolution["selected_successor"] = resolution["successor_claims"][1]["plan"]
+        resolution_tag = f"{CONTINUITY_RESOLUTION_TAG_PREFIX}plan-a/{manifest_digest(resolution)}"
+        resolution_commit = "6" * 40
+
         class FixtureClient:
-            def json(self, url: str) -> list[dict[str, str]]:
+            def __init__(
+                self,
+                resolution_tags: list[str],
+                qualification_run: object | None = None,
+            ) -> None:
+                self.resolution_tags = resolution_tags
+                self.qualification_run = (
+                    continuity_resolution_qualification_run()
+                    if qualification_run is None
+                    else qualification_run
+                )
+
+            def json(self, url: str) -> object:
                 if url.endswith("matching-refs/tags/release-plan/"):
                     return [{"ref": f"refs/tags/{tag}"} for tag in plan_commits]
+                if url.endswith("matching-refs/tags/release-plan-continuity-resolution/plan-a/"):
+                    return [{"ref": f"refs/tags/{tag}"} for tag in self.resolution_tags]
+                if "/actions/runs/987/attempts/2" in url:
+                    return self.qualification_run
                 raise AssertionError(f"unexpected registry request {url}")
 
         def resolve(_client: object, _repository: str, tag: str) -> str | None:
@@ -1074,6 +1188,7 @@ class ReleasePlanValidationTest(unittest.TestCase):
                 second_records["accepted_tag"]: second_records["accepted_commit"],
                 ordinary_records["accepted_tag"]: ordinary_records["accepted_commit"],
                 first_records["interruption_tag"]: first_records["interruption_commit"],
+                resolution_tag: resolution_commit,
             }.get(tag)
 
         plans = {
@@ -1096,9 +1211,7 @@ class ReleasePlanValidationTest(unittest.TestCase):
             if tag in accepted:
                 records = accepted[tag]
                 return (
-                    records["accepted_evidence"]
-                    if filename == "continuity-evidence.json"
-                    else records["accepted_plan"]
+                    records["accepted_evidence"] if filename == "continuity-evidence.json" else records["accepted_plan"]
                 )
             if tag == first_records["interruption_tag"]:
                 return (
@@ -1106,6 +1219,8 @@ class ReleasePlanValidationTest(unittest.TestCase):
                     if filename == "continuity-evidence.json"
                     else first_records["interruption_plan"]
                 )
+            if tag == resolution_tag:
+                return resolution
             if tag == "release-candidate/alpha/plan-b":
                 return completion_manifest(first_successor, plan_commits["release-plan/plan-b"])
             if tag == "release-candidate/alpha/plan-c":
@@ -1119,16 +1234,57 @@ class ReleasePlanValidationTest(unittest.TestCase):
             mock.patch("scripts.release_plan.read_public_record", side_effect=read_record),
             mock.patch("scripts.release_plan.load_public_supersession", return_value=None),
         ):
-            evidence = require_prior_plans_completed(future, FixtureClient())
+            with self.assertRaisesRegex(CandidateError, "multiple continuity successors"):
+                require_prior_plans_completed(future, FixtureClient([]))
+            evidence = require_prior_plans_completed(future, FixtureClient([resolution_tag]))
 
         terminal = evidence["release-plan/plan-a"]
         self.assertEqual("superseded-diagnostic-interruption", terminal["outcome"])
-        self.assertEqual(first_records["accepted_tag"], terminal["accepted_tag"])
-        self.assertEqual("2", terminal["completed_successor_count"])
-        self.assertEqual("release-plan/plan-b", terminal["successor_plan_tag"])
+        self.assertEqual(second_records["accepted_tag"], terminal["accepted_tag"])
+        self.assertEqual("release-plan/plan-c", terminal["successor_plan_tag"])
         self.assertEqual("completed", evidence["release-plan/plan-b"]["outcome"])
         self.assertEqual("completed", evidence["release-plan/plan-c"]["outcome"])
         self.assertEqual("completed", evidence["release-plan/plan-x"]["outcome"])
+        invalid_qualifications = (
+            ([], "qualification is absent"),
+            (
+                {**continuity_resolution_qualification_run(), "status": "queued", "conclusion": None},
+                "qualification is pending",
+            ),
+            (
+                {**continuity_resolution_qualification_run(), "conclusion": "failure"},
+                "qualification failed",
+            ),
+            (
+                {**continuity_resolution_qualification_run(), "conclusion": "cancelled"},
+                "qualification was cancelled",
+            ),
+            (
+                {**continuity_resolution_qualification_run(), "head_sha": "8" * 40},
+                "another source revision",
+            ),
+            (
+                {
+                    **continuity_resolution_qualification_run(),
+                    "path": ".github/workflows/untrusted.yml@main",
+                },
+                "untrusted workflow",
+            ),
+        )
+        with (
+            mock.patch("scripts.release_plan.resolve_tag", side_effect=resolve),
+            mock.patch("scripts.release_plan.read_public_record", side_effect=read_record),
+            mock.patch("scripts.release_plan.load_public_supersession", return_value=None),
+        ):
+            for run, message in invalid_qualifications:
+                with self.subTest(qualification=message), self.assertRaisesRegex(
+                    CandidateError,
+                    message,
+                ):
+                    require_prior_plans_completed(
+                        future,
+                        FixtureClient([resolution_tag], run),
+                    )
 
     def test_accepted_but_incomplete_continuity_successor_does_not_terminalize_the_interruption(self) -> None:
         interrupted = release_plan()

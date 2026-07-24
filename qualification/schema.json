@@ -151,6 +151,7 @@
         "artifact_digest_validator_environment": {
           "items": {
             "enum": [
+              "GITHUB_TOKEN",
               "GH_TOKEN",
               "REQUESTED_RUN_ATTEMPT",
               "REQUESTED_RUN_ID"
@@ -168,7 +169,10 @@
           "type": "array"
         },
         "event": {
-          "const": "workflow_dispatch"
+          "enum": [
+            "push",
+            "workflow_dispatch"
+          ]
         },
         "identity_validator_command": {
           "minLength": 1,
@@ -177,6 +181,7 @@
         "identity_validator_environment": {
           "items": {
             "enum": [
+              "GITHUB_TOKEN",
               "GH_TOKEN",
               "REQUESTED_RUN_ATTEMPT",
               "REQUESTED_RUN_ID"
@@ -192,6 +197,10 @@
           "maxItems": 4,
           "minItems": 1,
           "type": "array"
+        },
+        "privileged_job_condition": {
+          "minLength": 1,
+          "type": "string"
         },
         "protected_ref": {
           "minLength": 1,
@@ -217,6 +226,7 @@
         "identity_validator_command",
         "identity_validator_environment",
         "identity_validator_preceding_steps",
+        "privileged_job_condition",
         "artifact_digest_validator_command",
         "artifact_digest_validator_environment",
         "artifact_digest_validator_preceding_steps",

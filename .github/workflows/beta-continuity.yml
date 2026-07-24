@@ -11,10 +11,16 @@ on:
       - .github/workflows/beta-conformance-retention.yml
       - beta-continuity/**
       - qualification/**
+      - release-plans/continuity-resolution-schema.json
+      - release-plans/continuity-successor-selection.json
       - scripts/beta_continuity.py
+      - scripts/component_release_recovery.py
       - scripts/qualification_policy.py
+      - scripts/release_plan.py
       - tests/test_beta_continuity.py
+      - tests/test_component_release_recovery.py
       - tests/test_qualification_policy.py
+      - tests/test_release_plan.py
   schedule:
     - cron: '7,17,27,37,47,57 * * * *'
   workflow_dispatch:
@@ -67,8 +73,13 @@ jobs:
           python -m ruff check scripts tests
           python -m yamllint .github/workflows
           python -m compileall -q scripts tests
-          python -m unittest -v tests.test_beta_continuity tests.test_qualification_policy
+          python -m unittest -v \
+            tests.test_beta_continuity \
+            tests.test_component_release_recovery \
+            tests.test_qualification_policy \
+            tests.test_release_plan
           python -m jsonschema -i beta-continuity/config.json beta-continuity/schema.json
+          python -m json.tool release-plans/continuity-successor-selection.json >/dev/null
 
       - name: Select or recover the exact drill plan
         id: plan

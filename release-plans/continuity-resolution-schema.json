@@ -1,0 +1,140 @@
+{
+  "$id": "https://github.com/durable-workflow/.github/blob/main/release-plans/continuity-resolution-schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "acceptance_identity": {
+      "$ref": "#/$defs/identity"
+    },
+    "identity": {
+      "additionalProperties": false,
+      "properties": {
+        "commit": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "tag": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "commit",
+        "sha256",
+        "tag"
+      ],
+      "type": "object"
+    },
+    "qualification": {
+      "additionalProperties": false,
+      "properties": {
+        "conclusion": {
+          "const": "success"
+        },
+        "event": {
+          "const": "push"
+        },
+        "head_branch": {
+          "const": "main"
+        },
+        "head_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        },
+        "repository": {
+          "const": "durable-workflow/.github"
+        },
+        "run_attempt": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "run_id": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "status": {
+          "const": "completed"
+        },
+        "workflow": {
+          "const": ".github/workflows/beta-candidate.yml"
+        }
+      },
+      "required": [
+        "conclusion",
+        "event",
+        "head_branch",
+        "head_sha",
+        "repository",
+        "run_attempt",
+        "run_id",
+        "status",
+        "workflow"
+      ],
+      "type": "object"
+    },
+    "successor_claim": {
+      "additionalProperties": false,
+      "properties": {
+        "acceptance": {
+          "$ref": "#/$defs/acceptance_identity"
+        },
+        "plan": {
+          "$ref": "#/$defs/identity"
+        }
+      },
+      "required": [
+        "acceptance",
+        "plan"
+      ],
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "interruption": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence": {
+          "$ref": "#/$defs/identity"
+        },
+        "plan": {
+          "$ref": "#/$defs/identity"
+        }
+      },
+      "required": [
+        "evidence",
+        "plan"
+      ],
+      "type": "object"
+    },
+    "schema": {
+      "const": "durable-workflow.release-plan-continuity-resolution/v2"
+    },
+    "qualification": {
+      "$ref": "#/$defs/qualification"
+    },
+    "selected_successor": {
+      "$ref": "#/$defs/identity"
+    },
+    "successor_claims": {
+      "items": {
+        "$ref": "#/$defs/successor_claim"
+      },
+      "minItems": 2,
+      "type": "array",
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "interruption",
+    "qualification",
+    "schema",
+    "selected_successor",
+    "successor_claims"
+  ],
+  "title": "Durable Workflow release-plan continuity successor resolution",
+  "type": "object"
+}

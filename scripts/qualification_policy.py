@@ -47,6 +47,7 @@ CHECK_RUN_MAX_ATTEMPTS = 20
 CHECK_RUN_POLL_SECONDS = 30.0
 INFRASTRUCTURE_EXIT_CODE = 75
 SAFE_VALIDATOR_ENVIRONMENT_NAMES = {
+    "GITHUB_TOKEN",
     "GH_TOKEN",
     "REQUESTED_RUN_ATTEMPT",
     "REQUESTED_RUN_ID",
@@ -498,6 +499,7 @@ def validate_policy(policy: dict[str, Any]) -> None:
         "identity_validator_command",
         "identity_validator_environment",
         "identity_validator_preceding_steps",
+        "privileged_job_condition",
         "protected_ref",
         "repository",
         "validator_runner",
@@ -508,8 +510,8 @@ def validate_policy(policy: dict[str, Any]) -> None:
             raise PolicyError(f"invalid privileged workflow_run consumer path {path!r}")
         if not isinstance(consumer, dict) or set(consumer) != required_consumer_fields:
             raise PolicyError(f"{path} must declare the complete workflow_run trust binding")
-        if consumer["event"] != "workflow_dispatch":
-            raise PolicyError(f"{path} source event must be workflow_dispatch")
+        if consumer["event"] not in {"push", "workflow_dispatch"}:
+            raise PolicyError(f"{path} source event is not a reviewed trusted event")
         if (
             not isinstance(consumer["validator_runner"], str)
             or consumer["validator_runner"] not in SAFE_VALIDATOR_RUNNERS
@@ -568,8 +570,21 @@ def validate_policy(policy: dict[str, Any]) -> None:
                 ):
                     raise PolicyError(f"{path} {field} must contain only reviewed immutable action steps")
                 settings = step["with"]
-                if repository == "actions/checkout" and settings != {"persist-credentials": "false"}:
-                    raise PolicyError(f"{path} {field} checkout must select only the trusted controller")
+                if repository == "actions/checkout":
+                    trusted_controller = settings == {"persist-credentials": "false"}
+                    qualified_source = (
+                        consumer["event"] == "push"
+                        and field == "artifact_digest_validator_preceding_steps"
+                        and settings
+                        == {
+                            "fetch-depth": "0",
+                            "ref": "${{ needs.bind.outputs.source_head_sha }}",
+                        }
+                    )
+                    if not trusted_controller and not qualified_source:
+                        raise PolicyError(
+                            f"{path} {field} checkout must select only the trusted controller"
+                        )
                 if repository == "actions/setup-python" and (
                     set(settings) != {"python-version"}
                     or re.fullmatch(r"3\.\d+", settings["python-version"]) is None
@@ -596,10 +611,11 @@ def validate_policy(policy: dict[str, Any]) -> None:
             for step in consumer["identity_validator_preceding_steps"]
         ):
             raise PolicyError(f"{path} identity validation must precede artifact downloads")
-        if not any(
+        has_artifact_download = any(
             _split_action_reference(step["uses"])[0] == "actions/download-artifact"
             for step in consumer["artifact_digest_validator_preceding_steps"]
-        ):
+        )
+        if consumer["event"] == "workflow_dispatch" and not has_artifact_download:
             raise PolicyError(f"{path} artifact validation must follow a reviewed artifact download")
 
     targets = policy.get("targets")
@@ -1366,6 +1382,16 @@ def _scan_workflow_trust(
             needs = _job_needs(job, f"{label} privileged workflow_run job {job_name!r}")
             if not needs.intersection(binders) or "environment" not in job:
                 raise PolicyError(f"{label} privileged workflow_run job {job_name!r} is not isolated behind a binder")
+            condition = job.get("if")
+            if (
+                not isinstance(condition, str)
+                or _condition_without_expression_wrapper(condition)
+                != consumer_policy["privileged_job_condition"]
+            ):
+                raise PolicyError(
+                    f"{label} privileged workflow_run job {job_name!r} "
+                    "does not enforce its reviewed privilege condition"
+                )
             if not _job_invokes_after_trusted_actions(
                 document,
                 job,
