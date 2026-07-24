@@ -130,7 +130,7 @@ def write_result(
         "runner_blocked": runner_blocked,
         "artifact_versions": {
             "server": environment["DW_SERVER_VERSION"],
-            "waterline-service": environment["DW_WATERLINE_VERSION"],
+            "waterline": environment["DW_WATERLINE_VERSION"],
         },
         "executed_distribution_identities": ({"waterline-service": identity} if identity is not None else {}),
         "local_product_source_checkout_used": False,

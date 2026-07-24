@@ -63,6 +63,12 @@ PASS_OUTCOMES = {"pass", "passed", "success", "successful", "completed", "verifi
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 OCI_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+PYPI_SEMVER_PRERELEASE_PATTERN = re.compile(
+    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-(alpha|beta|rc)\.(0|[1-9][0-9]*)$"
+)
+PYPI_NATIVE_PRERELEASE_PATTERN = re.compile(
+    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(a|b|rc)(0|[1-9][0-9]*)$"
+)
 DIAGNOSTIC_LIMIT = 8192
 NATIVE_RESULT_LIMIT = 4 * 1024 * 1024
 NATIVE_RESULT_PREFIX_LIMIT = 64 * 1024
@@ -548,11 +554,16 @@ def load_contract(path: Path) -> dict[str, Any]:
     return contract
 
 
+def artifact_version_components(required_distributions: list[str]) -> list[str]:
+    """Return the candidate components represented by distribution assignments."""
+    return list(dict.fromkeys(DISTRIBUTIONS[distribution][0] for distribution in required_distributions))
+
+
 def runner_required_artifact_versions(
     runner: dict[str, Any], required_distributions: list[str] | None = None
 ) -> list[str]:
-    """Return executed distributions plus candidate artifacts required by the runtime."""
-    required = list(required_distributions or runner["required_distributions"])
+    """Return candidate components versioned by an executed distribution assignment."""
+    required = artifact_version_components(required_distributions or runner["required_distributions"])
     runtime = runner.get("runtime")
     if isinstance(runtime, dict) and runtime.get("kind") == "standalone-server" and "server" not in required:
         required.append("server")
@@ -598,6 +609,33 @@ def distribution_locator(name: str, version: str) -> str:
 def distribution_version(components: dict[str, Any], name: str) -> str:
     component_name, _component = DISTRIBUTIONS[name]
     return components[component_name]["version"]
+
+
+def pypi_release_identity(version: str) -> tuple[str, str, str, str | None, str | None] | None:
+    stable = re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version)
+    if stable:
+        major, minor, patch = stable.groups()
+        return major, minor, patch, None, None
+    semver = PYPI_SEMVER_PRERELEASE_PATTERN.fullmatch(version)
+    if semver:
+        major, minor, patch, prerelease, ordinal = semver.groups()
+        phase = {"alpha": "a", "beta": "b", "rc": "rc"}[prerelease]
+        return major, minor, patch, phase, ordinal
+    native = PYPI_NATIVE_PRERELEASE_PATTERN.fullmatch(version)
+    if native:
+        major, minor, patch, phase, ordinal = native.groups()
+        return major, minor, patch, phase, ordinal
+    return None
+
+
+def registry_versions_equivalent(name: str, observed: str, expected: str) -> bool:
+    """Compare exact candidate versions with the canonical spelling of their registry."""
+    if observed == expected:
+        return True
+    if name != "sdk-python":
+        return False
+    observed_identity = pypi_release_identity(observed)
+    return observed_identity is not None and observed_identity == pypi_release_identity(expected)
 
 
 def distribution_artifact(name: Any, sha256: Any) -> dict[str, str]:
@@ -1422,6 +1460,11 @@ def native_distribution_identity_structure_error(name: str, identity: Any) -> st
         return f"published runner result has a malformed {name} distribution identity body"
     _component_name, component = DISTRIBUTIONS[name]
     locator_prefix = f"{component.distribution}:{component.package}@"
+    locator_version = (
+        identity["locator"][len(locator_prefix) :]
+        if isinstance(identity.get("locator"), str) and identity["locator"].startswith(locator_prefix)
+        else ""
+    )
     if (
         not isinstance(identity["kind"], str)
         or not identity["kind"]
@@ -1431,7 +1474,10 @@ def native_distribution_identity_structure_error(name: str, identity: Any) -> st
         or not identity["locator"]
         or len(identity["locator"]) > 256
         or not identity["locator"].startswith(locator_prefix)
-        or not VERSION_PATTERN.fullmatch(identity["locator"][len(locator_prefix) :])
+        or (
+            VERSION_PATTERN.fullmatch(locator_version) is None
+            and (name != "sdk-python" or PYPI_NATIVE_PRERELEASE_PATTERN.fullmatch(locator_version) is None)
+        )
     ):
         return f"published runner result has a malformed {name} distribution identity locator"
     artifacts = identity["artifacts"]
@@ -2227,7 +2273,7 @@ def artifact_binding_failures(
                 observed_identities.setdefault(name, []).append(identity)
     for name, versions in observed_versions.items():
         expected = distribution_version(plan["artifact_tuple"], name)
-        if versions != {expected}:
+        if any(not registry_versions_equivalent(name, version, expected) for version in versions):
             failures.append(f"{name} native evidence reports {sorted(versions)}, expected exact version {expected}")
     for name, identities in observed_identities.items():
         expected = plan["distribution_identities"][name]
@@ -2236,7 +2282,14 @@ def artifact_binding_failures(
             if native_distribution_identity_structure_error(name, identity):
                 failures.append(f"{name} native evidence has an invalid executed distribution identity")
                 continue
-            if identity["kind"] != expected["kind"] or identity["locator"] != expected["locator"]:
+            locator_prefix = f"{identity['kind']}:{DISTRIBUTIONS[name][1].package}@"
+            observed_version = identity["locator"].removeprefix(locator_prefix)
+            expected_version = distribution_version(plan["artifact_tuple"], name)
+            if identity["kind"] != expected["kind"] or not registry_versions_equivalent(
+                name,
+                observed_version,
+                expected_version,
+            ):
                 failures.append(f"{name} native evidence reports a different distribution locator")
                 continue
             for artifact in identity["artifacts"]:
@@ -2249,9 +2302,10 @@ def artifact_binding_failures(
                     failures.append(
                         f"{name} executed distribution artifact {artifact['name']} does not match the candidate digest"
                     )
-    for name in required_distributions:
+    for name in artifact_version_components(required_distributions):
         if name not in observed_versions:
             failures.append(f"native evidence does not report the exact {name} artifact version")
+    for name in required_distributions:
         if name not in observed_identities:
             failures.append(f"native evidence does not report the executed {name} distribution identity")
     return list(dict.fromkeys(failures))

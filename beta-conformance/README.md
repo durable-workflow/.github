@@ -29,9 +29,13 @@ workflow list against the digest-pinned standalone server. Product checkouts
 and mutable package selectors are not inputs to this workflow.
 
 Runner entries declare the distributions they consume and any runtime they need
-from the candidate. The union of the runner distribution sets must equal the
-experiment's complete required set. The direct PHP SDK runner declares a
-standalone server dependency, so the portable wrapper
+from the candidate. Component version evidence remains keyed by the seven
+product components, while executed identity evidence distinguishes all eight
+distributions. The signals/query matrix therefore includes the Waterline
+service identity it executes in its assignment while reporting that
+distribution's version under the `waterline` component. The union of the runner
+distribution sets must equal the experiment's complete required set. The direct
+PHP SDK runner declares a standalone server dependency, so the portable wrapper
 bootstraps the digest-pinned candidate image and starts its HTTP, queue-worker,
 and scheduler processes with digest-pinned MySQL and Redis containers on
 isolated Docker state. Matrix jobs never launch either dependency through its
@@ -99,9 +103,12 @@ Detached registry snapshots are not accepted as execution evidence. Each runner
 must report identities derived from its own executed downloads for exactly the
 distributions assigned to that runner. The experiment-wide check then requires
 the complete distribution set declared by the experiment and matches every
-reported identity to the immutable candidate record. Missing native evidence is
-a non-retryable infrastructure failure; an exact-version or digest mismatch is
-a non-retryable product failure under the experiment's owning contract.
+reported identity to the immutable candidate record. Registry-native version
+text is accepted only when it represents the candidate release and the
+executed artifact digest matches the immutable plan; retained evidence keeps
+the exact version text reported by the runner. Missing native evidence is a
+non-retryable infrastructure failure; a different release or digest is a
+non-retryable product failure under the experiment's owning contract.
 Matching version strings cannot satisfy the identity check. A passing retained
 suite covers the complete eight-distribution set, including both Waterline modes.
 Experiments run in separate GitHub matrix jobs, have explicit deadlines, use

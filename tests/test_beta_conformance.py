@@ -116,7 +116,7 @@ def successful_diagnostic(
     scenario_ids: list[str] | None = None,
 ) -> dict[str, object]:
     selected = required_distributions or list(DISTRIBUTIONS)
-    selected_versions = required_artifact_versions or selected
+    selected_versions = required_artifact_versions or list(dict.fromkeys(DISTRIBUTIONS[name][0] for name in selected))
     selected_scenarios = scenario_ids or ["fixture"]
     artifact_tuple = plan["artifact_tuple"]
     distribution_identities = plan["distribution_identities"]
@@ -181,7 +181,9 @@ def successful_native_result(
     distribution_identities = plan["distribution_identities"]
     assert isinstance(artifact_tuple, dict)
     assert isinstance(distribution_identities, dict)
-    selected_versions = required_artifact_versions or required_distributions
+    selected_versions = required_artifact_versions or list(
+        dict.fromkeys(DISTRIBUTIONS[name][0] for name in required_distributions)
+    )
     return {
         "schema": "fixture.result/v1",
         "outcome": "pass",
@@ -506,7 +508,7 @@ class RetentionSourceTest(unittest.TestCase):
 
 
 class CandidateRecordFixture:
-    def __init__(self) -> None:
+    def __init__(self, component_versions: dict[str, str] | None = None) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.repository = Path(self.temporary.name)
         subprocess.run(["git", "init", str(self.repository)], check=True, capture_output=True)
@@ -519,6 +521,8 @@ class CandidateRecordFixture:
             check=True,
         )
         self.manifest = candidate_manifest()
+        for component, version in (component_versions or {}).items():
+            self.manifest["components"][component]["version"] = version
         (self.repository / "candidate.json").write_bytes(canonical_json(self.manifest))
         (self.repository / "verification.json").write_bytes(canonical_json(candidate_verification(self.manifest)))
         subprocess.run(["git", "-C", str(self.repository), "add", "."], check=True)
@@ -610,6 +614,19 @@ class ContractTest(unittest.TestCase):
             runner_required_artifact_versions(php_runner),
         )
         signals_runner = contract["experiments"]["signals-queries"]["runners"][0]
+        self.assertIn("waterline-service", signals_runner["required_distributions"])
+        self.assertEqual(
+            {
+                "workflow",
+                "waterline",
+                "server",
+                "cli",
+                "sdk-php",
+                "sdk-python",
+                "sdk-rust",
+            },
+            set(runner_required_artifact_versions(signals_runner)),
+        )
         self.assertEqual("durable-workflow.v2.signal-query-runtime.result", signals_runner["result_schema"])
         self.assertEqual(
             {
@@ -1010,6 +1027,44 @@ class FailureClassificationTest(unittest.TestCase):
             failures = artifact_binding_failures(plan, ["sdk-python"], [diagnostic])
             self.assertEqual(1, len(failures))
             self.assertIn("expected exact version", failures[0])
+        finally:
+            fixture.close()
+
+    def test_registry_native_python_version_is_accepted_only_for_the_exact_candidate(self) -> None:
+        fixture = CandidateRecordFixture({"sdk-python": "2.0.0-beta.10"})
+        try:
+            contract = load_contract(CONTRACT_PATH)
+            plan = prepare_plan(
+                fixture.repository,
+                fixture.manifest,
+                contract,
+                fixture.commit,
+                runtime_dependencies(),
+            )
+            diagnostic = successful_diagnostic(plan, ["sdk-python"])
+            summary = diagnostic["native_summary"]
+            summary["artifact_versions"]["sdk-python"] = "2.0.0b10"
+            summary["executed_distribution_identities"]["sdk-python"]["locator"] = "pypi:durable-workflow@2.0.0b10"
+
+            self.assertEqual([], artifact_binding_failures(plan, ["sdk-python"], [diagnostic]))
+
+            mismatched_bytes = json.loads(canonical_json(diagnostic))
+            mismatched_bytes["native_summary"]["executed_distribution_identities"]["sdk-python"]["artifacts"][0][
+                "sha256"
+            ] = "f" * 64
+            failures = artifact_binding_failures(plan, ["sdk-python"], [mismatched_bytes])
+            self.assertEqual(1, len(failures))
+            self.assertIn("does not match the candidate digest", failures[0])
+
+            mismatched = json.loads(canonical_json(diagnostic))
+            mismatched["native_summary"]["artifact_versions"]["sdk-python"] = "2.0.0b11"
+            mismatched["native_summary"]["executed_distribution_identities"]["sdk-python"]["locator"] = (
+                "pypi:durable-workflow@2.0.0b11"
+            )
+            failures = artifact_binding_failures(plan, ["sdk-python"], [mismatched])
+            self.assertEqual(2, len(failures))
+            self.assertTrue(any("expected exact version" in failure for failure in failures))
+            self.assertTrue(any("different distribution locator" in failure for failure in failures))
         finally:
             fixture.close()
 
@@ -1612,7 +1667,11 @@ class ExperimentRetryTest(unittest.TestCase):
 
     def portable_signals_query_result(self) -> tuple[dict[str, object], dict[str, object]]:
         runner = self.contract["experiments"]["signals-queries"]["runners"][0]
-        native = self.native_result("pass")
+        native = successful_native_result(
+            self.plan,
+            runner["required_distributions"],
+            required_artifact_versions=runner_required_artifact_versions(runner),
+        )
         native.update(
             {
                 "schema": runner["result_schema"],
@@ -2808,6 +2867,68 @@ class EvidenceTest(unittest.TestCase):
         self.assertEqual(set(DISTRIBUTIONS), set(suite["executed_distribution_identities"]))
         self.assertEqual(self.plan["runtime_dependencies"], suite["runtime_dependencies"])
         beta_schema_validator("suite-result-schema.json").validate(suite)
+
+    def test_green_suite_retains_registry_native_python_and_waterline_service_identities(self) -> None:
+        fixture = CandidateRecordFixture({"sdk-python": "2.0.0-beta.10"})
+        try:
+            contract = load_contract(CONTRACT_PATH)
+            plan = prepare_plan(
+                fixture.repository,
+                fixture.manifest,
+                contract,
+                fixture.commit,
+                runtime_dependencies(),
+            )
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                for experiment in EXPERIMENTS:
+                    specification = contract["experiments"][experiment]
+                    result = experiment_result(
+                        plan,
+                        experiment,
+                        specification["owning_contract"],
+                        specification["required_clients"],
+                        specification["required_distributions"],
+                        "2026-07-24T00:00:00Z",
+                        "passed",
+                        1,
+                        successful_runner_diagnostics(plan, specification),
+                    )
+                    for diagnostic in result["diagnostics"]:
+                        summary = diagnostic["native_summary"]
+                        if "sdk-python" in summary["artifact_versions"]:
+                            summary["artifact_versions"]["sdk-python"] = "2.0.0b10"
+                        if "sdk-python" in summary["executed_distribution_identities"]:
+                            summary["executed_distribution_identities"]["sdk-python"]["locator"] = (
+                                "pypi:durable-workflow@2.0.0b10"
+                            )
+                    path = root / experiment / "experiment-result.json"
+                    path.parent.mkdir()
+                    path.write_bytes(canonical_json(result))
+
+                suite, _ = aggregate_results(
+                    plan,
+                    contract,
+                    root,
+                    run_id=12345,
+                    run_attempt=1,
+                    source_candidate=plan["candidate"]["name"],
+                    source_head_sha=plan["runner"]["revision"],
+                )
+
+            self.assertEqual("pass", suite["outcome"])
+            self.assertEqual(set(DISTRIBUTIONS), set(suite["executed_distribution_identities"]))
+            self.assertEqual(
+                "pypi:durable-workflow@2.0.0b10",
+                suite["executed_distribution_identities"]["sdk-python"]["locator"],
+            )
+            self.assertEqual(
+                plan["distribution_identities"]["waterline-service"]["artifacts"],
+                suite["executed_distribution_identities"]["waterline-service"]["artifacts"],
+            )
+            beta_schema_validator("suite-result-schema.json").validate(suite)
+        finally:
+            fixture.close()
 
     def test_aggregate_rejects_a_passing_result_missing_a_declared_runner(self) -> None:
         specification = self.contract["experiments"]["polyglot"]

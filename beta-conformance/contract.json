@@ -180,6 +180,7 @@
           "required_distributions": [
             "workflow",
             "waterline",
+            "waterline-service",
             "server",
             "cli",
             "sdk-php",

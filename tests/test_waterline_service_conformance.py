@@ -52,7 +52,7 @@ class WaterlineServiceConformanceTest(unittest.TestCase):
             result = json.loads((directory / "waterline-service-conformance-result.json").read_bytes())
 
         self.assertEqual(
-            {"server": "2.0.0-beta.10", "waterline-service": "2.0.0-beta.10"},
+            {"server": "2.0.0-beta.10", "waterline": "2.0.0-beta.10"},
             result["artifact_versions"],
         )
         self.assertEqual({"waterline-service": identity}, result["executed_distribution_identities"])
