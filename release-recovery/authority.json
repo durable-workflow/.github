@@ -36,7 +36,7 @@
       "ref": "refs/heads/main",
       "path": ".github/workflows/release-plan-recovery.yml",
       "state": "active",
-      "sha256": "3b3d1be70f3624fc3e0785986e0e483a0a6d2b56c1e2561667a17afa8b74a2f7"
+      "sha256": "c19453ac7807422fb58d4f6f8f2b8da41f705b0203abef39ae6e0b396f5c07b2"
     },
     "sdk-php": {
       "repository": "durable-workflow/sdk-php",
