@@ -11,7 +11,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "durable-workflow.beta-candidate/v1"
+      "const": "durable-workflow.beta-candidate/v2"
     },
     "candidate": {
       "type": "string",

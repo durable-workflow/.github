@@ -45,6 +45,12 @@ from scripts.beta_candidate import (
     verify_github_release,
     write_github_output,
 )
+from scripts.beta_candidate import (
+    LEGACY_SCHEMA as LEGACY_CANDIDATE_SCHEMA,
+)
+from scripts.beta_candidate import (
+    SCHEMA as CANDIDATE_SCHEMA,
+)
 from scripts.product_train import require_current_product_train
 from scripts.recovery_workflow_authority import (
     RecoveryWorkflowAuthorityError,
@@ -52,7 +58,9 @@ from scripts.recovery_workflow_authority import (
     verify_workflow_source,
 )
 
-SCHEMA = "durable-workflow.release-plan/v1"
+SCHEMA = "durable-workflow.release-plan/v2"
+LEGACY_SCHEMA = "durable-workflow.release-plan/v1"
+LEGACY_PLAN_DIGESTS = recovery_discovery.LEGACY_PLAN_DIGESTS
 PREPARATION_SCHEMA = "durable-workflow.release-preparation/v1"
 SOURCE_PREPARATION_SCHEMA = "durable-workflow.release-source-preparation/v1"
 PLAN_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,55}$")
@@ -160,13 +168,24 @@ def load_plan(path: Path, *, require_current: bool = False) -> dict[str, Any]:
 
 
 def validate_plan(plan: Any) -> None:
+    _validate_plan(plan, {SCHEMA})
+
+
+def validate_recorded_plan(plan: Any) -> None:
+    """Validate a current plan or an exact plan recorded under the v1 contract."""
+    _validate_plan(plan, {LEGACY_SCHEMA, SCHEMA})
+    if plan["schema"] == LEGACY_SCHEMA and manifest_digest(plan) not in LEGACY_PLAN_DIGESTS:
+        raise CandidateError("legacy release plan is not an exact recorded historical contract")
+
+
+def _validate_plan(plan: Any, schemas: set[str]) -> None:
     if not isinstance(plan, dict):
         raise CandidateError("release plan must be a JSON object")
     expected = {"schema", "plan", "channel", "foundation", "components", "beta_authorization"}
     if set(plan) != expected:
         raise CandidateError(f"release plan keys must be exactly {sorted(expected)}")
-    if plan["schema"] != SCHEMA:
-        raise CandidateError(f"release plan schema must be {SCHEMA}")
+    if plan["schema"] not in schemas:
+        raise CandidateError(f"release plan schema must be one of {sorted(schemas)}")
     if not isinstance(plan["plan"], str) or not PLAN_PATTERN.fullmatch(plan["plan"]):
         raise CandidateError("plan must be 1-56 lowercase letters, digits, dots, underscores, or hyphens")
     if plan["channel"] not in {"alpha", "beta"}:
@@ -465,7 +484,7 @@ def prepare_release(plan: dict[str, Any], client: PublicClient, release_date: st
 
 
 def validate_release_preparation(preparation: Any, plan: dict[str, Any]) -> None:
-    validate_plan(plan)
+    validate_recorded_plan(plan)
     if not isinstance(preparation, dict) or set(preparation) != {
         "schema",
         "release_plan",
@@ -597,8 +616,8 @@ def parse_conflict_components(value: str) -> list[str]:
 def validate_successor_transition(
     failed_plan: dict[str, Any], successor_plan: dict[str, Any], conflicts: str | list[Any]
 ) -> None:
-    validate_plan(failed_plan)
-    validate_plan(successor_plan)
+    validate_recorded_plan(failed_plan)
+    validate_recorded_plan(successor_plan)
     conflict_names = conflict_component_names(conflicts)
     if successor_plan["plan"] == failed_plan["plan"]:
         raise CandidateError("a superseding release plan must use a new plan identity")
@@ -1252,7 +1271,7 @@ def load_public_supersession(
         return None
     record = read_public_record(client, tag, commit, "release-plan-failure.json")
     successor = read_public_record(client, tag, commit, "successor-release-plan.json")
-    validate_plan(successor)
+    validate_recorded_plan(successor)
     validate_supersession_record(record, failed_plan, failed_plan_commit, successor)
     revalidate_supersession_authority(record, client, require_success=True)
     return tag, commit, record, successor
@@ -1269,7 +1288,7 @@ def validate_continuity_supersession(
     accepted_evidence: Any,
     accepted_plan: Any,
 ) -> dict[str, str]:
-    validate_plan(accepted_plan)
+    validate_recorded_plan(accepted_plan)
     successor_tag = f"{PLAN_TAG_PREFIX}{successor_plan['plan']}"
     successor_digest = manifest_digest(successor_plan)
     if (
@@ -1320,7 +1339,7 @@ def validate_continuity_supersession(
         interruption_commit,
         "release-plan.json",
     )
-    validate_plan(interruption_plan)
+    validate_recorded_plan(interruption_plan)
     if (
         not isinstance(interruption_evidence, dict)
         or canonical_json(interruption_plan) != canonical_json(prior_plan)
@@ -1437,7 +1456,7 @@ def validate_continuity_resolution_authority(
         interrupted_commit,
         "release-plan.json",
     )
-    validate_plan(interrupted_plan)
+    validate_recorded_plan(interrupted_plan)
     if (
         interrupted_plan["plan"] != interrupted_name
         or manifest_digest(interrupted_plan) != interrupted_plan_identity["sha256"]
@@ -1477,7 +1496,7 @@ def validate_continuity_resolution_authority(
             successor_commit,
             "release-plan.json",
         )
-        validate_plan(successor_plan)
+        validate_recorded_plan(successor_plan)
         if successor_plan["plan"] != successor_name or manifest_digest(successor_plan) != plan_identity["sha256"]:
             raise CandidateError("continuity successor resolution has a mismatched successor plan")
         accepted_commit = resolve_tag(client, CONTROL_REPOSITORY, acceptance_identity["tag"])
@@ -1702,7 +1721,7 @@ def discover_completed_continuity_supersession(
             accepted_commit,
             "release-plan.json",
         )
-        validate_plan(accepted_plan)
+        validate_recorded_plan(accepted_plan)
         supersession = validate_continuity_supersession(
             accepted_plan,
             prior_plan,
@@ -1725,7 +1744,7 @@ def discover_completed_continuity_supersession(
             successor_commit,
             "release-plan.json",
         )
-        validate_plan(public_successor)
+        validate_recorded_plan(public_successor)
         if canonical_json(public_successor) != canonical_json(accepted_plan):
             raise CandidateError(f"recorded continuity successor {successor_tag} differs from {accepted_tag}")
         completion = load_plan_completion(
@@ -1786,7 +1805,7 @@ def require_prior_plans_completed(plan: dict[str, Any], client: PublicClient) ->
         if record_commit is None:
             raise CandidateError(f"prior release plan {tag} has no immutable Git record")
         prior = read_public_record(client, tag, record_commit, "release-plan.json")
-        validate_plan(prior)
+        validate_recorded_plan(prior)
         if tag != f"{PLAN_TAG_PREFIX}{prior['plan']}":
             raise CandidateError(f"prior release plan {tag} has a different document identity")
         completion = load_plan_completion(
@@ -1834,7 +1853,7 @@ def require_prior_plans_completed(plan: dict[str, Any], client: PublicClient) ->
                     successor_commit,
                     "release-plan.json",
                 )
-                validate_plan(public_successor)
+                validate_recorded_plan(public_successor)
                 if canonical_json(public_successor) != canonical_json(successor):
                     raise CandidateError(f"recorded successor {successor_tag} differs from {failure_tag}")
             completed[tag] = {
@@ -2500,7 +2519,7 @@ def prepare_supersession(
         failed_plan_commit,
         "release-plan.json",
     )
-    validate_plan(failed_plan)
+    validate_recorded_plan(failed_plan)
     if failed_plan_tag != f"{PLAN_TAG_PREFIX}{failed_plan['plan']}":
         raise CandidateError("failed release plan tag and document identity differ")
     component_names = conflict_component_names(conflict_components)
@@ -2643,7 +2662,7 @@ def record_supersession(
         failed_plan_commit,
         "release-plan.json",
     )
-    validate_plan(failed_plan)
+    validate_recorded_plan(failed_plan)
     validate_supersession_record(record, failed_plan, failed_plan_commit, successor)
     canonical_record = canonical_json(record)
     canonical_successor = canonical_json(successor)
@@ -2743,8 +2762,9 @@ def record_supersession(
 
 
 def candidate_manifest(plan: dict[str, Any]) -> dict[str, Any]:
+    validate_recorded_plan(plan)
     return {
-        "schema": "durable-workflow.beta-candidate/v1",
+        "schema": LEGACY_CANDIDATE_SCHEMA if plan["schema"] == LEGACY_SCHEMA else CANDIDATE_SCHEMA,
         "candidate": f"{plan['channel']}-{plan['plan']}",
         "components": plan["components"],
     }
@@ -2793,7 +2813,7 @@ def record_completion(
         plan_record_commit,
         "release-plan.json",
     )
-    validate_plan(public_plan)
+    validate_recorded_plan(public_plan)
     if canonical_json(public_plan) != canonical_json(plan):
         raise CandidateError("observed release plan differs from immutable Git authority")
     if load_public_supersession(plan, plan_record_commit, client) is not None:
@@ -3231,7 +3251,7 @@ def discover_plan(client: PublicClient, requested_tag: str | None) -> tuple[str,
     if commit is None:
         raise CandidateError(f"release plan tag {tag} does not exist")
     plan = read_public_record(client, tag, commit, "release-plan.json")
-    validate_plan(plan)
+    validate_recorded_plan(plan)
     if tag != f"{PLAN_TAG_PREFIX}{plan['plan']}":
         raise CandidateError("release plan tag and document identity differ")
     try:

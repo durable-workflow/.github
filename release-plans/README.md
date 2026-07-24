@@ -32,6 +32,11 @@ credentials. Each component repository discovers these records on its own
 schedule and uses its own GitHub token and publication environment to resume
 its release.
 
+The `durable-workflow.release-plan/v2` contract selects dual-distribution
+candidate verification and conformance for Waterline. New plans must use v2.
+The readers retain v1 support only for the exact canonical plan documents
+recorded before the Waterline service image became a required distribution.
+
 The current beta source selection is prepared in
 [`current-source-preparation.json`](current-source-preparation.json). It binds
 the exact seven source commits and the digests of their Unreleased changelogs

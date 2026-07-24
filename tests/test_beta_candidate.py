@@ -22,6 +22,7 @@ from jsonschema.exceptions import ValidationError
 from scripts.beta_candidate import (
     CLI_ASSETS,
     COMPONENTS,
+    LEGACY_VERIFICATION_SCHEMA,
     SCHEMA,
     CandidateError,
     PublicClient,
@@ -36,12 +37,19 @@ from scripts.beta_candidate import (
     record_candidate,
     revalidate_verification,
     validate_manifest,
+    validate_recorded_verification,
     validate_verification,
     verify_composer,
     verify_github_release,
     verify_python_archive_identity,
 )
-from tests.verification_fixture import candidate_verification
+from tests.verification_fixture import (
+    candidate_verification,
+    legacy_beta_one_candidate_manifest,
+    legacy_candidate_manifest,
+    legacy_candidate_verification,
+    legacy_completed_candidate_manifests,
+)
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
@@ -303,6 +311,56 @@ class ManifestTest(unittest.TestCase):
             Draft202012Validator(schema).validate(partial)
         with self.assertRaises(CandidateError):
             validate_verification(partial, candidate)
+
+    def test_historical_pre_service_verification_remains_readable_but_cannot_verify_a_new_candidate(self) -> None:
+        historical_candidate = legacy_candidate_manifest()
+        historical = legacy_candidate_verification(historical_candidate)
+
+        self.assertEqual(LEGACY_VERIFICATION_SCHEMA, historical["schema"])
+        validate_recorded_verification(historical, historical_candidate)
+
+        candidate = manifest()
+        with self.assertRaisesRegex(CandidateError, "does not prove this exact candidate manifest"):
+            validate_recorded_verification(legacy_candidate_verification(candidate), candidate)
+        with self.assertRaisesRegex(CandidateError, "does not prove this exact candidate manifest"):
+            validate_verification(legacy_candidate_verification(candidate), candidate)
+
+        unrecorded = copy.deepcopy(historical_candidate)
+        unrecorded["candidate"] = "unrecorded-pre-service-candidate"
+        with self.assertRaisesRegex(CandidateError, "not an exact recorded historical contract"):
+            validate_recorded_verification(legacy_candidate_verification(unrecorded), unrecorded)
+
+        missing = copy.deepcopy(historical)
+        del missing["components"]["waterline"]["distribution"]
+        with self.assertRaisesRegex(CandidateError, "not successful"):
+            validate_recorded_verification(missing, historical_candidate)
+
+    def test_exact_tagged_and_completed_pre_service_candidates_remain_readable(self) -> None:
+        candidates = [
+            (
+                "5e083e07e6abecbb0547466812f866a3650039b210dbe1d486ca98528479cd29",
+                legacy_beta_one_candidate_manifest(),
+            ),
+            *zip(
+                (
+                    "dd5e8d3bb248c2b1b292b5badf29376cc5c5b6fa73dedfb343e33987a2b6d7a2",
+                    "43243594ba34ff220365d9c514e6a54b93789788676ca8b1d678b679afa6c1c5",
+                    "2fbeda4e3368edf7cda7bcc749359d4bcdf7fcccca289e32316782613a84b4a6",
+                ),
+                legacy_completed_candidate_manifests(),
+                strict=True,
+            ),
+        ]
+
+        for expected_digest, candidate in candidates:
+            with self.subTest(candidate=candidate["candidate"]):
+                self.assertEqual(expected_digest, manifest_digest(candidate))
+                validate_recorded_verification(legacy_candidate_verification(candidate), candidate)
+
+                unrecorded = copy.deepcopy(candidate)
+                unrecorded["candidate"] += "-replacement"
+                with self.assertRaisesRegex(CandidateError, "not an exact recorded historical contract"):
+                    validate_recorded_verification(legacy_candidate_verification(unrecorded), unrecorded)
 
     def test_fresh_writer_independently_rejects_shape_valid_fabricated_distribution_evidence(self) -> None:
         candidate = manifest()

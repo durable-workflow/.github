@@ -11,9 +11,12 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, patch
 
-from scripts.beta_candidate import COMPONENTS, manifest_digest
+from scripts.beta_candidate import COMPONENTS, CandidateError, manifest_digest
 from scripts.beta_conformance import (
     DISTRIBUTIONS,
+    LEGACY_EXPERIMENT_RESULT_SCHEMA,
+    LEGACY_PLAN_SCHEMA,
+    LEGACY_SUITE_RESULT_SCHEMA,
     NATIVE_FAILURE_COMPONENT_LIMIT,
     NATIVE_FAILURE_PROJECTION_LIMIT,
     RUNTIME_DEPENDENCY_SELECTORS,
@@ -55,8 +58,16 @@ from scripts.beta_continuity import (
     validate_interrupted_evidence,
     validate_resolution_source,
 )
-from scripts.release_plan import candidate_manifest
-from tests.verification_fixture import candidate_verification
+from scripts.release_plan import (
+    LEGACY_SCHEMA as LEGACY_RELEASE_PLAN_SCHEMA,
+)
+from scripts.release_plan import (
+    SCHEMA as RELEASE_PLAN_SCHEMA,
+)
+from scripts.release_plan import (
+    candidate_manifest,
+)
+from tests.verification_fixture import candidate_verification, legacy_beta_one_release_plan
 
 ROOT = Path(__file__).resolve().parents[1]
 ROUTED_BLOCKER_LABELS = (
@@ -151,7 +162,7 @@ def run(command: list[str], directory: Path) -> str:
 
 def continuity_plan(name: str = "continuity-test") -> dict[str, object]:
     return {
-        "schema": "durable-workflow.release-plan/v1",
+        "schema": RELEASE_PLAN_SCHEMA,
         "plan": name,
         "channel": "alpha",
         "foundation": {
@@ -171,11 +182,55 @@ def continuity_plan(name: str = "continuity-test") -> dict[str, object]:
     }
 
 
+def historical_continuity_plan() -> dict[str, object]:
+    return {
+        "schema": LEGACY_RELEASE_PLAN_SCHEMA,
+        "plan": "workspace-unavailable-recovery-f46818553161",
+        "channel": "alpha",
+        "foundation": {
+            "tag": "beta-candidate/beta-continuity-foundation",
+            "commit": "4995052410bd4301c5796ffba54e0b6d2f490ed1",
+        },
+        "components": {
+            "workflow": {
+                "version": "2.0.0-alpha.292",
+                "commit": "7309173116dfc80ec8d22034ab9362e84dd55be4",
+            },
+            "waterline": {
+                "version": "2.0.0-alpha.138",
+                "commit": "b29fdbd8aa99a50cd688938dde2e03a6b8e26388",
+            },
+            "server": {
+                "version": "0.2.694",
+                "commit": "4f36343556b1698eba1fdaf78bc2b9c9d32b9329",
+            },
+            "cli": {
+                "version": "0.1.94",
+                "commit": "36bde75882980e834854a145c9ad0f61ceec4659",
+            },
+            "sdk-php": {
+                "version": "0.1.15",
+                "commit": "0673333d475a5b2d6b336790844bd126536925d9",
+            },
+            "sdk-python": {
+                "version": "0.4.104",
+                "commit": "46d494075c92b307844e83e44ca4de1c93f90715",
+            },
+            "sdk-rust": {
+                "version": "0.1.20",
+                "commit": "e1cbb36befdb90e19d9244e8deaccf9b871d01ba",
+            },
+        },
+        "beta_authorization": None,
+    }
+
+
 def conformance_release_fixture(
     plan: dict[str, Any],
     run_id: int,
     *,
     run_attempt: int = 1,
+    legacy: bool = False,
     sensitive: bool = False,
 ) -> tuple[dict[str, Any], dict[str, bytes], dict[str, Any]]:
     candidate = candidate_manifest(plan)
@@ -277,6 +332,16 @@ def conformance_release_fixture(
             run_attempt,
             [diagnostic],
         )
+        if legacy:
+            result = deepcopy(result)
+            result["schema"] = LEGACY_EXPERIMENT_RESULT_SCHEMA
+            result["distribution_identities"].pop("waterline-service")
+            result.pop("waterline_service_runner")
+            result["required_distributions"].remove("waterline-service")
+            result["source_policy"]["orchestration_source"] = "exact_server_container"
+            native_summary = result["diagnostics"][0]["native_summary"]
+            native_summary["artifact_versions"].pop("waterline-service")
+            native_summary["executed_distribution_identities"].pop("waterline-service")
         if sensitive and name == "replay":
             result["diagnostics"][0]["stdout_tail"] = "password=published-secret"
         payloads[f"https://downloads.example/{fixture_id}/{name}.json"] = json.dumps(
@@ -290,8 +355,12 @@ def conformance_release_fixture(
         "run_attempt": run_attempt,
         "evidence_tag": tag,
     }
+    if legacy:
+        conformance_plan["schema"] = LEGACY_PLAN_SCHEMA
+        conformance_plan["distribution_identities"].pop("waterline-service")
+        conformance_plan.pop("waterline_service_runner")
     suite = {
-        "schema": "durable-workflow.beta-conformance.suite-result/v2",
+        "schema": LEGACY_SUITE_RESULT_SCHEMA if legacy else "durable-workflow.beta-conformance.suite-result/v2",
         "candidate": conformance_plan["candidate"],
         "artifact_tuple": conformance_plan["artifact_tuple"],
         "source_identities": conformance_plan["source_identities"],
@@ -299,7 +368,6 @@ def conformance_release_fixture(
         "runtime_dependencies": conformance_plan["runtime_dependencies"],
         "runner": conformance_plan["runner"],
         "server_runner": conformance_plan["server_runner"],
-        "waterline_service_runner": conformance_plan["waterline_service_runner"],
         "github_run": run,
         "outcome": "pass",
         "experiments": {
@@ -313,6 +381,8 @@ def conformance_release_fixture(
             for name in CONFORMANCE_EXPERIMENTS
         },
     }
+    if not legacy:
+        suite["waterline_service_runner"] = conformance_plan["waterline_service_runner"]
     suite_url = f"https://downloads.example/{fixture_id}/suite-result.json"
     payloads[suite_url] = json.dumps(suite, sort_keys=True, separators=(",", ":")).encode()
     release_url = f"https://github.com/durable-workflow/.github/releases/tag/{tag}"
@@ -491,6 +561,7 @@ class BetaContinuityTest(unittest.TestCase):
         with patch("scripts.beta_continuity.resolve_tag", return_value=None):
             plan, expected = build_plan(config, client)  # type: ignore[arg-type]
 
+        self.assertEqual(RELEASE_PLAN_SCHEMA, plan["schema"])
         self.assertEqual(set(COMPONENTS), set(plan["components"]))
         self.assertEqual("2.0.0-alpha.292", plan["components"]["workflow"]["version"])
         self.assertEqual("0.4.105", plan["components"]["sdk-python"]["version"])
@@ -1715,8 +1786,12 @@ class BetaContinuityTest(unittest.TestCase):
         self.assertEqual([1, 2], client.requested_pages)
 
     def test_valid_recorded_conformance_release_is_preserved_beyond_the_first_release_page(self) -> None:
-        plan = continuity_plan("paginated-conformance-authority-test")
-        preferred_release, preferred_payloads, preferred_reference = conformance_release_fixture(plan, 12346)
+        plan = historical_continuity_plan()
+        preferred_release, preferred_payloads, preferred_reference = conformance_release_fixture(
+            plan,
+            12346,
+            legacy=True,
+        )
         later_release, later_payloads, _later_reference = conformance_release_fixture(plan, 12347)
         unrelated = [{"draft": False, "tag_name": f"unrelated-release-{index}"} for index in range(99)]
         client = PaginatedReleaseClient(
@@ -1729,6 +1804,73 @@ class BetaContinuityTest(unittest.TestCase):
             conformance_evidence(client, plan, preferred=preferred_reference),  # type: ignore[arg-type]
         )
         self.assertEqual([1, 2], client.requested_pages)
+
+    def test_legacy_conformance_is_only_selected_for_the_exact_recorded_reference(self) -> None:
+        plan = continuity_plan("legacy-conformance-selector-boundary-test")
+        legacy_release, legacy_payloads, _legacy_reference = conformance_release_fixture(
+            plan,
+            12345,
+            legacy=True,
+        )
+        replacement_release, replacement_payloads, replacement_reference = conformance_release_fixture(
+            plan,
+            12346,
+        )
+        _missing_release, _missing_payloads, missing_reference = conformance_release_fixture(plan, 12344)
+
+        class ReleaseClient:
+            def __init__(self, releases: list[dict[str, Any]], payloads: dict[str, bytes]) -> None:
+                self.releases = releases
+                self.payloads = payloads
+
+            def json(self, _url: str) -> list[dict[str, Any]]:
+                return self.releases
+
+            def bytes(self, url: str) -> bytes:
+                return self.payloads[url]
+
+        legacy_client = ReleaseClient([legacy_release], legacy_payloads)
+        self.assertIsNone(conformance_evidence(legacy_client, plan))  # type: ignore[arg-type]
+        self.assertIsNone(
+            conformance_evidence(
+                legacy_client,  # type: ignore[arg-type]
+                plan,
+                preferred=_legacy_reference,
+            )
+        )
+
+        client = ReleaseClient(
+            [replacement_release, legacy_release],
+            legacy_payloads | replacement_payloads,
+        )
+        self.assertEqual(
+            replacement_reference,
+            conformance_evidence(client, plan),  # type: ignore[arg-type]
+        )
+        self.assertEqual(
+            replacement_reference,
+            conformance_evidence(client, plan, preferred=missing_reference),  # type: ignore[arg-type]
+        )
+
+        historical = legacy_beta_one_release_plan()
+        historical_release, historical_payloads, historical_reference = conformance_release_fixture(
+            historical,
+            12347,
+            legacy=True,
+        )
+        self.assertEqual(
+            historical_reference,
+            conformance_evidence(
+                ReleaseClient([historical_release], historical_payloads),  # type: ignore[arg-type]
+                historical,
+                preferred=historical_reference,
+            ),
+        )
+
+        unrecorded = deepcopy(historical)
+        unrecorded["plan"] = "arbitrary-new-v1-plan"
+        with self.assertRaisesRegex(CandidateError, "not an exact recorded historical contract"):
+            conformance_evidence(ReleaseClient([], {}), unrecorded)  # type: ignore[arg-type]
 
     def test_missing_recorded_conformance_release_uses_only_the_earliest_newer_run_attempt(self) -> None:
         plan = continuity_plan("missing-conformance-authority-test")

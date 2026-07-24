@@ -19,6 +19,7 @@ from scripts.release_plan import (
     CONTINUITY_RESOLUTION_TAG_PREFIX,
     FOUNDATION_COMMIT,
     FOUNDATION_TAG,
+    LEGACY_SCHEMA,
     OBSERVATION_FAILURE_REASON,
     OCCUPIED_SOURCE_MANIFEST_REASON,
     PLAN_TAG_PREFIX,
@@ -50,12 +51,17 @@ from scripts.release_plan import (
     terminal_failure_state,
     validate_observation_handoff,
     validate_plan,
+    validate_recorded_plan,
     validate_release_preparation,
     validate_successor_transition,
     validate_supersession_handoff,
     validate_supersession_record,
 )
-from tests.verification_fixture import candidate_verification
+from tests.verification_fixture import (
+    candidate_verification,
+    legacy_beta_one_candidate_manifest,
+    legacy_beta_one_release_plan,
+)
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
@@ -901,6 +907,9 @@ class ReleasePlanValidationTest(unittest.TestCase):
     def test_alpha_plan_is_channel_bound(self) -> None:
         plan = release_plan()
         validate_plan(plan)
+        schema = json.loads((REPOSITORY_ROOT / "release-plans" / "schema.json").read_bytes())
+        Draft202012Validator.check_schema(schema)
+        Draft202012Validator(schema).validate(plan)
         candidate = candidate_manifest(plan)
         self.assertEqual("alpha-recovery-proof-1", candidate["candidate"])
         self.assertEqual(plan["components"], candidate["components"])
@@ -908,6 +917,29 @@ class ReleasePlanValidationTest(unittest.TestCase):
         completion = completion_manifest(plan, "a" * 40, preparation)
         self.assertEqual("alpha", completion["channel"])
         self.assertEqual("durable-workflow.release-candidate/v1", completion["schema"])
+
+        legacy = copy.deepcopy(plan)
+        legacy["schema"] = LEGACY_SCHEMA
+        with self.assertRaisesRegex(CandidateError, "release plan schema"):
+            validate_plan(legacy)
+        with self.assertRaisesRegex(CandidateError, "not an exact recorded historical contract"):
+            validate_recorded_plan(legacy)
+
+    def test_exact_historical_beta_one_plan_and_candidate_remain_paired(self) -> None:
+        plan = legacy_beta_one_release_plan()
+        candidate = legacy_beta_one_candidate_manifest()
+
+        self.assertEqual(
+            "e1fc6e20c9d2ded0b5e7ac4d6be75ba861d31fc4b2db651dc0272dca623f2c7f",
+            manifest_digest(plan),
+        )
+        validate_recorded_plan(plan)
+        self.assertEqual(candidate, candidate_manifest(plan))
+
+        unrecorded = copy.deepcopy(plan)
+        unrecorded["plan"] = "beta-1-replacement"
+        with self.assertRaisesRegex(CandidateError, "not an exact recorded historical contract"):
+            validate_recorded_plan(unrecorded)
 
     def test_alpha_plan_rejects_beta_authorization(self) -> None:
         plan = release_plan()

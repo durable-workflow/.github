@@ -46,6 +46,9 @@ CONTRACT_SCHEMA = "durable-workflow.beta-conformance.contract/v2"
 PLAN_SCHEMA = "durable-workflow.beta-conformance.plan/v2"
 EXPERIMENT_RESULT_SCHEMA = "durable-workflow.beta-conformance.experiment-result/v2"
 SUITE_RESULT_SCHEMA = "durable-workflow.beta-conformance.suite-result/v2"
+LEGACY_PLAN_SCHEMA = "durable-workflow.beta-conformance.plan/v1"
+LEGACY_EXPERIMENT_RESULT_SCHEMA = "durable-workflow.beta-conformance.experiment-result/v1"
+LEGACY_SUITE_RESULT_SCHEMA = "durable-workflow.beta-conformance.suite-result/v1"
 CONTROL_REPOSITORY = "durable-workflow/.github"
 CONFORMANCE_WORKFLOW_NAME = "Beta conformance"
 CONFORMANCE_WORKFLOW_PATH = ".github/workflows/beta-conformance.yml"
@@ -848,6 +851,27 @@ def prepare_plan(
 
 
 def validate_plan(plan: Any) -> None:
+    _validate_plan(plan, PLAN_SCHEMA, set(DISTRIBUTIONS), require_waterline_service=True)
+
+
+def validate_recorded_plan(plan: Any) -> None:
+    schema = plan.get("schema") if isinstance(plan, dict) else None
+    if schema == PLAN_SCHEMA:
+        validate_plan(plan)
+        return
+    if schema == LEGACY_PLAN_SCHEMA:
+        _validate_plan(plan, LEGACY_PLAN_SCHEMA, set(COMPONENTS), require_waterline_service=False)
+        return
+    raise ConformanceError("recorded beta conformance plan uses an unsupported schema")
+
+
+def _validate_plan(
+    plan: Any,
+    schema: str,
+    required_distributions: set[str],
+    *,
+    require_waterline_service: bool,
+) -> None:
     required = {
         "schema",
         "candidate",
@@ -857,10 +881,11 @@ def validate_plan(plan: Any) -> None:
         "runtime_dependencies",
         "runner",
         "server_runner",
-        "waterline_service_runner",
         "experiments",
     }
-    if not isinstance(plan, dict) or set(plan) != required or plan.get("schema") != PLAN_SCHEMA:
+    if require_waterline_service:
+        required.add("waterline_service_runner")
+    if not isinstance(plan, dict) or set(plan) != required or plan.get("schema") != schema:
         raise ConformanceError("beta conformance plan has an invalid top-level shape")
     components = plan["artifact_tuple"]
     if not isinstance(components, dict) or set(components) != set(COMPONENTS):
@@ -877,7 +902,12 @@ def validate_plan(plan: Any) -> None:
     sources = plan["source_identities"]
     if not isinstance(sources, dict) or sources != {name: item["commit"] for name, item in components.items()}:
         raise ConformanceError("beta conformance plan source identities do not match the artifact tuple")
-    validate_distribution_identities(plan["distribution_identities"], components)
+    if (
+        not isinstance(plan["distribution_identities"], dict)
+        or set(plan["distribution_identities"]) != required_distributions
+    ):
+        raise ConformanceError("distribution identities do not bind every required distribution")
+    validate_partial_distribution_identities(plan["distribution_identities"], components)
     validate_runtime_dependencies(plan["runtime_dependencies"])
     candidate = plan["candidate"]
     if (
@@ -911,17 +941,20 @@ def validate_plan(plan: Any) -> None:
         or server_runner["source_commit"] != components["server"]["commit"]
     ):
         raise ConformanceError("beta conformance plan has an invalid published server runner binding")
-    waterline_runner = plan["waterline_service_runner"]
-    waterline_digest = waterline_runner.get("manifest_digest") if isinstance(waterline_runner, dict) else None
-    if (
-        not isinstance(waterline_runner, dict)
-        or set(waterline_runner) != {"image", "manifest_digest", "source_commit"}
-        or not isinstance(waterline_digest, str)
-        or not OCI_DIGEST_PATTERN.fullmatch(waterline_digest)
-        or waterline_runner["image"] != f"docker.io/durableworkflow/waterline@{waterline_digest}"
-        or waterline_runner["source_commit"] != components["waterline"]["commit"]
-    ):
-        raise ConformanceError("beta conformance plan has an invalid published Waterline service runner binding")
+    if require_waterline_service:
+        waterline_runner = plan["waterline_service_runner"]
+        waterline_digest = waterline_runner.get("manifest_digest") if isinstance(waterline_runner, dict) else None
+        if (
+            not isinstance(waterline_runner, dict)
+            or set(waterline_runner) != {"image", "manifest_digest", "source_commit"}
+            or not isinstance(waterline_digest, str)
+            or not OCI_DIGEST_PATTERN.fullmatch(waterline_digest)
+            or waterline_runner["image"] != f"docker.io/durableworkflow/waterline@{waterline_digest}"
+            or waterline_runner["source_commit"] != components["waterline"]["commit"]
+        ):
+            raise ConformanceError(
+                "beta conformance plan has an invalid published Waterline service runner binding"
+            )
     if plan["experiments"] != list(EXPERIMENTS):
         raise ConformanceError("beta conformance plan does not select the complete experiment set")
 
@@ -2720,6 +2753,47 @@ def validate_retained_attempt_lifecycle(result: dict[str, Any], plan: dict[str, 
 
 
 def validate_experiment_result(result: Any, plan: dict[str, Any], contract: dict[str, Any] | None = None) -> None:
+    _validate_experiment_result(
+        result,
+        plan,
+        contract,
+        schema=EXPERIMENT_RESULT_SCHEMA,
+        allowed_distributions=set(DISTRIBUTIONS),
+        require_waterline_service=True,
+    )
+
+
+def validate_recorded_experiment_result(result: Any, plan: dict[str, Any]) -> None:
+    schema = result.get("schema") if isinstance(result, dict) else None
+    if schema == EXPERIMENT_RESULT_SCHEMA:
+        if plan.get("schema") != PLAN_SCHEMA:
+            raise ConformanceError("recorded experiment result does not match its plan schema")
+        validate_experiment_result(result, plan)
+        return
+    if schema == LEGACY_EXPERIMENT_RESULT_SCHEMA:
+        if plan.get("schema") != LEGACY_PLAN_SCHEMA:
+            raise ConformanceError("recorded experiment result does not match its plan schema")
+        _validate_experiment_result(
+            result,
+            plan,
+            None,
+            schema=LEGACY_EXPERIMENT_RESULT_SCHEMA,
+            allowed_distributions=set(COMPONENTS),
+            require_waterline_service=False,
+        )
+        return
+    raise ConformanceError("recorded experiment result uses an unsupported schema")
+
+
+def _validate_experiment_result(
+    result: Any,
+    plan: dict[str, Any],
+    contract: dict[str, Any] | None,
+    *,
+    schema: str,
+    allowed_distributions: set[str],
+    require_waterline_service: bool,
+) -> None:
     required = {
         "schema",
         "experiment",
@@ -2730,7 +2804,6 @@ def validate_experiment_result(result: Any, plan: dict[str, Any], contract: dict
         "runtime_dependencies",
         "runner",
         "server_runner",
-        "waterline_service_runner",
         "owning_contract",
         "required_clients",
         "required_distributions",
@@ -2743,11 +2816,13 @@ def validate_experiment_result(result: Any, plan: dict[str, Any], contract: dict
         "retry",
         "diagnostics",
     }
-    if not isinstance(result, dict) or set(result) != required or result.get("schema") != EXPERIMENT_RESULT_SCHEMA:
+    if require_waterline_service:
+        required.add("waterline_service_runner")
+    if not isinstance(result, dict) or set(result) != required or result.get("schema") != schema:
         raise ConformanceError("experiment result has an invalid top-level shape")
     if result["experiment"] not in EXPERIMENTS:
         raise ConformanceError("experiment result has an unknown experiment")
-    for field in (
+    binding_fields = [
         "candidate",
         "artifact_tuple",
         "source_identities",
@@ -2755,8 +2830,10 @@ def validate_experiment_result(result: Any, plan: dict[str, Any], contract: dict
         "runtime_dependencies",
         "runner",
         "server_runner",
-        "waterline_service_runner",
-    ):
+    ]
+    if require_waterline_service:
+        binding_fields.append("waterline_service_runner")
+    for field in binding_fields:
         if result[field] != plan[field]:
             raise ConformanceError(f"experiment result {result['experiment']} has a mismatched {field} binding")
     classification = result["classification"]
@@ -2773,13 +2850,18 @@ def validate_experiment_result(result: Any, plan: dict[str, Any], contract: dict
         not isinstance(required_distributions, list)
         or not required_distributions
         or len(required_distributions) != len(set(required_distributions))
-        or not set(required_distributions).issubset(DISTRIBUTIONS)
+        or not set(required_distributions).issubset(allowed_distributions)
         or not {"server", *clients}.issubset(required_distributions)
     ):
         raise ConformanceError("experiment result has invalid required distributions")
+    orchestration_source = (
+        "bound_control_plane_and_exact_candidate_images"
+        if require_waterline_service
+        else "exact_server_container"
+    )
     if result["source_policy"] != {
         "product_artifacts": "published_only",
-        "orchestration_source": "bound_control_plane_and_exact_candidate_images",
+        "orchestration_source": orchestration_source,
         "local_product_source_checkout_used": False,
     }:
         raise ConformanceError("experiment result does not prove the published-only source policy")
@@ -2906,20 +2988,22 @@ def validate_experiment_result(result: Any, plan: dict[str, Any], contract: dict
             }:
                 raise ConformanceError("experiment result has an invalid native summary")
             if (
-                len(native_summary["artifact_versions"]) > len(DISTRIBUTIONS)
-                or len(native_summary["executed_distribution_identities"]) > len(DISTRIBUTIONS)
+                len(native_summary["artifact_versions"]) > len(allowed_distributions)
+                or len(native_summary["executed_distribution_identities"]) > len(allowed_distributions)
                 or len(native_summary["scenario_statuses"]) > 128
             ):
                 raise ConformanceError("experiment result has an unbounded native summary")
             summary_versions = native_summary["artifact_versions"]
             if (
                 not isinstance(summary_versions, dict)
-                or not set(summary_versions).issubset(DISTRIBUTIONS)
+                or not set(summary_versions).issubset(allowed_distributions)
                 or any(not isinstance(version, str) or len(version) > 128 for version in summary_versions.values())
             ):
                 raise ConformanceError("experiment result has invalid native artifact versions")
             summary_identities = native_summary["executed_distribution_identities"]
-            if not isinstance(summary_identities, dict) or not set(summary_identities).issubset(DISTRIBUTIONS):
+            if not isinstance(summary_identities, dict) or not set(summary_identities).issubset(
+                allowed_distributions
+            ):
                 raise ConformanceError("experiment result retains an unknown native distribution identity")
             for name, identity in summary_identities.items():
                 identity_error = native_distribution_identity_structure_error(name, identity)

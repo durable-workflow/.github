@@ -37,8 +37,31 @@ if __package__ in {None, ""}:
 
 from scripts.packagist_metadata import PackagistMetadataError, exact_package_version
 
-SCHEMA = "durable-workflow.beta-candidate/v1"
+SCHEMA = "durable-workflow.beta-candidate/v2"
+LEGACY_SCHEMA = "durable-workflow.beta-candidate/v1"
 VERIFICATION_SCHEMA = "durable-workflow.beta-candidate-verification/v2"
+LEGACY_VERIFICATION_SCHEMA = "durable-workflow.beta-candidate-verification/v1"
+LEGACY_MANIFEST_DIGESTS = frozenset(
+    {
+        "1104bbb8d40c1acd8062a15b7fd385966bdb4428a533ef5d947820944e85d294",
+        "26084d2e8f12faeebb7b09bf3de41e1dd65f8afdaa5d38f786fcbcd1bf770f15",
+        "2fbeda4e3368edf7cda7bcc749359d4bcdf7fcccca289e32316782613a84b4a6",
+        "43243594ba34ff220365d9c514e6a54b93789788676ca8b1d678b679afa6c1c5",
+        "43f535585fc225a2d2cfcf347ec45c78daae1ff2d244e422d8952347d1ef4a95",
+        "47fdba440315d2f05b16c66b5ef37139db4b306fbf8e168c5e15a27a26592742",
+        "561c4544a8b9305056f863f20f84791921952f1dbcff97929805a5dac01027fb",
+        "5e083e07e6abecbb0547466812f866a3650039b210dbe1d486ca98528479cd29",
+        "5fce05154eb66ee1551bad7eadda0911ed867ea3cedd8f37d091df0649bbc5db",
+        "80282957f3a417af6025b4ad4abf461b03388d799ee570de128f25a676909f70",
+        "81f3346f59f414b29fc88efc993dd3c3d5ee759a819d9f82720118981776f4f3",
+        "a4b72535496346aa47bf0a8ebedd84308231776c9df015dd913095163eda3ce2",
+        "c6821caad478ee255b9e8cb70638d96ec46a70bd5afc54636861fe71840a6cbe",
+        "d70e45ce40c0959f38345abb1b6e53e2da8026832a918a640fe69d48b534f1e3",
+        "dd5e8d3bb248c2b1b292b5badf29376cc5c5b6fa73dedfb343e33987a2b6d7a2",
+        "ec5a4c032dfcaa73878b4126af4e2b2bb90c09fe46def19314d66be441b16174",
+        "ffee151da2e3835bf32bc2ef05dc5d0f3261e45c13da0ef6e2d6e6f19c1ca50f",
+    }
+)
 CANDIDATE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
 VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
@@ -149,13 +172,24 @@ def load_manifest(path: Path) -> dict[str, Any]:
 
 
 def validate_manifest(value: Any) -> None:
+    _validate_manifest(value, {SCHEMA})
+
+
+def validate_recorded_manifest(value: Any) -> None:
+    """Validate a current manifest or an exact pre-service manifest."""
+    _validate_manifest(value, {LEGACY_SCHEMA, SCHEMA})
+    if value["schema"] == LEGACY_SCHEMA and manifest_digest(value) not in LEGACY_MANIFEST_DIGESTS:
+        raise CandidateError("legacy candidate manifest is not an exact recorded historical contract")
+
+
+def _validate_manifest(value: Any, schemas: set[str]) -> None:
     if not isinstance(value, dict):
         raise CandidateError("candidate manifest must be a JSON object")
     expected_top = {"schema", "candidate", "components"}
     if set(value) != expected_top:
         raise CandidateError(f"candidate manifest keys must be exactly {sorted(expected_top)}")
-    if value["schema"] != SCHEMA:
-        raise CandidateError(f"candidate manifest schema must be {SCHEMA}")
+    if value["schema"] not in schemas:
+        raise CandidateError(f"candidate manifest schema must be one of {sorted(schemas)}")
     candidate = value["candidate"]
     if not isinstance(candidate, str) or not CANDIDATE_PATTERN.fullmatch(candidate):
         raise CandidateError("candidate must be 1-63 lowercase letters, digits, dots, underscores, or hyphens")
@@ -427,13 +461,24 @@ def load_verification(path: Path, manifest: dict[str, Any]) -> dict[str, Any]:
 
 
 def validate_verification(verification: Any, manifest: dict[str, Any]) -> None:
+    _validate_verification(verification, manifest, VERIFICATION_SCHEMA)
+
+
+def validate_recorded_verification(verification: Any, manifest: dict[str, Any]) -> None:
+    """Validate immutable evidence under the verification schema that produced it."""
+    validate_recorded_manifest(manifest)
+    expected_schema = LEGACY_VERIFICATION_SCHEMA if manifest["schema"] == LEGACY_SCHEMA else VERIFICATION_SCHEMA
+    _validate_verification(verification, manifest, expected_schema)
+
+
+def _validate_verification(verification: Any, manifest: dict[str, Any], schema: str) -> None:
     if not isinstance(verification, dict):
         raise CandidateError("verification result must be a JSON object")
     expected_top = {"schema", "candidate", "manifest_sha256", "verified_at", "outcome", "components"}
     if set(verification) != expected_top:
         raise CandidateError(f"verification result keys must be exactly {sorted(expected_top)}")
     if (
-        verification["schema"] != VERIFICATION_SCHEMA
+        verification["schema"] != schema
         or verification["candidate"] != manifest["candidate"]
         or verification["manifest_sha256"] != manifest_digest(manifest)
         or verification["outcome"] != "verified"
@@ -452,9 +497,10 @@ def validate_verification(verification: Any, manifest: dict[str, Any]) -> None:
         raise CandidateError("verification result does not cover every candidate component")
     for name, identity in manifest["components"].items():
         result = components[name]
+        dual_waterline = name == "waterline" and schema == VERIFICATION_SCHEMA
         expected_result = (
             {"version", "commit", "source", "distributions", "outcome"}
-            if name == "waterline"
+            if dual_waterline
             else {"version", "commit", "source", "distribution", "outcome"}
         )
         if not isinstance(result, dict) or set(result) != expected_result or result["outcome"] != "verified":
@@ -471,7 +517,7 @@ def validate_verification(verification: Any, manifest: dict[str, Any]) -> None:
             "crates.io": _validate_crate_evidence,
             "oci": _validate_oci_evidence,
         }
-        if name == "waterline":
+        if dual_waterline:
             distributions = _require_exact_keys(
                 result["distributions"],
                 {"embedded", "service"},

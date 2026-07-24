@@ -40,7 +40,7 @@ class ReleaseSourcePreparationTest(unittest.TestCase):
 
     def test_beta_plan_must_match_the_exact_prepared_sources(self) -> None:
         plan = {
-            "schema": "durable-workflow.release-plan/v1",
+            "schema": "durable-workflow.release-plan/v2",
             "plan": self.preparation["plan"],
             "channel": "beta",
             "foundation": {"tag": FOUNDATION_TAG, "commit": FOUNDATION_COMMIT},

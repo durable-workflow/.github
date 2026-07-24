@@ -87,7 +87,7 @@ def request() -> dict[str, object]:
 def candidate_manifest() -> dict[str, object]:
     intended = authorization()["components"]
     return {
-        "schema": "durable-workflow.beta-candidate/v1",
+        "schema": "durable-workflow.beta-candidate/v2",
         "candidate": "qualified-alpha",
         "components": {
             name: {

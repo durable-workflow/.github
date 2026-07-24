@@ -45,7 +45,9 @@ from scripts.release_plan import (
     EXPECTED_DEFAULT_BRANCHES,
     read_public_record,
     resolve_tag,
-    validate_plan,
+)
+from scripts.release_plan import (
+    validate_recorded_plan as validate_plan,
 )
 
 REQUEST_SCHEMA = "durable-workflow.beta-authorization-request/v1"

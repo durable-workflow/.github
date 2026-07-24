@@ -33,22 +33,25 @@ from scripts.beta_candidate import (
     read_record_file,
     resolve_github_tag,
     run_git,
-    validate_verification,
+    validate_recorded_verification,
     write_github_output,
 )
 from scripts.beta_conformance import (
     EXPERIMENTS as CONFORMANCE_EXPERIMENTS,
 )
 from scripts.beta_conformance import (
+    LEGACY_PLAN_SCHEMA,
+    LEGACY_SUITE_RESULT_SCHEMA,
+    ConformanceError,
+    validate_public_evidence_strings,
+    validate_recorded_experiment_result,
+    validate_recorded_plan,
+)
+from scripts.beta_conformance import (
     PLAN_SCHEMA as CONFORMANCE_PLAN_SCHEMA,
 )
 from scripts.beta_conformance import (
-    ConformanceError,
-    validate_experiment_result,
-    validate_public_evidence_strings,
-)
-from scripts.beta_conformance import (
-    validate_plan as validate_conformance_plan,
+    SUITE_RESULT_SCHEMA as CONFORMANCE_SUITE_RESULT_SCHEMA,
 )
 from scripts.release_plan import (
     CONTINUITY_RESOLUTION_SCHEMA,
@@ -63,6 +66,15 @@ from scripts.release_plan import (
     resolve_tag,
     validate_continuity_resolution_authority,
     validate_plan,
+)
+from scripts.release_plan import (
+    LEGACY_SCHEMA as LEGACY_RELEASE_PLAN_SCHEMA,
+)
+from scripts.release_plan import (
+    SCHEMA as RELEASE_PLAN_SCHEMA,
+)
+from scripts.release_plan import (
+    validate_recorded_plan as validate_recorded_release_plan,
 )
 
 SCHEMA = "durable-workflow.beta-continuity.config/v1"
@@ -675,7 +687,7 @@ def build_plan(
     if blockers:
         raise PlanBlocked(blockers)
     plan = {
-        "schema": "durable-workflow.release-plan/v1",
+        "schema": RELEASE_PLAN_SCHEMA,
         "plan": selection["plan"],
         "channel": config["channel"],
         "foundation": {"tag": FOUNDATION_TAG, "commit": FOUNDATION_COMMIT},
@@ -712,7 +724,7 @@ def superseded_interruption(config: dict[str, Any], client: PublicClient) -> dic
         raise ContinuityError(f"superseded interruption {tag} is not retained")
     evidence = read_public_json_file(client, commit, "continuity-evidence.json")
     plan = read_public_json_file(client, commit, "release-plan.json")
-    validate_plan(plan)
+    validate_recorded_release_plan(plan)
     if evidence.get("phase") != "interrupted" or phase_tag(plan, "interrupted") != tag:
         raise ContinuityError(f"superseded interruption {tag} has invalid diagnostic evidence")
     return {
@@ -737,7 +749,7 @@ def accepted_plan(config: dict[str, Any], client: PublicClient) -> dict[str, Any
     if not isinstance(commit, str) or not COMMIT_PATTERN.fullmatch(commit):
         raise ContinuityError("accepted continuity phase does not resolve to a commit")
     plan = read_public_json_file(client, commit, "release-plan.json")
-    validate_plan(plan)
+    validate_recorded_release_plan(plan)
     return plan
 
 
@@ -1142,7 +1154,7 @@ def accepted_plan_authority(client: PublicClient, plan: dict[str, Any]) -> dict[
     if commit is None:
         return None
     recorded_plan = read_public_json_file(client, commit, "release-plan.json")
-    validate_plan(recorded_plan)
+    validate_recorded_release_plan(recorded_plan)
     if canonical_json(recorded_plan) != canonical_json(plan):
         raise ContinuityError(f"accepted continuity record {tag} differs from the recorded release plan")
     acceptance = accepted_publication_state(client, plan, commit)
@@ -1221,7 +1233,7 @@ def validate_interrupted_evidence(
 ) -> dict[str, Any]:
     evidence = read_public_json_file(client, interrupted_commit, "continuity-evidence.json")
     recorded_plan = read_public_json_file(client, interrupted_commit, "release-plan.json")
-    validate_plan(recorded_plan)
+    validate_recorded_release_plan(recorded_plan)
     triggers = evidence.get("interruption_triggers")
     accepted_phase = evidence.get("accepted_phase")
     if (
@@ -1410,7 +1422,7 @@ def ensure_conformance_execution_or_retention(
 
 def dispatch_accepted_continuity(plan_path: Path, output: Path | None) -> None:
     plan = load_json(plan_path, "release plan")
-    validate_plan(plan)
+    validate_recorded_release_plan(plan)
     token = os.environ.get("GITHUB_TOKEN")
     client = PublicClient(token)
     acceptance = accepted_plan_authority(client, plan)
@@ -1556,6 +1568,8 @@ def validated_conformance_release(
     candidate: dict[str, Any],
     release: dict[str, Any],
     rank: tuple[int, int],
+    *,
+    allow_legacy: bool = False,
 ) -> dict[str, Any] | None:
     tag = release.get("tag_name")
     release_url = release.get("html_url")
@@ -1585,11 +1599,12 @@ def validated_conformance_release(
         "run_attempt": rank[1],
         "evidence_tag": tag,
     }
-    if (
-        not isinstance(suite, dict)
-        or suite.get("schema") != "durable-workflow.beta-conformance.suite-result/v2"
-        or suite.get("github_run") != expected_run
-    ):
+    suite_schema = suite.get("schema") if isinstance(suite, dict) else None
+    if suite_schema == LEGACY_SUITE_RESULT_SCHEMA and not allow_legacy:
+        return None
+    if suite_schema not in {LEGACY_SUITE_RESULT_SCHEMA, CONFORMANCE_SUITE_RESULT_SCHEMA}:
+        return None
+    if suite.get("github_run") != expected_run:
         return None
     if (
         suite.get("outcome") != "pass"
@@ -1598,8 +1613,9 @@ def validated_conformance_release(
         or suite.get("artifact_tuple") != plan["components"]
     ):
         return None
+    legacy = suite_schema == LEGACY_SUITE_RESULT_SCHEMA
     conformance_plan = {
-        "schema": CONFORMANCE_PLAN_SCHEMA,
+        "schema": LEGACY_PLAN_SCHEMA if legacy else CONFORMANCE_PLAN_SCHEMA,
         "candidate": suite.get("candidate"),
         "artifact_tuple": suite.get("artifact_tuple"),
         "source_identities": suite.get("source_identities"),
@@ -1607,11 +1623,12 @@ def validated_conformance_release(
         "runtime_dependencies": suite.get("runtime_dependencies"),
         "runner": suite.get("runner"),
         "server_runner": suite.get("server_runner"),
-        "waterline_service_runner": suite.get("waterline_service_runner"),
         "experiments": list(CONFORMANCE_EXPERIMENTS),
     }
+    if not legacy:
+        conformance_plan["waterline_service_runner"] = suite.get("waterline_service_runner")
     try:
-        validate_conformance_plan(conformance_plan)
+        validate_recorded_plan(conformance_plan)
         summaries = suite.get("experiments")
         if not isinstance(summaries, dict) or set(summaries) != set(CONFORMANCE_EXPERIMENTS):
             return None
@@ -1620,7 +1637,7 @@ def validated_conformance_release(
             if not isinstance(experiment_asset, dict):
                 raise ConformanceError("durable conformance release is missing an experiment asset")
             result, payload = validated_conformance_asset(client, experiment_asset)
-            validate_experiment_result(result, conformance_plan)
+            validate_recorded_experiment_result(result, conformance_plan)
             summary = summaries[experiment]
             if (
                 not isinstance(result, dict)
@@ -1668,8 +1685,15 @@ def conformance_evidence(
             None,
         )
         if preferred_release is not None:
-            evidence = validated_conformance_release(client, plan, candidate, preferred_release, preferred_rank)
-            if evidence is not None:
+            evidence = validated_conformance_release(
+                client,
+                plan,
+                candidate,
+                preferred_release,
+                preferred_rank,
+                allow_legacy=plan.get("schema") == LEGACY_RELEASE_PLAN_SCHEMA,
+            )
+            if evidence == preferred:
                 return evidence
         ranked_releases = [(rank, release) for rank, release in ranked_releases if rank > preferred_rank]
 
@@ -1755,7 +1779,7 @@ def exact_completion_authority(
         raise ContinuityError("completed continuity plan has no immutable plan artifact")
     plan_commit = public_plan_record["commit"]
     recorded_plan = read_public_json_file(client, plan_commit, "release-plan.json")
-    validate_plan(recorded_plan)
+    validate_recorded_release_plan(recorded_plan)
     if canonical_json(recorded_plan) != canonical_json(plan):
         raise ContinuityError("completed continuity plan artifact differs from the exact accepted plan")
     plan_record_value = {"tag": plan_tag_value, "commit": plan_commit, "sha256": plan_digest}
@@ -1815,7 +1839,7 @@ def exact_completion_authority(
     ):
         raise ContinuityError("public completion verification differs from the exact plan")
     try:
-        validate_verification(public_verification, candidate_manifest(plan))
+        validate_recorded_verification(public_verification, candidate_manifest(plan))
     except CandidateError as error:
         raise ContinuityError(f"public completion verification does not prove exact sources: {error}") from error
 
@@ -2276,7 +2300,7 @@ def advance_command(
 ) -> None:
     config = load_config(config_path)
     plan = load_json(plan_path, "release plan")
-    validate_plan(plan)
+    validate_recorded_release_plan(plan)
     github_token = os.environ.get("GITHUB_TOKEN")
     authority_token = os.environ.get("BETA_PRODUCT_WORK_TOKEN")
     client = PublicClient(github_token)

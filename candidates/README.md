@@ -47,3 +47,8 @@ Waterline remains one manifest component. Its verification result has a
 required `distributions` object with `embedded` Composer and `service` OCI
 records. Both records are checked against the component's one version, source
 tag, and full commit; either missing record makes the candidate unverifiable.
+
+Candidate manifests using `durable-workflow.beta-candidate/v2` require that
+dual-distribution verification contract. The verifier recognizes v1 evidence
+only for the exact immutable candidate manifests recorded before the service
+image became a required Waterline distribution.

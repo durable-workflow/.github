@@ -46,6 +46,7 @@ from scripts.component_release_recovery import (
     verify_recovery_workflow_source,
 )
 from scripts.recovery_workflow_authority import normalized_source_sha256
+from tests.verification_fixture import legacy_beta_one_release_plan
 
 
 def github_http_error(status: int, body: bytes = b"error", **headers: str) -> urllib.error.HTTPError:
@@ -1221,6 +1222,95 @@ class ComponentRecoveryContractTest(unittest.TestCase):
         ):
             client.json("https://api.github.com/repos/durable-workflow/.github/releases/tags/missing")
         self.assertEqual(1, open_url.call_count)
+
+    def test_explicit_discovery_accepts_only_an_exact_historical_v1_plan(self) -> None:
+        historical = legacy_beta_one_release_plan()
+        historical_tag = f"release-plan/{historical['plan']}"
+        record_commit = "a" * 40
+        client = mock.Mock()
+        client.json.return_value = {"tag_name": historical_tag}
+
+        with (
+            mock.patch("scripts.component_release_recovery.resolve_tag", return_value=record_commit),
+            mock.patch(
+                "scripts.component_release_recovery.read_record",
+                side_effect=[historical, NotFound("no historical preparation", "plan-discovery")],
+            ),
+            mock.patch("scripts.component_release_recovery.validate_release_mirrors"),
+            mock.patch("scripts.component_release_recovery.verify_component"),
+        ):
+            selected = discover_plan(client, historical_tag, "waterline")
+
+        self.assertEqual(historical_tag, selected[0])
+        self.assertEqual(historical, selected[2])
+
+        unrecorded = {**historical, "plan": "beta-1-unrecorded"}
+        with (
+            mock.patch("scripts.component_release_recovery.resolve_tag", return_value=record_commit),
+            mock.patch("scripts.component_release_recovery.read_record", return_value=unrecorded),
+            self.assertRaisesRegex(RecoveryError, "not an exact recorded historical contract"),
+        ):
+            discover_plan(client, f"release-plan/{unrecorded['plan']}", "waterline")
+
+    def test_implicit_discovery_accepts_only_an_exact_historical_v1_plan(self) -> None:
+        historical = legacy_beta_one_release_plan()
+        historical_tag = f"release-plan/{historical['plan']}"
+        record_commit = "a" * 40
+        recorded_at = dt.datetime(2026, 7, 9, tzinfo=dt.UTC)
+        client = mock.Mock()
+        client.json.return_value = {"tag_name": historical_tag}
+
+        def read_historical_record(
+            _client: mock.Mock,
+            _tag: str,
+            _commit: str,
+            filename: str,
+        ) -> dict[str, object]:
+            if filename == "release-plan.json":
+                return historical
+            raise NotFound("no historical preparation", "plan-discovery")
+
+        with (
+            mock.patch("scripts.component_release_recovery.list_release_plan_tags", return_value=[historical_tag]),
+            mock.patch("scripts.component_release_recovery.resolve_tag", return_value=record_commit),
+            mock.patch("scripts.component_release_recovery.read_record", side_effect=read_historical_record),
+            mock.patch(
+                "scripts.component_release_recovery.direct_plan_lifecycle",
+                return_value=("completed", None),
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.immutable_plan_recorded_at",
+                return_value=recorded_at,
+            ),
+            mock.patch("scripts.component_release_recovery.accepted_continuity_supersession", return_value=None),
+            mock.patch("scripts.component_release_recovery.validate_release_mirrors"),
+            mock.patch("scripts.component_release_recovery.verify_component"),
+        ):
+            selected = discover_plan(client, None, "waterline")
+
+        self.assertEqual(historical_tag, selected[0])
+        self.assertEqual(historical, selected[2])
+
+        unrecorded = {**historical, "plan": "beta-1-unrecorded"}
+
+        def read_unrecorded_plan(
+            _client: mock.Mock,
+            _tag: str,
+            _commit: str,
+            _filename: str,
+        ) -> dict[str, object]:
+            return unrecorded
+
+        with (
+            mock.patch(
+                "scripts.component_release_recovery.list_release_plan_tags",
+                return_value=[f"release-plan/{unrecorded['plan']}"],
+            ),
+            mock.patch("scripts.component_release_recovery.resolve_tag", return_value=record_commit),
+            mock.patch("scripts.component_release_recovery.read_record", side_effect=read_unrecorded_plan),
+            self.assertRaisesRegex(RecoveryError, "not an exact recorded historical contract"),
+        ):
+            discover_plan(client, None, "waterline")
 
     def test_discovery_rejects_missing_preparation_for_an_incomplete_release(self) -> None:
         candidate = plan()
