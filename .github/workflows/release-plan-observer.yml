@@ -1,6 +1,6 @@
 name: Release plan observer
 
-run-name: Observe ${{ inputs.plan_tag || 'latest public release plan' }}
+run-name: Observe ${{ inputs.plan_tag || 'current actionable release plan' }}
 
 on:
   schedule:
@@ -42,6 +42,7 @@ jobs:
       handoff-attempt: ${{ steps.handoff.outputs.producer_attempt }}
       source-run-attempt: ${{ github.run_attempt }}
       source-run-id: ${{ github.run_id }}
+      plan-available: ${{ steps.plan.outputs.available }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
@@ -63,11 +64,18 @@ jobs:
             --github-output "$GITHUB_OUTPUT")
           if [ -n "$REQUESTED_PLAN_TAG" ]; then
             arguments+=(--tag "$REQUESTED_PLAN_TAG")
+          else
+            arguments+=(--allow-empty)
           fi
           python scripts/release_plan.py discover "${arguments[@]}"
 
+      - name: Report truthful scheduled no-op
+        if: steps.plan.outputs.available == 'false'
+        run: echo "No current actionable release plan is available."
+
       - name: Verify all declared source and distribution identities
         id: verification
+        if: steps.plan.outputs.available == 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -78,7 +86,7 @@ jobs:
 
       - name: Bind observation evidence to this producing attempt
         id: handoff
-        if: always()
+        if: ${{ always() && steps.plan.outputs.available == 'true' }}
         continue-on-error: true
         run: |
           python scripts/handoff_recovery.py create release-plan-observation handoff.json \
@@ -91,7 +99,7 @@ jobs:
             --github-output "$GITHUB_OUTPUT"
 
       - name: Pass only observation evidence to the recorder
-        if: always()
+        if: ${{ always() && steps.plan.outputs.available == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: release-plan-observation-${{ github.run_id }}-${{ github.run_attempt }}
@@ -106,10 +114,16 @@ jobs:
           retention-days: 30
 
       - name: Package the privileged recorder handoff as one immutable file
+        env:
+          PLAN_AVAILABLE: ${{ steps.plan.outputs.available }}
         run: |
-          tar -cf observation-recorder-handoff.tar \
-            release-plan.json release-preparation.json candidate-verifier-input.json \
-            release-state.json verification.json handoff.json
+          if [ "$PLAN_AVAILABLE" = true ]; then
+            tar -cf observation-recorder-handoff.tar \
+              release-plan.json release-preparation.json candidate-verifier-input.json \
+              release-state.json verification.json handoff.json
+          else
+            tar -cf observation-recorder-handoff.tar --files-from /dev/null
+          fi
 
       - name: Bind the privileged recorder handoff identity and digest
         id: privileged-handoff
@@ -122,7 +136,7 @@ jobs:
   record:
     name: Record observation from a fresh checkout
     needs: observe
-    if: github.ref == 'refs/heads/main'
+    if: needs.observe.outputs.plan-available == 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

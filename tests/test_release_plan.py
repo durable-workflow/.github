@@ -57,6 +57,9 @@ from scripts.release_plan import (
     validate_supersession_handoff,
     validate_supersession_record,
 )
+from scripts.release_plan import (
+    main as release_plan_main,
+)
 from tests.verification_fixture import (
     candidate_verification,
     legacy_beta_one_candidate_manifest,
@@ -489,6 +492,35 @@ class ReleasePlanEntryPointTest(unittest.TestCase):
         self.assertEqual(prepared, selected_preparation)
         select.assert_called_once()
         self.assertNotIn("/releases?per_page=", client.json.call_args.args[0])
+
+    def test_scheduled_discovery_can_report_a_truthful_no_op(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            destination = root / "release-plan.json"
+            preparation = root / "release-preparation.json"
+            github_output = root / "github-output"
+            arguments = [
+                "release_plan.py",
+                "discover",
+                str(destination),
+                "--preparation",
+                str(preparation),
+                "--allow-empty",
+                "--github-output",
+                str(github_output),
+            ]
+            with (
+                mock.patch.object(sys, "argv", arguments),
+                mock.patch(
+                    "scripts.release_plan.discover_plan",
+                    side_effect=CandidateError("no public release plan is available"),
+                ),
+            ):
+                self.assertEqual(0, release_plan_main())
+
+            self.assertEqual("available=false\n", github_output.read_text())
+            self.assertFalse(destination.exists())
+            self.assertFalse(preparation.exists())
 
     def test_supersession_components_are_canonicalized_in_release_order(self) -> None:
         self.assertEqual(

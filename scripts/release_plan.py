@@ -3335,6 +3335,7 @@ def main() -> int:
     discover.add_argument("destination", type=Path)
     discover.add_argument("--preparation", required=True, type=Path)
     discover.add_argument("--tag")
+    discover.add_argument("--allow-empty", action="store_true")
     discover.add_argument("--github-output", type=Path)
 
     observe = subparsers.add_parser("observe")
@@ -3443,11 +3444,25 @@ def main() -> int:
                 expected_conflict_components=args.expected_conflict_components,
             )
         elif args.command == "discover":
-            tag, plan, preparation = discover_plan(PublicClient(token), args.tag)
+            try:
+                discovered = discover_plan(PublicClient(token), args.tag)
+            except CandidateError as error:
+                if (
+                    not args.allow_empty
+                    or args.tag is not None
+                    or str(error) != "no public release plan is available"
+                ):
+                    raise
+                values = {"available": "false"}
+                write_github_output(args.github_output, values)
+                print(json.dumps(values, sort_keys=True))
+                return 0
+            tag, plan, preparation = discovered
             args.destination.write_bytes(canonical_json(plan))
             if preparation is not None:
                 args.preparation.write_bytes(canonical_json(preparation))
             values = {
+                "available": "true",
                 "tag": tag,
                 "plan": plan["plan"],
                 "channel": plan["channel"],

@@ -411,6 +411,37 @@ class CliReleaseAuthorityTest(unittest.TestCase):
         self.assertLess(record["steps"].index(rediscovery), record["steps"].index(handoff))
         self.assertLess(record["steps"].index(handoff), record["steps"].index(upload))
 
+    def test_scheduled_observer_stops_cleanly_without_an_actionable_plan(self) -> None:
+        workflow = yaml.safe_load(
+            (REPOSITORY_ROOT / ".github/workflows/release-plan-observer.yml").read_text(encoding="utf-8")
+        )
+        observe = workflow["jobs"]["observe"]
+        record = workflow["jobs"]["record"]
+        discover = next(step for step in observe["steps"] if step.get("id") == "plan")
+        no_op = next(
+            step
+            for step in observe["steps"]
+            if step.get("name") == "Report truthful scheduled no-op"
+        )
+        package = next(
+            step
+            for step in observe["steps"]
+            if step.get("name") == "Package the privileged recorder handoff as one immutable file"
+        )
+        upload = next(
+            step
+            for step in observe["steps"]
+            if step.get("id") == "privileged-handoff"
+        )
+
+        self.assertIn("arguments+=(--allow-empty)", discover["run"])
+        self.assertEqual("steps.plan.outputs.available == 'false'", no_op["if"])
+        self.assertEqual("${{ steps.plan.outputs.available }}", package["env"]["PLAN_AVAILABLE"])
+        self.assertIn('if [ "$PLAN_AVAILABLE" = true ]; then', package["run"])
+        self.assertIn("--files-from /dev/null", package["run"])
+        self.assertNotIn("if", upload)
+        self.assertIn("needs.observe.outputs.plan-available == 'true'", record["if"])
+
     def test_supersession_writer_binds_mutation_to_dispatch_authority(self) -> None:
         workflow = yaml.safe_load(
             (REPOSITORY_ROOT / ".github/workflows/release-plan-supersession.yml").read_text(encoding="utf-8")

@@ -27,6 +27,7 @@ from scripts.component_release_recovery import (
     PublicInfrastructureError,
     RecoveryError,
     canonical_json,
+    current_product_train_authorities,
     direct_plan_lifecycle,
     discover_plan,
     list_release_plan_tags,
@@ -354,7 +355,7 @@ class ComponentRecoveryContractTest(unittest.TestCase):
             "git/matching-refs/tags/release-plan/"
         )
 
-    def test_scheduled_discovery_uses_immutable_plan_time_not_updated_release_order(self) -> None:
+    def test_scheduled_discovery_ignores_updated_older_plan_after_current_train_completed(self) -> None:
         older = plan()
         older["plan"] = "older-alpha"
         newer = plan("beta")
@@ -388,9 +389,9 @@ class ComponentRecoveryContractTest(unittest.TestCase):
             mock.patch(
                 "scripts.component_release_recovery.direct_plan_lifecycle",
                 side_effect=[
+                    ("actionable", None),
                     ("completed", None),
-                    ("completed", None),
-                    ("completed", None),
+                    ("actionable", None),
                     ("completed", None),
                 ],
             ),
@@ -402,11 +403,76 @@ class ComponentRecoveryContractTest(unittest.TestCase):
                 "scripts.component_release_recovery.accepted_continuity_supersession",
                 return_value=None,
             ),
+            self.assertRaisesRegex(RecoveryError, "no public release plan is available"),
         ):
-            selected = select_implicit_plan_authority(mock.Mock())
+            select_implicit_plan_authority(mock.Mock())
 
-        self.assertEqual(tags[1], selected["tag"])
-        self.assertEqual("completed", selected["lifecycle"])
+    def test_scheduled_discovery_rejects_incomparable_current_product_trains(self) -> None:
+        first = plan("beta")
+        first["plan"] = "workflow-ahead"
+        second = json.loads(json.dumps(first))
+        second["plan"] = "waterline-ahead"
+        first["components"]["workflow"]["version"] = "2.0.0-beta.11"
+        second["components"]["waterline"]["version"] = "2.0.0-beta.12"
+        authorities = [
+            {"tag": f"release-plan/{first['plan']}", "plan": first},
+            {"tag": f"release-plan/{second['plan']}", "plan": second},
+        ]
+
+        with (
+            mock.patch(
+                "scripts.component_release_recovery.classify_plan_authorities",
+                return_value=authorities,
+            ),
+            self.assertRaisesRegex(RecoveryError, "conflicting current product trains"),
+        ):
+            select_implicit_plan_authority(mock.Mock())
+
+    def test_scheduled_discovery_rejects_equal_versions_with_different_commits(self) -> None:
+        first = plan("beta")
+        first["plan"] = "first-beta-authority"
+        second = json.loads(json.dumps(first))
+        second["plan"] = "conflicting-beta-authority"
+        second["components"]["workflow"]["commit"] = "f" * 40
+        authorities = [
+            {"tag": f"release-plan/{first['plan']}", "plan": first},
+            {"tag": f"release-plan/{second['plan']}", "plan": second},
+        ]
+
+        with self.assertRaisesRegex(RecoveryError, "conflicting current product trains"):
+            current_product_train_authorities(authorities)
+
+    def test_scheduled_discovery_resolves_validated_source_manifest_successor(self) -> None:
+        predecessor = plan("beta")
+        predecessor["plan"] = "source-manifest-predecessor"
+        successor = json.loads(json.dumps(predecessor))
+        successor["plan"] = "source-manifest-successor"
+        successor["components"]["workflow"]["commit"] = "f" * 40
+        successor_tag = f"release-plan/{successor['plan']}"
+        successor_authority = {
+            "tag": successor_tag,
+            "plan": successor,
+            "lifecycle": "actionable",
+            "successor": None,
+        }
+        authorities = [
+            {
+                "tag": f"release-plan/{predecessor['plan']}",
+                "plan": predecessor,
+                "lifecycle": "superseded",
+                "successor": {
+                    "tag": successor_tag,
+                    "sha256": manifest_digest(successor),
+                    "plan": successor,
+                },
+            },
+            successor_authority,
+        ]
+
+        self.assertEqual(
+            [successor_authority],
+            current_product_train_authorities(authorities),
+        )
 
     def test_scheduled_discovery_retries_concurrent_terminal_supersession(self) -> None:
         older = plan()
@@ -759,7 +825,7 @@ class ComponentRecoveryContractTest(unittest.TestCase):
         self.assertFalse(any(call.args[0].endswith("/approvals") for call in client.json.call_args_list))
 
     def test_scheduled_discovery_fails_closed_on_ambiguous_or_incomplete_history(self) -> None:
-        first = plan()
+        first = plan("beta")
         first["plan"] = "first"
         second = plan("beta")
         second["plan"] = "second"
@@ -1252,7 +1318,7 @@ class ComponentRecoveryContractTest(unittest.TestCase):
         ):
             discover_plan(client, f"release-plan/{unrecorded['plan']}", "waterline")
 
-    def test_implicit_discovery_accepts_only_an_exact_historical_v1_plan(self) -> None:
+    def test_implicit_discovery_does_not_reverify_a_completed_historical_v1_plan(self) -> None:
         historical = legacy_beta_one_release_plan()
         historical_tag = f"release-plan/{historical['plan']}"
         record_commit = "a" * 40
@@ -1285,11 +1351,9 @@ class ComponentRecoveryContractTest(unittest.TestCase):
             mock.patch("scripts.component_release_recovery.accepted_continuity_supersession", return_value=None),
             mock.patch("scripts.component_release_recovery.validate_release_mirrors"),
             mock.patch("scripts.component_release_recovery.verify_component"),
+            self.assertRaisesRegex(RecoveryError, "no public release plan is available"),
         ):
-            selected = discover_plan(client, None, "waterline")
-
-        self.assertEqual(historical_tag, selected[0])
-        self.assertEqual(historical, selected[2])
+            discover_plan(client, None, "waterline")
 
         unrecorded = {**historical, "plan": "beta-1-unrecorded"}
 
