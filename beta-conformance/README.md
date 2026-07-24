@@ -9,7 +9,9 @@ server image without the recorded OCI manifest digest. The plan binds the
 digest of the complete candidate verification document as well as normalized
 digests for every package, crate, image manifest, and CLI release asset. The
 contract also declares the MySQL and Redis image selectors needed by the
-standalone runtime. `prepare` resolves each selector once and records its OCI
+standalone runtime. Waterline contributes two distribution identities under
+that one component: `waterline` for its embedded Composer package and
+`waterline-service` for its service OCI image. `prepare` resolves each selector once and records its OCI
 manifest digest in the immutable execution plan. The first workflow attempt
 retains that plan under the run identity. A full rerun restores and validates
 the retained plan instead of resolving the selectors again; if the plan is not
@@ -20,8 +22,11 @@ The experiment contract is [`contract.json`](contract.json). It selects replay,
 polyglot, worker-heartbeat, and signals/query runners shipped inside the exact
 published server image. Those runners install the candidate's PHP SDK from
 Packagist, Python SDK from PyPI, Rust SDK from crates.io, CLI release assets,
-and Composer packages by exact version. Product checkouts and mutable package
-selectors are not inputs to this workflow.
+and Composer packages by exact version. A runner bound to the exact control-
+plane revision launches the digest-pinned Waterline service image, confirms
+that it contains the published candidate PHP SDK, and exercises its remote
+workflow list against the digest-pinned standalone server. Product checkouts
+and mutable package selectors are not inputs to this workflow.
 
 Runner entries declare the distributions they consume and any runtime they need
 from the candidate. The union of the runner distribution sets must equal the
@@ -69,7 +74,7 @@ Every experiment result conforms to
 [`result-schema.json`](result-schema.json) and repeats these bindings:
 
 - the candidate name, manifest digest, immutable Git record, and exact
-  seven-artifact version/commit tuple;
+  seven-component version/commit tuple and all eight required distributions;
 - the public source commit for every artifact;
 - the candidate verification-document digest and expected distribution digests;
 - bounded native evidence identifying the package, crate, image manifest, and
@@ -98,7 +103,7 @@ reported identity to the immutable candidate record. Missing native evidence is
 a non-retryable infrastructure failure; an exact-version or digest mismatch is
 a non-retryable product failure under the experiment's owning contract.
 Matching version strings cannot satisfy the identity check. A passing retained
-suite covers all seven distributions.
+suite covers the complete eight-distribution set, including both Waterline modes.
 Experiments run in separate GitHub matrix jobs, have explicit deadlines, use
 unique scratch and Docker state, and prune Docker resources on every exit path.
 

@@ -4,6 +4,7 @@ import contextlib
 import json
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from collections.abc import Callable
@@ -18,6 +19,7 @@ from referencing import Registry, Resource
 
 from scripts.beta_candidate import COMPONENTS, SCHEMA, canonical_json
 from scripts.beta_conformance import (
+    DISTRIBUTIONS,
     EXPERIMENTS,
     MAX_INFRASTRUCTURE_ATTEMPTS,
     NATIVE_FAILURE_COMPONENT_LIMIT,
@@ -31,6 +33,7 @@ from scripts.beta_conformance import (
     artifact_binding_failures,
     bounded_text,
     classify_attempt,
+    distribution_version,
     experiment_result,
     fetch_retention_source_metadata,
     inject_distribution_identity_mismatch,
@@ -42,6 +45,7 @@ from scripts.beta_conformance import (
     resolve_runtime_dependencies,
     restore_plan,
     run_experiment,
+    runner_command,
     runner_required_artifact_versions,
     runner_runtime_environment,
     sha256_bytes,
@@ -82,6 +86,14 @@ def candidate_verification(candidate: dict[str, object]) -> dict[str, object]:
     return complete_candidate_verification(candidate, verified_at="2026-07-17T00:00:00Z")
 
 
+class RunnerCommandTest(unittest.TestCase):
+    def test_python_runner_uses_the_current_python_interpreter(self) -> None:
+        self.assertEqual(
+            [sys.executable, "scripts/runner.py", "--result-dir", "result"],
+            runner_command(Path("scripts/runner.py"), Path("result")),
+        )
+
+
 def runtime_dependencies() -> dict[str, dict[str, str]]:
     dependencies = {}
     for index, (name, selector) in enumerate(RUNTIME_DEPENDENCY_SELECTORS.items(), start=1):
@@ -103,7 +115,7 @@ def successful_diagnostic(
     schema: str = "fixture.result/v1",
     scenario_ids: list[str] | None = None,
 ) -> dict[str, object]:
-    selected = required_distributions or list(COMPONENTS)
+    selected = required_distributions or list(DISTRIBUTIONS)
     selected_versions = required_artifact_versions or selected
     selected_scenarios = scenario_ids or ["fixture"]
     artifact_tuple = plan["artifact_tuple"]
@@ -128,7 +140,7 @@ def successful_diagnostic(
         "native_result_prefix_bytes": None,
         "native_summary": {
             "schema": schema,
-            "artifact_versions": {name: artifact_tuple[name]["version"] for name in selected_versions},
+            "artifact_versions": {name: distribution_version(artifact_tuple, name) for name in selected_versions},
             "executed_distribution_identities": {
                 name: json.loads(canonical_json(distribution_identities[name])) for name in selected
             },
@@ -173,7 +185,7 @@ def successful_native_result(
     return {
         "schema": "fixture.result/v1",
         "outcome": "pass",
-        "artifact_versions": {name: artifact_tuple[name]["version"] for name in selected_versions},
+        "artifact_versions": {name: distribution_version(artifact_tuple, name) for name in selected_versions},
         "executed_distribution_identities": {
             name: json.loads(canonical_json(distribution_identities[name])) for name in required_distributions
         },
@@ -550,7 +562,7 @@ class ContractTest(unittest.TestCase):
             },
         )
         self.assertEqual(
-            set(COMPONENTS),
+            set(DISTRIBUTIONS),
             {
                 distribution
                 for specification in contract["experiments"].values()
@@ -615,9 +627,10 @@ class ContractTest(unittest.TestCase):
             },
             set(signals_runner["required_result_fields"]),
         )
-        self.assertEqual(18, len(signals_runner["required_scenarios"]))
+        self.assertEqual(19, len(signals_runner["required_scenarios"]))
         self.assertIn("published_artifact_install_only", signals_runner["required_scenarios"])
         self.assertIn("waterline_operator_visibility", signals_runner["required_scenarios"])
+        self.assertIn("waterline_service_operator_visibility", signals_runner["required_scenarios"])
 
     def test_contract_rejects_a_multi_runner_distribution_gap(self) -> None:
         contract = load_contract(CONTRACT_PATH)
@@ -674,11 +687,36 @@ class PlanTest(unittest.TestCase):
             plan["server_runner"]["image"],
         )
         self.assertEqual(
+            f"docker.io/durableworkflow/waterline@sha256:{'b' * 64}",
+            plan["waterline_service_runner"]["image"],
+        )
+        self.assertEqual(
             sha256_bytes(canonical_json(candidate_verification(self.fixture.manifest))),
             plan["candidate"]["verification_sha256"],
         )
-        self.assertEqual(set(COMPONENTS), set(plan["distribution_identities"]))
+        self.assertEqual(set(DISTRIBUTIONS), set(plan["distribution_identities"]))
         self.assertEqual(runtime_dependencies(), plan["runtime_dependencies"])
+
+    def test_plan_rejects_missing_or_mismatched_waterline_service_evidence(self) -> None:
+        plan = prepare_plan(
+            self.fixture.repository,
+            self.fixture.manifest,
+            self.contract,
+            self.fixture.commit,
+            runtime_dependencies(),
+        )
+
+        missing = json.loads(canonical_json(plan))
+        del missing["distribution_identities"]["waterline-service"]
+        with self.assertRaisesRegex(ConformanceError, "every required distribution"):
+            validate_plan(missing)
+        with self.assertRaises(ValidationError):
+            beta_schema_validator("plan-schema.json").validate(missing)
+
+        mismatched = json.loads(canonical_json(plan))
+        mismatched["waterline_service_runner"]["source_commit"] = "f" * 40
+        with self.assertRaisesRegex(ConformanceError, "Waterline service runner"):
+            validate_plan(mismatched)
 
     def test_prepare_resolves_declared_runtime_selectors_to_one_manifest_digest(self) -> None:
         digests = {"mysql": f"sha256:{'c' * 64}", "redis": f"sha256:{'d' * 64}"}
@@ -870,6 +908,39 @@ class StandaloneServerRuntimeTest(unittest.TestCase):
             runner_runtime_environment(self.plan, self.runner, self.scratch),
         ):
             pass
+
+    def test_waterline_service_runtime_joins_the_private_server_network(self) -> None:
+        service_runner = next(
+            runner
+            for runner in self.contract["experiments"]["signals-queries"]["runners"]
+            if runner["id"] == "waterline-service"
+        )
+        commands: list[list[str]] = []
+
+        def docker(command: list[str], **arguments: object) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            if command[1] == "port":
+                stdout = "127.0.0.1:49152\n"
+            elif command[1] == "inspect":
+                stdout = "healthy\n" if "Health.Status" in command[3] else "true\n"
+            else:
+                stdout = "runtime-id\n"
+            return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+        with (
+            mock.patch("scripts.beta_conformance.docker_runtime_command", side_effect=docker),
+            mock.patch("scripts.beta_conformance.wait_for_server_ready"),
+            runner_runtime_environment(self.plan, service_runner, self.scratch) as environment,
+        ):
+            network = environment["DW_WATERLINE_SERVICE_DOCKER_NETWORK"]
+            server_container = network.removesuffix("-network") + "-http"
+            self.assertEqual(
+                f"http://{server_container}:8080",
+                environment["DW_WATERLINE_SERVICE_SERVER_URL"],
+            )
+            self.assertNotIn("127.0.0.1", environment["DW_WATERLINE_SERVICE_SERVER_URL"])
+
+        self.assertTrue(any(command[1:3] == ["network", "create"] and network in command for command in commands))
 
 
 class FailureClassificationTest(unittest.TestCase):
@@ -1560,7 +1631,7 @@ class ExperimentRetryTest(unittest.TestCase):
 
     def test_every_declared_portable_field_is_required(self) -> None:
         native, runner = self.portable_signals_query_result()
-        required_distributions = self.contract["experiments"]["signals-queries"]["required_distributions"]
+        required_distributions = runner["required_distributions"]
         self.assertEqual("", native_result_completeness_error(native, required_distributions, runner))
 
         for field in runner["required_result_fields"]:
@@ -1574,7 +1645,7 @@ class ExperimentRetryTest(unittest.TestCase):
 
     def test_malformed_portable_identity_bodies_are_incomplete_evidence(self) -> None:
         native, runner = self.portable_signals_query_result()
-        required_distributions = self.contract["experiments"]["signals-queries"]["required_distributions"]
+        required_distributions = runner["required_distributions"]
         malformed_identities = (
             None,
             {"kind": "pypi", "locator": "pypi:durable-workflow@1.2.0"},
@@ -1617,7 +1688,7 @@ class ExperimentRetryTest(unittest.TestCase):
 
     def test_passing_outcome_cannot_hide_a_non_passing_required_scenario(self) -> None:
         native, runner = self.portable_signals_query_result()
-        required_distributions = self.contract["experiments"]["signals-queries"]["required_distributions"]
+        required_distributions = runner["required_distributions"]
         native["scenario_results"][runner["required_scenarios"][0]]["status"] = "fail"
 
         self.assertIn(
@@ -2041,9 +2112,9 @@ class ExperimentRetryTest(unittest.TestCase):
         self.assertEqual(sha256_bytes(native_bytes), diagnostic["native_result_sha256"])
         self.assertIsNone(diagnostic["native_result_prefix_sha256"])
 
-    def test_missing_required_scenario_is_one_attempt_runner_infrastructure_failure(self) -> None:
+    def test_missing_waterline_service_visibility_is_one_attempt_runner_infrastructure_failure(self) -> None:
         native, runner = self.portable_signals_query_result()
-        missing_scenario = runner["required_scenarios"][0]
+        missing_scenario = "waterline_service_operator_visibility"
         native["scenario_results"].pop(missing_scenario)
         runner_path = self.artifact_root / runner["path"]
         runner_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2686,9 +2757,13 @@ class EvidenceTest(unittest.TestCase):
             },
         }
         for name, source in cases.items():
-            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary, self.assertRaisesRegex(
-                ConformanceError,
-                "execution plan does not bind the source workflow",
+            with (
+                self.subTest(name=name),
+                tempfile.TemporaryDirectory() as temporary,
+                self.assertRaisesRegex(
+                    ConformanceError,
+                    "execution plan does not bind the source workflow",
+                ),
             ):
                 aggregate_results(
                     self.plan,
@@ -2699,7 +2774,7 @@ class EvidenceTest(unittest.TestCase):
                     **source,
                 )
 
-    def test_green_suite_retains_executed_identities_for_all_seven_distributions(self) -> None:
+    def test_green_suite_retains_executed_identities_for_all_required_distributions(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             for experiment in EXPERIMENTS:
@@ -2730,7 +2805,7 @@ class EvidenceTest(unittest.TestCase):
             )
 
         self.assertEqual("pass", suite["outcome"])
-        self.assertEqual(set(COMPONENTS), set(suite["executed_distribution_identities"]))
+        self.assertEqual(set(DISTRIBUTIONS), set(suite["executed_distribution_identities"]))
         self.assertEqual(self.plan["runtime_dependencies"], suite["runtime_dependencies"])
         beta_schema_validator("suite-result-schema.json").validate(suite)
 

@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest import mock
 
 from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError
 
 from scripts.beta_candidate import (
     CLI_ASSETS,
@@ -265,6 +266,43 @@ class ManifestTest(unittest.TestCase):
         del missing["components"]["server"]["distribution"]["configs"]
         with self.assertRaisesRegex(CandidateError, "keys must be exactly"):
             validate_verification(missing, candidate)
+
+    def test_waterline_verification_requires_both_matching_distributions(self) -> None:
+        candidate = manifest()
+        result = verification(candidate)
+        schema = json.loads((REPOSITORY_ROOT / "candidates" / "verification-schema.json").read_bytes())
+
+        missing = copy.deepcopy(result)
+        del missing["components"]["waterline"]["distributions"]["service"]
+        with self.assertRaises(ValidationError):
+            Draft202012Validator(schema).validate(missing)
+        with self.assertRaisesRegex(CandidateError, "keys must be exactly"):
+            validate_verification(missing, candidate)
+
+        mismatches = {
+            "version": lambda value: value["components"]["waterline"]["distributions"]["service"].update(
+                {"image": "docker.io/durableworkflow/waterline:9.9.9"}
+            ),
+            "source": lambda value: value["components"]["waterline"]["distributions"]["embedded"].update(
+                {"source_reference": "f" * 40}
+            ),
+            "labels": lambda value: value["components"]["waterline"]["distributions"]["service"]["configs"][0][
+                "labels"
+            ].update({"org.opencontainers.image.revision": "f" * 40}),
+        }
+        for mismatch, mutate in mismatches.items():
+            with self.subTest(mismatch=mismatch):
+                tampered = copy.deepcopy(result)
+                mutate(tampered)
+                with self.assertRaises(CandidateError):
+                    validate_verification(tampered, candidate)
+
+        partial = copy.deepcopy(result)
+        partial["components"]["waterline"]["distributions"]["service"]["configs"].pop()
+        with self.assertRaises(ValidationError):
+            Draft202012Validator(schema).validate(partial)
+        with self.assertRaises(CandidateError):
+            validate_verification(partial, candidate)
 
     def test_fresh_writer_independently_rejects_shape_valid_fabricated_distribution_evidence(self) -> None:
         candidate = manifest()
@@ -789,9 +827,7 @@ class RecordTest(unittest.TestCase):
         cli_identity = candidate["components"]["cli"]
         wrong_phar = self.root / "wrong-source.phar"
         write_build_info_phar(wrong_phar, cli_identity["version"], "f" * 40)
-        sources = {
-            COMPONENTS[name].repository: result["source"] for name, result in submitted["components"].items()
-        }
+        sources = {COMPONENTS[name].repository: result["source"] for name, result in submitted["components"].items()}
 
         def distribution_verifier(
             _client: object,
@@ -818,15 +854,21 @@ class RecordTest(unittest.TestCase):
         self.revalidate.side_effect = lambda handoff, selected, client: revalidate_verification(
             handoff, selected, client
         )
-        verifier_replacements = {
-            component.distribution: distribution_verifier for component in COMPONENTS.values()
-        }
+        verifier_replacements = {component.distribution: distribution_verifier for component in COMPONENTS.values()}
         with (
             mock.patch(
                 "scripts.beta_candidate.resolve_github_tag",
                 side_effect=lambda _client, repository, _version: sources[repository],
             ),
             mock.patch.dict("scripts.beta_candidate.VERIFIERS", verifier_replacements),
+            mock.patch(
+                "scripts.beta_candidate.verify_composer",
+                return_value=submitted["components"]["waterline"]["distributions"]["embedded"],
+            ),
+            mock.patch(
+                "scripts.beta_candidate.verify_oci",
+                return_value=submitted["components"]["waterline"]["distributions"]["service"],
+            ),
             mock.patch("scripts.beta_candidate.verify_github_release", side_effect=cli_verifier),
             self.assertRaisesRegex(CandidateError, "does not embed planned source commit"),
         ):

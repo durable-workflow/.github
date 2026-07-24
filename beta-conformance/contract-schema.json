@@ -10,7 +10,7 @@
       "const": "./contract-schema.json"
     },
     "schema": {
-      "const": "durable-workflow.beta-conformance.contract/v1"
+      "const": "durable-workflow.beta-conformance.contract/v2"
     },
     "runtime_dependencies": {
       "type": "object",
@@ -51,7 +51,7 @@
           "minItems": 1,
           "uniqueItems": true,
           "items": {
-            "enum": ["workflow", "waterline", "server", "cli", "sdk-php", "sdk-python", "sdk-rust"]
+            "enum": ["workflow", "waterline", "waterline-service", "server", "cli", "sdk-php", "sdk-python", "sdk-rust"]
           }
         },
         "runners": {
@@ -66,17 +66,18 @@
     "runner": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "path", "result", "required_distributions"],
+      "required": ["id", "source", "path", "result", "required_distributions"],
       "properties": {
         "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$" },
-        "path": { "type": "string", "pattern": "^scripts/conformance/[a-z0-9-]+\\.(?:sh|mjs|py)$" },
+        "source": { "enum": ["server-image", "control-plane"] },
+        "path": { "type": "string", "pattern": "^(?:scripts/conformance/[a-z0-9-]+\\.(?:sh|mjs|py)|scripts/waterline_service_conformance\\.py)$" },
         "result": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.-]+\\.json$" },
         "required_distributions": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
           "items": {
-            "enum": ["workflow", "waterline", "server", "cli", "sdk-php", "sdk-python", "sdk-rust"]
+            "enum": ["workflow", "waterline", "waterline-service", "server", "cli", "sdk-php", "sdk-python", "sdk-rust"]
           }
         },
         "result_schema": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.-]{0,126}$" },

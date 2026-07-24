@@ -18,7 +18,7 @@
       "const": "./schema.json"
     },
     "schema": {
-      "const": "durable-workflow.product-train/v1"
+      "const": "durable-workflow.product-train/v2"
     },
     "current": {
       "type": "string",
@@ -101,11 +101,20 @@
       "properties": {
         "workflow": {"type": "string", "minLength": 1},
         "sdk-php": {"type": "string", "minLength": 1},
-        "waterline": {"type": "string", "minLength": 1},
+        "waterline": {"$ref": "#/$defs/waterlineInstallCommands"},
         "server": {"type": "string", "minLength": 1},
         "cli": {"type": "string", "minLength": 1},
         "sdk-python": {"type": "string", "minLength": 1},
         "sdk-rust": {"type": "string", "minLength": 1}
+      }
+    },
+    "waterlineInstallCommands": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["embedded", "service"],
+      "properties": {
+        "embedded": {"type": "string", "minLength": 1},
+        "service": {"type": "string", "minLength": 1}
       }
     },
     "train": {

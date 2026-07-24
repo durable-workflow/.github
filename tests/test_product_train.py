@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError
 
 from scripts.beta_candidate import COMPONENTS, CandidateError
 from scripts.product_train import load_product_train, require_current_product_train
@@ -34,8 +35,17 @@ class ProductTrainTest(unittest.TestCase):
             "durable-workflow/waterline:2.0.0-beta.10@beta "
             "durable-workflow/workflow:2.0.0-beta.10@beta "
             "durable-workflow/sdk:2.0.0-beta.10@beta",
-            install["waterline"],
+            install["waterline"]["embedded"],
         )
+        self.assertEqual(
+            "docker pull durableworkflow/waterline:2.0.0-beta.10",
+            install["waterline"]["service"],
+        )
+
+        incomplete = json.loads(json.dumps(contract))
+        del incomplete["trains"][current]["install"]["waterline"]["service"]
+        with self.assertRaises(ValidationError):
+            Draft202012Validator(schema).validate(incomplete)
 
     def test_new_beta_tuple_must_match_current_train(self) -> None:
         components = {name: {"version": "2.0.0-beta.10", "commit": "a" * 40} for name in COMPONENTS}

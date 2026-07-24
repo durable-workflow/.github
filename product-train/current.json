@@ -1,6 +1,6 @@
 {
   "$schema": "./schema.json",
-  "schema": "durable-workflow.product-train/v1",
+  "schema": "durable-workflow.product-train/v2",
   "current": "2.0.0-beta.10",
   "components": [
     "workflow",
@@ -36,7 +36,10 @@
       "install": {
         "workflow": "composer require durable-workflow/workflow:2.0.0-beta.10@beta",
         "sdk-php": "composer require durable-workflow/sdk:2.0.0-beta.10@beta",
-        "waterline": "composer require durable-workflow/waterline:2.0.0-beta.10@beta durable-workflow/workflow:2.0.0-beta.10@beta durable-workflow/sdk:2.0.0-beta.10@beta",
+        "waterline": {
+          "embedded": "composer require durable-workflow/waterline:2.0.0-beta.10@beta durable-workflow/workflow:2.0.0-beta.10@beta durable-workflow/sdk:2.0.0-beta.10@beta",
+          "service": "docker pull durableworkflow/waterline:2.0.0-beta.10"
+        },
         "server": "docker pull durableworkflow/server:2.0.0-beta.10",
         "cli": "curl -fsSL https://durable-workflow.com/install.sh | VERSION=2.0.0-beta.10 sh",
         "sdk-python": "pip install durable-workflow==2.0.0-beta.10",

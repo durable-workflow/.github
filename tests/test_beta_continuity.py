@@ -13,13 +13,15 @@ from unittest.mock import Mock, patch
 
 from scripts.beta_candidate import COMPONENTS, manifest_digest
 from scripts.beta_conformance import (
-    EXPERIMENTS as CONFORMANCE_EXPERIMENTS,
-)
-from scripts.beta_conformance import (
+    DISTRIBUTIONS,
     NATIVE_FAILURE_COMPONENT_LIMIT,
     NATIVE_FAILURE_PROJECTION_LIMIT,
     RUNTIME_DEPENDENCY_SELECTORS,
+    distribution_version,
     experiment_result,
+)
+from scripts.beta_conformance import (
+    EXPERIMENTS as CONFORMANCE_EXPERIMENTS,
 )
 from scripts.beta_conformance import (
     PLAN_SCHEMA as CONFORMANCE_PLAN_SCHEMA,
@@ -101,9 +103,7 @@ class PlanningClient:
                             "Blocks https://github.com/durable-workflow/.github/issues/2.\n\n"
                             f"<!-- beta-continuity-blocker: {name}-source-version-{version} -->"
                         ),
-                        "labels": [
-                            {"name": label} for label in (*ROUTED_BLOCKER_LABELS[:-1], "status:done")
-                        ],
+                        "labels": [{"name": label} for label in (*ROUTED_BLOCKER_LABELS[:-1], "status:done")],
                         "number": index + 1,
                         "state": "closed",
                     }
@@ -192,10 +192,12 @@ def conformance_release_fixture(
     distribution_identities = {
         name: {
             "kind": component.distribution,
-            "locator": f"{component.distribution}:{component.package}@{plan['components'][name]['version']}",
+            "locator": (
+                f"{component.distribution}:{component.package}@{plan['components'][component_name]['version']}"
+            ),
             "artifacts": [{"name": f"{name}.artifact", "sha256": f"{index + 10:064x}"}],
         }
-        for index, (name, component) in enumerate(COMPONENTS.items())
+        for index, (name, (component_name, component)) in enumerate(DISTRIBUTIONS.items())
     }
     server_digest = f"sha256:{99:064x}"
     conformance_plan = {
@@ -208,9 +210,7 @@ def conformance_release_fixture(
             "record_commit": "b" * 40,
         },
         "artifact_tuple": plan["components"],
-        "source_identities": {
-            name: identity["commit"] for name, identity in plan["components"].items()
-        },
+        "source_identities": {name: identity["commit"] for name, identity in plan["components"].items()},
         "distribution_identities": distribution_identities,
         "runtime_dependencies": runtime_dependencies,
         "runner": {
@@ -222,6 +222,11 @@ def conformance_release_fixture(
             "image": f"docker.io/durableworkflow/server@{server_digest}",
             "manifest_digest": server_digest,
             "source_commit": plan["components"]["server"]["commit"],
+        },
+        "waterline_service_runner": {
+            "image": f"docker.io/durableworkflow/waterline@sha256:{98:064x}",
+            "manifest_digest": f"sha256:{98:064x}",
+            "source_commit": plan["components"]["waterline"]["commit"],
         },
         "experiments": list(CONFORMANCE_EXPERIMENTS),
     }
@@ -246,7 +251,8 @@ def conformance_release_fixture(
             "native_summary": {
                 "schema": "fixture.result/v1",
                 "artifact_versions": {
-                    component: identity["version"] for component, identity in plan["components"].items()
+                    distribution: distribution_version(plan["components"], distribution)
+                    for distribution in DISTRIBUTIONS
                 },
                 "executed_distribution_identities": deepcopy(distribution_identities),
                 "scenario_statuses": [{"id": "fixture", "status": "pass"}],
@@ -265,7 +271,7 @@ def conformance_release_fixture(
             name,
             "fixture-contract",
             ["sdk-php", "sdk-python", "sdk-rust"],
-            list(COMPONENTS),
+            list(DISTRIBUTIONS),
             "2026-07-20T10:00:00Z",
             "passed",
             run_attempt,
@@ -285,7 +291,7 @@ def conformance_release_fixture(
         "evidence_tag": tag,
     }
     suite = {
-        "schema": "durable-workflow.beta-conformance.suite-result/v1",
+        "schema": "durable-workflow.beta-conformance.suite-result/v2",
         "candidate": conformance_plan["candidate"],
         "artifact_tuple": conformance_plan["artifact_tuple"],
         "source_identities": conformance_plan["source_identities"],
@@ -293,6 +299,7 @@ def conformance_release_fixture(
         "runtime_dependencies": conformance_plan["runtime_dependencies"],
         "runner": conformance_plan["runner"],
         "server_runner": conformance_plan["server_runner"],
+        "waterline_service_runner": conformance_plan["waterline_service_runner"],
         "github_run": run,
         "outcome": "pass",
         "experiments": {
@@ -310,9 +317,7 @@ def conformance_release_fixture(
     payloads[suite_url] = json.dumps(suite, sort_keys=True, separators=(",", ":")).encode()
     release_url = f"https://github.com/durable-workflow/.github/releases/tag/{tag}"
     release = {
-        "assets": [
-            {"browser_download_url": url, "name": url.rsplit("/", 1)[-1]} for url in payloads
-        ],
+        "assets": [{"browser_download_url": url, "name": url.rsplit("/", 1)[-1]} for url in payloads],
         "draft": False,
         "html_url": release_url,
         "tag_name": tag,
@@ -415,14 +420,8 @@ class BetaContinuityTest(unittest.TestCase):
 
     def test_fresh_selection_uses_complete_reordered_release_histories(self) -> None:
         config = load_config(ROOT / "beta-continuity" / "config.json")
-        workflow_page = [
-            {"draft": False, "tag_name": f"2.0.0-alpha.{number}"}
-            for number in range(100, 0, -1)
-        ]
-        python_page = [
-            {"draft": False, "tag_name": f"0.4.{number}"}
-            for number in range(100, 0, -1)
-        ]
+        workflow_page = [{"draft": False, "tag_name": f"2.0.0-alpha.{number}"} for number in range(100, 0, -1)]
+        python_page = [{"draft": False, "tag_name": f"0.4.{number}"} for number in range(100, 0, -1)]
         client = PlanningClient(
             release_pages={
                 "workflow": {
@@ -456,10 +455,7 @@ class BetaContinuityTest(unittest.TestCase):
         )
 
     def test_release_history_pagination_fails_closed_when_a_page_repeats(self) -> None:
-        page = [
-            {"draft": False, "tag_name": f"2.0.0-alpha.{number}"}
-            for number in range(1, 101)
-        ]
+        page = [{"draft": False, "tag_name": f"2.0.0-alpha.{number}"} for number in range(1, 101)]
         client = PlanningClient(release_pages={"workflow": {1: page, 2: page}})
 
         with self.assertRaisesRegex(ContinuityError, "release pagination did not advance"):
@@ -467,10 +463,7 @@ class BetaContinuityTest(unittest.TestCase):
 
     def test_release_history_pagination_fails_closed_at_the_page_bound(self) -> None:
         pages = {
-            page: [
-                {"draft": False, "tag_name": f"2.0.0-alpha.{(page - 1) * 100 + number}"}
-                for number in range(1, 101)
-            ]
+            page: [{"draft": False, "tag_name": f"2.0.0-alpha.{(page - 1) * 100 + number}"} for number in range(1, 101)]
             for page in (1, 2)
         }
         client = PlanningClient(release_pages={"workflow": pages})
@@ -1705,10 +1698,7 @@ class BetaContinuityTest(unittest.TestCase):
             12346,
             run_attempt=2,
         )
-        unrelated = [
-            {"draft": False, "tag_name": f"unrelated-release-{index}"}
-            for index in range(98)
-        ]
+        unrelated = [{"draft": False, "tag_name": f"unrelated-release-{index}"} for index in range(98)]
         client = PaginatedReleaseClient(
             {1: [later_release, unsafe_release, *unrelated], 2: [replacement_release]},
             unsafe_payloads | replacement_payloads | later_payloads,
@@ -1728,10 +1718,7 @@ class BetaContinuityTest(unittest.TestCase):
         plan = continuity_plan("paginated-conformance-authority-test")
         preferred_release, preferred_payloads, preferred_reference = conformance_release_fixture(plan, 12346)
         later_release, later_payloads, _later_reference = conformance_release_fixture(plan, 12347)
-        unrelated = [
-            {"draft": False, "tag_name": f"unrelated-release-{index}"}
-            for index in range(99)
-        ]
+        unrelated = [{"draft": False, "tag_name": f"unrelated-release-{index}"} for index in range(99)]
         client = PaginatedReleaseClient(
             {1: [later_release, *unrelated], 2: [preferred_release]},
             preferred_payloads | later_payloads,

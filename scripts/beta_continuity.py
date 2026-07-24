@@ -1587,7 +1587,7 @@ def validated_conformance_release(
     }
     if (
         not isinstance(suite, dict)
-        or suite.get("schema") != "durable-workflow.beta-conformance.suite-result/v1"
+        or suite.get("schema") != "durable-workflow.beta-conformance.suite-result/v2"
         or suite.get("github_run") != expected_run
     ):
         return None
@@ -1607,6 +1607,7 @@ def validated_conformance_release(
         "runtime_dependencies": suite.get("runtime_dependencies"),
         "runner": suite.get("runner"),
         "server_runner": suite.get("server_runner"),
+        "waterline_service_runner": suite.get("waterline_service_runner"),
         "experiments": list(CONFORMANCE_EXPERIMENTS),
     }
     try:

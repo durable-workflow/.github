@@ -33,22 +33,29 @@ from scripts.beta_candidate import (
     CLI_ASSETS,
     COMPONENTS,
     VERSION_PATTERN,
+    WATERLINE_SERVICE,
     CandidateError,
+    Component,
     canonical_json,
     load_manifest,
     manifest_digest,
     validate_verification,
 )
 
-CONTRACT_SCHEMA = "durable-workflow.beta-conformance.contract/v1"
-PLAN_SCHEMA = "durable-workflow.beta-conformance.plan/v1"
-EXPERIMENT_RESULT_SCHEMA = "durable-workflow.beta-conformance.experiment-result/v1"
-SUITE_RESULT_SCHEMA = "durable-workflow.beta-conformance.suite-result/v1"
+CONTRACT_SCHEMA = "durable-workflow.beta-conformance.contract/v2"
+PLAN_SCHEMA = "durable-workflow.beta-conformance.plan/v2"
+EXPERIMENT_RESULT_SCHEMA = "durable-workflow.beta-conformance.experiment-result/v2"
+SUITE_RESULT_SCHEMA = "durable-workflow.beta-conformance.suite-result/v2"
 CONTROL_REPOSITORY = "durable-workflow/.github"
 CONFORMANCE_WORKFLOW_NAME = "Beta conformance"
 CONFORMANCE_WORKFLOW_PATH = ".github/workflows/beta-conformance.yml"
 CONFORMANCE_WORKFLOW_PATHS = {CONFORMANCE_WORKFLOW_PATH, f"{CONFORMANCE_WORKFLOW_PATH}@main"}
 EXPERIMENTS = ("heartbeats", "polyglot", "replay", "signals-queries")
+WATERLINE_SERVICE_DISTRIBUTION = "waterline-service"
+DISTRIBUTIONS: dict[str, tuple[str, Component]] = {
+    **{name: (name, component) for name, component in COMPONENTS.items()},
+    WATERLINE_SERVICE_DISTRIBUTION: ("waterline", WATERLINE_SERVICE),
+}
 PASS_OUTCOMES = {"pass", "passed", "success", "successful", "completed", "verified"}
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -395,7 +402,7 @@ def validate_contract(contract: Any) -> None:
             not isinstance(required_distributions, list)
             or not required_distributions
             or len(required_distributions) != len(set(required_distributions))
-            or not set(required_distributions).issubset(COMPONENTS)
+            or not set(required_distributions).issubset(DISTRIBUTIONS)
             or not {"server", *clients}.issubset(required_distributions)
         ):
             raise ConformanceError(f"experiment {name} has invalid required distributions")
@@ -420,6 +427,7 @@ def validate_contract(contract: Any) -> None:
                         "required_result_fields",
                         "required_scenarios",
                         "runtime",
+                        "source",
                     }
                 )
             ):
@@ -439,12 +447,16 @@ def validate_contract(contract: Any) -> None:
                 or len(runner_required_distributions) != len(set(runner_required_distributions))
                 or not set(runner_required_distributions).issubset(required_distributions)
             ):
-                raise ConformanceError(
-                    f"experiment {name} runner has invalid required distributions"
-                )
+                raise ConformanceError(f"experiment {name} runner has invalid required distributions")
+            source = runner.get("source")
+            if source not in {"server-image", "control-plane"}:
+                raise ConformanceError(f"experiment {name} runner has an invalid source")
             path = safe_relative_path(runner["path"])
-            if not path.startswith("scripts/conformance/") or not path.endswith((".sh", ".mjs", ".py")):
+            expected_prefix = "scripts/conformance/" if source == "server-image" else "scripts/"
+            if not path.startswith(expected_prefix) or not path.endswith((".sh", ".mjs", ".py")):
                 raise ConformanceError(f"experiment {name} runner is outside the published conformance surface")
+            if source == "control-plane" and path != "scripts/waterline_service_conformance.py":
+                raise ConformanceError(f"experiment {name} names an unsupported control-plane runner")
             safe_relative_path(runner["result"], suffix=".json")
             if "/" in runner["result"]:
                 raise ConformanceError(f"experiment {name} native result must be a file name")
@@ -456,9 +468,7 @@ def validate_contract(contract: Any) -> None:
                     f"experiment {name} runner must declare its result schema and required fields together"
                 )
             if result_schema is not None:
-                if not isinstance(result_schema, str) or not re.fullmatch(
-                    r"[a-z0-9][a-z0-9.-]{0,126}", result_schema
-                ):
+                if not isinstance(result_schema, str) or not re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,126}", result_schema):
                     raise ConformanceError(f"experiment {name} runner has an invalid result schema")
                 if (
                     not isinstance(required_result_fields, list)
@@ -517,22 +527,16 @@ def validate_contract(contract: Any) -> None:
                     for value in environment_names
                 ):
                     raise ConformanceError(f"experiment {name} runner has invalid runtime environment bindings")
-        runner_distributions = {
-            distribution
-            for runner in runners
-            for distribution in runner["required_distributions"]
-        }
+        runner_distributions = {distribution for runner in runners for distribution in runner["required_distributions"]}
         if runner_distributions != set(required_distributions):
-            raise ConformanceError(
-                f"experiment {name} runners do not cover its required distributions"
-            )
+            raise ConformanceError(f"experiment {name} runners do not cover its required distributions")
     covered_distributions = {
         distribution
         for specification in experiments.values()
         for distribution in specification["required_distributions"]
     }
-    if covered_distributions != set(COMPONENTS):
-        raise ConformanceError("beta conformance contract does not execute all seven distributions")
+    if covered_distributions != set(DISTRIBUTIONS):
+        raise ConformanceError("beta conformance contract does not execute every required distribution")
 
 
 def load_contract(path: Path) -> dict[str, Any]:
@@ -584,8 +588,13 @@ def read_candidate_record(repository: Path, manifest: dict[str, Any]) -> tuple[s
 
 
 def distribution_locator(name: str, version: str) -> str:
-    component = COMPONENTS[name]
+    _component_name, component = DISTRIBUTIONS[name]
     return f"{component.distribution}:{component.package}@{version}"
+
+
+def distribution_version(components: dict[str, Any], name: str) -> str:
+    component_name, _component = DISTRIBUTIONS[name]
+    return components[component_name]["version"]
 
 
 def distribution_artifact(name: Any, sha256: Any) -> dict[str, str]:
@@ -601,7 +610,7 @@ def normalized_distribution_identity(name: str, version: str, artifacts: list[di
     if not ordered or len(ordered) != len({artifact["name"] for artifact in ordered}):
         raise ConformanceError(f"candidate verification has invalid {name} distribution artifacts")
     return {
-        "kind": COMPONENTS[name].distribution,
+        "kind": DISTRIBUTIONS[name][1].distribution,
         "locator": distribution_locator(name, version),
         "artifacts": ordered,
     }
@@ -611,9 +620,17 @@ def normalize_distribution_identities(
     verification: dict[str, Any], manifest: dict[str, Any]
 ) -> dict[str, dict[str, Any]]:
     identities: dict[str, dict[str, Any]] = {}
-    for name, component in COMPONENTS.items():
-        version = manifest["components"][name]["version"]
-        distribution = verification["components"][name].get("distribution")
+    for name, (component_name, component) in DISTRIBUTIONS.items():
+        version = manifest["components"][component_name]["version"]
+        component_verification = verification["components"][component_name]
+        if name == "waterline":
+            distributions = component_verification.get("distributions")
+            distribution = distributions.get("embedded") if isinstance(distributions, dict) else None
+        elif name == WATERLINE_SERVICE_DISTRIBUTION:
+            distributions = component_verification.get("distributions")
+            distribution = distributions.get("service") if isinstance(distributions, dict) else None
+        else:
+            distribution = component_verification.get("distribution")
         if not isinstance(distribution, dict) or distribution.get("kind") != component.distribution:
             raise ConformanceError(f"candidate verification has no exact {name} distribution identity")
         if component.distribution == "composer":
@@ -661,11 +678,11 @@ def normalize_distribution_identities(
 
 
 def validate_distribution_identity(name: str, identity: Any, components: dict[str, Any]) -> None:
-    expected_locator = distribution_locator(name, components[name]["version"])
+    expected_locator = distribution_locator(name, distribution_version(components, name))
     if (
         not isinstance(identity, dict)
         or set(identity) != {"kind", "locator", "artifacts"}
-        or identity["kind"] != COMPONENTS[name].distribution
+        or identity["kind"] != DISTRIBUTIONS[name][1].distribution
         or identity["locator"] != expected_locator
     ):
         raise ConformanceError(f"distribution identity for {name} has an invalid locator")
@@ -689,15 +706,15 @@ def validate_distribution_identity(name: str, identity: Any, components: dict[st
 
 
 def validate_partial_distribution_identities(identities: Any, components: dict[str, Any]) -> None:
-    if not isinstance(identities, dict) or not set(identities).issubset(COMPONENTS):
+    if not isinstance(identities, dict) or not set(identities).issubset(DISTRIBUTIONS):
         raise ConformanceError("executed distribution identities name an unknown component")
     for name, identity in identities.items():
         validate_distribution_identity(name, identity, components)
 
 
 def validate_distribution_identities(identities: Any, components: dict[str, Any]) -> None:
-    if not isinstance(identities, dict) or set(identities) != set(COMPONENTS):
-        raise ConformanceError("distribution identities do not bind the exact seven-artifact tuple")
+    if not isinstance(identities, dict) or set(identities) != set(DISTRIBUTIONS):
+        raise ConformanceError("distribution identities do not bind every required distribution")
     validate_partial_distribution_identities(identities, components)
 
 
@@ -726,17 +743,13 @@ def normalized_oci_repository(value: str) -> str:
     return repository
 
 
-def resolve_runtime_dependencies(
-    contract: dict[str, Any], *, docker: str = "docker"
-) -> dict[str, dict[str, str]]:
+def resolve_runtime_dependencies(contract: dict[str, Any], *, docker: str = "docker") -> dict[str, dict[str, str]]:
     """Resolve declared selectors once so isolated jobs consume immutable references."""
     validate_contract(contract)
     dependencies: dict[str, dict[str, str]] = {}
     for name, selector in contract["runtime_dependencies"].items():
         docker_runtime_command([docker, "pull", selector])
-        inspection = docker_runtime_command(
-            [docker, "image", "inspect", "--format", "{{json .RepoDigests}}", selector]
-        )
+        inspection = docker_runtime_command([docker, "image", "inspect", "--format", "{{json .RepoDigests}}", selector])
         try:
             references = json.loads(inspection.stdout)
         except (json.JSONDecodeError, TypeError) as error:
@@ -754,9 +767,7 @@ def resolve_runtime_dependencies(
             and OCI_DIGEST_PATTERN.fullmatch(digest)
         }
         if len(digests) != 1:
-            raise ConformanceError(
-                f"runtime dependency {name} did not resolve to one immutable OCI manifest digest"
-            )
+            raise ConformanceError(f"runtime dependency {name} did not resolve to one immutable OCI manifest digest")
         digest = digests.pop()
         repository = selector.rsplit(":", 1)[0]
         dependencies[name] = {
@@ -790,6 +801,17 @@ def prepare_plan(
     expected_tag = f"docker.io/durableworkflow/server:{manifest['components']['server']['version']}"
     if image != expected_tag or not isinstance(image_digest, str) or not OCI_DIGEST_PATTERN.fullmatch(image_digest):
         raise ConformanceError("candidate verification has no exact matching server image digest")
+    waterline_distributions = verification["components"]["waterline"].get("distributions")
+    waterline_service = waterline_distributions.get("service") if isinstance(waterline_distributions, dict) else None
+    waterline_image = waterline_service.get("image") if isinstance(waterline_service, dict) else None
+    waterline_digest = waterline_service.get("manifest_digest") if isinstance(waterline_service, dict) else None
+    expected_waterline_tag = f"docker.io/durableworkflow/waterline:{manifest['components']['waterline']['version']}"
+    if (
+        waterline_image != expected_waterline_tag
+        or not isinstance(waterline_digest, str)
+        or not OCI_DIGEST_PATTERN.fullmatch(waterline_digest)
+    ):
+        raise ConformanceError("candidate verification has no exact matching Waterline service image digest")
     components = manifest["components"]
     plan = {
         "schema": PLAN_SCHEMA,
@@ -814,6 +836,11 @@ def prepare_plan(
             "manifest_digest": image_digest,
             "source_commit": components["server"]["commit"],
         },
+        "waterline_service_runner": {
+            "image": f"docker.io/durableworkflow/waterline@{waterline_digest}",
+            "manifest_digest": waterline_digest,
+            "source_commit": components["waterline"]["commit"],
+        },
         "experiments": list(EXPERIMENTS),
     }
     validate_plan(plan)
@@ -830,6 +857,7 @@ def validate_plan(plan: Any) -> None:
         "runtime_dependencies",
         "runner",
         "server_runner",
+        "waterline_service_runner",
         "experiments",
     }
     if not isinstance(plan, dict) or set(plan) != required or plan.get("schema") != PLAN_SCHEMA:
@@ -883,6 +911,17 @@ def validate_plan(plan: Any) -> None:
         or server_runner["source_commit"] != components["server"]["commit"]
     ):
         raise ConformanceError("beta conformance plan has an invalid published server runner binding")
+    waterline_runner = plan["waterline_service_runner"]
+    waterline_digest = waterline_runner.get("manifest_digest") if isinstance(waterline_runner, dict) else None
+    if (
+        not isinstance(waterline_runner, dict)
+        or set(waterline_runner) != {"image", "manifest_digest", "source_commit"}
+        or not isinstance(waterline_digest, str)
+        or not OCI_DIGEST_PATTERN.fullmatch(waterline_digest)
+        or waterline_runner["image"] != f"docker.io/durableworkflow/waterline@{waterline_digest}"
+        or waterline_runner["source_commit"] != components["waterline"]["commit"]
+    ):
+        raise ConformanceError("beta conformance plan has an invalid published Waterline service runner binding")
     if plan["experiments"] != list(EXPERIMENTS):
         raise ConformanceError("beta conformance plan does not select the complete experiment set")
 
@@ -988,14 +1027,14 @@ def bounded_text(value: Any, limit: int = FINDING_TEXT_LIMIT) -> str:
 
 
 def evidence_value_parts(value: str) -> tuple[str, str, str]:
-    for quote in (r'\"', r"\'", '"', "'"):
+    for quote in (r"\"", r"\'", '"', "'"):
         if value.startswith(quote) and value.endswith(quote) and len(value) >= len(quote) * 2:
             return quote, value[len(quote) : -len(quote)], quote
     return "", value, ""
 
 
 def quoted_evidence_value_end(text: str, start: int) -> int | None:
-    escaped_wrapper = text.startswith((r'\"', r"\'"), start)
+    escaped_wrapper = text.startswith((r"\"", r"\'"), start)
     if escaped_wrapper:
         quote = text[start + 1]
         cursor = start + 2
@@ -1348,7 +1387,7 @@ def native_state(native: Any) -> tuple[str | None, bool, list[dict[str, str]]]:
 def native_distribution_identity_structure_error(name: str, identity: Any) -> str:
     if not isinstance(identity, dict) or set(identity) != {"kind", "locator", "artifacts"}:
         return f"published runner result has a malformed {name} distribution identity body"
-    component = COMPONENTS[name]
+    _component_name, component = DISTRIBUTIONS[name]
     locator_prefix = f"{component.distribution}:{component.package}@"
     if (
         not isinstance(identity["kind"], str)
@@ -1405,9 +1444,7 @@ def native_result_completeness_error(
         return "published runner result does not declare an outcome"
     if "runner_blocked" in required_fields and not isinstance(native["runner_blocked"], bool):
         return "published runner result does not declare a boolean runner_blocked value"
-    required_artifact_versions = set(
-        runner_required_artifact_versions(runner, required_distributions)
-    )
+    required_artifact_versions = set(runner_required_artifact_versions(runner, required_distributions))
     versions = native.get("artifact_versions", native.get("artifactVersions"))
     if not isinstance(versions, dict) or any(
         name not in versions or not isinstance(versions[name], str) or not versions[name]
@@ -1474,13 +1511,13 @@ def summarize_executed_distribution_identities(native: dict[str, Any]) -> dict[s
         return {}
     identities: dict[str, Any] = {}
     for name, identity in raw.items():
-        if name not in COMPONENTS or not isinstance(identity, dict):
+        if name not in DISTRIBUTIONS or not isinstance(identity, dict):
             continue
         kind = identity.get("kind")
         locator = identity.get("locator")
         artifacts = identity.get("artifacts")
         if (
-            kind != COMPONENTS[name].distribution
+            kind != DISTRIBUTIONS[name][1].distribution
             or not isinstance(locator, str)
             or not locator
             or len(locator) > 256
@@ -1523,7 +1560,7 @@ def summarize_native_result(native: Any) -> dict[str, Any] | None:
     bounded_versions = {
         name: sanitized_evidence_text(version, 128)
         for name, version in versions.items()
-        if name in COMPONENTS and isinstance(version, str)
+        if name in DISTRIBUTIONS and isinstance(version, str)
     }
     raw_scenarios = native.get("scenario_results", {})
     scenarios: list[dict[str, str]] = []
@@ -1654,6 +1691,19 @@ def execute_command(
     return returncode, timed_out
 
 
+def runner_command(path: Path, result_dir: Path) -> list[str]:
+    interpreters = {
+        ".sh": "bash",
+        ".mjs": "node",
+        ".py": sys.executable,
+    }
+    try:
+        interpreter = interpreters[path.suffix]
+    except KeyError as error:
+        raise ConformanceError(f"unsupported conformance runner type: {path.suffix}") from error
+    return [interpreter, str(path), "--result-dir", str(result_dir)]
+
+
 def artifact_environment(plan: dict[str, Any], scratch: Path) -> dict[str, str]:
     versions = {name: identity["version"] for name, identity in plan["artifact_tuple"].items()}
     return {
@@ -1667,6 +1717,7 @@ def artifact_environment(plan: dict[str, Any], scratch: Path) -> dict[str, str]:
         "DW_RUST_SDK_VERSION": versions["sdk-rust"],
         "DW_WORKFLOW_PHP_VERSION": versions["workflow"],
         "DW_WATERLINE_VERSION": versions["waterline"],
+        "DW_WATERLINE_SERVICE_IMAGE": plan["waterline_service_runner"]["image"],
         "DW_CONFORMANCE_TMPDIR": str(scratch),
     }
 
@@ -1980,11 +2031,15 @@ def standalone_server_runtime(
         wait_for_server_ready(server_url, http_name, docker=docker)
         for container_name in (mysql_name, redis_name, http_name, queue_name, scheduler_name):
             require_running_container(container_name, docker=docker)
-        yield {
-            runtime["server_url_environment"]: server_url,
+        runner_server_url = f"http://{http_name}:8080" if runner["id"] == "waterline-service" else server_url
+        environment = {
+            runtime["server_url_environment"]: runner_server_url,
             runtime["namespace_environment"]: "default",
             runtime["token_environment"]: runtime_token,
         }
+        if runner["id"] == "waterline-service":
+            environment["DW_WATERLINE_SERVICE_DOCKER_NETWORK"] = network
+        yield environment
         for container_name in (mysql_name, redis_name, http_name, queue_name, scheduler_name):
             require_running_container(container_name, docker=docker)
     finally:
@@ -2033,10 +2088,7 @@ def injected_failure_result(
     required_distributions: list[str],
     started_at: str,
 ) -> dict[str, Any]:
-    raw_stderr = (
-        "deterministic synthetic sanitizer canary: "
-        f"Authorization: Bearer {SYNTHETIC_CREDENTIAL_CANARY}"
-    )
+    raw_stderr = f"deterministic synthetic sanitizer canary: Authorization: Bearer {SYNTHETIC_CREDENTIAL_CANARY}"
     diagnostic = {
         "runner": "injected-product-failure",
         "attempt": 1,
@@ -2095,12 +2147,13 @@ def experiment_result(
         "runtime_dependencies": plan["runtime_dependencies"],
         "runner": plan["runner"],
         "server_runner": plan["server_runner"],
+        "waterline_service_runner": plan["waterline_service_runner"],
         "owning_contract": owner,
         "required_clients": required_clients,
         "required_distributions": required_distributions,
         "source_policy": {
             "product_artifacts": "published_only",
-            "orchestration_source": "exact_server_container",
+            "orchestration_source": "bound_control_plane_and_exact_candidate_images",
             "local_product_source_checkout_used": False,
         },
         "started_at": started_at,
@@ -2140,7 +2193,7 @@ def artifact_binding_failures(
             for name, identity in identities.items():
                 observed_identities.setdefault(name, []).append(identity)
     for name, versions in observed_versions.items():
-        expected = plan["artifact_tuple"][name]["version"]
+        expected = distribution_version(plan["artifact_tuple"], name)
         if versions != {expected}:
             failures.append(f"{name} native evidence reports {sorted(versions)}, expected exact version {expected}")
     for name, identities in observed_identities.items():
@@ -2210,7 +2263,8 @@ def run_experiment(
     maximum_attempts_used = 1
     identity_failure_injected = False
     for runner in specification["runners"]:
-        runner_path = artifact_root / safe_relative_path(runner["path"])
+        runner_root = artifact_root if runner["source"] == "server-image" else Path(__file__).resolve().parent.parent
+        runner_path = runner_root / safe_relative_path(runner["path"])
         if not runner_path.is_file():
             diagnostic = {
                 "runner": runner["id"],
@@ -2255,7 +2309,7 @@ def run_experiment(
                 with runner_runtime_environment(plan, runner, scratch) as runtime_environment:
                     environment = {**artifact_environment(plan, scratch), **runtime_environment}
                     returncode, timed_out = execute_command(
-                        ["bash", str(runner_path), "--result-dir", str(native_dir)],
+                        runner_command(runner_path, native_dir),
                         cwd=artifact_root,
                         environment=environment,
                         timeout_seconds=specification["timeout_seconds"],
@@ -2532,22 +2586,16 @@ def validate_retained_runner_summary(
     summary = diagnostic["native_summary"]
     if summary is None:
         if terminal_pass:
-            raise ConformanceError(
-                f"passing runner {runner['id']} does not retain a native summary"
-            )
+            raise ConformanceError(f"passing runner {runner['id']} does not retain a native summary")
         return
     required_distributions = set(runner["required_distributions"])
     required_artifact_versions = set(runner_required_artifact_versions(runner))
     reported_versions = set(summary["artifact_versions"])
     if reported_versions - required_artifact_versions:
-        raise ConformanceError(
-            f"runner {runner['id']} retains artifact versions outside its exact assignment"
-        )
+        raise ConformanceError(f"runner {runner['id']} retains artifact versions outside its exact assignment")
     reported_identities = set(summary["executed_distribution_identities"])
     if reported_identities - required_distributions:
-        raise ConformanceError(
-            f"runner {runner['id']} retains distribution identities outside its exact assignment"
-        )
+        raise ConformanceError(f"runner {runner['id']} retains distribution identities outside its exact assignment")
     if require_contract_summary and (
         reported_versions != required_artifact_versions or reported_identities != required_distributions
     ):
@@ -2561,24 +2609,14 @@ def validate_retained_runner_summary(
     if required_scenarios:
         scenario_ids = [cell["id"] for cell in summary["scenario_statuses"]]
         if len(scenario_ids) != len(set(scenario_ids)) or set(scenario_ids) != set(required_scenarios):
-            raise ConformanceError(
-                f"runner {runner['id']} does not retain exactly its declared scenario cells"
-            )
+            raise ConformanceError(f"runner {runner['id']} does not retain exactly its declared scenario cells")
         if terminal_pass and any(cell["status"] != "pass" for cell in summary["scenario_statuses"]):
-            raise ConformanceError(
-                f"passing runner {runner['id']} retains a non-passing declared scenario cell"
-            )
-    if require_binding and artifact_binding_failures(
-        plan, runner["required_distributions"], [diagnostic]
-    ):
-        raise ConformanceError(
-            f"passing runner {runner['id']} has incomplete or mismatched native artifact evidence"
-        )
+            raise ConformanceError(f"passing runner {runner['id']} retains a non-passing declared scenario cell")
+    if require_binding and artifact_binding_failures(plan, runner["required_distributions"], [diagnostic]):
+        raise ConformanceError(f"passing runner {runner['id']} has incomplete or mismatched native artifact evidence")
 
 
-def validate_retained_attempt_lifecycle(
-    result: dict[str, Any], plan: dict[str, Any], contract: dict[str, Any]
-) -> None:
+def validate_retained_attempt_lifecycle(result: dict[str, Any], plan: dict[str, Any], contract: dict[str, Any]) -> None:
     experiment = result["experiment"]
     specification = contract["experiments"][experiment]
     if result["owning_contract"] != specification["owning_contract"]:
@@ -2637,9 +2675,7 @@ def validate_retained_attempt_lifecycle(
             raise ConformanceError(f"runner {runner['id']} retains duplicate passing terminal attempts")
         observed_attempts = [diagnostic["attempt"] for diagnostic in attempts]
         if observed_attempts != list(range(1, len(attempts) + 1)):
-            raise ConformanceError(
-                f"runner {runner['id']} does not retain a bounded, ordered attempt lifecycle"
-            )
+            raise ConformanceError(f"runner {runner['id']} does not retain a bounded, ordered attempt lifecycle")
         maximum_attempt = max(maximum_attempt, observed_attempts[-1])
         for diagnostic, (classification, _retryable) in zip(attempts, classified, strict=True):
             validate_retained_runner_summary(
@@ -2665,9 +2701,7 @@ def validate_retained_attempt_lifecycle(
     if cursor < len(runner_diagnostics):
         runner_id = runner_diagnostics[cursor]["runner"]
         if runner_id in expected_ids:
-            raise ConformanceError(
-                f"experiment {experiment} retains a duplicate or out-of-order runner {runner_id}"
-            )
+            raise ConformanceError(f"experiment {experiment} retains a duplicate or out-of-order runner {runner_id}")
         raise ConformanceError(f"experiment {experiment} retains unknown runner {runner_id}")
     if result["retry"]["attempts"] != maximum_attempt:
         raise ConformanceError("experiment result retry count disagrees with its runner attempts")
@@ -2685,9 +2719,7 @@ def validate_retained_attempt_lifecycle(
         raise ConformanceError("failed experiment result disagrees with its terminal runner attempt")
 
 
-def validate_experiment_result(
-    result: Any, plan: dict[str, Any], contract: dict[str, Any] | None = None
-) -> None:
+def validate_experiment_result(result: Any, plan: dict[str, Any], contract: dict[str, Any] | None = None) -> None:
     required = {
         "schema",
         "experiment",
@@ -2698,6 +2730,7 @@ def validate_experiment_result(
         "runtime_dependencies",
         "runner",
         "server_runner",
+        "waterline_service_runner",
         "owning_contract",
         "required_clients",
         "required_distributions",
@@ -2722,6 +2755,7 @@ def validate_experiment_result(
         "runtime_dependencies",
         "runner",
         "server_runner",
+        "waterline_service_runner",
     ):
         if result[field] != plan[field]:
             raise ConformanceError(f"experiment result {result['experiment']} has a mismatched {field} binding")
@@ -2739,13 +2773,13 @@ def validate_experiment_result(
         not isinstance(required_distributions, list)
         or not required_distributions
         or len(required_distributions) != len(set(required_distributions))
-        or not set(required_distributions).issubset(COMPONENTS)
+        or not set(required_distributions).issubset(DISTRIBUTIONS)
         or not {"server", *clients}.issubset(required_distributions)
     ):
         raise ConformanceError("experiment result has invalid required distributions")
     if result["source_policy"] != {
         "product_artifacts": "published_only",
-        "orchestration_source": "exact_server_container",
+        "orchestration_source": "bound_control_plane_and_exact_candidate_images",
         "local_product_source_checkout_used": False,
     }:
         raise ConformanceError("experiment result does not prove the published-only source policy")
@@ -2784,10 +2818,7 @@ def validate_experiment_result(
             or not isinstance(diagnostic.get("timed_out"), bool)
             or (
                 diagnostic.get("native_outcome") is not None
-                and (
-                    not isinstance(diagnostic["native_outcome"], str)
-                    or len(diagnostic["native_outcome"]) > 128
-                )
+                and (not isinstance(diagnostic["native_outcome"], str) or len(diagnostic["native_outcome"]) > 128)
             )
             or not isinstance(diagnostic.get("runner_blocked"), bool)
         ):
@@ -2875,20 +2906,20 @@ def validate_experiment_result(
             }:
                 raise ConformanceError("experiment result has an invalid native summary")
             if (
-                len(native_summary["artifact_versions"]) > len(COMPONENTS)
-                or len(native_summary["executed_distribution_identities"]) > len(COMPONENTS)
+                len(native_summary["artifact_versions"]) > len(DISTRIBUTIONS)
+                or len(native_summary["executed_distribution_identities"]) > len(DISTRIBUTIONS)
                 or len(native_summary["scenario_statuses"]) > 128
             ):
                 raise ConformanceError("experiment result has an unbounded native summary")
             summary_versions = native_summary["artifact_versions"]
             if (
                 not isinstance(summary_versions, dict)
-                or not set(summary_versions).issubset(COMPONENTS)
+                or not set(summary_versions).issubset(DISTRIBUTIONS)
                 or any(not isinstance(version, str) or len(version) > 128 for version in summary_versions.values())
             ):
                 raise ConformanceError("experiment result has invalid native artifact versions")
             summary_identities = native_summary["executed_distribution_identities"]
-            if not isinstance(summary_identities, dict) or not set(summary_identities).issubset(COMPONENTS):
+            if not isinstance(summary_identities, dict) or not set(summary_identities).issubset(DISTRIBUTIONS):
                 raise ConformanceError("experiment result retains an unknown native distribution identity")
             for name, identity in summary_identities.items():
                 identity_error = native_distribution_identity_structure_error(name, identity)
@@ -2907,8 +2938,7 @@ def validate_experiment_result(
             ):
                 raise ConformanceError("experiment result has invalid native scenario statuses")
             if any(
-                contains_sensitive_evidence_text(cell["id"])
-                or contains_sensitive_evidence_text(cell["status"])
+                contains_sensitive_evidence_text(cell["id"]) or contains_sensitive_evidence_text(cell["status"])
                 for cell in scenario_statuses
             ):
                 raise ConformanceError("experiment result has unsanitized native scenario statuses")
@@ -3023,8 +3053,8 @@ def aggregate_results(
         }
         retained_paths[experiment] = path
     outcome = "pass" if all(item["outcome"] == "pass" for item in summaries.values()) else "fail"
-    if outcome == "pass" and set(executed_distribution_identities) != set(COMPONENTS):
-        raise ConformanceError("passing suite does not retain executed identities for all seven distributions")
+    if outcome == "pass" and set(executed_distribution_identities) != set(DISTRIBUTIONS):
+        raise ConformanceError("passing suite does not retain every required executed distribution identity")
     evidence_tag = f"beta-conformance/{plan['candidate']['name']}/{run_id}.{run_attempt}"
     suite = {
         "schema": SUITE_RESULT_SCHEMA,
@@ -3036,9 +3066,10 @@ def aggregate_results(
         "runtime_dependencies": plan["runtime_dependencies"],
         "runner": plan["runner"],
         "server_runner": plan["server_runner"],
+        "waterline_service_runner": plan["waterline_service_runner"],
         "source_policy": {
             "product_artifacts": "published_only",
-            "orchestration_source": "exact_server_container",
+            "orchestration_source": "bound_control_plane_and_exact_candidate_images",
             "local_product_source_checkout_used": False,
         },
         "github_run": {

@@ -38,7 +38,7 @@ if __package__ in {None, ""}:
 from scripts.packagist_metadata import PackagistMetadataError, exact_package_version
 
 SCHEMA = "durable-workflow.beta-candidate/v1"
-VERIFICATION_SCHEMA = "durable-workflow.beta-candidate-verification/v1"
+VERIFICATION_SCHEMA = "durable-workflow.beta-candidate-verification/v2"
 CANDIDATE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
 VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
@@ -73,6 +73,12 @@ COMPONENTS = {
     "sdk-python": Component("durable-workflow/sdk-python", "pypi", "durable-workflow"),
     "sdk-rust": Component("durable-workflow/sdk-rust", "crates.io", "durable-workflow"),
 }
+
+WATERLINE_SERVICE = Component(
+    "durable-workflow/waterline",
+    "oci",
+    "docker.io/durableworkflow/waterline",
+)
 
 CLI_ASSETS = {
     "dw.phar",
@@ -446,7 +452,11 @@ def validate_verification(verification: Any, manifest: dict[str, Any]) -> None:
         raise CandidateError("verification result does not cover every candidate component")
     for name, identity in manifest["components"].items():
         result = components[name]
-        expected_result = {"version", "commit", "source", "distribution", "outcome"}
+        expected_result = (
+            {"version", "commit", "source", "distributions", "outcome"}
+            if name == "waterline"
+            else {"version", "commit", "source", "distribution", "outcome"}
+        )
         if not isinstance(result, dict) or set(result) != expected_result or result["outcome"] != "verified":
             raise CandidateError(f"verification result for {name} is not successful")
         if result["version"] != identity["version"] or result["commit"] != identity["commit"]:
@@ -461,9 +471,34 @@ def validate_verification(verification: Any, manifest: dict[str, Any]) -> None:
             "crates.io": _validate_crate_evidence,
             "oci": _validate_oci_evidence,
         }
-        distribution_validators[component.distribution](
-            result["distribution"], component, identity["version"], identity["commit"], f"{context}.distribution"
-        )
+        if name == "waterline":
+            distributions = _require_exact_keys(
+                result["distributions"],
+                {"embedded", "service"},
+                f"{context}.distributions",
+            )
+            _validate_composer_evidence(
+                distributions["embedded"],
+                component,
+                identity["version"],
+                identity["commit"],
+                f"{context}.distributions.embedded",
+            )
+            _validate_oci_evidence(
+                distributions["service"],
+                WATERLINE_SERVICE,
+                identity["version"],
+                identity["commit"],
+                f"{context}.distributions.service",
+            )
+        else:
+            distribution_validators[component.distribution](
+                result["distribution"],
+                component,
+                identity["version"],
+                identity["commit"],
+                f"{context}.distribution",
+            )
 
 
 class PublicClient:
@@ -833,10 +868,7 @@ try {
         matches = re.findall(rf"\bpublic\s+const\s+{name}\s*=\s*'([^'\\\r\n]*)'\s*;", source)
         return matches[0] if len(matches) == 1 else None
 
-    if (
-        generated_constant("VERSION") != version.lstrip("v")
-        or generated_constant("COMMIT") != expected_commit
-    ):
+    if generated_constant("VERSION") != version.lstrip("v") or generated_constant("COMMIT") != expected_commit:
         raise CandidateError(f"CLI PHAR for {version} does not embed planned source commit {expected_commit}")
     return canonical_cli_embedded_identity(version, expected_commit)
 
@@ -1204,18 +1236,31 @@ def verify_candidate(manifest: dict[str, Any], client: PublicClient) -> dict[str
             try:
                 source = resolve_github_tag(client, component.repository, identity["version"])
                 require_tag_commit(source, identity["commit"])
-                distribution = VERIFIERS[component.distribution](
-                    client, component, identity["version"], identity["commit"], directory
-                )
+                if name == "waterline":
+                    distributions = {
+                        "embedded": verify_composer(
+                            client, component, identity["version"], identity["commit"], directory
+                        ),
+                        "service": verify_oci(
+                            client, WATERLINE_SERVICE, identity["version"], identity["commit"], directory
+                        ),
+                    }
+                else:
+                    distribution = VERIFIERS[component.distribution](
+                        client, component, identity["version"], identity["commit"], directory
+                    )
             except CandidateError as error:
                 raise CandidateError(f"{name}: {error}") from error
             components[name] = {
                 "version": identity["version"],
                 "commit": identity["commit"],
                 "source": source,
-                "distribution": distribution,
                 "outcome": "verified",
             }
+            if name == "waterline":
+                components[name]["distributions"] = distributions
+            else:
+                components[name]["distribution"] = distribution
     return {
         "schema": VERIFICATION_SCHEMA,
         "candidate": manifest["candidate"],
@@ -1240,7 +1285,24 @@ def revalidate_verification(
             try:
                 source = resolve_github_tag(client, component.repository, identity["version"])
                 require_tag_commit(source, identity["commit"])
-                if component.distribution == "github-release":
+                if name == "waterline":
+                    distributions = {
+                        "embedded": verify_composer(
+                            client,
+                            component,
+                            identity["version"],
+                            identity["commit"],
+                            directory,
+                        ),
+                        "service": verify_oci(
+                            client,
+                            WATERLINE_SERVICE,
+                            identity["version"],
+                            identity["commit"],
+                            directory,
+                        ),
+                    }
+                elif component.distribution == "github-release":
                     distribution = verify_github_release(
                         client,
                         component,
@@ -1254,7 +1316,12 @@ def revalidate_verification(
                     )
             except CandidateError as error:
                 raise CandidateError(f"fresh writer revalidation failed for {name}: {error}") from error
-            if source != submitted["source"] or distribution != submitted["distribution"]:
+            submitted_distributions = submitted.get("distributions") if name == "waterline" else None
+            if source != submitted["source"] or (
+                distributions != submitted_distributions
+                if name == "waterline"
+                else distribution != submitted["distribution"]
+            ):
                 raise CandidateError(
                     f"fresh writer revalidation for {name} differs from the isolated verification handoff"
                 )
@@ -1262,9 +1329,12 @@ def revalidate_verification(
                 "version": identity["version"],
                 "commit": identity["commit"],
                 "source": source,
-                "distribution": distribution,
                 "outcome": "verified",
             }
+            if name == "waterline":
+                components[name]["distributions"] = distributions
+            else:
+                components[name]["distribution"] = distribution
     return {
         "schema": VERIFICATION_SCHEMA,
         "candidate": manifest["candidate"],

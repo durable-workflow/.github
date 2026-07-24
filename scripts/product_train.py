@@ -10,7 +10,7 @@ from typing import Any
 from scripts.beta_candidate import COMPONENTS, CandidateError
 
 CONTRACT_PATH = Path(__file__).resolve().parents[1] / "product-train" / "current.json"
-SCHEMA = "durable-workflow.product-train/v1"
+SCHEMA = "durable-workflow.product-train/v2"
 
 
 def load_product_train(path: Path = CONTRACT_PATH) -> dict[str, Any]:
@@ -56,6 +56,14 @@ def load_product_train(path: Path = CONTRACT_PATH) -> dict[str, Any]:
     expected_registry_versions["sdk-python"] = current.replace("-beta.", "b")
     if current_train.get("registry_versions") != expected_registry_versions:
         raise CandidateError("current registry versions must identify the synchronized train")
+    install = current_train.get("install")
+    waterline_install = install.get("waterline") if isinstance(install, dict) else None
+    if (
+        not isinstance(waterline_install, dict)
+        or set(waterline_install) != {"embedded", "service"}
+        or any(not isinstance(command, str) or not command for command in waterline_install.values())
+    ):
+        raise CandidateError("current product train must publish both Waterline install modes")
     return contract
 
 

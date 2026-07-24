@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema", "candidate", "manifest_sha256", "verified_at", "outcome", "components"],
   "properties": {
-    "schema": {"const": "durable-workflow.beta-candidate-verification/v1"},
+    "schema": {"const": "durable-workflow.beta-candidate-verification/v2"},
     "candidate": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,62}$"},
     "manifest_sha256": {"$ref": "#/$defs/sha256"},
     "verified_at": {
@@ -20,7 +20,7 @@
       "required": ["workflow", "waterline", "server", "cli", "sdk-php", "sdk-python", "sdk-rust"],
       "properties": {
         "workflow": {"$ref": "#/$defs/composerResult"},
-        "waterline": {"$ref": "#/$defs/composerResult"},
+        "waterline": {"$ref": "#/$defs/waterlineResult"},
         "server": {"$ref": "#/$defs/ociResult"},
         "cli": {"$ref": "#/$defs/githubReleaseResult"},
         "sdk-php": {"$ref": "#/$defs/composerResult"},
@@ -248,7 +248,7 @@
       "required": ["kind", "image", "manifest_digest", "platforms", "configs"],
       "properties": {
         "kind": {"const": "oci"},
-        "image": {"type": "string", "pattern": "^docker\\.io/durableworkflow/server:"},
+        "image": {"type": "string", "pattern": "^docker\\.io/durableworkflow/(?:server|waterline):"},
         "manifest_digest": {"$ref": "#/$defs/ociDigest"},
         "platforms": {
           "type": "array",
@@ -265,6 +265,28 @@
           "items": {"$ref": "#/$defs/ociConfig"}
         }
       }
+    },
+    "serverOciDistribution": {
+      "allOf": [
+        {"$ref": "#/$defs/ociDistribution"},
+        {
+          "type": "object",
+          "properties": {
+            "image": {"type": "string", "pattern": "^docker\\.io/durableworkflow/server:"}
+          }
+        }
+      ]
+    },
+    "waterlineOciDistribution": {
+      "allOf": [
+        {"$ref": "#/$defs/ociDistribution"},
+        {
+          "type": "object",
+          "properties": {
+            "image": {"type": "string", "pattern": "^docker\\.io/durableworkflow/waterline:"}
+          }
+        }
+      ]
     },
     "resultBase": {
       "type": "object",
@@ -288,6 +310,30 @@
             "commit": {"$ref": "#/$defs/commit"},
             "source": {"$ref": "#/$defs/source"},
             "distribution": {"$ref": "#/$defs/composerDistribution"},
+            "outcome": {"const": "verified"}
+          }
+        }
+      ]
+    },
+    "waterlineResult": {
+      "allOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version", "commit", "source", "distributions", "outcome"],
+          "properties": {
+            "version": {"$ref": "#/$defs/version"},
+            "commit": {"$ref": "#/$defs/commit"},
+            "source": {"$ref": "#/$defs/source"},
+            "distributions": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["embedded", "service"],
+              "properties": {
+                "embedded": {"$ref": "#/$defs/composerDistribution"},
+                "service": {"$ref": "#/$defs/waterlineOciDistribution"}
+              }
+            },
             "outcome": {"const": "verified"}
           }
         }
@@ -355,7 +401,7 @@
             "version": {"$ref": "#/$defs/version"},
             "commit": {"$ref": "#/$defs/commit"},
             "source": {"$ref": "#/$defs/source"},
-            "distribution": {"$ref": "#/$defs/ociDistribution"},
+            "distribution": {"$ref": "#/$defs/serverOciDistribution"},
             "outcome": {"const": "verified"}
           }
         }

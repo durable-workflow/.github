@@ -3,7 +3,13 @@ from __future__ import annotations
 import urllib.parse
 from typing import Any
 
-from scripts.beta_candidate import CLI_ASSETS, COMPONENTS, VERIFICATION_SCHEMA, manifest_digest
+from scripts.beta_candidate import (
+    CLI_ASSETS,
+    COMPONENTS,
+    VERIFICATION_SCHEMA,
+    WATERLINE_SERVICE,
+    manifest_digest,
+)
 
 
 def candidate_verification(candidate: dict[str, Any], *, verified_at: str = "2026-07-20T21:00:00Z") -> dict[str, Any]:
@@ -120,9 +126,28 @@ def candidate_verification(candidate: dict[str, Any], *, verified_at: str = "202
             "version": version,
             "commit": commit,
             "source": source,
-            "distribution": distribution,
             "outcome": "verified",
         }
+        if name == "waterline":
+            labels = {
+                "org.opencontainers.image.revision": commit,
+                "dev.durable-workflow.release.tag": version,
+            }
+            results[name]["distributions"] = {
+                "embedded": distribution,
+                "service": {
+                    "kind": "oci",
+                    "image": f"{WATERLINE_SERVICE.package}:{version}",
+                    "manifest_digest": f"sha256:{'b' * 64}",
+                    "platforms": ["linux/amd64", "linux/arm64"],
+                    "configs": [
+                        {"digest": f"sha256:{index + 30:064x}", "labels": labels},
+                        {"digest": f"sha256:{index + 40:064x}", "labels": labels},
+                    ],
+                },
+            }
+        else:
+            results[name]["distribution"] = distribution
     return {
         "schema": VERIFICATION_SCHEMA,
         "candidate": candidate["candidate"],

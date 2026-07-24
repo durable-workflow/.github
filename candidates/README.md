@@ -12,7 +12,7 @@ by the verifier rather than supplied by the request:
 | Component | Public artifact surface | Source identity check |
 | --- | --- | --- |
 | Workflow | Packagist `durable-workflow/workflow` | Packagist source/dist reference and GitHub release tag |
-| Waterline | Packagist `durable-workflow/waterline` | Packagist source/dist reference and GitHub release tag |
+| Waterline | Packagist `durable-workflow/waterline` and Docker Hub `durableworkflow/waterline` | Packagist source/dist reference, OCI manifest/platform/config-label evidence, and one GitHub release tag |
 | server | Docker Hub `durableworkflow/server` | OCI config labels and GitHub release tag |
 | CLI | GitHub release assets | release checksums, build-attestation source commit/ref, and GitHub release tag |
 | PHP SDK | Packagist `durable-workflow/sdk` | Packagist source/dist reference and GitHub release tag |
@@ -42,3 +42,8 @@ GET /repos/durable-workflow/.github/contents/verification.json?ref=beta-candidat
 The manifest contains public versions and source commits only. Registry
 credentials, publishing environments, conformance results, and product secrets
 are deliberately outside this format.
+
+Waterline remains one manifest component. Its verification result has a
+required `distributions` object with `embedded` Composer and `service` OCI
+records. Both records are checked against the component's one version, source
+tag, and full commit; either missing record makes the candidate unverifiable.

@@ -13,10 +13,11 @@
     "runtime_dependencies",
     "runner",
     "server_runner",
+    "waterline_service_runner",
     "experiments"
   ],
   "properties": {
-    "schema": { "const": "durable-workflow.beta-conformance.plan/v1" },
+    "schema": { "const": "durable-workflow.beta-conformance.plan/v2" },
     "candidate": { "$ref": "#/$defs/candidate" },
     "artifact_tuple": { "$ref": "#/$defs/components" },
     "source_identities": { "$ref": "#/$defs/sourceIdentities" },
@@ -24,6 +25,7 @@
     "runtime_dependencies": { "$ref": "#/$defs/runtimeDependencies" },
     "runner": { "$ref": "#/$defs/runner" },
     "server_runner": { "$ref": "#/$defs/serverRunner" },
+    "waterline_service_runner": { "$ref": "#/$defs/waterlineServiceRunner" },
     "experiments": {
       "type": "array",
       "const": ["heartbeats", "polyglot", "replay", "signals-queries"]
@@ -102,6 +104,16 @@
         "source_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
       }
     },
+    "waterlineServiceRunner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image", "manifest_digest", "source_commit"],
+      "properties": {
+        "image": { "type": "string", "pattern": "^docker\\.io/durableworkflow/waterline@sha256:[0-9a-f]{64}$" },
+        "manifest_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "source_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+      }
+    },
     "runtimeDependencies": {
       "type": "object",
       "additionalProperties": false,
@@ -158,10 +170,11 @@
     "distributionIdentities": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["workflow", "waterline", "server", "cli", "sdk-php", "sdk-python", "sdk-rust"],
+      "required": ["workflow", "waterline", "waterline-service", "server", "cli", "sdk-php", "sdk-python", "sdk-rust"],
       "properties": {
         "workflow": { "$ref": "#/$defs/distributionIdentity" },
         "waterline": { "$ref": "#/$defs/distributionIdentity" },
+        "waterline-service": { "$ref": "#/$defs/distributionIdentity" },
         "server": { "$ref": "#/$defs/distributionIdentity" },
         "cli": { "$ref": "#/$defs/distributionIdentity" },
         "sdk-php": { "$ref": "#/$defs/distributionIdentity" },
@@ -175,6 +188,7 @@
       "properties": {
         "workflow": { "$ref": "#/$defs/distributionIdentity" },
         "waterline": { "$ref": "#/$defs/distributionIdentity" },
+        "waterline-service": { "$ref": "#/$defs/distributionIdentity" },
         "server": { "$ref": "#/$defs/distributionIdentity" },
         "cli": { "$ref": "#/$defs/distributionIdentity" },
         "sdk-php": { "$ref": "#/$defs/distributionIdentity" },

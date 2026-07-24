@@ -14,6 +14,7 @@
     "runtime_dependencies",
     "runner",
     "server_runner",
+    "waterline_service_runner",
     "owning_contract",
     "required_clients",
     "required_distributions",
@@ -27,7 +28,7 @@
     "diagnostics"
   ],
   "properties": {
-    "schema": { "const": "durable-workflow.beta-conformance.experiment-result/v1" },
+    "schema": { "const": "durable-workflow.beta-conformance.experiment-result/v2" },
     "experiment": { "enum": ["replay", "polyglot", "heartbeats", "signals-queries"] },
     "candidate": { "$ref": "plan-schema.json#/$defs/candidate" },
     "artifact_tuple": { "$ref": "plan-schema.json#/$defs/components" },
@@ -36,6 +37,7 @@
     "runtime_dependencies": { "$ref": "plan-schema.json#/$defs/runtimeDependencies" },
     "runner": { "$ref": "plan-schema.json#/$defs/runner" },
     "server_runner": { "$ref": "plan-schema.json#/$defs/serverRunner" },
+    "waterline_service_runner": { "$ref": "plan-schema.json#/$defs/waterlineServiceRunner" },
     "owning_contract": { "type": "string" },
     "required_clients": {
       "type": "array",
@@ -48,7 +50,7 @@
       "minItems": 1,
       "uniqueItems": true,
       "items": {
-        "enum": ["workflow", "waterline", "server", "cli", "sdk-php", "sdk-python", "sdk-rust"]
+        "enum": ["workflow", "waterline", "waterline-service", "server", "cli", "sdk-php", "sdk-python", "sdk-rust"]
       }
     },
     "source_policy": { "$ref": "#/$defs/sourcePolicy" },
@@ -176,7 +178,7 @@
       "required": ["product_artifacts", "orchestration_source", "local_product_source_checkout_used"],
       "properties": {
         "product_artifacts": { "const": "published_only" },
-        "orchestration_source": { "const": "exact_server_container" },
+        "orchestration_source": { "const": "bound_control_plane_and_exact_candidate_images" },
         "local_product_source_checkout_used": { "const": false }
       }
     },
@@ -197,10 +199,11 @@
         "artifact_versions": {
           "type": "object",
           "additionalProperties": false,
-          "maxProperties": 7,
+          "maxProperties": 8,
           "properties": {
             "workflow": { "type": "string", "maxLength": 128 },
             "waterline": { "type": "string", "maxLength": 128 },
+            "waterline-service": { "type": "string", "maxLength": 128 },
             "server": { "type": "string", "maxLength": 128 },
             "cli": { "type": "string", "maxLength": 128 },
             "sdk-php": { "type": "string", "maxLength": 128 },

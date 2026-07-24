@@ -22,6 +22,7 @@
       "runners": [
         {
           "id": "php",
+          "source": "server-image",
           "path": "scripts/conformance/heartbeats-published-artifacts.sh",
           "result": "php-sdk-heartbeat-loop-evidence.json",
           "required_distributions": [
@@ -32,6 +33,7 @@
         },
         {
           "id": "python",
+          "source": "server-image",
           "path": "scripts/conformance/heartbeats-python-published-artifacts.sh",
           "result": "python-sdk-heartbeat-loop-evidence.json",
           "required_distributions": [
@@ -42,6 +44,7 @@
         },
         {
           "id": "rust",
+          "source": "server-image",
           "path": "scripts/conformance/heartbeats-rust-published-artifacts.sh",
           "result": "rust-sdk-heartbeat-loop-evidence.json",
           "required_distributions": [
@@ -70,6 +73,7 @@
       "runners": [
         {
           "id": "python-parity",
+          "source": "server-image",
           "path": "scripts/conformance/python-published-artifacts.sh",
           "result": "python-conformance-result.json",
           "required_distributions": [
@@ -82,6 +86,7 @@
         },
         {
           "id": "php-sdk",
+          "source": "server-image",
           "path": "scripts/conformance/php-sdk-published-artifacts.sh",
           "result": "php-sdk-conformance-result.json",
           "required_distributions": [
@@ -100,6 +105,7 @@
         },
         {
           "id": "activities-cross-language",
+          "source": "server-image",
           "path": "scripts/conformance/activities-published-artifacts.sh",
           "result": "activities-result.json",
           "required_distributions": [
@@ -132,6 +138,7 @@
       "runners": [
         {
           "id": "replay-matrix",
+          "source": "server-image",
           "path": "scripts/conformance/replay-published-artifacts.sh",
           "result": "replay-conformance-result.json",
           "required_distributions": [
@@ -157,6 +164,7 @@
       "required_distributions": [
         "workflow",
         "waterline",
+        "waterline-service",
         "server",
         "cli",
         "sdk-php",
@@ -166,6 +174,7 @@
       "runners": [
         {
           "id": "signals-queries-matrix",
+          "source": "server-image",
           "path": "scripts/conformance/signals-queries-published-artifacts.sh",
           "result": "signals-queries-result.json",
           "required_distributions": [
@@ -209,12 +218,47 @@
             "completed_run_signal_and_query",
             "unknown_signal_and_query_errors",
             "malformed_signal_and_query_payloads",
-            "waterline_operator_visibility"
+            "waterline_operator_visibility",
+            "waterline_service_operator_visibility"
           ]
+        },
+        {
+          "id": "waterline-service",
+          "source": "control-plane",
+          "path": "scripts/waterline_service_conformance.py",
+          "result": "waterline-service-conformance-result.json",
+          "required_distributions": [
+            "waterline-service"
+          ],
+          "result_schema": "durable-workflow.beta-conformance.waterline-service.v1",
+          "required_result_fields": [
+            "schema",
+            "started_at",
+            "finished_at",
+            "outcome",
+            "runner_blocked",
+            "artifact_versions",
+            "executed_distribution_identities",
+            "scenario_results",
+            "findings"
+          ],
+          "required_scenarios": [
+            "service_image_php_sdk_standalone"
+          ],
+          "runtime": {
+            "cache_backend": "redis",
+            "database_backend": "mysql",
+            "kind": "standalone-server",
+            "namespace_environment": "DW_WATERLINE_SERVICE_NAMESPACE",
+            "network_scope": "private",
+            "queue_backend": "redis",
+            "server_url_environment": "DW_WATERLINE_SERVICE_SERVER_URL",
+            "token_environment": "DW_WATERLINE_SERVICE_TOKEN"
+          }
         }
       ],
       "timeout_seconds": 5400
     }
   },
-  "schema": "durable-workflow.beta-conformance.contract/v1"
+  "schema": "durable-workflow.beta-conformance.contract/v2"
 }
