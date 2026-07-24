@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import unittest
 import urllib.error
 from pathlib import Path
@@ -13,16 +14,22 @@ import yaml
 from scripts.issue_authority import (
     COMPLETION_REQUIRED_LABEL,
     COMPLETION_VERIFIED_LABEL,
+    INTAKE_SCHEMA,
     OWNER_LABELS,
     STATUS_LABELS,
     UNBLOCK_CONTEXT_END,
     UNBLOCK_CONTEXT_START,
     AuthorityError,
     GitHubApi,
+    GitHubDiscovery,
     apply_backlog,
+    assess_issue_intake,
     audit_backlog,
+    issue_revision_digest,
     load_contract,
+    reconstruct_intake,
     validate_contract,
+    verify_intake_manifest,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -182,6 +189,70 @@ def replace_unblock_context(issue: dict[str, Any], replacement: str) -> None:
     issue["body"] = issue["body"][:start] + replacement + issue["body"][end:]
 
 
+def intake_issue(
+    *,
+    author: str = "external-contributor",
+    body: str = "Current body",
+    edited_at: str | None = None,
+    labels: list[str] | None = None,
+    number: int = 1,
+) -> dict[str, Any]:
+    return {
+        "author": {"login": author},
+        "body": body,
+        "created_at": "2026-07-21T10:00:00Z",
+        "html_url": f"https://github.com/durable-workflow/.github/issues/{number}",
+        "labels": [{"name": label} for label in labels or []],
+        "last_edited_at": edited_at,
+        "milestone": None,
+        "number": number,
+        "state": "open",
+        "title": "Current title",
+    }
+
+
+def label_event(
+    actor: str,
+    created_at: str,
+    *,
+    event: str = "labeled",
+) -> dict[str, Any]:
+    return {
+        "actor": actor,
+        "created_at": created_at,
+        "event": event,
+        "label": "intake:approved",
+    }
+
+
+class FakeDiscovery:
+    def __init__(
+        self,
+        policy: dict[str, Any],
+        issues: dict[str, list[tuple[dict[str, Any], list[dict[str, Any]]]]],
+    ) -> None:
+        self.policy = policy
+        self.issues = issues
+        self.get_requests: list[tuple[str, int]] = []
+
+    def list_issues(
+        self,
+        _organization: str,
+        repository: str,
+    ) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
+        return copy.deepcopy(self.issues.get(repository, []))
+
+    def get_issue(
+        self,
+        _organization: str,
+        repository: str,
+        number: int,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        self.get_requests.append((repository, number))
+        issue, timeline = next(record for record in self.issues.get(repository, []) if record[0]["number"] == number)
+        return copy.deepcopy(issue), copy.deepcopy(timeline)
+
+
 class ContractValidationTest(unittest.TestCase):
     def test_checked_in_contract_is_valid(self) -> None:
         policy, backlog = load_contract(
@@ -190,6 +261,8 @@ class ContractValidationTest(unittest.TestCase):
         )
 
         self.assertEqual("github-to-mirrors", policy["state_direction"])
+        self.assertEqual(["rmcdaniel", "durable-workflow-ops"], policy["intake"]["trusted_actors"])
+        self.assertEqual("intake:approved", policy["intake"]["approval_label"])
         self.assertEqual(4, len(backlog["items"]))
         blocked = [item for item in backlog["items"] if item["status"] == "blocked"]
         self.assertTrue(all(item["depends_on"] or item.get("unblock_condition") for item in blocked))
@@ -270,28 +343,263 @@ class ContractValidationTest(unittest.TestCase):
 
     def test_authority_jobs_are_limited_to_the_canonical_github_host(self) -> None:
         workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "issue-authority.yml").read_text(encoding="utf-8"))
-        conditions = {job: " ".join(workflow["jobs"][job]["if"].split()) for job in ("validate", "apply", "audit")}
+        conditions = {
+            job: " ".join(workflow["jobs"][job]["if"].split())
+            for job in ("validate", "intake", "apply", "audit")
+        }
 
         self.assertEqual(
             "${{ github.event_name != 'issues' || github.server_url == 'https://github.com' }}",
             conditions["validate"],
         )
         self.assertEqual(
+            "${{ github.server_url == 'https://github.com' && "
+            "(github.event_name == 'push' || github.event_name == 'schedule' || "
+            "github.event_name == 'issues' || github.event_name == 'workflow_dispatch') }}",
+            conditions["intake"],
+        )
+        self.assertEqual(
             "${{ github.ref == 'refs/heads/main' && github.server_url == 'https://github.com' && "
-            "(github.event_name == 'push' || "
+            "needs.intake.outputs.intake_ready == 'true' && (github.event_name == 'push' || "
             "(github.event_name == 'workflow_dispatch' && inputs.mode == 'apply')) }}",
             conditions["apply"],
         )
         self.assertEqual(
             "${{ github.ref == 'refs/heads/main' && github.server_url == 'https://github.com' && "
-            "(github.event_name == 'schedule' || "
-            "github.event_name == 'issues' || "
+            "needs.intake.outputs.intake_ready == 'true' && (github.event_name == 'schedule' || "
+            "(github.event_name == 'issues' && needs.intake.outputs.trigger_approved == 'true') || "
             "(github.event_name == 'workflow_dispatch' && inputs.mode == 'audit')) }}",
             conditions["audit"],
         )
 
+    def test_unapproved_events_cannot_reach_a_privileged_environment(self) -> None:
+        workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "issue-authority.yml").read_text(encoding="utf-8"))
+        intake = workflow["jobs"]["intake"]
+
+        self.assertNotIn("environment", intake)
+        self.assertEqual({"contents": "read", "issues": "read"}, intake["permissions"])
+        self.assertNotIn("BETA_PRODUCT_WORK_TOKEN", json.dumps(intake))
+        self.assertEqual("${{ github.token }}", intake["steps"][-1]["env"]["GITHUB_TOKEN"])
+        for name in ("apply", "audit"):
+            job = workflow["jobs"][name]
+            self.assertEqual("beta-product-work", job["environment"])
+            self.assertEqual({"contents": "read", "issues": "read"}, job["permissions"])
+            self.assertIn("intake", job["needs"])
+            self.assertNotIn("PUBLIC_ISSUE_DISCOVERY_TOKEN", json.dumps(job))
+            self.assertIn("GITHUB_TOKEN", json.dumps(job))
+            self.assertIn("BETA_PRODUCT_WORK_TOKEN", json.dumps(job))
+
+    def test_comments_and_pull_request_content_are_not_event_inputs(self) -> None:
+        source = (ROOT / ".github" / "workflows" / "issue-authority.yml").read_text(encoding="utf-8")
+
+        self.assertNotIn("issue_comment:", source)
+        self.assertNotIn("pull_request:", source)
+        self.assertNotIn("pull_request_target:", source)
+        self.assertIn("types: [opened, edited, closed, reopened, labeled, unlabeled, milestoned, demilestoned]", source)
+
+    def test_every_external_action_is_immutably_pinned(self) -> None:
+        source = (ROOT / ".github" / "workflows" / "issue-authority.yml").read_text(encoding="utf-8")
+        invocations = re.findall(r"^\s+uses:\s+(actions/[^\s@]+)@([^\s]+)(?:\s+#\s+(.+))?$", source, re.MULTILINE)
+
+        self.assertTrue(invocations)
+        for action, revision, version in invocations:
+            with self.subTest(action=action):
+                self.assertRegex(revision, r"^[0-9a-f]{40}$")
+                self.assertRegex(version or "", r"^v[0-9]+$")
+
+
+class IssueIntakeTest(unittest.TestCase):
+    trusted = ["rmcdaniel", "durable-workflow-ops"]
+
+    def assess(self, issue: dict[str, Any], timeline: list[dict[str, Any]]) -> dict[str, Any]:
+        return assess_issue_intake(
+            issue,
+            timeline,
+            approval_label="intake:approved",
+            trusted_actors=self.trusted,
+        )
+
+    def test_trusted_creation_is_vetted_without_a_label(self) -> None:
+        issue = intake_issue(author="rmcdaniel")
+
+        assessment = self.assess(issue, [])
+
+        self.assertTrue(assessment["approved"])
+        self.assertEqual("trusted-creation", assessment["approval_mode"])
+        self.assertEqual(issue_revision_digest(issue["title"], issue["body"]), assessment["revision"])
+
+    def test_external_creation_is_inert(self) -> None:
+        assessment = self.assess(intake_issue(), [])
+
+        self.assertFalse(assessment["approved"])
+        self.assertEqual("approval-label-absent", assessment["reason"])
+
+    def test_unapproved_body_is_never_fetched_for_revision_binding(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
+        discovery = FakeDiscovery(policy, {".github": [(intake_issue(), [])]})
+
+        manifest, inventory = reconstruct_intake(policy, discovery)
+
+        self.assertEqual([], manifest["issues"])
+        self.assertEqual([], inventory[".github"])
+        self.assertEqual([], discovery.get_requests)
+
+    def test_only_a_trusted_latest_label_actor_can_approve(self) -> None:
+        issue = intake_issue(labels=["intake:approved"])
+        trusted = self.assess(issue, [label_event("durable-workflow-ops", "2026-07-21T10:01:00Z")])
+        untrusted = self.assess(issue, [label_event("external-contributor", "2026-07-21T10:01:00Z")])
+
+        self.assertTrue(trusted["approved"])
+        self.assertEqual("durable-workflow-ops", trusted["approval_actor"])
+        self.assertFalse(untrusted["approved"])
+        self.assertEqual("approval-actor-untrusted", untrusted["reason"])
+
+    def test_post_approval_edit_invalidates_the_revision(self) -> None:
+        issue = intake_issue(
+            body="Edited body",
+            edited_at="2026-07-21T10:02:00Z",
+            labels=["intake:approved"],
+        )
+
+        assessment = self.assess(issue, [label_event("rmcdaniel", "2026-07-21T10:01:00Z")])
+
+        self.assertFalse(assessment["approved"])
+        self.assertEqual("approval-predates-revision", assessment["reason"])
+
+    def test_title_rename_after_approval_invalidates_the_revision(self) -> None:
+        issue = intake_issue(labels=["intake:approved"])
+        timeline = [
+            label_event("rmcdaniel", "2026-07-21T10:01:00Z"),
+            {"created_at": "2026-07-21T10:02:00Z", "event": "renamed"},
+        ]
+
+        assessment = self.assess(issue, timeline)
+
+        self.assertFalse(assessment["approved"])
+        self.assertEqual("approval-predates-revision", assessment["reason"])
+
+    def test_label_removal_invalidates_approval(self) -> None:
+        issue = intake_issue()
+        timeline = [
+            label_event("rmcdaniel", "2026-07-21T10:01:00Z"),
+            label_event("rmcdaniel", "2026-07-21T10:02:00Z", event="unlabeled"),
+        ]
+
+        assessment = self.assess(issue, timeline)
+
+        self.assertFalse(assessment["approved"])
+        self.assertEqual("approval-label-absent", assessment["reason"])
+
+    def test_reapproval_binds_the_new_revision_digest(self) -> None:
+        original = intake_issue(labels=["intake:approved"])
+        original_assessment = self.assess(original, [label_event("rmcdaniel", "2026-07-21T10:01:00Z")])
+        edited = intake_issue(
+            body="A newly reviewed body",
+            edited_at="2026-07-21T10:02:00Z",
+            labels=["intake:approved"],
+        )
+        timeline = [
+            label_event("rmcdaniel", "2026-07-21T10:01:00Z"),
+            label_event("rmcdaniel", "2026-07-21T10:02:30Z", event="unlabeled"),
+            label_event("rmcdaniel", "2026-07-21T10:03:00Z"),
+        ]
+
+        edited_assessment = self.assess(edited, timeline)
+
+        self.assertTrue(edited_assessment["approved"])
+        self.assertNotEqual(original_assessment["revision"], edited_assessment["revision"])
+
+    def test_clean_machine_reconstruction_is_deterministic_and_reverified(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
+        issue = intake_issue(author="rmcdaniel")
+        issues = {".github": [(issue, [])]}
+
+        first, first_inventory = reconstruct_intake(policy, FakeDiscovery(policy, issues))
+        second, _second_inventory = reconstruct_intake(policy, FakeDiscovery(policy, issues))
+
+        self.assertEqual(INTAKE_SCHEMA, first["schema"])
+        self.assertEqual(first, second)
+        self.assertEqual([issue], first_inventory[".github"])
+        verified = verify_intake_manifest(policy, first, FakeDiscovery(policy, issues))
+        self.assertEqual(first_inventory, verified)
+
+        changed = copy.deepcopy(issues)
+        changed[".github"][0][0]["body"] = "Changed after discovery"
+        changed[".github"][0][0]["last_edited_at"] = "2026-07-21T10:05:00Z"
+        with self.assertRaisesRegex(AuthorityError, "changed after read-only discovery"):
+            verify_intake_manifest(policy, first, FakeDiscovery(policy, changed))
+
+    def test_edited_trigger_fails_closed_during_api_convergence(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
+        issue = intake_issue(author="rmcdaniel")
+        issues = {".github": [(issue, [])]}
+        discovery = FakeDiscovery(policy, issues)
+
+        manifest, _inventory = reconstruct_intake(
+            policy,
+            discovery,
+            trigger_repository=".github",
+            trigger_number=1,
+            trigger_action="edited",
+        )
+
+        self.assertFalse(manifest["trigger"]["approved"])
+        self.assertEqual("revision-edited", manifest["trigger"]["reason"])
+        self.assertEqual([], discovery.get_requests)
+
+    def test_approval_label_removal_fails_closed_during_api_convergence(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
+        issue = intake_issue(labels=["intake:approved"])
+        issues = {".github": [(issue, [label_event("rmcdaniel", "2026-07-21T10:01:00Z")])]}
+        discovery = FakeDiscovery(policy, issues)
+
+        manifest, _inventory = reconstruct_intake(
+            policy,
+            discovery,
+            trigger_repository=".github",
+            trigger_number=1,
+            trigger_action="unlabeled",
+            trigger_actor="external-contributor",
+            trigger_label="intake:approved",
+        )
+
+        self.assertFalse(manifest["trigger"]["approved"])
+        self.assertEqual("approval-label-removed", manifest["trigger"]["reason"])
+        self.assertEqual([], discovery.get_requests)
+
+    def test_untrusted_approval_actor_fails_closed_during_api_convergence(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
+        issue = intake_issue(labels=["intake:approved"])
+        issues = {".github": [(issue, [label_event("rmcdaniel", "2026-07-21T10:01:00Z")])]}
+        discovery = FakeDiscovery(policy, issues)
+
+        manifest, _inventory = reconstruct_intake(
+            policy,
+            discovery,
+            trigger_repository=".github",
+            trigger_number=1,
+            trigger_action="labeled",
+            trigger_actor="external-contributor",
+            trigger_label="intake:approved",
+        )
+
+        self.assertFalse(manifest["trigger"]["approved"])
+        self.assertEqual("approval-actor-untrusted", manifest["trigger"]["reason"])
+        self.assertEqual([], discovery.get_requests)
+
 
 class GitHubApiTest(unittest.TestCase):
+    def test_discovery_uses_the_read_only_job_token(self) -> None:
+        client = GitHubDiscovery("job-token")
+        response = FakeResponse(b'{"data":{"repository":{"issues":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}}')
+
+        with patch("urllib.request.urlopen", return_value=response) as urlopen:
+            self.assertEqual([], client.list_issues("durable-workflow", "workflow"))
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual("Bearer job-token", request.get_header("Authorization"))
+        self.assertEqual("POST", request.method)
+
     def test_create_request_is_not_repeated_after_an_ambiguous_failure(self) -> None:
         client = GitHubApi("secret")
         responses = [
@@ -351,6 +659,8 @@ class MigrationTest(unittest.TestCase):
 
         self.assertEqual("pass", evidence["outcome"])
         self.assertEqual(4, sum(len(issues) for issues in self.client.issues.values()))
+        for repository in self.policy["repositories"]:
+            self.assertIn("intake:approved", self.client.labels[repository])
         for item in self.backlog["items"]:
             repository, issue = find_work_item(self.client, item["id"])
             self.assertEqual(item["repository"], repository)

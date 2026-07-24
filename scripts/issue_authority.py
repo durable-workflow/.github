@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import os
 import re
@@ -13,6 +15,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +23,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 
 POLICY_SCHEMA = "durable-workflow.github-issue-authority/v1"
 BACKLOG_SCHEMA = "durable-workflow.github-beta-backlog/v1"
+INTAKE_SCHEMA = "durable-workflow.github-issue-intake/v1"
 MARKER_PATTERN = re.compile(r"<!-- beta-work-id: ([a-z0-9][a-z0-9-]{2,79}) -->")
 UNBLOCK_CONTEXT_START = "<!-- beta-unblock-condition:start -->"
 UNBLOCK_CONTEXT_END = "<!-- beta-unblock-condition:end -->"
@@ -50,6 +54,95 @@ OWNER_LABELS = {
 }
 GITHUB_API_ATTEMPTS = 4
 GITHUB_API_RETRY_SECONDS = 2.0
+
+ISSUE_INTAKE_QUERY = """
+query IssueIntake($owner: String!, $repository: String!, $cursor: String) {
+  repository(owner: $owner, name: $repository) {
+    issues(
+      first: 100
+      after: $cursor
+      orderBy: {field: CREATED_AT, direction: ASC}
+      states: [OPEN, CLOSED]
+    ) {
+      nodes {
+        number
+        createdAt
+        lastEditedAt
+        url
+        state
+        author { login }
+        milestone { title }
+        labels(first: 100) {
+          nodes { name }
+          pageInfo { hasNextPage }
+        }
+        timelineItems(last: 100, itemTypes: [LABELED_EVENT, RENAMED_TITLE_EVENT, UNLABELED_EVENT]) {
+          nodes {
+            __typename
+            ... on LabeledEvent {
+              createdAt
+              actor { login }
+              label { name }
+            }
+            ... on UnlabeledEvent {
+              createdAt
+              actor { login }
+              label { name }
+            }
+            ... on RenamedTitleEvent {
+              createdAt
+            }
+          }
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+"""
+
+ISSUE_REVISION_QUERY = """
+query IssueRevision($owner: String!, $repository: String!, $number: Int!) {
+  repository(owner: $owner, name: $repository) {
+    issue(number: $number) {
+      number
+      title
+      body
+      createdAt
+      lastEditedAt
+      url
+      state
+      author { login }
+      milestone { title }
+      labels(first: 100) {
+        nodes { name }
+        pageInfo { hasNextPage }
+      }
+      timelineItems(last: 100, itemTypes: [LABELED_EVENT, RENAMED_TITLE_EVENT, UNLABELED_EVENT]) {
+        nodes {
+          __typename
+          ... on LabeledEvent {
+            createdAt
+            actor { login }
+            label { name }
+          }
+          ... on UnlabeledEvent {
+            createdAt
+            actor { login }
+            label { name }
+          }
+          ... on RenamedTitleEvent {
+            createdAt
+          }
+        }
+      }
+    }
+  }
+}
+"""
 
 
 class AuthorityError(RuntimeError):
@@ -99,6 +192,14 @@ def validate_contract(
     if policy.get("state_direction") != "github-to-mirrors":
         raise AuthorityError("issue state must flow from GitHub to consumers only")
 
+    intake = policy["intake"]
+    trusted_actors = intake["trusted_actors"]
+    if trusted_actors != list(dict.fromkeys(trusted_actors)) or set(trusted_actors) != {
+        "durable-workflow-ops",
+        "rmcdaniel",
+    }:
+        raise AuthorityError("issue-intake trusted actors must be the reviewed maintainer identities")
+
     repositories = policy["repositories"]
     if repositories != list(dict.fromkeys(repositories)) or set(repositories) != set(OWNER_LABELS):
         raise AuthorityError("issue-authority repository inventory is incomplete or duplicated")
@@ -118,6 +219,7 @@ def validate_contract(
         *PRIORITY_LABELS,
         *CLASSIFICATION_LABELS,
         *OWNER_LABELS.values(),
+        intake["approval_label"],
     }
     missing_labels = required_labels - set(label_names)
     if missing_labels:
@@ -198,6 +300,358 @@ def load_contract(
     )
     validate_contract(policy, backlog, policy_schema, backlog_schema)
     return policy, backlog
+
+
+def _object_digest(value: Any) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def issue_revision_digest(title: str, body: str) -> str:
+    """Bind the complete instruction-bearing issue revision to one stable digest."""
+
+    return _object_digest({"body": body, "title": title})
+
+
+def _parse_timestamp(value: Any, label: str) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise AuthorityError(f"GitHub issue intake has no valid {label}")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise AuthorityError(f"GitHub issue intake has invalid {label}") from error
+    if parsed.tzinfo is None:
+        raise AuthorityError(f"GitHub issue intake {label} must include a timezone")
+    return parsed
+
+
+def _intake_label_names(issue: Mapping[str, Any]) -> set[str]:
+    names: set[str] = set()
+    labels = issue.get("labels")
+    if not isinstance(labels, Sequence) or isinstance(labels, str | bytes):
+        return names
+    for label in labels:
+        if isinstance(label, str):
+            names.add(label)
+        elif isinstance(label, Mapping) and isinstance(label.get("name"), str):
+            names.add(str(label["name"]))
+    return names
+
+
+def assess_issue_intake(
+    issue: Mapping[str, Any],
+    timeline: Sequence[Mapping[str, Any]],
+    *,
+    approval_label: str,
+    trusted_actors: Sequence[str],
+    bind_revision: bool = True,
+) -> dict[str, Any]:
+    """Reconstruct whether the current title/body revision has trusted authority."""
+
+    number = issue.get("number")
+    author = issue.get("author")
+    author_login = author.get("login") if isinstance(author, Mapping) else None
+    if not isinstance(number, int):
+        raise AuthorityError("GitHub issue intake returned an issue without a numeric identity")
+
+    def approved_record(actor: str, approved_at: Any, mode: str) -> dict[str, Any]:
+        record = {
+            "approved": True,
+            "approval_actor": actor,
+            "approval_at": approved_at,
+            "approval_mode": mode,
+            "reason": mode,
+        }
+        if bind_revision:
+            title = issue.get("title")
+            body = issue.get("body")
+            if not isinstance(title, str) or not isinstance(body, str):
+                raise AuthorityError(f"GitHub issue {number} has no complete title/body revision")
+            record["revision"] = issue_revision_digest(title, body)
+        return record
+
+    trusted = {actor.casefold() for actor in trusted_actors}
+    last_edited_value = issue.get("last_edited_at")
+    edit_times: list[datetime] = []
+    if last_edited_value is not None:
+        edit_times.append(_parse_timestamp(last_edited_value, "last body edit timestamp"))
+    edit_times.extend(
+        _parse_timestamp(event.get("created_at"), "title edit timestamp")
+        for event in timeline
+        if event.get("event") == "renamed"
+    )
+    last_edit = max(edit_times) if edit_times else None
+    if isinstance(author_login, str) and author_login.casefold() in trusted and last_edit is None:
+        created_at = issue.get("created_at")
+        _parse_timestamp(created_at, "creation timestamp")
+        return approved_record(author_login, created_at, "trusted-creation")
+
+    if approval_label not in _intake_label_names(issue):
+        return {"approved": False, "reason": "approval-label-absent"}
+
+    transitions: list[tuple[datetime, int, Mapping[str, Any]]] = []
+    for index, event in enumerate(timeline):
+        if event.get("label") != approval_label or event.get("event") not in {"labeled", "unlabeled"}:
+            continue
+        transitions.append((_parse_timestamp(event.get("created_at"), "label event timestamp"), index, event))
+    if not transitions:
+        return {"approved": False, "reason": "approval-event-absent"}
+
+    approval_time, _index, latest = max(transitions, key=lambda record: (record[0], record[1]))
+    if latest.get("event") != "labeled":
+        return {"approved": False, "reason": "approval-label-removed"}
+    actor = latest.get("actor")
+    if not isinstance(actor, str) or actor.casefold() not in trusted:
+        return {"approved": False, "reason": "approval-actor-untrusted"}
+    if last_edit is not None and approval_time <= last_edit:
+        return {"approved": False, "reason": "approval-predates-revision"}
+
+    return approved_record(actor, latest["created_at"], "trusted-label")
+
+
+def _normalize_intake_issue(node: Mapping[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    labels_connection = node.get("labels")
+    if not isinstance(labels_connection, Mapping):
+        raise AuthorityError("GitHub issue intake returned malformed labels")
+    page_info = labels_connection.get("pageInfo")
+    if isinstance(page_info, Mapping) and page_info.get("hasNextPage"):
+        raise AuthorityError(f"GitHub issue {node.get('number')} exceeds the intake label bound")
+    labels = labels_connection.get("nodes")
+    if not isinstance(labels, list):
+        raise AuthorityError("GitHub issue intake returned malformed label nodes")
+
+    timeline_connection = node.get("timelineItems")
+    timeline_nodes = timeline_connection.get("nodes") if isinstance(timeline_connection, Mapping) else None
+    if not isinstance(timeline_nodes, list):
+        raise AuthorityError("GitHub issue intake returned malformed approval history")
+    timeline: list[dict[str, Any]] = []
+    for event in timeline_nodes:
+        if not isinstance(event, Mapping):
+            continue
+        event_type = {
+            "LabeledEvent": "labeled",
+            "RenamedTitleEvent": "renamed",
+            "UnlabeledEvent": "unlabeled",
+        }.get(event.get("__typename"))
+        if event_type == "renamed":
+            timeline.append({"created_at": event.get("createdAt"), "event": event_type})
+            continue
+        label = event.get("label")
+        actor = event.get("actor")
+        if event_type is None or not isinstance(label, Mapping):
+            continue
+        timeline.append(
+            {
+                "actor": actor.get("login") if isinstance(actor, Mapping) else None,
+                "created_at": event.get("createdAt"),
+                "event": event_type,
+                "label": label.get("name"),
+            }
+        )
+
+    milestone = node.get("milestone")
+    issue = {
+        "author": node.get("author"),
+        "body": node.get("body"),
+        "created_at": node.get("createdAt"),
+        "html_url": node.get("url"),
+        "labels": [label for label in labels if isinstance(label, Mapping)],
+        "last_edited_at": node.get("lastEditedAt"),
+        "milestone": {"title": milestone.get("title")} if isinstance(milestone, Mapping) else None,
+        "number": node.get("number"),
+        "state": str(node.get("state", "")).lower(),
+        "title": node.get("title"),
+    }
+    return issue, timeline
+
+
+class GitHubDiscovery:
+    """Read-only GraphQL client that reconstructs issue revision authority."""
+
+    def __init__(self, token: str, graphql_url: str = "https://api.github.com/graphql") -> None:
+        if not token:
+            raise AuthorityError("GITHUB_TOKEN is required for read-only issue discovery")
+        self.graphql_url = graphql_url
+        self.headers = {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "durable-workflow-issue-intake/1",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+
+    def graphql(self, query: str, variables: Mapping[str, Any]) -> dict[str, Any]:
+        body = json.dumps({"query": query, "variables": variables}, separators=(",", ":")).encode("utf-8")
+        request = urllib.request.Request(self.graphql_url, data=body, headers=self.headers, method="POST")
+        for attempt in range(1, GITHUB_API_ATTEMPTS + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    payload = json.loads(response.read())
+                if not isinstance(payload, dict) or payload.get("errors") or not isinstance(payload.get("data"), dict):
+                    raise AuthorityError("GitHub GraphQL issue discovery returned errors")
+                return payload["data"]
+            except urllib.error.HTTPError as error:
+                retryable = error.code == 429 or 500 <= error.code <= 599
+                if not retryable or attempt == GITHUB_API_ATTEMPTS:
+                    raise AuthorityError(f"GitHub GraphQL issue discovery returned {error.code}") from error
+            except (urllib.error.URLError, ConnectionError, TimeoutError, json.JSONDecodeError) as error:
+                if attempt == GITHUB_API_ATTEMPTS:
+                    raise AuthorityError("GitHub GraphQL issue discovery failed after bounded retries") from error
+            time.sleep(GITHUB_API_RETRY_SECONDS * (2 ** (attempt - 1)))
+        raise AssertionError("GitHub GraphQL retry loop ended unexpectedly")
+
+    def list_issues(self, organization: str, repository: str) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
+        issues: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+        cursor: str | None = None
+        for _page in range(10):
+            data = self.graphql(
+                ISSUE_INTAKE_QUERY,
+                {"cursor": cursor, "owner": organization, "repository": repository},
+            )
+            repository_node = data.get("repository")
+            connection = repository_node.get("issues") if isinstance(repository_node, Mapping) else None
+            if not isinstance(connection, Mapping) or not isinstance(connection.get("nodes"), list):
+                raise AuthorityError(f"GitHub issue discovery cannot read {organization}/{repository}")
+            for node in connection["nodes"]:
+                if isinstance(node, Mapping):
+                    issues.append(_normalize_intake_issue(node))
+            page_info = connection.get("pageInfo")
+            if not isinstance(page_info, Mapping):
+                raise AuthorityError("GitHub issue discovery returned malformed pagination")
+            if not page_info.get("hasNextPage"):
+                return issues
+            cursor = page_info.get("endCursor")
+            if not isinstance(cursor, str) or not cursor:
+                raise AuthorityError("GitHub issue discovery omitted its next cursor")
+        raise AuthorityError(f"GitHub issue discovery for {repository} exceeded the pagination bound")
+
+    def get_issue(
+        self,
+        organization: str,
+        repository: str,
+        number: int,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        data = self.graphql(
+            ISSUE_REVISION_QUERY,
+            {"number": number, "owner": organization, "repository": repository},
+        )
+        repository_node = data.get("repository")
+        node = repository_node.get("issue") if isinstance(repository_node, Mapping) else None
+        if not isinstance(node, Mapping):
+            raise AuthorityError(f"GitHub issue discovery cannot read {repository}/{number}")
+        return _normalize_intake_issue(node)
+
+
+def _manifest_core(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: manifest.get(key) for key in ("schema", "organization", "policy_digest", "issues")}
+
+
+def reconstruct_intake(
+    policy: dict[str, Any],
+    client: Any,
+    *,
+    trigger_repository: str | None = None,
+    trigger_number: int | None = None,
+    trigger_action: str | None = None,
+    trigger_actor: str | None = None,
+    trigger_label: str | None = None,
+) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    """Build a deterministic manifest and an inventory containing only vetted revisions."""
+
+    intake_policy = policy["intake"]
+    records: list[dict[str, Any]] = []
+    inventory: dict[str, list[dict[str, Any]]] = {repository: [] for repository in policy["repositories"]}
+    trigger_assessment: dict[str, Any] | None = None
+    for repository in policy["repositories"]:
+        for issue, timeline in client.list_issues(policy["organization"], repository):
+            number = issue["number"]
+            is_trigger = repository == trigger_repository and number == trigger_number
+            if is_trigger and trigger_action == "edited":
+                trigger_assessment = {"approved": False, "reason": "revision-edited"}
+                continue
+            if (
+                is_trigger
+                and trigger_action == "unlabeled"
+                and trigger_label == intake_policy["approval_label"]
+            ):
+                trigger_assessment = {"approved": False, "reason": "approval-label-removed"}
+                continue
+            if (
+                is_trigger
+                and trigger_action == "labeled"
+                and trigger_label == intake_policy["approval_label"]
+                and (
+                    not isinstance(trigger_actor, str)
+                    or trigger_actor.casefold()
+                    not in {actor.casefold() for actor in intake_policy["trusted_actors"]}
+                )
+            ):
+                trigger_assessment = {"approved": False, "reason": "approval-actor-untrusted"}
+                continue
+            preliminary = assess_issue_intake(
+                issue,
+                timeline,
+                approval_label=intake_policy["approval_label"],
+                trusted_actors=intake_policy["trusted_actors"],
+                bind_revision=False,
+            )
+            if not preliminary["approved"]:
+                if is_trigger:
+                    trigger_assessment = dict(preliminary)
+                continue
+            issue, timeline = client.get_issue(policy["organization"], repository, number)
+            assessment = assess_issue_intake(
+                issue,
+                timeline,
+                approval_label=intake_policy["approval_label"],
+                trusted_actors=intake_policy["trusted_actors"],
+            )
+            if is_trigger:
+                trigger_assessment = dict(assessment)
+            if not assessment["approved"]:
+                continue
+            inventory[repository].append(issue)
+            records.append(
+                {
+                    "approval_actor": assessment["approval_actor"],
+                    "approval_at": assessment["approval_at"],
+                    "approval_mode": assessment["approval_mode"],
+                    "number": number,
+                    "repository": repository,
+                    "revision": assessment["revision"],
+                }
+            )
+
+    manifest: dict[str, Any] = {
+        "schema": INTAKE_SCHEMA,
+        "organization": policy["organization"],
+        "policy_digest": _object_digest(policy),
+        "issues": records,
+    }
+    if trigger_repository is not None or trigger_number is not None:
+        approved = bool(trigger_assessment and trigger_assessment["approved"])
+        reason = trigger_assessment["reason"] if trigger_assessment else "trigger-issue-not-found"
+        manifest["trigger"] = {
+            "action": trigger_action,
+            "approved": approved,
+            "number": trigger_number,
+            "reason": reason,
+            "repository": trigger_repository,
+        }
+    return manifest, inventory
+
+
+def verify_intake_manifest(
+    policy: dict[str, Any],
+    manifest: Mapping[str, Any],
+    client: Any,
+) -> dict[str, list[dict[str, Any]]]:
+    if manifest.get("schema") != INTAKE_SCHEMA:
+        raise AuthorityError("issue-intake manifest uses an unsupported schema")
+    current, inventory = reconstruct_intake(policy, client)
+    if _manifest_core(manifest) != _manifest_core(current):
+        raise AuthorityError("vetted issue revisions changed after read-only discovery")
+    return inventory
 
 
 class GitHubApi:
@@ -723,9 +1177,15 @@ def _audit_migrated_classification(
     return failures
 
 
-def apply_backlog(policy: dict[str, Any], backlog: dict[str, Any], client: Any) -> dict[str, Any]:
+def apply_backlog(
+    policy: dict[str, Any],
+    backlog: dict[str, Any],
+    client: Any,
+    *,
+    inventory: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
     organization = policy["organization"]
-    inventory = _inventory(policy, client)
+    inventory = inventory if inventory is not None else _inventory(policy, client)
     resolved = _preflight_markers(policy, backlog, client, inventory, allow_missing=True)
     _preflight_unblock_context_layouts(backlog, inventory)
     planned_body_updates = _plan_unblock_context_updates(backlog, resolved)
@@ -801,8 +1261,14 @@ def apply_backlog(policy: dict[str, Any], backlog: dict[str, Any], client: Any) 
     }
 
 
-def audit_backlog(policy: dict[str, Any], backlog: dict[str, Any], client: Any) -> dict[str, Any]:
-    inventory = _inventory(policy, client)
+def audit_backlog(
+    policy: dict[str, Any],
+    backlog: dict[str, Any],
+    client: Any,
+    *,
+    inventory: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
+    inventory = inventory if inventory is not None else _inventory(policy, client)
     resolved = _preflight_markers(policy, backlog, client, inventory, allow_missing=False)
     _preflight_unblock_context_layouts(backlog, inventory)
     _plan_unblock_context_updates(backlog, resolved)
@@ -832,17 +1298,40 @@ def _write_evidence(path: Path | None, evidence: dict[str, Any]) -> None:
         path.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _write_discovery_outputs(path: Path | None, manifest: dict[str, Any]) -> None:
+    if path is None:
+        return
+    encoded = base64.b64encode(
+        json.dumps(manifest, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).decode("ascii")
+    trigger = manifest.get("trigger")
+    trigger_approved = not isinstance(trigger, Mapping) or trigger.get("approved") is True
+    with path.open("a", encoding="utf-8") as output:
+        output.write("intake_ready=true\n")
+        output.write(f"trigger_approved={'true' if trigger_approved else 'false'}\n")
+        output.write(f"manifest={encoded}\n")
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for name in ("validate", "apply", "audit"):
+    for name in ("validate", "discover", "apply", "audit"):
         command = subparsers.add_parser(name)
         command.add_argument("policy", type=Path)
         command.add_argument("backlog", type=Path)
         command.add_argument("--policy-schema", type=Path)
         command.add_argument("--backlog-schema", type=Path)
-        if name != "validate":
+        if name == "discover":
+            command.add_argument("--output", type=Path, required=True)
+            command.add_argument("--github-output", type=Path)
+            command.add_argument("--trigger-repository")
+            command.add_argument("--trigger-number", type=int)
+            command.add_argument("--trigger-action")
+            command.add_argument("--trigger-actor")
+            command.add_argument("--trigger-label")
+        elif name != "validate":
             command.add_argument("--evidence", type=Path)
+            command.add_argument("--intake-manifest", type=Path, required=True)
     return parser.parse_args(argv)
 
 
@@ -858,12 +1347,38 @@ def main(argv: list[str] | None = None) -> int:
         )
         if arguments.command == "validate":
             return 0
-        token = os.environ.get("BETA_PRODUCT_WORK_TOKEN") or os.environ.get("GH_TOKEN") or ""
+        discovery_token = os.environ.get("GITHUB_TOKEN") or ""
+        discovery = GitHubDiscovery(
+            discovery_token,
+            os.environ.get("GITHUB_GRAPHQL_URL", "https://api.github.com/graphql"),
+        )
+        if arguments.command == "discover":
+            has_repository = arguments.trigger_repository is not None
+            has_number = arguments.trigger_number is not None
+            if has_repository != has_number:
+                raise AuthorityError("trigger repository and issue number must be provided together")
+            manifest, _inventory = reconstruct_intake(
+                policy,
+                discovery,
+                trigger_repository=arguments.trigger_repository,
+                trigger_number=arguments.trigger_number,
+                trigger_action=arguments.trigger_action,
+                trigger_actor=arguments.trigger_actor,
+                trigger_label=arguments.trigger_label,
+            )
+            _write_evidence(arguments.output, manifest)
+            _write_discovery_outputs(arguments.github_output, manifest)
+            return 0
+
+        manifest = _load_json(arguments.intake_manifest, "issue-intake manifest")
+        inventory = verify_intake_manifest(policy, manifest, discovery)
+        token = os.environ.get("BETA_PRODUCT_WORK_TOKEN") or ""
         client = GitHubApi(token, os.environ.get("GITHUB_API_URL", "https://api.github.com"))
         if arguments.command == "apply":
-            evidence = apply_backlog(policy, backlog, client)
+            evidence = apply_backlog(policy, backlog, client, inventory=inventory)
         else:
-            evidence = audit_backlog(policy, backlog, client)
+            evidence = audit_backlog(policy, backlog, client, inventory=inventory)
+        evidence["intake"] = _manifest_core(manifest)
         _write_evidence(evidence_path, evidence)
         return 0
     except AuthorityError as error:

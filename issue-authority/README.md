@@ -5,6 +5,32 @@ release blockers, and cross-repository work entering the 2.0 beta line. The
 organization issue forms capture source evidence, acceptance criteria,
 dependencies, and public-safe context at intake.
 
+## Vetted revisions
+
+Issue text is inert until its current revision has trusted intake authority.
+Issues created by `rmcdaniel` or `durable-workflow-ops` are trusted at creation.
+Every other issue must carry `intake:approved`, and the most recent transition
+of that label must have been performed by one of those maintainers after the
+most recent title or body edit. An edit invalidates an earlier approval. Label
+removal also invalidates approval, while a later trusted reapplication binds a
+new SHA-256 digest of the complete title and body.
+
+Before any environment-backed job is considered, a metadata-only, read-only
+pass reconstructs these decisions from the issue author, last edit time, and
+approval-label timeline. It fetches title and body only after that pass accepts
+the revision, then binds the content digest. The resulting manifest contains
+issue coordinates, approval evidence, and revision digests, but no issue text.
+The lifecycle job repeats read-only reconstruction and requires an exact
+manifest match before processing the vetted issue bodies. A new edit or
+approval change between those jobs therefore fails closed before mutation.
+Lifecycle evidence retains the matched approval records and revision digests
+for review, but later runs reconstruct authority from GitHub instead of
+consuming an earlier artifact.
+
+Only issue title and body revisions participate in intake. Comments,
+pull-request text, workflow logs, artifacts, and attachments are not queried or
+interpreted as issue instructions.
+
 `policy.json` owns the public repository inventory and the shared label and
 milestone vocabulary. `backlog.json` records the deliberate review of the
 unresolved alpha queue and contains only the work selected for migration. A
@@ -59,11 +85,19 @@ artifact on both successful and failed runs.
 
 ## Credential boundary
 
-Cross-repository metadata and issues are written with the
-`BETA_PRODUCT_WORK_TOKEN` secret in the protected `beta-product-work` GitHub
-environment. The credential needs repository metadata read and Issues
-read/write access only for the public repositories in `policy.json`. It does
-not need source, package, release, environment, or private repository access.
+The workflow's repository-scoped `GITHUB_TOKEN` performs discovery with only
+Contents read and Issues read permissions. GitHub's public repository graph is
+available to that token across the explicit inventory in `policy.json`; no
+operator-provisioned cross-repository discovery credential is required. The
+token runs outside the protected environment and cannot change issue or
+authority state.
+
+Cross-repository metadata and issues are written separately with
+`BETA_PRODUCT_WORK_TOKEN` in the protected `beta-product-work` GitHub
+environment. That lifecycle credential needs repository metadata read and
+Issues read/write access only for the same public repositories. It does not
+need source, package, release, environment, or private repository access, and
+it is never exposed to an event whose current issue revision failed intake.
 
 Private Cloud implementation work is outside this inventory. If public
 components need a Cloud-facing contract, the public issue describes only that

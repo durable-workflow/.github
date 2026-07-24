@@ -9,6 +9,7 @@
     "organization",
     "authority_repository",
     "state_direction",
+    "intake",
     "repositories",
     "labels",
     "milestones"
@@ -28,6 +29,38 @@
     },
     "state_direction": {
       "const": "github-to-mirrors"
+    },
+    "intake": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approval_label", "trusted_actors"],
+      "properties": {
+        "approval_label": {
+          "const": "intake:approved"
+        },
+        "trusted_actors": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9-]+$"
+          },
+          "allOf": [
+            {
+              "contains": {
+                "const": "rmcdaniel"
+              }
+            },
+            {
+              "contains": {
+                "const": "durable-workflow-ops"
+              }
+            }
+          ]
+        }
+      }
     },
     "repositories": {
       "type": "array",

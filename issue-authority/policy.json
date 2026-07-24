@@ -1,6 +1,13 @@
 {
   "$schema": "./policy-schema.json",
   "authority_repository": ".github",
+  "intake": {
+    "approval_label": "intake:approved",
+    "trusted_actors": [
+      "rmcdaniel",
+      "durable-workflow-ops"
+    ]
+  },
   "labels": [
     {
       "color": "0969da",
@@ -11,6 +18,11 @@
       "color": "b60205",
       "description": "Issue authority has a duplicate or state conflict requiring review",
       "name": "authority:conflict"
+    },
+    {
+      "color": "0e8a16",
+      "description": "Current issue title and body revision is approved for authority intake",
+      "name": "intake:approved"
     },
     {
       "color": "d73a4a",
