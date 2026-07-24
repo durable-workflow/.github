@@ -986,6 +986,61 @@ class ReleasePlanValidationTest(unittest.TestCase):
         with self.assertRaisesRegex(CandidateError, "not an exact 2.0.0-beta.N identity"):
             validate_plan(plan)
 
+    def test_plan_component_versions_require_strict_semver(self) -> None:
+        schema = json.loads((REPOSITORY_ROOT / "release-plans" / "schema.json").read_bytes())
+        validator = Draft202012Validator(schema)
+        for malformed in ("01.0.0", "1.0.0-alpha.01", "1.0.0-alpha..1", "1.0.0\n"):
+            plan = release_plan("beta")
+            plan["components"]["server"]["version"] = malformed
+
+            with self.subTest(version=malformed), self.assertRaisesRegex(
+                CandidateError,
+                "components.server.version must be an exact SemVer release",
+            ):
+                validate_plan(plan)
+            with self.subTest(version=malformed), self.assertRaises(ValidationError):
+                validator.validate(plan)
+
+    def test_plan_accepts_valid_prerelease_and_build_metadata(self) -> None:
+        schema = json.loads((REPOSITORY_ROOT / "release-plans" / "schema.json").read_bytes())
+        validator = Draft202012Validator(schema)
+        for valid in (
+            "1.0.0-alpha.1",
+            "1.0.0-alpha.1+build.01",
+            "1.0.0+build.01",
+        ):
+            plan = release_plan("beta")
+            plan["components"]["server"]["version"] = valid
+
+            with self.subTest(version=valid):
+                validate_plan(plan)
+                validator.validate(plan)
+
+    def test_derived_release_plan_schemas_share_strict_semver_validation(self) -> None:
+        version_schemas = {
+            "candidate-schema.json": ("$defs", "component", "properties", "version"),
+            "failure-schema.json": ("$defs", "version"),
+            "preparation-schema.json": ("$defs", "component", "properties", "version"),
+        }
+        malformed_versions = ("01.0.0", "1.0.0-alpha.01", "1.0.0-alpha..1", "1.0.0\n")
+        valid_versions = ("1.0.0-alpha.1", "1.0.0-alpha.1+build.01", "1.0.0+build.01")
+
+        for filename, path in version_schemas.items():
+            schema = json.loads((REPOSITORY_ROOT / "release-plans" / filename).read_bytes())
+            Draft202012Validator.check_schema(schema)
+            version_schema = schema
+            for segment in path:
+                version_schema = version_schema[segment]
+            validator = Draft202012Validator(version_schema)
+            for malformed in malformed_versions:
+                with self.subTest(schema=filename, version=malformed), self.assertRaises(
+                    ValidationError
+                ):
+                    validator.validate(malformed)
+            for valid in valid_versions:
+                with self.subTest(schema=filename, version=valid):
+                    validator.validate(valid)
+
     def test_plan_rejects_a_different_foundation(self) -> None:
         plan = release_plan()
         plan["foundation"]["commit"] = "0" * 40

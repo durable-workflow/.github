@@ -39,6 +39,7 @@ from scripts.component_release_recovery import (
     scheduled_continuity_pause,
     select_implicit_plan_authority,
     select_publication_run,
+    semver_precedence,
     validate_continuity_resolution_qualification,
     validate_plan,
     validate_release_preparation,
@@ -441,6 +442,139 @@ class ComponentRecoveryContractTest(unittest.TestCase):
 
         with self.assertRaisesRegex(RecoveryError, "conflicting current product trains"):
             current_product_train_authorities(authorities)
+
+    def test_scheduled_discovery_validates_strict_semver_before_selection(self) -> None:
+        for malformed in ("01.0.0", "1.0.0-alpha.01", "1.0.0-alpha..1", "1.0.0\n"):
+            candidate = plan("beta")
+            candidate["components"]["server"]["version"] = malformed
+            authority = {
+                "tag": f"release-plan/{candidate['plan']}",
+                "plan": candidate,
+            }
+
+            with self.subTest(version=malformed), self.assertRaisesRegex(
+                RecoveryError,
+                "components.server.version is not exact SemVer",
+            ):
+                current_product_train_authorities([authority])
+
+    def test_malformed_scheduled_authority_fails_before_recovery_or_handoff(self) -> None:
+        candidate = plan("beta")
+        candidate["components"]["server"]["version"] = "01.0.0"
+        authority = {
+            "tag": f"release-plan/{candidate['plan']}",
+            "plan": candidate,
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evidence = root / "release-recovery-evidence.json"
+            plan_output = root / "release-plan.json"
+            preparation_output = root / "release-preparation.json"
+            github_output = root / "github-output"
+            arguments = [
+                "component_release_recovery.py",
+                "resolve",
+                "--component",
+                "server",
+                "--plan-output",
+                str(plan_output),
+                "--preparation-output",
+                str(preparation_output),
+                "--evidence",
+                str(evidence),
+                "--github-output",
+                str(github_output),
+                "--allow-empty",
+            ]
+
+            with (
+                mock.patch.object(sys, "argv", arguments),
+                mock.patch(
+                    "scripts.component_release_recovery.classify_plan_authorities",
+                    return_value=[authority],
+                ),
+                mock.patch(
+                    "scripts.component_release_recovery.resolve_component",
+                ) as recover_component,
+            ):
+                self.assertEqual(1, main())
+
+            recover_component.assert_not_called()
+            self.assertFalse(plan_output.exists())
+            self.assertFalse(preparation_output.exists())
+            self.assertFalse(github_output.exists())
+            failure = json.loads(evidence.read_text())
+            self.assertEqual("plan-discovery", failure["phase"])
+            self.assertEqual("failed", failure["outcome"])
+            self.assertIn("not exact SemVer", failure["reason"])
+
+    def test_semver_precedence_preserves_ordering_and_immutable_identity(self) -> None:
+        self.assertEqual(
+            semver_precedence("1.0.0+build.1"),
+            semver_precedence("1.0.0+build.2"),
+        )
+        self.assertLess(
+            semver_precedence("1.0.0-beta.2"),
+            semver_precedence("1.0.0-beta.10"),
+        )
+        self.assertLess(
+            semver_precedence("1.0.0-beta.10"),
+            semver_precedence("1.0.0"),
+        )
+
+        first = plan("beta")
+        first["components"]["server"]["version"] = "1.0.0+build.1"
+        second = json.loads(json.dumps(first))
+        second["plan"] = "different-build-identity"
+        second["components"]["server"]["version"] = "1.0.0+build.2"
+        authorities = [
+            {"tag": f"release-plan/{first['plan']}", "plan": first},
+            {"tag": f"release-plan/{second['plan']}", "plan": second},
+        ]
+
+        with self.assertRaisesRegex(RecoveryError, "conflicting current product trains"):
+            current_product_train_authorities(authorities)
+
+    def test_semver_precedence_compares_unbounded_numeric_identifiers(self) -> None:
+        long_numeric = "9" * 4301
+        cases = (
+            ("core", "1.0.0", f"{long_numeric}.0.0"),
+            ("prerelease", "1.0.0-alpha.1", f"1.0.0-alpha.{long_numeric}"),
+        )
+
+        for kind, lower_version, higher_version in cases:
+            lower = plan("beta")
+            lower["plan"] = f"unbounded-{kind}-lower"
+            lower["components"]["server"]["version"] = lower_version
+            higher = json.loads(json.dumps(lower))
+            higher["plan"] = f"unbounded-{kind}-higher"
+            higher["components"]["server"]["version"] = higher_version
+            authorities = [
+                {"tag": f"release-plan/{lower['plan']}", "plan": lower},
+                {"tag": f"release-plan/{higher['plan']}", "plan": higher},
+            ]
+
+            with self.subTest(kind=kind):
+                self.assertEqual(
+                    [f"release-plan/{higher['plan']}"],
+                    [
+                        authority["tag"]
+                        for authority in current_product_train_authorities(authorities)
+                    ],
+                )
+
+    def test_release_plan_accepts_valid_prerelease_and_build_metadata(self) -> None:
+        for valid in (
+            "1.0.0-alpha.1",
+            "1.0.0-alpha.1+build.01",
+            "1.0.0+build.01",
+        ):
+            candidate = plan("beta")
+            candidate["components"]["server"]["version"] = valid
+
+            with self.subTest(version=valid):
+                validate_plan(candidate)
 
     def test_scheduled_discovery_resolves_validated_source_manifest_successor(self) -> None:
         predecessor = plan("beta")

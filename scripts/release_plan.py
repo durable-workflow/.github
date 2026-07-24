@@ -64,7 +64,12 @@ LEGACY_PLAN_DIGESTS = recovery_discovery.LEGACY_PLAN_DIGESTS
 PREPARATION_SCHEMA = "durable-workflow.release-preparation/v1"
 SOURCE_PREPARATION_SCHEMA = "durable-workflow.release-source-preparation/v1"
 PLAN_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,55}$")
-VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$")
+VERSION_PATTERN = re.compile(
+    r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    r"(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+)
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 ALPHA_VERSION_PATTERN = re.compile(r"^2\.0\.0-alpha\.[1-9][0-9]*$")
 BETA_VERSION_PATTERN = re.compile(r"^2\.0\.0-beta\.[1-9][0-9]*$")
