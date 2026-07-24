@@ -141,6 +141,11 @@
     },
     {
       "color": "bfdadc",
+      "description": "Owned by the AI repository",
+      "name": "repo:ai"
+    },
+    {
+      "color": "bfdadc",
       "description": "Owned by the sample application repository",
       "name": "repo:sample-app"
     },
@@ -174,6 +179,7 @@
         "waterline",
         "server",
         "cli",
+        "ai",
         "sample-app",
         "sdk-php",
         "sdk-python",
@@ -191,6 +197,7 @@
     "waterline",
     "server",
     "cli",
+    "ai",
     "sample-app",
     "sdk-php",
     "sdk-python",

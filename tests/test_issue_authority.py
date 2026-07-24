@@ -233,6 +233,7 @@ class FakeDiscovery:
     ) -> None:
         self.policy = policy
         self.issues = issues
+        self.list_requests: list[str] = []
         self.get_requests: list[tuple[str, int]] = []
 
     def list_issues(
@@ -240,6 +241,7 @@ class FakeDiscovery:
         _organization: str,
         repository: str,
     ) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
+        self.list_requests.append(repository)
         return copy.deepcopy(self.issues.get(repository, []))
 
     def get_issue(
@@ -266,6 +268,25 @@ class ContractValidationTest(unittest.TestCase):
         self.assertEqual(4, len(backlog["items"]))
         blocked = [item for item in backlog["items"] if item["status"] == "blocked"]
         self.assertTrue(all(item["depends_on"] or item.get("unblock_condition") for item in blocked))
+
+    def test_public_repository_inventory_is_exact(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
+        expected_repositories = [
+            ".github",
+            "workflow",
+            "waterline",
+            "server",
+            "cli",
+            "ai",
+            "sample-app",
+            "sdk-php",
+            "sdk-python",
+            "sdk-rust",
+            "durable-workflow.github.io",
+        ]
+        self.assertEqual(expected_repositories, policy["repositories"])
+        self.assertEqual(expected_repositories, list(OWNER_LABELS))
+        self.assertEqual(expected_repositories, policy["milestones"][0]["repositories"])
 
     def test_review_and_migration_sets_must_match_exactly(self) -> None:
         policy, backlog, policy_schema, backlog_schema = contract_fixture()
@@ -523,11 +544,34 @@ class IssueIntakeTest(unittest.TestCase):
         verified = verify_intake_manifest(policy, first, FakeDiscovery(policy, issues))
         self.assertEqual(first_inventory, verified)
 
-        changed = copy.deepcopy(issues)
+    def test_concurrent_unselected_trusted_issue_remains_inert_during_revalidation(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
+        selected = intake_issue(author="rmcdaniel")
+        manifest, _inventory = reconstruct_intake(
+            policy,
+            FakeDiscovery(policy, {".github": [(selected, [])]}),
+        )
+        concurrent = intake_issue(author="durable-workflow-ops", body="Later issue", number=2)
+        discovery = FakeDiscovery(policy, {".github": [(selected, []), (concurrent, [])]})
+
+        verified = verify_intake_manifest(policy, manifest, discovery)
+
+        self.assertEqual([selected], verified[".github"])
+        self.assertEqual([], discovery.list_requests)
+        self.assertEqual([(".github", 1)], discovery.get_requests)
+
+    def test_selected_issue_revision_change_fails_manifest_revalidation(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
+        selected = intake_issue(author="rmcdaniel")
+        manifest, _inventory = reconstruct_intake(
+            policy,
+            FakeDiscovery(policy, {".github": [(selected, [])]}),
+        )
+        changed = {".github": [(copy.deepcopy(selected), [])]}
         changed[".github"][0][0]["body"] = "Changed after discovery"
         changed[".github"][0][0]["last_edited_at"] = "2026-07-21T10:05:00Z"
         with self.assertRaisesRegex(AuthorityError, "changed after read-only discovery"):
-            verify_intake_manifest(policy, first, FakeDiscovery(policy, changed))
+            verify_intake_manifest(policy, manifest, FakeDiscovery(policy, changed))
 
     def test_edited_trigger_fails_closed_during_api_convergence(self) -> None:
         policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
@@ -659,8 +703,9 @@ class MigrationTest(unittest.TestCase):
 
         self.assertEqual("pass", evidence["outcome"])
         self.assertEqual(4, sum(len(issues) for issues in self.client.issues.values()))
+        expected_labels = {label["name"] for label in self.policy["labels"]}
         for repository in self.policy["repositories"]:
-            self.assertIn("intake:approved", self.client.labels[repository])
+            self.assertEqual(expected_labels, set(self.client.labels[repository]))
         for item in self.backlog["items"]:
             repository, issue = find_work_item(self.client, item["id"])
             self.assertEqual(item["repository"], repository)

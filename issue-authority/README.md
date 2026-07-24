@@ -20,9 +20,12 @@ pass reconstructs these decisions from the issue author, last edit time, and
 approval-label timeline. It fetches title and body only after that pass accepts
 the revision, then binds the content digest. The resulting manifest contains
 issue coordinates, approval evidence, and revision digests, but no issue text.
-The lifecycle job repeats read-only reconstruction and requires an exact
-manifest match before processing the vetted issue bodies. A new edit or
-approval change between those jobs therefore fails closed before mutation.
+The lifecycle job directly refetches every manifest-selected issue and requires
+its identity, approval actor, approval time, approval mode, and revision digest
+to remain exact before processing the vetted issue bodies. A selected issue's
+edit, approval change, or disappearance between those jobs therefore fails
+closed before mutation. A newly created or newly visible issue that was absent
+from the manifest remains inert until a later discovery run.
 Lifecycle evidence retains the matched approval records and revision digests
 for review, but later runs reconstruct authority from GitHub instead of
 consuming an earlier artifact.

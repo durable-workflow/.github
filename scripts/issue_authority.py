@@ -46,6 +46,7 @@ OWNER_LABELS = {
     "waterline": "repo:waterline",
     "server": "repo:server",
     "cli": "repo:cli",
+    "ai": "repo:ai",
     "sample-app": "repo:sample-app",
     "sdk-php": "repo:sdk-php",
     "sdk-python": "repo:sdk-python",
@@ -648,9 +649,63 @@ def verify_intake_manifest(
 ) -> dict[str, list[dict[str, Any]]]:
     if manifest.get("schema") != INTAKE_SCHEMA:
         raise AuthorityError("issue-intake manifest uses an unsupported schema")
-    current, inventory = reconstruct_intake(policy, client)
-    if _manifest_core(manifest) != _manifest_core(current):
+    if (
+        manifest.get("organization") != policy["organization"]
+        or manifest.get("policy_digest") != _object_digest(policy)
+    ):
         raise AuthorityError("vetted issue revisions changed after read-only discovery")
+
+    records = manifest.get("issues")
+    if not isinstance(records, list):
+        raise AuthorityError("issue-intake manifest has no issue record list")
+
+    record_keys = {
+        "approval_actor",
+        "approval_at",
+        "approval_mode",
+        "number",
+        "repository",
+        "revision",
+    }
+    inventory: dict[str, list[dict[str, Any]]] = {repository: [] for repository in policy["repositories"]}
+    identities: set[tuple[str, int]] = set()
+    intake_policy = policy["intake"]
+    for record in records:
+        if not isinstance(record, Mapping) or set(record) != record_keys:
+            raise AuthorityError("issue-intake manifest contains a malformed issue record")
+        repository = record.get("repository")
+        number = record.get("number")
+        if (
+            not isinstance(repository, str)
+            or repository not in inventory
+            or not isinstance(number, int)
+            or isinstance(number, bool)
+            or number < 1
+        ):
+            raise AuthorityError("issue-intake manifest contains an invalid issue identity")
+        identity = (repository, number)
+        if identity in identities:
+            raise AuthorityError("issue-intake manifest contains a duplicate issue identity")
+        identities.add(identity)
+
+        issue, timeline = client.get_issue(policy["organization"], repository, number)
+        assessment = assess_issue_intake(
+            issue,
+            timeline,
+            approval_label=intake_policy["approval_label"],
+            trusted_actors=intake_policy["trusted_actors"],
+        )
+        current = {
+            "approval_actor": assessment.get("approval_actor"),
+            "approval_at": assessment.get("approval_at"),
+            "approval_mode": assessment.get("approval_mode"),
+            "number": issue.get("number"),
+            "repository": repository,
+            "revision": assessment.get("revision"),
+        }
+        if not assessment["approved"] or dict(record) != current:
+            raise AuthorityError("vetted issue revisions changed after read-only discovery")
+        inventory[repository].append(issue)
     return inventory
 
 
