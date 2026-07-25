@@ -287,8 +287,6 @@ jobs:
           RECORD_COMMIT: ${{ steps.record.outputs.commit }}
         run: |
           set -euo pipefail
-          mirror_dir="$(mktemp -d)"
-          trap 'rm -rf "$mirror_dir"' EXIT
 
           if ! gh release view "$CANDIDATE_TAG" >/dev/null 2>&1; then
             notes="$(mktemp)"
@@ -301,20 +299,9 @@ jobs:
               --title "Beta candidate ${CANDIDATE}" --notes-file "$notes"
           fi
 
-          repair_asset() {
-            source_path="$1"
-            asset_name="$2"
-            if gh release download "$CANDIDATE_TAG" --pattern "$asset_name" --dir "$mirror_dir" >/dev/null 2>&1; then
-              cmp --silent "$source_path" "$mirror_dir/$asset_name" || {
-                printf 'release asset %s differs from immutable Git authority\n' "$asset_name" >&2
-                exit 1
-              }
-            else
-              upload_dir="$(mktemp -d)"
-              cp "$source_path" "$upload_dir/$asset_name"
-              gh release upload "$CANDIDATE_TAG" "$upload_dir/$asset_name"
-            fi
-          }
-
-          repair_asset candidate.json candidate.json
-          repair_asset authoritative-verification.json verification.json
+          python scripts/release_asset_mirror.py repair \
+            "$CANDIDATE_TAG" candidate.json candidate.json \
+            --repository "$GITHUB_REPOSITORY"
+          python scripts/release_asset_mirror.py repair \
+            "$CANDIDATE_TAG" authoritative-verification.json verification.json \
+            --repository "$GITHUB_REPOSITORY"
