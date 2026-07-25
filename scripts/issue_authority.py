@@ -155,6 +155,38 @@ query IssueRevision($owner: String!, $repository: String!, $number: Int!) {
 }
 """
 
+CLOSING_REFERENCE_QUERY = """
+query ClosingReferences($owner: String!, $repository: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $repository) {
+    issue(number: $number) {
+      timelineItems(first: 100, after: $cursor, itemTypes: [CROSS_REFERENCED_EVENT]) {
+        nodes {
+          __typename
+          ... on CrossReferencedEvent {
+            actor { login }
+            id
+            referencedAt
+            source {
+              __typename
+              ... on PullRequest {
+                number
+                repository { nameWithOwner }
+                url
+              }
+            }
+            willCloseTarget
+          }
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+    }
+  }
+}
+"""
+
 
 class AuthorityError(RuntimeError):
     """The public issue-authority contract cannot be satisfied."""
@@ -1074,7 +1106,7 @@ def verify_intake_manifest(
 
 
 class GitHubApi:
-    """Bounded GitHub REST client for public issue metadata and lifecycle labels."""
+    """Bounded GitHub client for public issue metadata and lifecycle labels."""
 
     def __init__(
         self,
@@ -1082,10 +1114,12 @@ class GitHubApi:
         api_url: str = "https://api.github.com",
         *,
         read_token: str | None = None,
+        graphql_url: str = "https://api.github.com/graphql",
     ) -> None:
         if not token:
             raise AuthorityError("BETA_PRODUCT_WORK_TOKEN is required for cross-repository issue authority")
         self.api_url = api_url.rstrip("/")
+        self.graphql_url = graphql_url
         self.headers = {
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {token}",
@@ -1141,6 +1175,27 @@ class GitHubApi:
 
     def request(self, method: str, path: str, payload: Mapping[str, Any] | None = None) -> Any:
         return self._request(method, path, payload)
+
+    def _graphql(self, query: str, variables: Mapping[str, Any]) -> dict[str, Any]:
+        body = json.dumps({"query": query, "variables": variables}, separators=(",", ":")).encode("utf-8")
+        headers = {**self.read_headers, "Content-Type": "application/json"}
+        request = urllib.request.Request(self.graphql_url, data=body, headers=headers, method="POST")
+        for attempt in range(1, GITHUB_API_ATTEMPTS + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    payload = json.loads(response.read())
+                if not isinstance(payload, dict) or payload.get("errors") or not isinstance(payload.get("data"), dict):
+                    raise AuthorityError("GitHub GraphQL lifecycle authority returned errors")
+                return payload["data"]
+            except urllib.error.HTTPError as error:
+                retryable = error.code == 429 or 500 <= error.code <= 599
+                if not retryable or attempt == GITHUB_API_ATTEMPTS:
+                    raise AuthorityError(f"GitHub GraphQL lifecycle authority returned {error.code}") from error
+            except (urllib.error.URLError, ConnectionError, TimeoutError, json.JSONDecodeError) as error:
+                if attempt == GITHUB_API_ATTEMPTS:
+                    raise AuthorityError("GitHub GraphQL lifecycle authority failed after bounded retries") from error
+            time.sleep(GITHUB_API_RETRY_SECONDS * (2 ** (attempt - 1)))
+        raise AssertionError("GitHub GraphQL retry loop ended unexpectedly")
 
     def _authenticated_writer(self) -> tuple[int, str]:
         if self._writer_identity is not None:
@@ -1273,13 +1328,41 @@ class GitHubApi:
     ) -> None:
         self.request("PATCH", f"/repos/{organization}/{repository}/issues/{number}", {"state": state})
 
-    def list_issue_timeline(
+    def list_issue_closing_references(
         self,
         organization: str,
         repository: str,
         number: int,
     ) -> list[dict[str, Any]]:
-        return self.list_collection(f"/repos/{organization}/{repository}/issues/{number}/timeline")
+        records: list[dict[str, Any]] = []
+        cursor: str | None = None
+        for _page in range(10):
+            data = self._graphql(
+                CLOSING_REFERENCE_QUERY,
+                {
+                    "cursor": cursor,
+                    "number": number,
+                    "owner": organization,
+                    "repository": repository,
+                },
+            )
+            repository_node = data.get("repository")
+            issue = repository_node.get("issue") if isinstance(repository_node, Mapping) else None
+            connection = issue.get("timelineItems") if isinstance(issue, Mapping) else None
+            if not isinstance(connection, Mapping) or not isinstance(connection.get("nodes"), list):
+                raise AuthorityError(f"GitHub GraphQL lifecycle authority cannot read {repository}/{number}")
+            records.extend(dict(node) for node in connection["nodes"] if isinstance(node, Mapping))
+            page_info = connection.get("pageInfo")
+            if not isinstance(page_info, Mapping):
+                raise AuthorityError("GitHub GraphQL lifecycle authority returned malformed pagination")
+            if not page_info.get("hasNextPage"):
+                return records
+            cursor = page_info.get("endCursor")
+            if not isinstance(cursor, str) or not cursor:
+                raise AuthorityError("GitHub GraphQL lifecycle authority omitted its next cursor")
+        raise AuthorityError(
+            f"GitHub GraphQL lifecycle authority for {repository}/{number} exceeded the pagination bound"
+        )
 
     def get_pull_request(self, organization: str, repository: str, number: int) -> dict[str, Any]:
         result = self.request("GET", f"/repos/{organization}/{repository}/pulls/{number}")
@@ -2131,6 +2214,7 @@ def main(argv: list[str] | None = None) -> int:
             token,
             os.environ.get("GITHUB_API_URL", "https://api.github.com"),
             read_token=discovery_token,
+            graphql_url=os.environ.get("GITHUB_GRAPHQL_URL", "https://api.github.com/graphql"),
         )
         if arguments.command == "apply":
             evidence = apply_backlog(

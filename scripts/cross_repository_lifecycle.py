@@ -10,7 +10,6 @@ from typing import Any
 TARGET_HEADING = "### Required source targets"
 TARGET_HEADING_PATTERN = re.compile(r"(?m)^#{2,3}[ \t]+Required source targets[ \t]*\r?$")
 EVIDENCE_MARKER = "<!-- durable-workflow-cross-repository-lifecycle:v1 -->"
-API_PULL_PATTERN = re.compile(r"/repos/([^/]+)/([^/]+)/pulls/([1-9][0-9]*)$")
 HTML_PULL_PATTERN = re.compile(r"https://github\.com/([^/]+)/([^/]+)/pull/([1-9][0-9]*)$")
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
@@ -104,19 +103,33 @@ def declared_targets(
 
 
 def _pull_identity(event: Mapping[str, Any], organization: str) -> tuple[str, int] | None:
-    if event.get("event") != "cross-referenced" or event.get("will_close_target") is not True:
+    if event.get("__typename") != "CrossReferencedEvent" or event.get("willCloseTarget") is not True:
         return None
     source = event.get("source")
-    source_issue = source.get("issue") if isinstance(source, Mapping) else None
-    pull = source_issue.get("pull_request") if isinstance(source_issue, Mapping) else None
-    if not isinstance(pull, Mapping):
+    repository = source.get("repository") if isinstance(source, Mapping) else None
+    name_with_owner = repository.get("nameWithOwner") if isinstance(repository, Mapping) else None
+    number = source.get("number") if isinstance(source, Mapping) else None
+    url = source.get("url") if isinstance(source, Mapping) else None
+    match = HTML_PULL_PATTERN.fullmatch(url) if isinstance(url, str) else None
+    if (
+        not isinstance(source, Mapping)
+        or source.get("__typename") != "PullRequest"
+        or not isinstance(name_with_owner, str)
+        or REPOSITORY_PATTERN.fullmatch(name_with_owner) is None
+        or type(number) is not int
+        or number < 1
+        or match is None
+    ):
         return None
-    for field, pattern in (("url", API_PULL_PATTERN), ("html_url", HTML_PULL_PATTERN)):
-        value = pull.get(field)
-        match = pattern.search(value) if isinstance(value, str) else None
-        if match is not None and match.group(1).casefold() == organization.casefold():
-            return match.group(2), int(match.group(3))
-    return None
+    owner, repository_name = name_with_owner.split("/", 1)
+    if (
+        owner.casefold() != organization.casefold()
+        or match.group(1).casefold() != organization.casefold()
+        or match.group(2) != repository_name
+        or int(match.group(3)) != number
+    ):
+        return None
+    return repository_name, number
 
 
 def _utc_timestamp(value: Any) -> datetime | None:
@@ -271,7 +284,7 @@ def _trusted_pull_request(
             "head_repository": head_repository,
             "head_sha": head_sha,
             "kind": provenance,
-            "reference_at": event["created_at"],
+            "reference_at": event["referencedAt"],
             "reference_event": event["id"],
         },
     }
@@ -287,19 +300,19 @@ def _latest_attempts(
     attempts: dict[str, dict[str, Any]] = {}
     references: dict[tuple[str, int], tuple[tuple[datetime, int], Mapping[str, Any]]] = {}
     invalid_references: set[tuple[str, int]] = set()
-    for event in events:
+    for index, event in enumerate(events):
         identity = _pull_identity(event, organization)
         if identity is None:
             continue
-        reference_at = _utc_timestamp(event.get("created_at"))
+        reference_at = _utc_timestamp(event.get("referencedAt"))
         reference_id = event.get("id")
-        if reference_at is None or type(reference_id) is not int or reference_id < 1:
+        if reference_at is None or not isinstance(reference_id, str) or not reference_id:
             invalid_references.add(identity)
             references.pop(identity, None)
             continue
         if identity in invalid_references:
             continue
-        ordering = (reference_at, reference_id)
+        ordering = (reference_at, index)
         if identity not in references or ordering > references[identity][0]:
             references[identity] = (ordering, event)
     for (repository, number), (reference_ordering, event) in sorted(references.items()):
@@ -432,7 +445,7 @@ def evaluate_lifecycle(
     trusted = {actor.casefold() for actor in trusted_actors if isinstance(actor, str) and actor}
     if not trusted:
         raise LifecycleError("cross-repository lifecycle has no trusted execution actors")
-    events = client.list_issue_timeline(organization, source_repository, number)
+    events = client.list_issue_closing_references(organization, source_repository, number)
     attempts = _latest_attempts(client, organization, events, repositories, trusted)
     results = [
         _evaluate_target(client, organization, target, attempts.get(str(target["repository"]))) for target in targets

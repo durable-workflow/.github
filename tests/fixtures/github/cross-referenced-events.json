@@ -1,0 +1,50 @@
+{
+  "data": {
+    "repository": {
+      "issue": {
+        "timelineItems": {
+          "nodes": [
+            {
+              "__typename": "CrossReferencedEvent",
+              "actor": {
+                "login": "durable-workflow-ops"
+              },
+              "id": "CRE_kwDOA1b2c84AAZ9x",
+              "referencedAt": "2026-07-24T09:00:00Z",
+              "source": {
+                "__typename": "PullRequest",
+                "number": 70,
+                "repository": {
+                  "nameWithOwner": "durable-workflow/workflow"
+                },
+                "url": "https://github.com/durable-workflow/workflow/pull/70"
+              },
+              "willCloseTarget": true
+            },
+            {
+              "__typename": "CrossReferencedEvent",
+              "actor": {
+                "login": "external-contributor"
+              },
+              "id": "CRE_kwDOA1b2c84AAaB7",
+              "referencedAt": "2026-07-24T09:05:00Z",
+              "source": {
+                "__typename": "PullRequest",
+                "number": 71,
+                "repository": {
+                  "nameWithOwner": "durable-workflow/server"
+                },
+                "url": "https://github.com/durable-workflow/server/pull/71"
+              },
+              "willCloseTarget": true
+            }
+          ],
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": "Y3Vyc29yOnYyOpHOAAaB7"
+          }
+        }
+      }
+    }
+  }
+}

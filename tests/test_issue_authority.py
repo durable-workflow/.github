@@ -200,7 +200,7 @@ class FakeGitHubApi:
         issue["state"] = state
         self.state_updates.append((repository, number, state))
 
-    def list_issue_timeline(
+    def list_issue_closing_references(
         self,
         _organization: str,
         repository: str,
@@ -321,20 +321,21 @@ def closing_reference(
     *,
     actor: str = "durable-workflow-ops",
     created_at: str = "2026-07-24T09:00:00Z",
-    identifier: int | None = None,
+    identifier: str | None = None,
     will_close_target: bool = True,
 ) -> dict[str, Any]:
     return {
+        "__typename": "CrossReferencedEvent",
         "actor": {"login": actor},
-        "created_at": created_at,
-        "event": "cross-referenced",
-        "id": identifier or number,
+        "id": identifier if identifier is not None else f"CRE_kwDOA1b2c84A{number:04d}",
+        "referencedAt": created_at,
         "source": {
-            "issue": {
-                "pull_request": {"url": f"https://api.github.com/repos/durable-workflow/{repository}/pulls/{number}"}
-            }
+            "__typename": "PullRequest",
+            "number": number,
+            "repository": {"nameWithOwner": f"durable-workflow/{repository}"},
+            "url": f"https://github.com/durable-workflow/{repository}/pull/{number}",
         },
-        "will_close_target": will_close_target,
+        "willCloseTarget": will_close_target,
     }
 
 
@@ -1357,6 +1358,29 @@ class GitHubApiTest(unittest.TestCase):
         self.assertEqual("Bearer job-token", request.get_header("Authorization"))
         self.assertEqual("POST", request.method)
 
+    def test_lifecycle_reads_captured_graphql_closing_reference_shape(self) -> None:
+        client = GitHubApi(
+            "writer-token",
+            read_token="job-token",
+            graphql_url="https://api.github.test/graphql",
+        )
+        payload = (ROOT / "tests/fixtures/github/cross-referenced-events.json").read_bytes()
+
+        with patch("urllib.request.urlopen", return_value=FakeResponse(payload)) as urlopen:
+            references = client.list_issue_closing_references("durable-workflow", ".github", 99)
+
+        self.assertEqual(["CRE_kwDOA1b2c84AAZ9x", "CRE_kwDOA1b2c84AAaB7"], [event["id"] for event in references])
+        request = urlopen.call_args.args[0]
+        body = json.loads(request.data)
+        self.assertEqual("https://api.github.test/graphql", request.full_url)
+        self.assertEqual("Bearer job-token", request.get_header("Authorization"))
+        self.assertEqual(
+            {"cursor": None, "number": 99, "owner": "durable-workflow", "repository": ".github"},
+            body["variables"],
+        )
+        self.assertIn("... on CrossReferencedEvent", body["query"])
+        self.assertIn("willCloseTarget", body["query"])
+
     def test_create_request_is_not_repeated_after_an_ambiguous_failure(self) -> None:
         client = GitHubApi("secret")
         responses = [
@@ -2367,7 +2391,7 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual("v2", approved["targets"][0]["base_ref"])
         self.assertEqual("approved:repository-maintainer", approved["targets"][0]["provenance"])
         rendered = render_evidence(approved)
-        self.assertIn("reference event `70` at `2026-07-24T09:00:00Z`", rendered)
+        self.assertIn("reference event `CRE_kwDOA1b2c84A0070` at `2026-07-24T09:00:00Z`", rendered)
         self.assertIn("approval review `1` at `2026-07-24T09:30:00Z`", rendered)
 
         self.client.reviews[("workflow", 71)] = [approving_review(newer_head)]
@@ -2399,7 +2423,7 @@ class MigrationTest(unittest.TestCase):
             91,
             actor="external-contributor",
             created_at="2026-07-24T10:00:00Z",
-            identifier=910,
+            identifier="CRE_kwDOA1b2c84AA910",
         )
         self.client.timelines[(".github", 99)] = [late_reference]
         self.client.pulls[("workflow", 91)] = pull_request(
@@ -2438,7 +2462,7 @@ class MigrationTest(unittest.TestCase):
                 "workflow",
                 90,
                 created_at="2026-07-24T08:30:00Z",
-                identifier=900,
+                identifier="CRE_kwDOA1b2c84AA900",
             ),
         )
         self.client.pulls[("workflow", 90)] = pull_request(
@@ -2490,7 +2514,7 @@ class MigrationTest(unittest.TestCase):
                 91,
                 actor="external-contributor",
                 created_at="2026-07-24T11:00:00Z",
-                identifier=911,
+                identifier="CRE_kwDOA1b2c84AA911",
             )
         )
 
@@ -2526,8 +2550,63 @@ class MigrationTest(unittest.TestCase):
         self.assertFalse(readmitted["complete"])
         self.assertEqual("pending:rejected", readmitted["targets"][0]["state"])
         self.assertIn("/pull/91", readmitted["targets"][0]["pull_request"])
-        self.assertEqual(911, readmitted["targets"][0]["reference_event"])
+        self.assertEqual("CRE_kwDOA1b2c84AA911", readmitted["targets"][0]["reference_event"])
         self.assertEqual(3, readmitted["targets"][0]["approval_review"])
+
+    def test_captured_graphql_references_admit_trusted_and_freshly_approved_external_attempts(self) -> None:
+        targets = qualification_targets(qualification_fixture())
+        selected_targets = [targets["workflow"], targets["server"]]
+        trusted_actors = self.policy["intake"]["trusted_actors"]
+        payload = json.loads((ROOT / "tests/fixtures/github/cross-referenced-events.json").read_text(encoding="utf-8"))
+        self.client.timelines[(".github", 99)] = payload["data"]["repository"]["issue"]["timelineItems"]["nodes"]
+        workflow_landing = "c" * 40
+        server_landing = "d" * 40
+        external_head = "e" * 40
+        self.client.pulls[("workflow", 70)] = pull_request(
+            "workflow",
+            70,
+            "v2",
+            commit=workflow_landing,
+            created_at="2026-07-24T08:45:00Z",
+        )
+        self.client.pulls[("server", 71)] = pull_request(
+            "server",
+            71,
+            "main",
+            author="external-contributor",
+            author_association="NONE",
+            commit=server_landing,
+            created_at="2026-07-24T08:50:00Z",
+            head_repository="external-contributor/server",
+            head_sha=external_head,
+        )
+        self.client.reviews[("server", 71)] = [
+            approving_review(
+                external_head,
+                submitted_at="2026-07-24T09:30:00Z",
+            )
+        ]
+        for target, commit in ((targets["workflow"], workflow_landing), (targets["server"], server_landing)):
+            repository = target["repository"]
+            self.client.reachable.add((repository, commit, target["branch"]))
+            self.client.successful_checks[(repository, commit)] = set(target["required_checks"])
+
+        assessment = evaluate_lifecycle(
+            self.client,
+            "durable-workflow",
+            ".github",
+            {"number": 99},
+            selected_targets,
+            trusted_actors=trusted_actors,
+        )
+
+        self.assertTrue(assessment["complete"])
+        by_repository = {target["repository"]: target for target in assessment["targets"]}
+        self.assertEqual("CRE_kwDOA1b2c84AAZ9x", by_repository["workflow"]["reference_event"])
+        self.assertEqual("trusted-author:durable-workflow-ops", by_repository["workflow"]["provenance"])
+        self.assertEqual("CRE_kwDOA1b2c84AAaB7", by_repository["server"]["reference_event"])
+        self.assertEqual("approved:repository-maintainer", by_repository["server"]["provenance"])
+        self.assertEqual("2026-07-24T09:30:00Z", by_repository["server"]["approval_at"])
 
     def test_trusted_attempt_requires_exact_pull_head_base_and_reference_metadata(self) -> None:
         target = qualification_targets(qualification_fixture())["workflow"]
@@ -2541,8 +2620,10 @@ class MigrationTest(unittest.TestCase):
             ("base repository", "pull", ("base", "repo", "full_name"), "durable-workflow/server"),
             ("base commit", "pull", ("base", "sha"), "invalid"),
             ("reference actor", "event", ("actor", "login"), "public-noise"),
-            ("reference event identity", "event", ("id",), "invalid"),
-            ("reference event timestamp", "event", ("created_at",), "invalid"),
+            ("reference source type", "event", ("source", "__typename"), "Issue"),
+            ("reference source repository", "event", ("source", "repository", "nameWithOwner"), "other/workflow"),
+            ("reference event identity", "event", ("id",), 80),
+            ("reference event timestamp", "event", ("referencedAt",), "invalid"),
         ]
         for label, location, path, replacement in mutations:
             with self.subTest(label=label):

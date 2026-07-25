@@ -41,13 +41,15 @@ The cross-repository issue form records every required source target as an
 exact `organization/repository@branch` selection in its required-targets
 section. Intake binds those selections to the same vetted revision and resolves
 their required checks from `qualification/policy.json`. The lifecycle audit
-then evaluates the latest trusted linked implementation pull request for each
-target. Same-repository execution must bind an authorized pull-request author
-and closing-reference actor. A fork or other external attempt participates only
-when an authorized maintainer's latest approval names its exact current head
-commit and was submitted strictly after the latest immutable closing-reference
-event. Removing and reintroducing that reference therefore requires another
-approval. Every admitted attempt also binds its exact pull-request identity,
+reads closing-reference authority from GitHub's GraphQL
+`CrossReferencedEvent`, then evaluates the latest trusted linked implementation
+pull request for each target. Same-repository execution must bind an authorized
+pull-request author and closing-reference actor. A fork or other external
+attempt participates only when an authorized maintainer's latest approval names
+its exact current head commit and was submitted strictly after the event's
+current `referencedAt` value. Removing, reintroducing, or retargeting that
+reference therefore requires another approval. Every admitted attempt also
+binds its exact pull-request identity,
 head repository, head ref and commit, base repository, ref and commit, reference
 event identity and time, and any required external approval identity and time
 before latest-attempt selection. A target is complete only when that attempt
