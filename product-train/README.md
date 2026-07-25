@@ -4,7 +4,7 @@
 supported Durable Workflow 2.0 product train. Selecting its `current` value
 selects exact server, CLI, Workflow, Waterline operator, PHP SDK, Python SDK,
 and Rust SDK artifacts together. The Python registry normalizes the SemVer tag
-`2.0.0-beta.14` to the PEP 440 spelling `2.0.0b14`; both identify the same train.
+`2.0.0-beta.16` to the PEP 440 spelling `2.0.0b16`; both identify the same train.
 Waterline remains one component. Its `install.waterline` record publishes
 separate `embedded` Composer and `service` OCI commands at that component's
 single train version.

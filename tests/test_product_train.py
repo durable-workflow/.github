@@ -20,25 +20,25 @@ class ProductTrainTest(unittest.TestCase):
         Draft202012Validator(schema).validate(contract)
 
         current = contract["current"]
-        self.assertEqual("2.0.0-beta.14", current)
+        self.assertEqual("2.0.0-beta.16", current)
         supported = [
             name for name, train in contract["trains"].items() if train["status"] == "supported"
         ]
         self.assertEqual([current], supported)
         self.assertEqual({name: current for name in COMPONENTS}, contract["trains"][current]["versions"])
-        self.assertEqual("2.0.0b14", contract["trains"][current]["registry_versions"]["sdk-python"])
+        self.assertEqual("2.0.0b16", contract["trains"][current]["registry_versions"]["sdk-python"])
 
         install = contract["trains"][current]["install"]
-        self.assertEqual("cargo add durable-workflow@=2.0.0-beta.14", install["sdk-rust"])
+        self.assertEqual("cargo add durable-workflow@=2.0.0-beta.16", install["sdk-rust"])
         self.assertEqual(
             "composer require "
-            "durable-workflow/waterline:2.0.0-beta.14@beta "
-            "durable-workflow/workflow:2.0.0-beta.14@beta "
-            "durable-workflow/sdk:2.0.0-beta.14@beta",
+            "durable-workflow/waterline:2.0.0-beta.16@beta "
+            "durable-workflow/workflow:2.0.0-beta.16@beta "
+            "durable-workflow/sdk:2.0.0-beta.16@beta",
             install["waterline"]["embedded"],
         )
         self.assertEqual(
-            "docker pull durableworkflow/waterline:2.0.0-beta.14",
+            "docker pull durableworkflow/waterline:2.0.0-beta.16",
             install["waterline"]["service"],
         )
 
@@ -48,9 +48,9 @@ class ProductTrainTest(unittest.TestCase):
             Draft202012Validator(schema).validate(incomplete)
 
     def test_new_beta_tuple_must_match_current_train(self) -> None:
-        components = {name: {"version": "2.0.0-beta.14", "commit": "a" * 40} for name in COMPONENTS}
-        self.assertEqual("2.0.0-beta.14", require_current_product_train(components))
+        components = {name: {"version": "2.0.0-beta.16", "commit": "a" * 40} for name in COMPONENTS}
+        self.assertEqual("2.0.0-beta.16", require_current_product_train(components))
 
         components["cli"]["version"] = "0.1.95"
-        with self.assertRaisesRegex(CandidateError, "supported product train 2.0.0-beta.14"):
+        with self.assertRaisesRegex(CandidateError, "supported product train 2.0.0-beta.16"):
             require_current_product_train(components)

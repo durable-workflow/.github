@@ -1,43 +1,43 @@
 {
   "beta_authorization": {
-    "commit": "a83a36b88ca838fb485e2224420cba04a617c0fb",
-    "tag": "beta-authorization/coherent-2-0-beta-14"
+    "commit": "12e33fffc6f605213e4694ed359c4554c7a55deb",
+    "tag": "beta-authorization/coherent-2-0-beta-16"
   },
   "channel": "beta",
   "components": {
     "cli": {
-      "commit": "6eeea275f3fe1af96cf6c25a347baf93632d76c5",
-      "version": "2.0.0-beta.14"
+      "commit": "89bc84b920b3c942581ba3314e7fd32b6a007200",
+      "version": "2.0.0-beta.16"
     },
     "sdk-php": {
-      "commit": "47bb5d213b1ebd1504a01b49cd574891b603a747",
-      "version": "2.0.0-beta.14"
+      "commit": "b1c756259847ea1259c1c132d9b2efbf4e24d188",
+      "version": "2.0.0-beta.16"
     },
     "sdk-python": {
-      "commit": "cc4efc00c5fd227caf38067658c5e7253c1fff73",
-      "version": "2.0.0-beta.14"
+      "commit": "7ae3a3d10ae22cce83a5a7bd5b7eed91fb8a18e8",
+      "version": "2.0.0-beta.16"
     },
     "sdk-rust": {
-      "commit": "88679659576713238ec156fd35fd543c8e627384",
-      "version": "2.0.0-beta.14"
+      "commit": "f654e19e37e9744b7b2e93c3e5d2b0c1ac75bec9",
+      "version": "2.0.0-beta.16"
     },
     "server": {
-      "commit": "0ca149a3c861d8b9e652ed2dcbaeb3baabeeac75",
-      "version": "2.0.0-beta.14"
+      "commit": "d481249420797329eac62c654eb0fb7e65c1a46d",
+      "version": "2.0.0-beta.16"
     },
     "waterline": {
-      "commit": "417d965f03b5fc58f6e0b3916c539b0fc82a949c",
-      "version": "2.0.0-beta.14"
+      "commit": "f6971abfb3151b67b76cff57f83509f301b1abfc",
+      "version": "2.0.0-beta.16"
     },
     "workflow": {
-      "commit": "ef844b34dfec8cfe54d4bc699fc21d80574ce028",
-      "version": "2.0.0-beta.14"
+      "commit": "68262eb8589e8e1142c2e158f50815950a347ef8",
+      "version": "2.0.0-beta.16"
     }
   },
   "foundation": {
     "commit": "4995052410bd4301c5796ffba54e0b6d2f490ed1",
     "tag": "beta-candidate/beta-continuity-foundation"
   },
-  "plan": "coherent-2-0-beta-14",
+  "plan": "coherent-2-0-beta-16",
   "schema": "durable-workflow.release-plan/v2"
 }
