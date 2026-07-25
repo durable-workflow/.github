@@ -777,6 +777,33 @@ class IssueIntakeTest(unittest.TestCase):
             ),
         )
 
+    def test_api_and_issue_form_target_headings_use_the_same_contract(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
+        qualification = qualification_fixture()
+
+        for heading in ("## Required source targets", "### Required source targets"):
+            with self.subTest(heading=heading):
+                issue = intake_issue(
+                    author="rmcdaniel",
+                    body=(
+                        f"{heading}\n\n"
+                        "durable-workflow/.github@main\n"
+                        "durable-workflow/workflow@v2\n\n"
+                        "## Repository roles\n\nShared authority and consumer.\n"
+                    ),
+                    labels=["kind:cross-repository"],
+                )
+                manifest, _inventory = reconstruct_intake(
+                    policy,
+                    FakeDiscovery(policy, {".github": [(issue, [])]}),
+                    target_qualification=qualification,
+                )
+
+                self.assertEqual(
+                    [".github", "workflow"],
+                    [target["repository"] for target in manifest["issues"][0]["cross_repository_targets"]],
+                )
+
     def test_cross_repository_intake_rejects_invalid_target_sets(self) -> None:
         policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
         qualification = qualification_fixture()
@@ -797,6 +824,15 @@ class IssueIntakeTest(unittest.TestCase):
             "unqualified": (
                 "### Required source targets\n\ndurable-workflow/.github@main\ndurable-workflow/workflow@main",
                 "not a qualified target",
+            ),
+            "repeated-section": (
+                "## Required source targets\n\n"
+                "durable-workflow/.github@main\n"
+                "durable-workflow/workflow@v2\n\n"
+                "### Required source targets\n\n"
+                "durable-workflow/.github@main\n"
+                "durable-workflow/server@main",
+                "repeats its affected public repositories section",
             ),
         }
 
@@ -889,7 +925,7 @@ class IssueIntakeTest(unittest.TestCase):
         active_hygiene = intake_issue(
             author="durable-workflow-ops",
             body=(
-                "### Required source targets\n\n"
+                "## Required source targets\n\n"
                 "durable-workflow/.github@main\n"
                 "durable-workflow/cli@main\n"
                 "durable-workflow/durable-workflow.github.io@main\n"
@@ -959,7 +995,7 @@ class IssueIntakeTest(unittest.TestCase):
         issue = intake_issue(
             author="rmcdaniel",
             body=(
-                "### Required source targets\n\n"
+                "## Required source targets\n\n"
                 "durable-workflow/.github@main\n"
                 "durable-workflow/workflow@v2\n"
                 "durable-workflow/waterline@v2\n"

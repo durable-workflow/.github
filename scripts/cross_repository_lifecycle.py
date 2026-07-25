@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 TARGET_HEADING = "### Required source targets"
+TARGET_HEADING_PATTERN = re.compile(r"(?m)^#{2,3}[ \t]+Required source targets[ \t]*\r?$")
 EVIDENCE_MARKER = "<!-- durable-workflow-cross-repository-lifecycle:v1 -->"
 API_PULL_PATTERN = re.compile(r"/repos/([^/]+)/([^/]+)/pulls/([1-9][0-9]*)$")
 HTML_PULL_PATTERN = re.compile(r"https://github\.com/([^/]+)/([^/]+)/pull/([1-9][0-9]*)$")
@@ -63,15 +64,15 @@ def declared_targets(
 ) -> list[dict[str, Any]]:
     """Read exact form selections from the bounded affected-repositories section."""
 
-    heading_count = body.count(TARGET_HEADING)
-    if heading_count == 0:
+    headings = list(TARGET_HEADING_PATTERN.finditer(body))
+    if not headings:
         if required:
             raise LifecycleError("cross-repository authority must declare its required source targets")
         return []
-    if heading_count != 1:
+    if len(headings) != 1:
         raise LifecycleError("cross-repository issue repeats its affected public repositories section")
-    section = body.split(TARGET_HEADING, 1)[1]
-    section = re.split(r"(?m)^#{1,3} ", section, maxsplit=1)[0]
+    section = body[headings[0].end() :]
+    section = re.split(r"(?m)^#{1,6}[ \t]+", section, maxsplit=1)[0]
     selected: list[str] = []
     candidate_pattern = re.compile(rf"^(?:-\s*)?{re.escape(organization)}/([a-z0-9_.-]+)@(main|v2)\s*$")
     for raw_line in section.splitlines():

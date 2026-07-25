@@ -731,7 +731,7 @@ def _issue_cross_repository_targets(
             organization=organization,
         )
     except cross_repository_lifecycle.LifecycleError as error:
-        raise AuthorityError(str(error)) from error
+        raise AuthorityError(f"GitHub issue {issue['number']}: {error}") from error
     if declared:
         if not is_cross_repository:
             raise AuthorityError(
@@ -750,7 +750,9 @@ def _issue_cross_repository_targets(
     )
     if migrated:
         return migrated
-    raise AuthorityError("cross-repository authority must declare its required source targets")
+    raise AuthorityError(
+        f"GitHub issue {issue['number']}: cross-repository authority must declare its required source targets"
+    )
 
 
 def reconstruct_intake(
