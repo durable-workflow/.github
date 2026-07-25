@@ -27,6 +27,7 @@ from scripts.release_plan import (
     SCHEMA,
     SOURCE_CHANGELOGS,
     SOURCE_MANIFEST_REASON,
+    SUPERSESSION_REASON,
     candidate_manifest,
     check_plan_compatibility,
     completion_manifest,
@@ -1817,6 +1818,81 @@ class ReleasePlanValidationTest(unittest.TestCase):
         changed["components"]["server"]["commit"] = "d" * 40
         with self.assertRaisesRegex(CandidateError, "unaffected component server"):
             validate_successor_transition(failed, changed, "waterline")
+
+    def test_exact_semver_successors_cover_both_conflict_paths(self) -> None:
+        long_numeric = "9" * 4301
+        cases = (
+            ("release", "1.2.3", "1.2.4"),
+            ("prerelease", "1.2.3-alpha.9", "1.2.3-alpha.10"),
+            ("release-build", "1.2.3+build.1", "1.2.4+build.2"),
+            (
+                "prerelease-build",
+                "1.2.3-alpha.9+build.1",
+                "1.2.3-alpha.10+build.2",
+            ),
+            ("single-numeric-prerelease", "1.2.3-9", "1.2.3-10"),
+            (
+                "single-numeric-prerelease-build",
+                "1.2.3-9+build.1",
+                "1.2.3-10+build.2",
+            ),
+            ("nonnumeric-prerelease", "1.2.3-rc", "1.2.3-rc.1"),
+            (
+                "nonnumeric-prerelease-build",
+                "1.2.3-rc+build.1",
+                "1.2.3-rc.1+build.2",
+            ),
+            (
+                "long-core",
+                f"1.2.{long_numeric}",
+                f"1.2.1{'0' * 4301}",
+            ),
+            (
+                "long-prerelease",
+                f"1.2.3-alpha.{long_numeric}",
+                f"1.2.3-alpha.1{'0' * 4301}",
+            ),
+        )
+
+        for reason in (SUPERSESSION_REASON, OCCUPIED_SOURCE_MANIFEST_REASON):
+            for label, previous_version, successor_version in cases:
+                failed = release_plan("beta")
+                failed["plan"] = f"semver-{label}-failed"
+                failed["components"]["server"]["version"] = previous_version
+                successor = copy.deepcopy(failed)
+                successor["plan"] = f"semver-{label}-successor"
+                successor["components"]["server"]["version"] = successor_version
+                if reason == OCCUPIED_SOURCE_MANIFEST_REASON:
+                    successor["components"]["server"]["commit"] = "e" * 40
+
+                with self.subTest(reason=reason, kind=label):
+                    validate_successor_transition(
+                        failed,
+                        successor,
+                        [{"component": "server", "reason": reason}],
+                    )
+
+            failed = release_plan("beta")
+            failed["plan"] = "semver-long-skipped-failed"
+            failed["components"]["server"]["version"] = f"1.2.{long_numeric}"
+            successor = copy.deepcopy(failed)
+            successor["plan"] = "semver-long-skipped-successor"
+            successor["components"]["server"]["version"] = f"1.2.2{'0' * 4301}"
+            if reason == OCCUPIED_SOURCE_MANIFEST_REASON:
+                successor["components"]["server"]["commit"] = "e" * 40
+
+            with (
+                self.subTest(reason=reason, kind="invalid"),
+                self.assertRaisesRegex(
+                    CandidateError,
+                    "immediate next version",
+                ),
+            ):
+                validate_successor_transition(
+                    failed,
+                    successor,
+                    [{"component": "server", "reason": reason}],
+                )
 
     def test_terminal_record_rejects_mutated_evidence(self) -> None:
         failed = release_plan()

@@ -64,12 +64,7 @@ LEGACY_PLAN_DIGESTS = recovery_discovery.LEGACY_PLAN_DIGESTS
 PREPARATION_SCHEMA = "durable-workflow.release-preparation/v1"
 SOURCE_PREPARATION_SCHEMA = "durable-workflow.release-source-preparation/v1"
 PLAN_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,55}$")
-VERSION_PATTERN = re.compile(
-    r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
-    r"(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
-    r"(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?"
-    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
-)
+VERSION_PATTERN = recovery_discovery.VERSION_PATTERN
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 ALPHA_VERSION_PATTERN = re.compile(r"^2\.0\.0-alpha\.[1-9][0-9]*$")
 BETA_VERSION_PATTERN = re.compile(r"^2\.0\.0-beta\.[1-9][0-9]*$")
@@ -204,7 +199,7 @@ def _validate_plan(plan: Any, schemas: set[str]) -> None:
     for name, identity in components.items():
         if not isinstance(identity, dict) or set(identity) != {"version", "commit"}:
             raise CandidateError(f"components.{name} must contain only version and commit")
-        if not isinstance(identity["version"], str) or not VERSION_PATTERN.fullmatch(identity["version"]):
+        if not isinstance(identity["version"], str) or recovery_discovery.parse_semver(identity["version"]) is None:
             raise CandidateError(f"components.{name}.version must be an exact SemVer release")
         if not isinstance(identity["commit"], str) or not COMMIT_PATTERN.fullmatch(identity["commit"]):
             raise CandidateError(f"components.{name}.commit must be a full lowercase Git commit identity")
@@ -566,32 +561,7 @@ def revalidate_release_preparation(preparation: dict[str, Any], plan: dict[str, 
         raise CandidateError("release preparation no longer matches its immutable source evidence")
 
 
-def is_immediate_version_successor(previous: str, successor: str) -> bool:
-    previous_match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?", previous)
-    successor_match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?", successor)
-    if previous_match is None or successor_match is None:
-        return False
-    previous_core = tuple(int(value) for value in previous_match.groups()[:3])
-    successor_core = tuple(int(value) for value in successor_match.groups()[:3])
-    previous_prerelease = previous_match.group(4)
-    successor_prerelease = successor_match.group(4)
-    if previous_prerelease is None:
-        return successor_prerelease is None and successor_core == (
-            previous_core[0],
-            previous_core[1],
-            previous_core[2] + 1,
-        )
-    previous_parts = previous_prerelease.rsplit(".", 1)
-    successor_parts = (successor_prerelease or "").rsplit(".", 1)
-    return (
-        successor_core == previous_core
-        and len(previous_parts) == 2
-        and len(successor_parts) == 2
-        and previous_parts[0] == successor_parts[0]
-        and previous_parts[1].isdigit()
-        and successor_parts[1].isdigit()
-        and int(successor_parts[1]) == int(previous_parts[1]) + 1
-    )
+is_immediate_version_successor = recovery_discovery.is_immediate_version_successor
 
 
 def conflict_component_names(conflicts: Any) -> list[str]:

@@ -19,9 +19,11 @@ from scripts.component_release_recovery import (
     CONTINUITY_RESOLUTION_TAG_PREFIX,
     FOUNDATION_COMMIT,
     FOUNDATION_TAG,
+    OCCUPIED_SOURCE_MANIFEST_REASON,
     PREPARATION_SCHEMA,
     SCHEMA,
     SUPERSESSION_API_VERSION,
+    SUPERSESSION_REASON,
     NotFound,
     PublicClient,
     PublicInfrastructureError,
@@ -43,6 +45,7 @@ from scripts.component_release_recovery import (
     validate_continuity_resolution_qualification,
     validate_plan,
     validate_release_preparation,
+    validate_successor_transition,
     verify_cli,
     verify_composer,
     verify_recovery_workflow_source,
@@ -563,6 +566,76 @@ class ComponentRecoveryContractTest(unittest.TestCase):
                         for authority in current_product_train_authorities(authorities)
                     ],
                 )
+
+    def test_semver_successors_cover_both_terminal_conflict_paths(self) -> None:
+        long_numeric = "9" * 4301
+        cases = (
+            ("release", "1.2.3", "1.2.4"),
+            ("prerelease", "1.2.3-alpha.9", "1.2.3-alpha.10"),
+            ("release-build", "1.2.3+build.1", "1.2.4+build.2"),
+            (
+                "prerelease-build",
+                "1.2.3-alpha.9+build.1",
+                "1.2.3-alpha.10+build.2",
+            ),
+            ("single-numeric-prerelease", "1.2.3-9", "1.2.3-10"),
+            (
+                "single-numeric-prerelease-build",
+                "1.2.3-9+build.1",
+                "1.2.3-10+build.2",
+            ),
+            ("nonnumeric-prerelease", "1.2.3-rc", "1.2.3-rc.1"),
+            (
+                "nonnumeric-prerelease-build",
+                "1.2.3-rc+build.1",
+                "1.2.3-rc.1+build.2",
+            ),
+            (
+                "long-core",
+                f"1.2.{long_numeric}",
+                f"1.2.1{'0' * 4301}",
+            ),
+            (
+                "long-prerelease",
+                f"1.2.3-alpha.{long_numeric}",
+                f"1.2.3-alpha.1{'0' * 4301}",
+            ),
+        )
+
+        for reason in (SUPERSESSION_REASON, OCCUPIED_SOURCE_MANIFEST_REASON):
+            for label, previous_version, successor_version in cases:
+                failed = plan("beta")
+                failed["plan"] = f"semver-{label}-failed"
+                failed["components"]["server"]["version"] = previous_version
+                successor = json.loads(json.dumps(failed))
+                successor["plan"] = f"semver-{label}-successor"
+                successor["components"]["server"]["version"] = successor_version
+                if reason == OCCUPIED_SOURCE_MANIFEST_REASON:
+                    successor["components"]["server"]["commit"] = "e" * 40
+
+                with self.subTest(reason=reason, kind=label):
+                    validate_successor_transition(
+                        failed,
+                        successor,
+                        [{"component": "server", "reason": reason}],
+                    )
+
+            failed = plan("beta")
+            failed["plan"] = "semver-long-skipped-failed"
+            failed["components"]["server"]["version"] = f"1.2.{long_numeric}"
+            successor = json.loads(json.dumps(failed))
+            successor["plan"] = "semver-long-skipped-successor"
+            successor["components"]["server"]["version"] = f"1.2.2{'0' * 4301}"
+            if reason == OCCUPIED_SOURCE_MANIFEST_REASON:
+                successor["components"]["server"]["commit"] = "e" * 40
+
+            with self.subTest(reason=reason, kind="invalid"), self.assertRaises(RecoveryError) as raised:
+                validate_successor_transition(
+                    failed,
+                    successor,
+                    [{"component": "server", "reason": reason}],
+                )
+            self.assertEqual("plan-discovery", raised.exception.phase)
 
     def test_release_plan_accepts_valid_prerelease_and_build_metadata(self) -> None:
         for valid in (
