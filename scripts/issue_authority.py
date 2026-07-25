@@ -93,6 +93,7 @@ query IssueIntake($owner: String!, $repository: String!, $cursor: String) {
         lastEditedAt
         url
         state
+        stateReason
         author { login }
         milestone { title }
         labels(first: 100) {
@@ -138,6 +139,7 @@ query IssueRevision($owner: String!, $repository: String!, $number: Int!) {
       lastEditedAt
       url
       state
+      stateReason
       author { login }
       milestone { title }
       labels(first: 100) {
@@ -641,6 +643,7 @@ def _normalize_intake_issue(node: Mapping[str, Any]) -> tuple[dict[str, Any], li
         "milestone": {"title": milestone.get("title")} if isinstance(milestone, Mapping) else None,
         "number": node.get("number"),
         "state": str(node.get("state", "")).lower(),
+        "state_reason": (str(node["stateReason"]).lower() if isinstance(node.get("stateReason"), str) else None),
         "title": node.get("title"),
     }
     return issue, timeline
@@ -1689,8 +1692,20 @@ class GitHubApi:
         repository: str,
         number: int,
         state: str,
+        *,
+        state_reason: str,
     ) -> None:
-        self.request("PATCH", f"/repos/{organization}/{repository}/issues/{number}", {"state": state})
+        valid_state_reasons = {
+            "closed": {"completed", "not_planned"},
+            "open": {"reopened"},
+        }
+        if state_reason not in valid_state_reasons.get(state, set()):
+            raise AuthorityError(f"invalid GitHub issue state reason {state_reason!r} for {state!r} state")
+        self.request(
+            "PATCH",
+            f"/repos/{organization}/{repository}/issues/{number}",
+            {"state": state, "state_reason": state_reason},
+        )
 
     def list_issue_closing_references(
         self,
@@ -2253,9 +2268,16 @@ def _audit_state_labels(
                         supersession,
                     ),
                 )
-                if state != "closed":
-                    client.update_issue_state(organization, repository, number, "closed")
+                if state != "closed" or issue.get("state_reason") != "not_planned":
+                    client.update_issue_state(
+                        organization,
+                        repository,
+                        number,
+                        "closed",
+                        state_reason="not_planned",
+                    )
                     issue["state"] = "closed"
+                    issue["state_reason"] = "not_planned"
                 replacement = set(labels) - STATUS_LABELS
                 replacement.add(SUPERSEDED_STATUS_LABEL)
                 if replacement != labels:
@@ -2324,8 +2346,15 @@ def _audit_state_labels(
 
             must_remain_open = completion_is_pending or target_completion_is_pending
             if state == "closed" and must_remain_open:
-                client.update_issue_state(organization, repository, number, "open")
+                client.update_issue_state(
+                    organization,
+                    repository,
+                    number,
+                    "open",
+                    state_reason="reopened",
+                )
                 issue["state"] = "open"
+                issue["state_reason"] = "reopened"
                 replacement -= STATUS_LABELS
                 previous_open_statuses = statuses & OPEN_STATUS_LABELS
                 replacement.update(previous_open_statuses if len(previous_open_statuses) == 1 else {"status:triage"})
@@ -2345,8 +2374,15 @@ def _audit_state_labels(
                 failures.append(f"{location} {reason}")
                 target_contract_failure_reported = target_contract_is_missing
             elif state == "open" and declared_targets and not must_remain_open:
-                client.update_issue_state(organization, repository, number, "closed")
+                client.update_issue_state(
+                    organization,
+                    repository,
+                    number,
+                    "closed",
+                    state_reason="completed",
+                )
                 issue["state"] = "closed"
+                issue["state_reason"] = "completed"
                 state = "closed"
                 aggregated_close = True
             if target_contract_is_missing and not target_contract_failure_reported:
@@ -2395,8 +2431,15 @@ def _audit_state_labels(
                     cross_repository_lifecycle.render_evidence(assessment),
                 )
                 if state == "closed":
-                    client.update_issue_state(organization, repository, number, "open")
+                    client.update_issue_state(
+                        organization,
+                        repository,
+                        number,
+                        "open",
+                        state_reason="reopened",
+                    )
                     issue["state"] = "open"
+                    issue["state_reason"] = "reopened"
                     state = "open"
                 replacement = set(labels) - STATUS_LABELS
                 replacement.update(open_statuses_before_lifecycle or {"status:triage"})
@@ -2405,6 +2448,16 @@ def _audit_state_labels(
                     issue["labels"] = [{"name": label} for label in sorted(replacement)]
                     labels = replacement
                 failures.append(f"{location} closing-reference authority changed during lifecycle mutation")
+
+            if state == "closed" and "state_reason" in issue and issue.get("state_reason") != "completed":
+                client.update_issue_state(
+                    organization,
+                    repository,
+                    number,
+                    "closed",
+                    state_reason="completed",
+                )
+                issue["state_reason"] = "completed"
 
             if len(labels & KIND_LABELS) != 1:
                 failures.append(f"{location} must have exactly one kind label")

@@ -107,7 +107,7 @@ class FakeGitHubApi:
         self.created_issues: list[tuple[str, int]] = []
         self.replacements: list[tuple[str, int, list[str]]] = []
         self.body_updates: list[tuple[str, int, str]] = []
-        self.state_updates: list[tuple[str, int, str]] = []
+        self.state_updates: list[tuple[str, int, str, str]] = []
         self.timelines: dict[tuple[str, int], list[dict[str, Any]]] = {}
         self.timeline_sequences: dict[tuple[str, int], list[list[dict[str, Any]]]] = {}
         self.timeline_reads: list[tuple[str, int]] = []
@@ -173,6 +173,7 @@ class FakeGitHubApi:
             "milestone": {"number": milestone, "title": "2.0 beta"},
             "number": number,
             "state": "open",
+            "state_reason": None,
             "title": title,
         }
         self.issues[repository].append(issue)
@@ -207,10 +208,13 @@ class FakeGitHubApi:
         repository: str,
         number: int,
         state: str,
+        *,
+        state_reason: str,
     ) -> None:
         issue = next(issue for issue in self.issues[repository] if issue["number"] == number)
         issue["state"] = state
-        self.state_updates.append((repository, number, state))
+        issue["state_reason"] = state_reason
+        self.state_updates.append((repository, number, state, state_reason))
 
     def list_issue_closing_references(
         self,
@@ -347,6 +351,7 @@ def intake_issue(
         "milestone": None,
         "number": number,
         "state": "open",
+        "state_reason": None,
         "title": "Current title",
     }
 
@@ -1693,16 +1698,45 @@ class IssueIntakeTest(unittest.TestCase):
 
 
 class GitHubApiTest(unittest.TestCase):
-    def test_discovery_uses_the_read_only_job_token(self) -> None:
+    def test_discovery_uses_the_read_only_job_token_and_reads_state_reason(self) -> None:
         client = GitHubDiscovery("job-token")
-        response = FakeResponse(b'{"data":{"repository":{"issues":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}}')
+        node = {
+            "author": {"login": "rmcdaniel"},
+            "body": "Retired prerelease authority.",
+            "createdAt": "2026-07-25T09:00:00Z",
+            "labels": {"nodes": [], "pageInfo": {"hasNextPage": False}},
+            "lastEditedAt": None,
+            "milestone": None,
+            "number": 59,
+            "state": "CLOSED",
+            "stateReason": "NOT_PLANNED",
+            "timelineItems": {"nodes": []},
+            "title": "Retired authority",
+            "url": "https://github.com/durable-workflow/.github/issues/59",
+        }
+        response = FakeResponse(
+            json.dumps(
+                {
+                    "data": {
+                        "repository": {
+                            "issues": {
+                                "nodes": [node],
+                                "pageInfo": {"hasNextPage": False},
+                            }
+                        }
+                    }
+                }
+            ).encode()
+        )
 
         with patch("urllib.request.urlopen", return_value=response) as urlopen:
-            self.assertEqual([], client.list_issues("durable-workflow", "workflow"))
+            issues = client.list_issues("durable-workflow", ".github")
 
         request = urlopen.call_args.args[0]
+        self.assertEqual("not_planned", issues[0][0]["state_reason"])
         self.assertEqual("Bearer job-token", request.get_header("Authorization"))
         self.assertEqual("POST", request.method)
+        self.assertIn("stateReason", json.loads(request.data)["query"])
 
     def test_discovery_reads_append_only_activation_statuses_with_the_job_token(self) -> None:
         client = GitHubDiscovery("job-token")
@@ -1775,6 +1809,31 @@ class GitHubApiTest(unittest.TestCase):
         write_request = urlopen.call_args_list[1].args[0]
         self.assertEqual("Bearer job-token", read_request.get_header("Authorization"))
         self.assertEqual("Bearer writer-token", write_request.get_header("Authorization"))
+
+    def test_issue_state_mutations_send_the_explicit_terminal_reason(self) -> None:
+        client = GitHubApi("writer-token")
+
+        for state, state_reason in (
+            ("closed", "not_planned"),
+            ("closed", "completed"),
+            ("open", "reopened"),
+        ):
+            with self.subTest(state=state, state_reason=state_reason):
+                with patch("urllib.request.urlopen", return_value=FakeResponse(b"")) as urlopen:
+                    client.update_issue_state(
+                        "durable-workflow",
+                        ".github",
+                        59,
+                        state,
+                        state_reason=state_reason,
+                    )
+
+                request = urlopen.call_args.args[0]
+                self.assertEqual("PATCH", request.method)
+                self.assertEqual(
+                    {"state": state, "state_reason": state_reason},
+                    json.loads(request.data),
+                )
 
     def test_supersession_activation_uses_the_narrow_status_token(self) -> None:
         client = GitHubApi(
@@ -2244,6 +2303,7 @@ class MigrationTest(unittest.TestCase):
         repository, issue = find_work_item(self.client, "github-only-beta-continuity-drill")
         issue["labels"].append({"name": COMPLETION_REQUIRED_LABEL})
         issue["state"] = "closed"
+        issue["state_reason"] = "completed"
 
         with self.assertRaisesRegex(
             AuthorityError,
@@ -2253,7 +2313,8 @@ class MigrationTest(unittest.TestCase):
 
         self.assertEqual({"status:ready"}, label_names(issue) & STATUS_LABELS)
         self.assertEqual("open", issue["state"])
-        self.assertIn((repository, issue["number"], "open"), self.client.state_updates)
+        self.assertEqual("reopened", issue["state_reason"])
+        self.assertIn((repository, issue["number"], "open", "reopened"), self.client.state_updates)
 
     def test_valid_prerelease_supersession_is_terminal_without_false_completion(self) -> None:
         for item in self.backlog["items"]:
@@ -2266,6 +2327,8 @@ class MigrationTest(unittest.TestCase):
             for label in retired["labels"]
         ]
         successor = prerelease_authority_issue(61, body="Coherent synchronized replacement train")
+        retired["state"] = "closed"
+        retired["state_reason"] = "completed"
         self.client.issues[".github"].extend((retired, successor))
         targets = qualification_targets(qualification_fixture())
         successor_revision = issue_revision_digest(successor["title"], successor["body"])
@@ -2304,7 +2367,8 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual("open", successor["state"])
         self.assertEqual({"status:ready"}, label_names(successor) & STATUS_LABELS)
         self.assertEqual([], self.client.timeline_reads)
-        self.assertIn((".github", 59, "closed"), self.client.state_updates)
+        self.assertEqual("not_planned", retired["state_reason"])
+        self.assertIn((".github", 59, "closed", "not_planned"), self.client.state_updates)
         comment = self.client.comments[(".github", 59)]
         self.assertIn(SUPERSESSION_EVIDENCE_MARKER, comment)
         self.assertIn("https://github.com/durable-workflow/.github/issues/61", comment)
@@ -2325,6 +2389,7 @@ class MigrationTest(unittest.TestCase):
 
         self.assertEqual("pass", repeated["outcome"])
         self.assertEqual("closed", retired["state"])
+        self.assertEqual("not_planned", retired["state_reason"])
         self.assertEqual({SUPERSEDED_STATUS_LABEL}, label_names(retired) & STATUS_LABELS)
         self.assertEqual([], self.client.timeline_reads)
         self.assert_no_github_mutations()
@@ -2360,6 +2425,7 @@ class MigrationTest(unittest.TestCase):
             client.status_updates,
         )
         successor["state"] = "closed"
+        successor["state_reason"] = "completed"
         successor["labels"] = [
             {"name": "status:done" if label["name"] in STATUS_LABELS else label["name"]}
             for label in successor["labels"]
@@ -2410,6 +2476,7 @@ class MigrationTest(unittest.TestCase):
         )
 
         self.assertEqual("closed", retired["state"])
+        self.assertEqual("not_planned", retired["state_reason"])
         self.assertEqual({SUPERSEDED_STATUS_LABEL}, label_names(retired) & STATUS_LABELS)
         self.assertNotIn("status:done", label_names(retired))
         self.assertNotIn(COMPLETION_VERIFIED_LABEL, label_names(retired))
@@ -2422,6 +2489,7 @@ class MigrationTest(unittest.TestCase):
         apply_backlog(self.policy, self.backlog, self.client)
         _repository, issue = find_work_item(self.client, "github-only-beta-continuity-drill")
         issue["state"] = "closed"
+        issue["state_reason"] = "completed"
         issue["labels"] = [
             {"name": "status:done" if label["name"] in STATUS_LABELS else label["name"]} for label in issue["labels"]
         ]
@@ -2439,6 +2507,7 @@ class MigrationTest(unittest.TestCase):
         _repository, issue = find_work_item(self.client, "github-only-beta-continuity-drill")
         issue["body"] = "## Completion\n\n## Delete when\n\n## Acceptance\n\n" + issue["body"]
         issue["state"] = "closed"
+        issue["state_reason"] = "completed"
         issue["labels"] = [
             {"name": "status:done" if label["name"] in STATUS_LABELS else label["name"]} for label in issue["labels"]
         ]
@@ -2557,7 +2626,7 @@ class MigrationTest(unittest.TestCase):
         self.assertTrue(all(parent["state"] == "closed" for parent in parents))
         self.assertTrue(all(label_names(parent) & STATUS_LABELS == {"status:done"} for parent in parents))
         self.assertEqual(
-            {(repository, number, "closed") for repository, number in completion_sets},
+            {(repository, number, "closed", "completed") for repository, number in completion_sets},
             set(self.client.state_updates),
         )
         self.assertEqual(
