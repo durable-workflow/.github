@@ -21,3 +21,7 @@ contains the full component tuple so a refresh is one reviewable change rather
 than independent per-repository digest edits. Recovery evidence retains the
 qualified authority commit, exact manifest SHA-256, and successful
 qualification run identity.
+
+The versioned shared authority behavior and its seven target adapters are
+defined by the
+[release-recovery consumer conformance contract](consumer-conformance/README.md).

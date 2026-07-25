@@ -1,0 +1,106 @@
+{
+  "$id": "https://github.com/durable-workflow/.github/blob/main/release-recovery/consumer-conformance/contract-schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "case": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z][a-z0-9-]+$",
+          "type": "string"
+        },
+        "requirement": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "requirement"
+      ],
+      "type": "object"
+    },
+    "consumer": {
+      "additionalProperties": false,
+      "properties": {
+        "component": {
+          "enum": [
+            "workflow",
+            "waterline",
+            "server",
+            "cli",
+            "sdk-php",
+            "sdk-python",
+            "sdk-rust"
+          ]
+        },
+        "repository": {
+          "pattern": "^durable-workflow/[a-z0-9.-]+$",
+          "type": "string"
+        },
+        "target_branch": {
+          "enum": [
+            "main",
+            "v2"
+          ]
+        }
+      },
+      "required": [
+        "component",
+        "repository",
+        "target_branch"
+      ],
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "cases": {
+      "items": {
+        "$ref": "#/$defs/case"
+      },
+      "maxItems": 8,
+      "minItems": 8,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "consumers": {
+      "items": {
+        "$ref": "#/$defs/consumer"
+      },
+      "maxItems": 7,
+      "minItems": 7,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "schema": {
+      "const": "durable-workflow.release-recovery-consumer-conformance/v1"
+    },
+    "suite": {
+      "additionalProperties": false,
+      "properties": {
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "version": {
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "cases",
+    "consumers",
+    "schema",
+    "suite",
+    "version"
+  ],
+  "title": "Durable Workflow release-recovery consumer conformance contract",
+  "type": "object"
+}

@@ -22,6 +22,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
@@ -42,6 +45,19 @@ jobs:
           python -m json.tool release-recovery/authority.json >/dev/null
           python -m json.tool release-recovery/schema.json >/dev/null
           python -m jsonschema -i release-recovery/authority.json release-recovery/schema.json
+          python -m json.tool release-recovery/consumer-conformance/contract.json >/dev/null
+          python -m json.tool release-recovery/consumer-conformance/contract-schema.json >/dev/null
+          python -m json.tool release-recovery/consumer-conformance/adapter-schema.json >/dev/null
+          python -m jsonschema \
+            -i release-recovery/consumer-conformance/contract.json \
+            release-recovery/consumer-conformance/contract-schema.json
+          conformance_args=()
+          if [ -n "$CONFORMANCE_BASE_REF" ]; then
+            conformance_args+=(--previous-ref "$CONFORMANCE_BASE_REF")
+          fi
+          python scripts/release_recovery_consumer_conformance.py \
+            --contract release-recovery/consumer-conformance/contract.json \
+            "${conformance_args[@]}"
           python -m json.tool beta-authorization/request-schema.json >/dev/null
           python -m json.tool beta-authorization/record-schema.json >/dev/null
           python -m json.tool beta-authorization/evidence-schema.json >/dev/null
@@ -56,3 +72,5 @@ jobs:
             beta-conformance/result-schema.json \
             beta-conformance/suite-result-schema.json
           python scripts/qualification_policy.py validate
+        env:
+          CONFORMANCE_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}

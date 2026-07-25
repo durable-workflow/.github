@@ -1,0 +1,49 @@
+name: Release-recovery consumer conformance
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/release-recovery-consumer-conformance.yml'
+      - 'release-recovery/consumer-conformance/**'
+      - 'scripts/release_recovery_consumer_conformance.py'
+  schedule:
+    - cron: '41 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-recovery-consumer-conformance
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Audit seven target consumers
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.13"
+
+      - name: Audit public target conformance
+        run: >-
+          python scripts/release_recovery_consumer_conformance.py
+          --contract release-recovery/consumer-conformance/contract.json
+          --audit-public-targets
+          --evidence release-recovery-consumer-conformance-evidence.json
+
+      - name: Retain target conformance evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: release-recovery-consumer-conformance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-recovery-consumer-conformance-evidence.json
+          if-no-files-found: error
+          retention-days: 90

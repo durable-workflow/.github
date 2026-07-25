@@ -1,0 +1,109 @@
+{
+  "$id": "https://github.com/durable-workflow/.github/blob/main/release-recovery/consumer-conformance/adapter-schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "relativePath": {
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]+$",
+      "type": "string"
+    },
+    "sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "component": {
+      "enum": [
+        "workflow",
+        "waterline",
+        "server",
+        "cli",
+        "sdk-php",
+        "sdk-python",
+        "sdk-rust"
+      ]
+    },
+    "consumer": {
+      "$ref": "#/$defs/relativePath"
+    },
+    "contract": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "version"
+      ],
+      "type": "object"
+    },
+    "distribution_verification": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 2,
+          "type": "array"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
+    },
+    "repository": {
+      "pattern": "^durable-workflow/[a-z0-9.-]+$",
+      "type": "string"
+    },
+    "schema": {
+      "const": "durable-workflow.release-recovery-consumer-adapter/v1"
+    },
+    "suite": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "target_branch": {
+      "enum": [
+        "main",
+        "v2"
+      ]
+    }
+  },
+  "required": [
+    "component",
+    "consumer",
+    "contract",
+    "distribution_verification",
+    "repository",
+    "schema",
+    "suite",
+    "target_branch"
+  ],
+  "title": "Durable Workflow release-recovery consumer conformance adapter",
+  "type": "object"
+}
