@@ -73,6 +73,7 @@ jobs:
     permissions:
       contents: read
       issues: read
+      statuses: read
     outputs:
       intake_ready: ${{ steps.discover.outputs.intake_ready }}
       manifest: ${{ steps.discover.outputs.manifest }}
@@ -131,6 +132,7 @@ jobs:
       contents: read
       issues: read
       pull-requests: read
+      statuses: write
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
 
@@ -180,6 +182,7 @@ jobs:
       contents: read
       issues: read
       pull-requests: read
+      statuses: write
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
 

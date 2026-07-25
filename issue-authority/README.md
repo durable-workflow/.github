@@ -136,15 +136,21 @@ acceptance criteria impossible. `policy.json` may name that issue and one
 explicit active successor. The relationship activates only when both current
 issue revisions pass the same trusted intake and remain evidence-required beta
 blockers in the same milestone. Discovery records both revision digests before
-the lifecycle job can act.
+the lifecycle job can act. The lifecycle job then records one successful commit
+status on the policy's exact `activation_commit`; its digest binds the policy
+mapping, reason, and both issue revisions. GitHub commit statuses are
+append-only, so later discovery can distinguish that activation from mutable
+issue state.
 
 The retired issue keeps its unverified evidence hold, receives
 `status:superseded`, links to the successor in generated lifecycle evidence, and
 closes without `status:done` or `completion:evidence-verified`. Later audits
-preserve that terminal state and do not evaluate its source landings. Comments,
-pull requests, and unapproved issue edits cannot create or redirect this
-relationship. Every issue outside the reviewed mapping retains the ordinary
-fail-closed completion and cross-repository behavior.
+preserve that terminal state and do not evaluate its source landings. Once the
+append-only activation matches, the exact successor revision may reach verified
+completion and close. Comments, pull requests, current labels alone, and
+unapproved issue edits cannot create or redirect this relationship. Every issue
+outside the reviewed mapping retains the ordinary fail-closed completion and
+cross-repository behavior.
 
 Every migrated issue contains exactly one stable `beta-work-id` marker, and each
 work ID identifies exactly one issue. Migration first searches open and closed

@@ -135,8 +135,12 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["retired", "successor", "reason"],
+        "required": ["activation_commit", "retired", "successor", "reason"],
         "properties": {
+          "activation_commit": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
+          },
           "retired": {"$ref": "#/$defs/issueIdentity"},
           "successor": {"$ref": "#/$defs/issueIdentity"},
           "reason": {

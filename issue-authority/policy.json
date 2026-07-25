@@ -198,6 +198,7 @@
   "organization": "durable-workflow",
   "prerelease_supersessions": [
     {
+      "activation_commit": "93fab46b8eb028d0302b0438591a8c67bd4b0d9f",
       "reason": "The immutable Server 2.0.0-beta.13 image contains Workflow 2.0.0-beta.10 and cannot represent a coherent synchronized beta.13 train.",
       "retired": {
         "number": 59,

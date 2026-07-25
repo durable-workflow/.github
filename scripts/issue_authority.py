@@ -30,7 +30,7 @@ from scripts import cross_repository_lifecycle
 
 POLICY_SCHEMA = "durable-workflow.github-issue-authority/v1"
 BACKLOG_SCHEMA = "durable-workflow.github-beta-backlog/v1"
-INTAKE_SCHEMA = "durable-workflow.github-issue-intake/v6"
+INTAKE_SCHEMA = "durable-workflow.github-issue-intake/v7"
 LEGACY_TARGET_SCHEMA = "durable-workflow.legacy-cross-repository-targets/v3"
 MARKER_PATTERN = re.compile(r"<!-- beta-work-id: ([a-z0-9][a-z0-9-]{2,79}) -->")
 WORK_MARKER_PATTERN = re.compile(r"<!-- durable-workflow-work-id: ([a-z0-9][a-z0-9-]{2,79}) -->")
@@ -43,6 +43,10 @@ NON_PUBLIC_CONTEXT_PATTERNS = (
     re.compile(r"\b(?:localhost|127\.0\.0\.1)(?::[0-9]+)?\b", re.I),
 )
 SUPERSESSION_EVIDENCE_MARKER = "<!-- durable-workflow-prerelease-supersession -->"
+SUPERSESSION_ACTIVATION_CONTEXT_PREFIX = "issue-authority/prerelease-supersession"
+SUPERSESSION_ACTIVATION_DESCRIPTION_PREFIX = "sha256:"
+GITHUB_ACTIONS_BOT_ID = 41_898_282
+GITHUB_ACTIONS_BOT_LOGIN = "github-actions[bot]"
 SUPERSEDED_STATUS_LABEL = "status:superseded"
 STATUS_LABELS = {
     "status:triage",
@@ -645,9 +649,16 @@ def _normalize_intake_issue(node: Mapping[str, Any]) -> tuple[dict[str, Any], li
 class GitHubDiscovery:
     """Read-only GraphQL client that reconstructs issue revision authority."""
 
-    def __init__(self, token: str, graphql_url: str = "https://api.github.com/graphql") -> None:
+    def __init__(
+        self,
+        token: str,
+        graphql_url: str = "https://api.github.com/graphql",
+        *,
+        api_url: str = "https://api.github.com",
+    ) -> None:
         if not token:
             raise AuthorityError("GITHUB_TOKEN is required for read-only issue discovery")
+        self.api_url = api_url.rstrip("/")
         self.graphql_url = graphql_url
         self.headers = {
             "Accept": "application/vnd.github+json",
@@ -676,6 +687,46 @@ class GitHubDiscovery:
                     raise AuthorityError("GitHub GraphQL issue discovery failed after bounded retries") from error
             time.sleep(GITHUB_API_RETRY_SECONDS * (2 ** (attempt - 1)))
         raise AssertionError("GitHub GraphQL retry loop ended unexpectedly")
+
+    def _rest(self, path: str) -> Any:
+        request = urllib.request.Request(
+            f"{self.api_url}{path}",
+            headers=self.headers,
+            method="GET",
+        )
+        for attempt in range(1, GITHUB_API_ATTEMPTS + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    response_body = response.read()
+                return json.loads(response_body) if response_body else None
+            except urllib.error.HTTPError as error:
+                retryable = error.code == 429 or 500 <= error.code <= 599
+                if not retryable or attempt == GITHUB_API_ATTEMPTS:
+                    raise AuthorityError(f"GitHub REST issue discovery returned {error.code}") from error
+            except (urllib.error.URLError, ConnectionError, TimeoutError, json.JSONDecodeError) as error:
+                if attempt == GITHUB_API_ATTEMPTS:
+                    raise AuthorityError("GitHub REST issue discovery failed after bounded retries") from error
+            time.sleep(GITHUB_API_RETRY_SECONDS * (2 ** (attempt - 1)))
+        raise AssertionError("GitHub REST issue discovery retry loop ended unexpectedly")
+
+    def list_commit_statuses(
+        self,
+        organization: str,
+        repository: str,
+        commit: str,
+    ) -> list[dict[str, Any]]:
+        encoded_commit = urllib.parse.quote(commit, safe="")
+        statuses: list[dict[str, Any]] = []
+        for page in range(1, 11):
+            payload = self._rest(
+                f"/repos/{organization}/{repository}/commits/{encoded_commit}/statuses?per_page=100&page={page}"
+            )
+            if not isinstance(payload, list):
+                raise AuthorityError("GitHub REST issue discovery returned malformed commit statuses")
+            statuses.extend(dict(status) for status in payload if isinstance(status, Mapping))
+            if len(payload) < 100:
+                return statuses
+        raise AuthorityError("GitHub REST issue discovery commit statuses exceeded the pagination bound")
 
     def list_issues(self, organization: str, repository: str) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
         issues: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
@@ -770,10 +821,87 @@ def _manifest_prerelease_supersessions(
     }
 
 
+def _supersession_activation(
+    supersession: Mapping[str, Any],
+    retired_record: Mapping[str, Any],
+    successor_record: Mapping[str, Any],
+) -> dict[str, str]:
+    retired = supersession["retired"]
+    successor = supersession["successor"]
+    context = f"{SUPERSESSION_ACTIVATION_CONTEXT_PREFIX}/{retired['repository']}/{retired['number']}"
+    if len(context) > 100:
+        raise AuthorityError("prerelease supersession activation context exceeds the GitHub status bound")
+    activation = {
+        "commit": supersession["activation_commit"],
+        "context": context,
+        "digest": _object_digest(
+            {
+                "activation_commit": supersession["activation_commit"],
+                "reason": supersession["reason"],
+                "retired": {
+                    **retired,
+                    "revision": retired_record["revision"],
+                },
+                "successor": {
+                    **successor,
+                    "revision": successor_record["revision"],
+                },
+            }
+        ),
+    }
+    return activation
+
+
+def _activation_status_is_trusted(status: Mapping[str, Any]) -> bool:
+    creator = status.get("creator")
+    return (
+        isinstance(creator, Mapping)
+        and creator.get("id") == GITHUB_ACTIONS_BOT_ID
+        and isinstance(creator.get("login"), str)
+        and creator["login"].casefold() == GITHUB_ACTIONS_BOT_LOGIN
+        and creator.get("type") == "Bot"
+    )
+
+
+def _supersession_activation_is_recorded(
+    statuses: Sequence[Mapping[str, Any]],
+    activation: Mapping[str, str],
+) -> bool:
+    trusted_successes = [
+        status
+        for status in statuses
+        if (
+            status.get("context") == activation["context"]
+            and status.get("state") == "success"
+            and _activation_status_is_trusted(status)
+        )
+    ]
+    descriptions = {status.get("description") for status in trusted_successes}
+    expected_description = SUPERSESSION_ACTIVATION_DESCRIPTION_PREFIX + activation["digest"]
+    if descriptions and descriptions != {expected_description}:
+        raise AuthorityError("prerelease supersession has conflicting immutable activation authority")
+    return descriptions == {expected_description}
+
+
+def _require_supersession_activation(
+    policy: Mapping[str, Any],
+    client: Any,
+    activation: Mapping[str, str],
+) -> None:
+    statuses = client.list_commit_statuses(
+        policy["organization"],
+        ".github",
+        activation["commit"],
+    )
+    if not _supersession_activation_is_recorded(statuses, activation):
+        raise AuthorityError("completed prerelease successor has no immutable active-successor activation")
+
+
 def _bind_prerelease_supersessions(
     policy: Mapping[str, Any],
     records: Sequence[dict[str, Any]],
     inventory: Mapping[str, Sequence[Mapping[str, Any]]],
+    client: Any,
 ) -> None:
     record_by_identity = {(record["repository"], record["number"]): record for record in records}
     issue_by_identity = {
@@ -828,21 +956,39 @@ def _bind_prerelease_supersessions(
                 f"retired prerelease issue {retired['repository']}#{retired['number']} "
                 "does not retain evidence-required blocker authority"
             )
-        if (
-            not required_labels <= successor_labels
-            or COMPLETION_VERIFIED_LABEL in successor_labels
-            or len(successor_labels & KIND_LABELS) != 1
-            or len(successor_statuses) != 1
-            or not successor_statuses <= OPEN_STATUS_LABELS
-            or successor_issue.get("state") != "open"
-            or successor_milestone_title != retired_milestone_title
-        ):
+        successor_is_active = (
+            required_labels <= successor_labels
+            and COMPLETION_VERIFIED_LABEL not in successor_labels
+            and len(successor_labels & KIND_LABELS) == 1
+            and len(successor_statuses) == 1
+            and successor_statuses <= OPEN_STATUS_LABELS
+            and successor_issue.get("state") == "open"
+            and successor_milestone_title == retired_milestone_title
+        )
+        successor_is_completed = (
+            {"authority:github", "beta:blocker", COMPLETION_VERIFIED_LABEL} <= successor_labels
+            and len(successor_labels & KIND_LABELS) == 1
+            and successor_statuses == {"status:done"}
+            and successor_issue.get("state") == "closed"
+            and successor_milestone_title == retired_milestone_title
+        )
+        if not successor_is_active and not successor_is_completed:
             raise AuthorityError(
                 f"prerelease successor {successor['repository']}#{successor['number']} "
-                "is not an active evidence-required blocker in the same release milestone"
+                "is neither an active evidence-required blocker nor a verified completed blocker "
+                "in the same release milestone"
             )
 
+        activation = _supersession_activation(
+            supersession,
+            retired_record,
+            successor_record,
+        )
+        if successor_is_completed:
+            _require_supersession_activation(policy, client, activation)
+
         retired_record["superseded_by"] = {
+            "activation": activation,
             "number": successor["number"],
             "reason": supersession["reason"],
             "repository": successor["repository"],
@@ -1109,7 +1255,7 @@ def reconstruct_intake(
                 }
             )
 
-    _bind_prerelease_supersessions(policy, records, inventory)
+    _bind_prerelease_supersessions(policy, records, inventory, client)
     manifest: dict[str, Any] = {
         "schema": INTAKE_SCHEMA,
         "organization": policy["organization"],
@@ -1186,7 +1332,22 @@ def verify_intake_manifest(
                 superseded_by is not None
                 and (
                     not isinstance(superseded_by, Mapping)
-                    or set(superseded_by) != {"number", "reason", "repository", "revision"}
+                    or set(superseded_by)
+                    != {
+                        "activation",
+                        "number",
+                        "reason",
+                        "repository",
+                        "revision",
+                    }
+                    or not isinstance(superseded_by.get("activation"), Mapping)
+                    or set(superseded_by["activation"]) != {"commit", "context", "digest"}
+                    or not re.fullmatch(r"[0-9a-f]{40}", str(superseded_by["activation"].get("commit", "")))
+                    or not isinstance(superseded_by["activation"].get("context"), str)
+                    or not superseded_by["activation"]["context"].startswith(
+                        SUPERSESSION_ACTIVATION_CONTEXT_PREFIX + "/"
+                    )
+                    or not re.fullmatch(r"[0-9a-f]{64}", str(superseded_by["activation"].get("digest", "")))
                     or not isinstance(superseded_by.get("repository"), str)
                     or superseded_by["repository"] not in inventory
                     or type(superseded_by.get("number")) is not int
@@ -1248,7 +1409,7 @@ def verify_intake_manifest(
         current_records.append(current)
         inventory[repository].append(issue)
 
-    _bind_prerelease_supersessions(policy, current_records, inventory)
+    _bind_prerelease_supersessions(policy, current_records, inventory, client)
     if [dict(record) for record in records] != current_records:
         raise AuthorityError("vetted issue revisions changed after read-only discovery")
     return inventory
@@ -1262,6 +1423,7 @@ class GitHubApi:
         token: str,
         api_url: str = "https://api.github.com",
         *,
+        activation_token: str | None = None,
         read_token: str | None = None,
         graphql_url: str = "https://api.github.com/graphql",
     ) -> None:
@@ -1278,6 +1440,10 @@ class GitHubApi:
         self.read_headers = {
             **self.headers,
             "Authorization": f"Bearer {read_token if read_token is not None else token}",
+        }
+        self.activation_headers = {
+            **self.headers,
+            "Authorization": f"Bearer {activation_token if activation_token is not None else token}",
         }
         self._writer_identity: tuple[int, str] | None = None
 
@@ -1368,6 +1534,55 @@ class GitHubApi:
             if len(payload) < 100:
                 return records
         raise AuthorityError(f"GitHub API collection {path} exceeded the pagination bound")
+
+    def list_commit_statuses(
+        self,
+        organization: str,
+        repository: str,
+        commit: str,
+    ) -> list[dict[str, Any]]:
+        encoded_commit = urllib.parse.quote(commit, safe="")
+        return self.list_collection(f"/repos/{organization}/{repository}/commits/{encoded_commit}/statuses")
+
+    def ensure_supersession_activation(
+        self,
+        organization: str,
+        repository: str,
+        activation: Mapping[str, str],
+    ) -> None:
+        statuses = self.list_commit_statuses(
+            organization,
+            repository,
+            activation["commit"],
+        )
+        if _supersession_activation_is_recorded(statuses, activation):
+            return
+
+        encoded_commit = urllib.parse.quote(activation["commit"], safe="")
+        payload = {
+            "context": activation["context"],
+            "description": SUPERSESSION_ACTIVATION_DESCRIPTION_PREFIX + activation["digest"],
+            "state": "success",
+        }
+        request = urllib.request.Request(
+            f"{self.api_url}/repos/{organization}/{repository}/statuses/{encoded_commit}",
+            data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+            headers={**self.activation_headers, "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                result = json.loads(response.read())
+        except (
+            urllib.error.HTTPError,
+            urllib.error.URLError,
+            ConnectionError,
+            TimeoutError,
+            json.JSONDecodeError,
+        ) as error:
+            raise AuthorityError("GitHub could not persist immutable prerelease supersession activation") from error
+        if not isinstance(result, Mapping) or not _supersession_activation_is_recorded([result], activation):
+            raise AuthorityError("GitHub returned untrusted prerelease supersession activation")
 
     def ensure_labels(
         self,
@@ -2021,6 +2236,11 @@ def _audit_state_labels(
 
             supersession = (prerelease_supersessions or {}).get((repository, number))
             if supersession is not None:
+                client.ensure_supersession_activation(
+                    organization,
+                    ".github",
+                    supersession["activation"],
+                )
                 client.upsert_lifecycle_comment(
                     organization,
                     repository,
@@ -2375,6 +2595,7 @@ def _supersession_evidence(
                 "url": f"https://github.com/{organization}/{repository}/issues/{number}",
             },
             "state": "superseded",
+            "activation": dict(successor["activation"]),
             "successor": {
                 "number": successor["number"],
                 "repository": successor["repository"],
@@ -2468,6 +2689,7 @@ def main(argv: list[str] | None = None) -> int:
         discovery = GitHubDiscovery(
             discovery_token,
             os.environ.get("GITHUB_GRAPHQL_URL", "https://api.github.com/graphql"),
+            api_url=os.environ.get("GITHUB_API_URL", "https://api.github.com"),
         )
         if arguments.command == "discover":
             has_repository = arguments.trigger_repository is not None
@@ -2505,6 +2727,7 @@ def main(argv: list[str] | None = None) -> int:
         client = GitHubApi(
             token,
             os.environ.get("GITHUB_API_URL", "https://api.github.com"),
+            activation_token=discovery_token,
             read_token=discovery_token,
             graphql_url=os.environ.get("GITHUB_GRAPHQL_URL", "https://api.github.com/graphql"),
         )
