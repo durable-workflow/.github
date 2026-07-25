@@ -41,11 +41,17 @@ The cross-repository issue form records every required source target as an
 exact `organization/repository@branch` selection in its required-targets
 section. Intake binds those selections to the same vetted revision and resolves
 their required checks from `qualification/policy.json`. The lifecycle audit
-then evaluates the latest linked implementation pull request for each target.
-A target is complete only when that attempt merged into the declared branch,
-the merge commit remains on the branch, and every required repository check
-succeeded. A newer open, rejected, or rebuilt attempt supersedes earlier
-evidence for the same target.
+then evaluates the latest trusted linked implementation pull request for each
+target. Same-repository execution must bind an authorized pull-request author
+and closing-reference actor. A fork or other external attempt participates only
+when an authorized maintainer's latest approval names its exact current head
+commit. Every admitted attempt also binds its exact pull-request identity, head
+repository, head ref and commit, and base repository, ref and commit before
+latest-attempt selection. A target is complete only when that attempt merged
+into the declared branch, the merge commit remains on the branch, and every
+required repository check succeeded. A newer trusted open, rejected, or rebuilt
+attempt supersedes earlier evidence for the same target; untrusted public
+references remain inert.
 
 The same contract applies to issues created through the API or edited outside
 the issue form. A cross-repository revision with a missing, empty, repeated,

@@ -11,6 +11,9 @@ TARGET_HEADING_PATTERN = re.compile(r"(?m)^#{2,3}[ \t]+Required source targets[ 
 EVIDENCE_MARKER = "<!-- durable-workflow-cross-repository-lifecycle:v1 -->"
 API_PULL_PATTERN = re.compile(r"/repos/([^/]+)/([^/]+)/pulls/([1-9][0-9]*)$")
 HTML_PULL_PATTERN = re.compile(r"https://github\.com/([^/]+)/([^/]+)/pull/([1-9][0-9]*)$")
+COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
+REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+TRUSTED_REPOSITORY_ASSOCIATIONS = {"COLLABORATOR", "MEMBER", "OWNER"}
 
 
 class LifecycleError(RuntimeError):
@@ -115,11 +118,145 @@ def _pull_identity(event: Mapping[str, Any], organization: str) -> tuple[str, in
     return None
 
 
+def _approved_head_reviewer(
+    client: Any,
+    organization: str,
+    repository: str,
+    number: int,
+    head_sha: str,
+    trusted_actors: set[str],
+) -> str | None:
+    """Return the authorized reviewer whose latest review approves this exact head."""
+
+    latest_by_reviewer: dict[tuple[int, str], tuple[tuple[str, int], Mapping[str, Any]]] = {}
+    for review in client.list_pull_request_reviews(organization, repository, number):
+        if not isinstance(review, Mapping) or review.get("commit_id") != head_sha:
+            continue
+        user = review.get("user")
+        identifier = user.get("id") if isinstance(user, Mapping) else None
+        login = user.get("login") if isinstance(user, Mapping) else None
+        review_id = review.get("id")
+        submitted_at = review.get("submitted_at")
+        if (
+            type(identifier) is not int
+            or identifier < 1
+            or not isinstance(login, str)
+            or not login
+            or type(review_id) is not int
+            or review_id < 1
+            or not isinstance(submitted_at, str)
+            or not submitted_at
+        ):
+            continue
+        reviewer = (identifier, login.casefold())
+        ordering = (submitted_at, review_id)
+        if reviewer not in latest_by_reviewer or ordering > latest_by_reviewer[reviewer][0]:
+            latest_by_reviewer[reviewer] = (ordering, review)
+    for reviewer in sorted(latest_by_reviewer):
+        review = latest_by_reviewer[reviewer][1]
+        user = review["user"]
+        login = str(user["login"])
+        if review.get("state") == "APPROVED" and (
+            login.casefold() in trusted_actors or review.get("author_association") in TRUSTED_REPOSITORY_ASSOCIATIONS
+        ):
+            return login
+    return None
+
+
+def _trusted_pull_request(
+    client: Any,
+    organization: str,
+    repository: str,
+    number: int,
+    event: Mapping[str, Any],
+    pull: Mapping[str, Any],
+    trusted_actors: set[str],
+) -> dict[str, Any] | None:
+    """Bind exact pull metadata and admit only trusted or explicitly approved work."""
+
+    target_repository = f"{organization}/{repository}"
+    expected_api_url = f"https://api.github.com/repos/{target_repository}/pulls/{number}"
+    expected_html_url = f"https://github.com/{target_repository}/pull/{number}"
+    actor = event.get("actor")
+    actor_login = actor.get("login") if isinstance(actor, Mapping) else None
+    user = pull.get("user")
+    author_login = user.get("login") if isinstance(user, Mapping) else None
+    base = pull.get("base")
+    base_repo = base.get("repo") if isinstance(base, Mapping) else None
+    head = pull.get("head")
+    head_repo = head.get("repo") if isinstance(head, Mapping) else None
+    base_ref = base.get("ref") if isinstance(base, Mapping) else None
+    base_sha = base.get("sha") if isinstance(base, Mapping) else None
+    head_ref = head.get("ref") if isinstance(head, Mapping) else None
+    head_sha = head.get("sha") if isinstance(head, Mapping) else None
+    head_repository = head_repo.get("full_name") if isinstance(head_repo, Mapping) else None
+    author_association = pull.get("author_association")
+    if (
+        pull.get("number") != number
+        or pull.get("url") != expected_api_url
+        or pull.get("html_url") != expected_html_url
+        or not isinstance(actor_login, str)
+        or not actor_login
+        or not isinstance(author_login, str)
+        or not author_login
+        or not isinstance(author_association, str)
+        or not isinstance(base, Mapping)
+        or not isinstance(base_repo, Mapping)
+        or base_repo.get("full_name") != target_repository
+        or not isinstance(base_ref, str)
+        or not base_ref
+        or not isinstance(base_sha, str)
+        or COMMIT_PATTERN.fullmatch(base_sha) is None
+        or not isinstance(head, Mapping)
+        or not isinstance(head_repo, Mapping)
+        or not isinstance(head_repository, str)
+        or REPOSITORY_PATTERN.fullmatch(head_repository) is None
+        or not isinstance(head_ref, str)
+        or not head_ref
+        or not isinstance(head_sha, str)
+        or COMMIT_PATTERN.fullmatch(head_sha) is None
+    ):
+        return None
+    trusted_author = author_login.casefold() in trusted_actors or author_association in TRUSTED_REPOSITORY_ASSOCIATIONS
+    trusted_reference_actor = actor_login.casefold() in trusted_actors or (
+        actor_login.casefold() == author_login.casefold()
+    )
+    trusted_execution = head_repository == target_repository and trusted_author and trusted_reference_actor
+    approved_by = None
+    if not trusted_execution:
+        approved_by = _approved_head_reviewer(
+            client,
+            organization,
+            repository,
+            number,
+            head_sha,
+            trusted_actors,
+        )
+    if not trusted_execution and approved_by is None:
+        return None
+    provenance = f"trusted-author:{author_login}" if trusted_execution else f"approved:{approved_by}"
+    return {
+        **pull,
+        "_provenance": {
+            "actor": actor_login,
+            "author": author_login,
+            "base_ref": base_ref,
+            "base_repository": target_repository,
+            "base_sha": base_sha,
+            "head_ref": head_ref,
+            "head_repository": head_repository,
+            "head_sha": head_sha,
+            "kind": provenance,
+        },
+    }
+
+
 def _latest_attempts(
     client: Any,
     organization: str,
     events: Sequence[Mapping[str, Any]],
     target_repositories: set[str],
+    trusted_actors: set[str],
 ) -> dict[str, dict[str, Any]]:
     attempts: dict[str, dict[str, Any]] = {}
     seen: set[tuple[str, int]] = set()
@@ -132,13 +269,24 @@ def _latest_attempts(
         if repository not in target_repositories:
             continue
         pull = client.get_pull_request(organization, repository, number)
-        created_at = pull.get("created_at")
+        trusted_pull = _trusted_pull_request(
+            client,
+            organization,
+            repository,
+            number,
+            event,
+            pull,
+            trusted_actors,
+        )
+        if trusted_pull is None:
+            continue
+        created_at = trusted_pull.get("created_at")
         if not isinstance(created_at, str) or not created_at:
             raise LifecycleError(f"linked pull request {repository}#{number} has no creation time")
         current = attempts.get(repository)
         ordering = (created_at, number)
         if current is None or ordering > current["_ordering"]:
-            attempts[repository] = {**pull, "_ordering": ordering}
+            attempts[repository] = {**trusted_pull, "_ordering": ordering}
     return attempts
 
 
@@ -152,10 +300,19 @@ def _evaluate_target(
     branch = str(target["branch"])
     required_checks = list(target["required_checks"])
     result: dict[str, Any] = {
+        "base_commit": None,
+        "base_ref": None,
+        "base_repository": None,
         "branch": branch,
         "commit": None,
+        "head_commit": None,
+        "head_ref": None,
+        "head_repository": None,
         "missing_checks": required_checks,
+        "pull_author": None,
+        "provenance": None,
         "pull_request": None,
+        "reference_actor": None,
         "repository": repository,
         "state": "pending:no-linked-pull-request",
     }
@@ -165,7 +322,19 @@ def _evaluate_target(
     html_url = pull.get("html_url")
     base = pull.get("base")
     base_repo = base.get("repo") if isinstance(base, Mapping) else None
+    provenance = pull.get("_provenance")
     result["pull_request"] = html_url
+    if not isinstance(provenance, Mapping):
+        raise LifecycleError(f"linked pull request {repository}#{number} has no trusted provenance")
+    result["base_commit"] = provenance["base_sha"]
+    result["base_ref"] = provenance["base_ref"]
+    result["base_repository"] = provenance["base_repository"]
+    result["head_commit"] = provenance["head_sha"]
+    result["head_ref"] = provenance["head_ref"]
+    result["head_repository"] = provenance["head_repository"]
+    result["pull_author"] = provenance["author"]
+    result["provenance"] = provenance["kind"]
+    result["reference_actor"] = provenance["actor"]
     if (
         not isinstance(number, int)
         or not isinstance(html_url, str)
@@ -180,7 +349,7 @@ def _evaluate_target(
         result["state"] = "pending:rejected" if pull.get("state") == "closed" else "pending:open"
         return result
     commit = pull.get("merge_commit_sha")
-    if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+    if not isinstance(commit, str) or COMMIT_PATTERN.fullmatch(commit) is None:
         result["state"] = "pending:invalid-merge-commit"
         return result
     result["commit"] = commit
@@ -203,6 +372,8 @@ def evaluate_lifecycle(
     source_repository: str,
     issue: Mapping[str, Any],
     targets: Sequence[Mapping[str, Any]],
+    *,
+    trusted_actors: Sequence[str],
 ) -> dict[str, Any]:
     """Evaluate the latest linked implementation attempt for every declared target."""
 
@@ -212,8 +383,11 @@ def evaluate_lifecycle(
     repositories = {str(target["repository"]) for target in targets}
     if len(repositories) != len(targets):
         raise LifecycleError("cross-repository lifecycle target set is duplicated")
+    trusted = {actor.casefold() for actor in trusted_actors if isinstance(actor, str) and actor}
+    if not trusted:
+        raise LifecycleError("cross-repository lifecycle has no trusted execution actors")
     events = client.list_issue_timeline(organization, source_repository, number)
-    attempts = _latest_attempts(client, organization, events, repositories)
+    attempts = _latest_attempts(client, organization, events, repositories, trusted)
     results = [
         _evaluate_target(client, organization, target, attempts.get(str(target["repository"]))) for target in targets
     ]
@@ -245,7 +419,7 @@ def evaluate_recorded_landings(
             or not isinstance(branch, str)
             or not branch
             or not isinstance(commit, str)
-            or re.fullmatch(r"[0-9a-f]{40}", commit) is None
+            or COMMIT_PATTERN.fullmatch(commit) is None
             or not isinstance(required_checks, Sequence)
             or isinstance(required_checks, str | bytes)
             or any(not isinstance(check, str) or not check for check in required_checks)
@@ -276,16 +450,46 @@ def render_evidence(assessment: Mapping[str, Any]) -> str:
 
     rows = [
         f"{EVIDENCE_MARKER}",
-        "Cross-repository landing evidence (generated from linked implementation pull requests):",
+        "Cross-repository landing evidence (generated from trusted implementation pull requests):",
         "",
-        "| Target | Latest attempt | Landing | Required qualification | State |",
-        "| --- | --- | --- | --- | --- |",
+        "| Target | Latest attempt | Bound provenance | Landing | Required qualification | State |",
+        "| --- | --- | --- | --- | --- | --- |",
     ]
     for target in assessment["targets"]:
         repository = target["repository"]
         branch = target["branch"]
         pull_url = target["pull_request"]
         attempt = f"[pull request]({pull_url})" if pull_url else "Not linked"
+        head_commit = target["head_commit"]
+        head_repository = target["head_repository"]
+        head_ref = target["head_ref"]
+        base_commit = target["base_commit"]
+        base_repository = target["base_repository"]
+        base_ref = target["base_ref"]
+        pull_author = target["pull_author"]
+        provenance = target["provenance"]
+        reference_actor = target["reference_actor"]
+        bound_provenance = (
+            f"head [`{head_repository}@{head_ref}`]"
+            f"(https://github.com/{head_repository}/commit/{head_commit}) "
+            f"`{head_commit[:12]}` → base "
+            f"[`{base_repository}@{base_ref}`]"
+            f"(https://github.com/{base_repository}/commit/{base_commit}) "
+            f"`{base_commit[:12]}`; `{provenance}`; "
+            f"author `{pull_author}`; reference actor `{reference_actor}`"
+            if (
+                head_commit
+                and head_repository
+                and head_ref
+                and base_commit
+                and base_repository
+                and base_ref
+                and pull_author
+                and provenance
+                and reference_actor
+            )
+            else "Pending"
+        )
         commit = target["commit"]
         landing = (
             f"[`{commit[:12]}`](https://github.com/durable-workflow/{repository}/commit/{commit})"
@@ -295,7 +499,7 @@ def render_evidence(assessment: Mapping[str, Any]) -> str:
         missing = target["missing_checks"]
         qualification = "Passed" if not missing else "Pending: " + ", ".join(f"`{name}`" for name in missing)
         rows.append(
-            f"| `durable-workflow/{repository}@{branch}` | {attempt} | {landing} | "
+            f"| `durable-workflow/{repository}@{branch}` | {attempt} | {bound_provenance} | {landing} | "
             f"{qualification} | `{target['state']}` |"
         )
     rows.extend(

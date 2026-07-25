@@ -1287,6 +1287,14 @@ class GitHubApi:
             raise AuthorityError(f"GitHub did not return linked pull request {repository}#{number}")
         return result
 
+    def list_pull_request_reviews(
+        self,
+        organization: str,
+        repository: str,
+        number: int,
+    ) -> list[dict[str, Any]]:
+        return self.list_collection(f"/repos/{organization}/{repository}/pulls/{number}/reviews")
+
     def commit_reaches_branch(
         self,
         organization: str,
@@ -1777,6 +1785,7 @@ def _audit_state_labels(
                         repository,
                         issue,
                         declared_targets,
+                        trusted_actors=policy["intake"]["trusted_actors"],
                     )
                     client.upsert_lifecycle_comment(
                         organization,
