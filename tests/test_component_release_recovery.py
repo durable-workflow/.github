@@ -359,7 +359,7 @@ class ComponentRecoveryContractTest(unittest.TestCase):
             "git/matching-refs/tags/release-plan/"
         )
 
-    def test_scheduled_discovery_ignores_updated_older_plan_after_current_train_completed(self) -> None:
+    def test_scheduled_discovery_selects_completed_current_train_despite_older_release_update(self) -> None:
         older = plan()
         older["plan"] = "older-alpha"
         newer = plan("beta")
@@ -407,9 +407,10 @@ class ComponentRecoveryContractTest(unittest.TestCase):
                 "scripts.component_release_recovery.accepted_continuity_supersession",
                 return_value=None,
             ),
-            self.assertRaisesRegex(RecoveryError, "no public release plan is available"),
         ):
-            select_implicit_plan_authority(mock.Mock())
+            selected = select_implicit_plan_authority(mock.Mock())
+        self.assertEqual(tags[1], selected["tag"])
+        self.assertEqual("completed", selected["lifecycle"])
 
     def test_scheduled_discovery_rejects_incomparable_current_product_trains(self) -> None:
         first = plan("beta")
@@ -858,6 +859,60 @@ class ComponentRecoveryContractTest(unittest.TestCase):
         self.assertEqual("publication", state["phase"])
         self.assertEqual(1, classify.call_count)
         self.assertEqual(2, publication_preflight.call_count)
+
+    def test_implicit_completed_plan_refuses_publication_when_artifact_is_absent(
+        self,
+    ) -> None:
+        candidate = plan()
+        candidate_preparation = preparation(candidate)
+        component = COMPONENTS["sdk-php"]
+        selected = {
+            "tag": "release-plan/completed",
+            "lifecycle": "completed",
+        }
+        implicit_authority = {
+            **selected,
+            "authority_snapshot": [selected],
+        }
+
+        with (
+            mock.patch(
+                "scripts.component_release_recovery.verify_plan_authority",
+                return_value=({}, {}),
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.validate_release_preparation",
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.resolve_tag",
+                return_value=None,
+            ),
+            mock.patch(
+                "scripts.component_release_recovery.classify_implicit_plan_authority",
+                return_value=(selected, [selected]),
+            ),
+            mock.patch.dict(
+                "scripts.component_release_recovery.VERIFIERS",
+                {
+                    component.distribution: mock.Mock(
+                        side_effect=NotFound("not published")
+                    )
+                },
+            ),
+            self.assertRaisesRegex(
+                RecoveryError,
+                "is completed; refusing publication instead of idempotent verification",
+            ),
+        ):
+            resolve_component(
+                mock.Mock(),
+                "sdk-php",
+                selected["tag"],
+                "a" * 40,
+                candidate,
+                candidate_preparation,
+                implicit_authority,
+            )
 
     def test_terminal_failure_successor_requires_exact_authorized_plan_identity(self) -> None:
         failed = plan()
@@ -1525,7 +1580,7 @@ class ComponentRecoveryContractTest(unittest.TestCase):
         ):
             discover_plan(client, f"release-plan/{unrecorded['plan']}", "waterline")
 
-    def test_implicit_discovery_does_not_reverify_a_completed_historical_v1_plan(self) -> None:
+    def test_implicit_discovery_reverifies_a_completed_historical_v1_plan(self) -> None:
         historical = legacy_beta_one_release_plan()
         historical_tag = f"release-plan/{historical['plan']}"
         record_commit = "a" * 40
@@ -1557,10 +1612,11 @@ class ComponentRecoveryContractTest(unittest.TestCase):
             ),
             mock.patch("scripts.component_release_recovery.accepted_continuity_supersession", return_value=None),
             mock.patch("scripts.component_release_recovery.validate_release_mirrors"),
-            mock.patch("scripts.component_release_recovery.verify_component"),
-            self.assertRaisesRegex(RecoveryError, "no public release plan is available"),
+            mock.patch("scripts.component_release_recovery.verify_component") as verify_component,
         ):
-            discover_plan(client, None, "waterline")
+            selected = discover_plan(client, None, "waterline")
+        self.assertEqual(historical_tag, selected[0])
+        verify_component.assert_called_once()
 
         unrecorded = {**historical, "plan": "beta-1-unrecorded"}
 
@@ -1911,7 +1967,7 @@ jobs:
                 self.assertEqual(plan_tag, evidence["durable_evidence"]["release_plan"])
                 self.assertTrue(evidence["resume_action"].endswith(f" for {plan_tag}"))
 
-    def test_scheduled_discovery_without_a_pending_plan_is_a_truthful_no_op(self) -> None:
+    def test_scheduled_discovery_without_plan_authority_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             evidence_output = root / "release-recovery-evidence.json"
@@ -1939,12 +1995,12 @@ jobs:
                     side_effect=RecoveryError("no public release plan is available", "plan-discovery"),
                 ),
             ):
-                self.assertEqual(0, main())
+                self.assertEqual(1, main())
 
             evidence = json.loads(evidence_output.read_bytes())
             self.assertEqual("plan-discovery", evidence["phase"])
-            self.assertEqual("idle", evidence["outcome"])
-            self.assertEqual("action=none\n", github_output.read_text())
+            self.assertEqual("failed", evidence["outcome"])
+            self.assertFalse(github_output.exists())
 
 
 if __name__ == "__main__":

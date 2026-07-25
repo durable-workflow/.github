@@ -43,7 +43,7 @@ class ReleaseRecoveryConsumerConformanceTest(unittest.TestCase):
         ):
             conformance.require_versioned_contract_change(self.contract, changed)
 
-        changed["version"] = "1.1.0"
+        changed["version"] = "1.2.0"
         conformance.require_versioned_contract_change(self.contract, changed)
 
     def test_public_audit_requires_every_target_to_pin_identical_bytes(self) -> None:

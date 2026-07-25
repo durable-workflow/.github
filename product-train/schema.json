@@ -120,13 +120,36 @@
     "train": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["channel", "status", "versions", "registry_versions", "install"],
+      "required": [
+        "channel",
+        "status",
+        "versions",
+        "registry_versions",
+        "install",
+        "release_plan"
+      ],
       "properties": {
         "channel": {"const": "beta"},
         "status": {"enum": ["supported", "historical"]},
         "versions": {"$ref": "#/$defs/componentVersions"},
         "registry_versions": {"$ref": "#/$defs/componentVersions"},
-        "install": {"$ref": "#/$defs/installCommands"}
+        "install": {"$ref": "#/$defs/installCommands"},
+        "release_plan": {"$ref": "#/$defs/releasePlan"}
+      }
+    },
+    "releasePlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tag", "sha256"],
+      "properties": {
+        "tag": {
+          "type": "string",
+          "pattern": "^release-plan/[a-z0-9][a-z0-9._-]{0,55}$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
       }
     }
   }

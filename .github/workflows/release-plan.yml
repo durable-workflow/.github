@@ -55,9 +55,12 @@ jobs:
           python -m json.tool release-plans/preparation-schema.json >/dev/null
           python -m json.tool release-plans/source-preparation-schema.json >/dev/null
           python -m json.tool release-plans/current-source-preparation.json >/dev/null
+          python -m json.tool release-plans/current.json >/dev/null
           python -m json.tool release-plans/candidate-schema.json >/dev/null
           python -m json.tool product-train/schema.json >/dev/null
           python -m json.tool product-train/current.json >/dev/null
+          python -m jsonschema -i product-train/current.json product-train/schema.json
+          python -m jsonschema -i release-plans/current.json release-plans/schema.json
 
       - name: Canonicalize requested plan
         env:

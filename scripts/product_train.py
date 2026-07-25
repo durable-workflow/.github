@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any
 from scripts.beta_candidate import COMPONENTS, CandidateError
 
 CONTRACT_PATH = Path(__file__).resolve().parents[1] / "product-train" / "current.json"
+CURRENT_PLAN_PATH = Path(__file__).resolve().parents[1] / "release-plans" / "current.json"
 SCHEMA = "durable-workflow.product-train/v2"
 
 
@@ -64,6 +66,31 @@ def load_product_train(path: Path = CONTRACT_PATH) -> dict[str, Any]:
         or any(not isinstance(command, str) or not command for command in waterline_install.values())
     ):
         raise CandidateError("current product train must publish both Waterline install modes")
+    plan_reference = current_train.get("release_plan")
+    try:
+        plan_raw = CURRENT_PLAN_PATH.read_bytes()
+        plan = json.loads(plan_raw)
+    except (OSError, json.JSONDecodeError) as error:
+        raise CandidateError(f"cannot load current release-plan authority {CURRENT_PLAN_PATH}: {error}") from error
+    if not isinstance(plan, dict):
+        raise CandidateError("current release-plan authority must be a JSON object")
+    canonical_plan = (json.dumps(plan, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode()
+    expected_plan_reference = {
+        "tag": f"release-plan/{plan.get('plan')}",
+        "sha256": hashlib.sha256(canonical_plan).hexdigest(),
+    }
+    plan_components = plan.get("components") if isinstance(plan, dict) else None
+    if (
+        plan_reference != expected_plan_reference
+        or plan.get("channel") != "beta"
+        or not isinstance(plan_components, dict)
+        or {
+            name: identity.get("version") if isinstance(identity, dict) else None
+            for name, identity in plan_components.items()
+        }
+        != current_train["versions"]
+    ):
+        raise CandidateError("current product train does not bind its exact public release plan")
     return contract
 
 

@@ -2210,7 +2210,7 @@ def classify_implicit_plan_authority(
             "plan-discovery",
         )
     selected = current_train[-1]
-    if selected["lifecycle"] in {"completed", "superseded"}:
+    if selected["lifecycle"] == "superseded":
         selected = None
     return selected, authorities
 
@@ -2252,6 +2252,18 @@ def revalidate_implicit_plan_authority(
         raise RecoveryError(
             "implicit release plan authority changed during component preflight; "
             "refusing a stale recovery action",
+            "plan-discovery",
+        )
+
+
+def require_completed_plan_verification(
+    authority: dict[str, Any],
+    action: str,
+) -> None:
+    if authority.get("lifecycle") == "completed" and action == "publish":
+        raise RecoveryError(
+            f"release plan {authority['tag']} is completed; "
+            "refusing publication instead of idempotent verification",
             "plan-discovery",
         )
 
@@ -2888,6 +2900,7 @@ def resolve_component(
         action = "publish"
     if implicit_authority is not None:
         revalidate_implicit_plan_authority(client, implicit_authority)
+        require_completed_plan_verification(implicit_authority, action)
     state = base_state(component_name, tag, plan)
     state.update(
         {
@@ -3056,23 +3069,6 @@ def main() -> int:
                 args.evidence.write_bytes(canonical_json(state))
                 write_output(args.github_output, outputs)
             except RecoveryError as error:
-                if (
-                    args.allow_empty
-                    and error.phase == "plan-discovery"
-                    and str(error) == "no public release plan is available"
-                ):
-                    idle = base_state(args.component)
-                    idle.update(
-                        {
-                            "phase": "plan-discovery",
-                            "outcome": "idle",
-                            "reason": str(error),
-                            "resume_action": "No action is required; scheduled discovery will check again",
-                        }
-                    )
-                    args.evidence.write_bytes(canonical_json(idle))
-                    write_output(args.github_output, {"action": "none"})
-                    return 0
                 failure = base_state(args.component, tag, plan)
                 if record_commit is not None:
                     failure["plan_record_commit"] = record_commit

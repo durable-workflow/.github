@@ -1,5 +1,9 @@
 {
-  "candidate": "beta-coherent-2-0-beta-14",
+  "beta_authorization": {
+    "commit": "a83a36b88ca838fb485e2224420cba04a617c0fb",
+    "tag": "beta-authorization/coherent-2-0-beta-14"
+  },
+  "channel": "beta",
   "components": {
     "cli": {
       "commit": "6eeea275f3fe1af96cf6c25a347baf93632d76c5",
@@ -30,5 +34,10 @@
       "version": "2.0.0-beta.14"
     }
   },
-  "schema": "durable-workflow.beta-candidate/v2"
+  "foundation": {
+    "commit": "4995052410bd4301c5796ffba54e0b6d2f490ed1",
+    "tag": "beta-candidate/beta-continuity-foundation"
+  },
+  "plan": "coherent-2-0-beta-14",
+  "schema": "durable-workflow.release-plan/v2"
 }

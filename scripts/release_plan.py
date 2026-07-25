@@ -41,6 +41,7 @@ from scripts.beta_candidate import (
     resolve_github_tag,
     revalidate_verification,
     run_git,
+    validate_verification,
     verify_candidate,
     verify_github_release,
     write_github_output,
@@ -133,6 +134,9 @@ SOURCE_CHANGELOGS = {
 }
 
 SOURCE_PREPARATION_PATH = Path(__file__).resolve().parent.parent / "release-plans" / "current-source-preparation.json"
+CURRENT_PLAN_PATH = Path(__file__).resolve().parent.parent / "release-plans" / "current.json"
+CURRENT_CANDIDATE_PATH = Path(__file__).resolve().parent.parent / "candidates" / "main.json"
+CURRENT_AUTHORIZATION_DATE = "2026-07-25T00:00:00Z"
 
 MARKDOWN_MEDIA_TYPE = "text/markdown"
 
@@ -381,6 +385,125 @@ def verify_beta_authorization(client: PublicClient, plan: dict[str, Any]) -> Non
     }
     if record != expected:
         raise CandidateError("beta authorization does not name the same candidate and seven-component tuple")
+
+
+def beta_authorization_manifest(plan: dict[str, Any]) -> dict[str, Any]:
+    validate_plan(plan)
+    if plan["channel"] != "beta":
+        raise CandidateError("current release-plan authorization requires the beta channel")
+    return {
+        "schema": "durable-workflow.beta-authorization/v1",
+        "channel": "beta",
+        "candidate": plan["plan"],
+        "components": plan["components"],
+    }
+
+
+def validate_current_plan_authority(
+    plan_path: Path = CURRENT_PLAN_PATH,
+    candidate_path: Path = CURRENT_CANDIDATE_PATH,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    plan = load_plan(plan_path, require_current=True)
+    require_current_source_preparation(plan)
+    candidate = load_manifest(candidate_path)
+    expected_candidate = candidate_manifest(plan)
+    if canonical_json(candidate) != canonical_json(expected_candidate):
+        raise CandidateError("current candidate does not match the exact current release plan")
+    authorization = plan["beta_authorization"]
+    if authorization["tag"] != f"beta-authorization/{plan['plan']}":
+        raise CandidateError("current release plan has a mismatched authorization tag")
+    return plan, candidate
+
+
+def record_current_plan_authorization(
+    repository: Path,
+    plan_path: Path,
+    *,
+    remote: str,
+    authoritative_authorization: Path,
+) -> dict[str, str]:
+    plan, _candidate = validate_current_plan_authority(plan_path)
+    authorization = beta_authorization_manifest(plan)
+    canonical = canonical_json(authorization)
+    identity = plan["beta_authorization"]
+    tag = identity["tag"]
+    expected_commit = identity["commit"]
+    existing_ref = fetch_existing_record(repository, remote, tag)
+    if existing_ref:
+        existing = read_record_file(repository, existing_ref, "beta-authorization.json")
+        commit = run_git(["rev-parse", f"{existing_ref}^{{commit}}"], cwd=repository)
+        if existing != canonical or commit != expected_commit:
+            raise CandidateError(f"beta authorization {tag} is immutable and differs")
+        authoritative_authorization.write_bytes(existing)
+        return {"status": "existing", "tag": tag, "commit": commit}
+
+    with tempfile.NamedTemporaryFile(prefix="current-plan-authorization-index-", delete=False) as index:
+        index_path = Path(index.name)
+    try:
+        env = os.environ.copy()
+        env["GIT_INDEX_FILE"] = str(index_path)
+        index_path.unlink(missing_ok=True)
+        run_git(["read-tree", "--empty"], cwd=repository, env=env)
+        blob = (
+            subprocess.run(
+                ["git", "hash-object", "-w", "--stdin"],
+                cwd=repository,
+                env=env,
+                input=canonical,
+                check=True,
+                stdout=subprocess.PIPE,
+            )
+            .stdout.decode()
+            .strip()
+        )
+        run_git(
+            ["update-index", "--add", "--cacheinfo", f"100644,{blob},beta-authorization.json"],
+            cwd=repository,
+            env=env,
+        )
+        tree = run_git(["write-tree"], cwd=repository, env=env)
+        commit_env = env | {
+            "GIT_AUTHOR_NAME": "Durable Workflow Product Train",
+            "GIT_AUTHOR_EMAIL": "support@durable-workflow.com",
+            "GIT_COMMITTER_NAME": "Durable Workflow Product Train",
+            "GIT_COMMITTER_EMAIL": "support@durable-workflow.com",
+            "GIT_AUTHOR_DATE": CURRENT_AUTHORIZATION_DATE,
+            "GIT_COMMITTER_DATE": CURRENT_AUTHORIZATION_DATE,
+        }
+        commit = subprocess.run(
+            ["git", "commit-tree", tree],
+            cwd=repository,
+            env=commit_env,
+            input=f"Authorize completed product train {plan['plan']}\n",
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout.strip()
+        if commit != expected_commit:
+            raise CandidateError(
+                f"current release plan expects beta authorization {expected_commit}, generated {commit}"
+            )
+        process = subprocess.run(
+            ["git", "push", remote, f"{commit}:refs/tags/{tag}"],
+            cwd=repository,
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        if process.returncode:
+            existing_ref = fetch_existing_record(repository, remote, tag)
+            if (
+                not existing_ref
+                or run_git(["rev-parse", f"{existing_ref}^{{commit}}"], cwd=repository) != expected_commit
+                or read_record_file(repository, existing_ref, "beta-authorization.json") != canonical
+            ):
+                raise CandidateError(f"cannot publish current beta authorization: {process.stderr.strip()}")
+            authoritative_authorization.write_bytes(canonical)
+            return {"status": "existing", "tag": tag, "commit": expected_commit}
+        authoritative_authorization.write_bytes(canonical)
+        return {"status": "created", "tag": tag, "commit": commit}
+    finally:
+        index_path.unlink(missing_ok=True)
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -2767,6 +2890,43 @@ def completion_manifest(
     return completion
 
 
+def validate_completion_verification(
+    value: Any,
+    plan: dict[str, Any],
+    candidate: dict[str, Any],
+    current_verification: dict[str, Any],
+    preparation: dict[str, Any] | None,
+) -> None:
+    expected_keys = {
+        "schema",
+        "candidate",
+        "channel",
+        "release_plan_sha256",
+        "public_verification",
+    }
+    if preparation is not None:
+        expected_keys.add("release_preparation_sha256")
+    if (
+        not isinstance(value, dict)
+        or set(value) != expected_keys
+        or value.get("schema") != "durable-workflow.release-candidate-verification/v1"
+        or value.get("candidate") != plan["plan"]
+        or value.get("channel") != plan["channel"]
+        or value.get("release_plan_sha256") != manifest_digest(plan)
+        or (
+            preparation is not None
+            and value.get("release_preparation_sha256") != manifest_digest(preparation)
+        )
+    ):
+        raise CandidateError(f"completed release candidate {plan['plan']} has invalid verification authority")
+    recorded = value["public_verification"]
+    validate_verification(recorded, candidate)
+    if recorded["components"] != current_verification["components"]:
+        raise CandidateError(
+            f"completed release candidate {plan['plan']} verification differs from current public evidence"
+        )
+
+
 def record_completion(
     repository: Path,
     plan_path: Path,
@@ -2827,6 +2987,19 @@ def record_completion(
         if existing != canonical_completion:
             raise CandidateError(f"completed release candidate {plan['plan']} is immutable and differs")
         existing_verification = read_record_file(repository, existing_ref, "verification.json")
+        try:
+            existing_verification_value = json.loads(existing_verification)
+        except json.JSONDecodeError as error:
+            raise CandidateError(
+                f"completed release candidate {plan['plan']} has invalid verification authority"
+            ) from error
+        validate_completion_verification(
+            existing_verification_value,
+            plan,
+            candidate,
+            verification,
+            preparation,
+        )
         authoritative_completion.write_bytes(existing)
         authoritative_verification.write_bytes(existing_verification)
         return {
@@ -2895,8 +3068,23 @@ def record_completion(
                 or read_record_file(repository, existing_ref, "release-candidate.json") != canonical_completion
             ):
                 raise CandidateError(f"cannot publish completed release candidate: {process.stderr.strip()}")
-            authoritative_completion.write_bytes(read_record_file(repository, existing_ref, "release-candidate.json"))
-            authoritative_verification.write_bytes(read_record_file(repository, existing_ref, "verification.json"))
+            existing_completion = read_record_file(repository, existing_ref, "release-candidate.json")
+            existing_verification = read_record_file(repository, existing_ref, "verification.json")
+            try:
+                existing_verification_value = json.loads(existing_verification)
+            except json.JSONDecodeError as error:
+                raise CandidateError(
+                    f"completed release candidate {plan['plan']} has invalid verification authority"
+                ) from error
+            validate_completion_verification(
+                existing_verification_value,
+                plan,
+                candidate,
+                verification,
+                preparation,
+            )
+            authoritative_completion.write_bytes(existing_completion)
+            authoritative_verification.write_bytes(existing_verification)
             return {
                 "status": "existing",
                 "candidate": plan["plan"],
@@ -3261,6 +3449,12 @@ def main() -> int:
     validate.add_argument("source", type=Path)
     validate.add_argument("destination", type=Path)
 
+    validate_current = subparsers.add_parser("validate-current")
+    validate_current.add_argument("plan", type=Path)
+    validate_current.add_argument("candidate", type=Path)
+    validate_current.add_argument("plan_destination", type=Path)
+    validate_current.add_argument("candidate_destination", type=Path)
+
     preflight = subparsers.add_parser("preflight")
     preflight.add_argument("plan", type=Path)
     preflight.add_argument("evidence", type=Path)
@@ -3278,6 +3472,16 @@ def main() -> int:
     record.add_argument("--authoritative-plan", required=True, type=Path)
     record.add_argument("--authoritative-preparation", required=True, type=Path)
     record.add_argument("--github-output", type=Path)
+
+    record_current_authorization = subparsers.add_parser("record-current-authorization")
+    record_current_authorization.add_argument("plan", type=Path)
+    record_current_authorization.add_argument("--remote", default="origin")
+    record_current_authorization.add_argument(
+        "--authoritative-authorization",
+        required=True,
+        type=Path,
+    )
+    record_current_authorization.add_argument("--github-output", type=Path)
 
     supersede = subparsers.add_parser("prepare-supersession")
     supersede.add_argument("failed_plan_tag")
@@ -3349,6 +3553,10 @@ def main() -> int:
         if args.command == "validate":
             plan = load_plan(args.source, require_current=True)
             args.destination.write_bytes(canonical_json(plan))
+        elif args.command == "validate-current":
+            plan, candidate = validate_current_plan_authority(args.plan, args.candidate)
+            args.plan_destination.write_bytes(canonical_json(plan))
+            args.candidate_destination.write_bytes(canonical_json(candidate))
         elif args.command == "preflight":
             plan = load_plan(args.plan)
             evidence = preflight_plan(
@@ -3380,6 +3588,15 @@ def main() -> int:
                 remote=args.remote,
                 authoritative_plan=args.authoritative_plan,
                 authoritative_preparation=args.authoritative_preparation,
+            )
+            write_github_output(args.github_output, result)
+            print(json.dumps(result, sort_keys=True))
+        elif args.command == "record-current-authorization":
+            result = record_current_plan_authorization(
+                Path.cwd(),
+                args.plan,
+                remote=args.remote,
+                authoritative_authorization=args.authoritative_authorization,
             )
             write_github_output(args.github_output, result)
             print(json.dumps(result, sort_keys=True))
@@ -3419,19 +3636,7 @@ def main() -> int:
                 expected_conflict_components=args.expected_conflict_components,
             )
         elif args.command == "discover":
-            try:
-                discovered = discover_plan(PublicClient(token), args.tag)
-            except CandidateError as error:
-                if (
-                    not args.allow_empty
-                    or args.tag is not None
-                    or str(error) != "no public release plan is available"
-                ):
-                    raise
-                values = {"available": "false"}
-                write_github_output(args.github_output, values)
-                print(json.dumps(values, sort_keys=True))
-                return 0
+            discovered = discover_plan(PublicClient(token), args.tag)
             tag, plan, preparation = discovered
             args.destination.write_bytes(canonical_json(plan))
             if preparation is not None:

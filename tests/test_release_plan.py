@@ -46,6 +46,7 @@ from scripts.release_plan import (
     protected_environment_evidence,
     protected_run_approval_evidence,
     record_completion,
+    record_current_plan_authorization,
     record_plan,
     record_supersession,
     require_prior_plans_completed,
@@ -494,7 +495,7 @@ class ReleasePlanEntryPointTest(unittest.TestCase):
         select.assert_called_once()
         self.assertNotIn("/releases?per_page=", client.json.call_args.args[0])
 
-    def test_scheduled_discovery_can_report_a_truthful_no_op(self) -> None:
+    def test_scheduled_discovery_fails_closed_without_plan_authority(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             destination = root / "release-plan.json"
@@ -517,9 +518,9 @@ class ReleasePlanEntryPointTest(unittest.TestCase):
                     side_effect=CandidateError("no public release plan is available"),
                 ),
             ):
-                self.assertEqual(0, release_plan_main())
+                self.assertEqual(1, release_plan_main())
 
-            self.assertEqual("available=false\n", github_output.read_text())
+            self.assertFalse(github_output.exists())
             self.assertFalse(destination.exists())
             self.assertFalse(preparation.exists())
 
@@ -534,9 +535,11 @@ class ReleasePlanEntryPointTest(unittest.TestCase):
     def test_workflow_commands_are_directly_executable(self) -> None:
         for command in (
             "validate",
+            "validate-current",
             "check",
             "preflight",
             "record",
+            "record-current-authorization",
             "prepare-supersession",
             "record-supersession",
             "validate-supersession-handoff",
@@ -557,6 +560,7 @@ class ReleasePlanEntryPointTest(unittest.TestCase):
 
     def test_terminal_and_completion_writers_share_the_plan_registry_lock(self) -> None:
         for workflow in (
+            "current-release-plan.yml",
             "release-plan.yml",
             "release-plan-observer.yml",
             "release-plan-supersession.yml",
@@ -576,7 +580,7 @@ class ReleasePlanValidationTest(unittest.TestCase):
     def test_new_beta_plan_requires_current_product_train(self) -> None:
         plan = release_plan("beta")
         plan["components"] = {
-            name: {"version": "2.0.0-beta.10", "commit": identity["commit"]}
+            name: {"version": "2.0.0-beta.14", "commit": identity["commit"]}
             for name, identity in plan["components"].items()
         }
 
@@ -587,7 +591,7 @@ class ReleasePlanValidationTest(unittest.TestCase):
 
             plan["components"]["server"]["version"] = "0.2.701"
             path.write_bytes(canonical_json(plan))
-            with self.assertRaisesRegex(CandidateError, "supported product train 2.0.0-beta.10"):
+            with self.assertRaisesRegex(CandidateError, "supported product train 2.0.0-beta.14"):
                 load_plan(path, require_current=True)
 
     def test_supersession_handoff_binds_dispatch_identities(self) -> None:
@@ -2684,6 +2688,7 @@ class ReleasePlanRecordTest(unittest.TestCase):
         self.plan_path = root / "release-plan.json"
         self.preparation_path = root / "release-preparation.json"
         self.authoritative_path = root / "authoritative-release-plan.json"
+        self.authoritative_authorization_path = root / "authoritative-beta-authorization.json"
         self.authoritative_preparation_path = root / "authoritative-release-preparation.json"
         self.failure_path = root / "release-plan-failure.json"
         self.successor_path = root / "successor-release-plan.json"
@@ -2733,6 +2738,33 @@ class ReleasePlanRecordTest(unittest.TestCase):
             canonical_json(first_preparation),
             self.authoritative_preparation_path.read_bytes(),
         )
+
+    def test_current_completed_train_authorization_is_deterministic_and_idempotent(self) -> None:
+        current_plan = REPOSITORY_ROOT / "release-plans" / "current.json"
+        created = record_current_plan_authorization(
+            self.repository,
+            current_plan,
+            remote=str(self.remote),
+            authoritative_authorization=self.authoritative_authorization_path,
+        )
+        repeated = record_current_plan_authorization(
+            self.repository,
+            current_plan,
+            remote=str(self.remote),
+            authoritative_authorization=self.authoritative_authorization_path,
+        )
+
+        self.assertEqual("created", created["status"])
+        self.assertEqual("existing", repeated["status"])
+        self.assertEqual("a83a36b88ca838fb485e2224420cba04a617c0fb", created["commit"])
+        self.assertEqual(created["commit"], repeated["commit"])
+        files = subprocess.run(
+            ["git", "--git-dir", str(self.remote), "ls-tree", "-r", "--name-only", created["commit"]],
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout.splitlines()
+        self.assertEqual(["beta-authorization.json"], files)
 
     def test_existing_plan_rejects_tuple_mutation(self) -> None:
         plan = release_plan()

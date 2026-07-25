@@ -6,6 +6,14 @@ document against [`schema.json`](schema.json), proves its public branch and tag
 preconditions, and records it at `release-plan/<plan>` in Git and as a GitHub
 Release asset.
 
+[`current.json`](current.json) binds the supported already-published train to
+the same plan contract. The protected `Current release plan` workflow verifies
+all seven public source and distribution identities before it records that
+plan, its beta authorization, and its terminal completion record. Repeating
+the workflow compares the immutable records and current public evidence; it
+does not move component tags or republish packages, crates, archives, or
+images.
+
 Before recording the plan, the workflow also prepares exact dated release
 notes for every component. The resulting record, validated by
 [`preparation-schema.json`](preparation-schema.json), is stored in the same
@@ -134,7 +142,7 @@ not the mutable ordering of GitHub Releases. It validates every plan together
 with its completion, terminal-failure, and continuity lifecycle records, then
 orders plans by the committer time embedded in each immutable plan-record
 commit. Every plan older than the selected record must be completed or
-superseded. The newest record may be completed (a scheduled no-op),
+superseded. The newest record may be completed (a verification-only scheduled no-op),
 interrupted, or currently actionable. Duplicate record times, malformed or
 conflicting lifecycle records, an older nonterminal plan, and a superseded
 record without its exact successor all fail closed. An explicit manual

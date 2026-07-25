@@ -1,0 +1,198 @@
+name: Current release plan
+
+run-name: Record and verify the current completed product train
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/current-release-plan.yml'
+      - 'candidates/main.json'
+      - 'product-train/**'
+      - 'release-plans/**'
+      - 'scripts/beta_candidate.py'
+      - 'scripts/component_release_recovery.py'
+      - 'scripts/product_train.py'
+      - 'scripts/release_plan.py'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-plan-registry
+  cancel-in-progress: false
+
+jobs:
+  record:
+    name: Record protected current-plan and completion authority
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: beta-authorization
+    permissions:
+      actions: read
+      attestations: read
+      contents: write
+    steps:
+      - name: Check out the public control plane
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.13"
+
+      - name: Install changed-file quality tooling
+        run: python -m pip install jsonschema==4.23.0 PyYAML==6.0.2 ruff==0.12.3 yamllint==1.37.1
+
+      - name: Qualify release-plan tooling and structured authority
+        run: |
+          python -m ruff check scripts tests
+          python -m yamllint .github/workflows
+          python -m compileall -q scripts tests
+          python -m unittest discover -v
+          python -m json.tool candidates/main.json >/dev/null
+          python -m json.tool product-train/current.json >/dev/null
+          python -m json.tool release-plans/current.json >/dev/null
+          python -m json.tool release-plans/current-source-preparation.json >/dev/null
+          python -m jsonschema -i product-train/current.json product-train/schema.json
+          python -m jsonschema -i release-plans/current.json release-plans/schema.json
+          python -m jsonschema \
+            -i release-plans/current-source-preparation.json \
+            release-plans/source-preparation-schema.json
+
+      - name: Bind the exact supported train to one current plan
+        run: |
+          python scripts/release_plan.py validate-current \
+            release-plans/current.json candidates/main.json \
+            current-release-plan.json current-candidate.json
+
+      - name: Verify every existing public source and distribution identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/beta_candidate.py verify current-candidate.json verification.json
+
+      - name: Create or verify protected beta authorization
+        id: authorization
+        run: |
+          python scripts/release_plan.py record-current-authorization \
+            current-release-plan.json \
+            --authoritative-authorization authoritative-beta-authorization.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Wait for protected authorization to become publicly observable
+        env:
+          AUTHORIZATION_TAG: ${{ steps.authorization.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$AUTHORIZATION_TAG" >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+          printf 'protected authorization tag did not become publicly observable\n' >&2
+          exit 1
+
+      - name: Verify public branch, source, tag, note, and prior-plan authority
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/release_plan.py preflight \
+            current-release-plan.json release-plan-preflight.json \
+            --preparation release-preparation.json \
+            --release-date 2026-07-25
+
+      - name: Create or verify the immutable release plan
+        id: plan
+        run: |
+          python scripts/release_plan.py record \
+            current-release-plan.json release-preparation.json \
+            --authoritative-plan authoritative-release-plan.json \
+            --authoritative-preparation authoritative-release-preparation.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Wait for the immutable plan tag to become publicly observable
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLAN_TAG: ${{ steps.plan.outputs.tag }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$PLAN_TAG" >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+          printf 'immutable plan tag did not become publicly observable\n' >&2
+          exit 1
+
+      - name: Create or verify the durable completion record
+        id: completion
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/release_plan.py complete \
+            authoritative-release-plan.json verification.json \
+            --authoritative-completion authoritative-release-candidate.json \
+            --authoritative-verification authoritative-verification.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Create or verify durable GitHub Release mirrors
+        env:
+          AUTHORIZATION_COMMIT: ${{ steps.authorization.outputs.commit }}
+          COMPLETION_COMMIT: ${{ steps.completion.outputs.commit }}
+          COMPLETION_TAG: ${{ steps.completion.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+          PLAN_COMMIT: ${{ steps.plan.outputs.commit }}
+          PLAN_TAG: ${{ steps.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mirror_dir="$(mktemp -d)"
+          upload_dir="$(mktemp -d)"
+          trap 'rm -rf "$mirror_dir" "$upload_dir"' EXIT
+
+          repair_asset() {
+            tag="$1"
+            source_path="$2"
+            asset_name="$3"
+            rm -f "$mirror_dir/$asset_name"
+            if gh release download "$tag" --pattern "$asset_name" --dir "$mirror_dir" >/dev/null 2>&1; then
+              cmp --silent "$source_path" "$mirror_dir/$asset_name" || {
+                printf 'release asset %s differs from immutable Git authority\n' "$asset_name" >&2
+                exit 1
+              }
+            else
+              rm -f "$upload_dir/$asset_name"
+              cp "$source_path" "$upload_dir/$asset_name"
+              gh release upload "$tag" "$upload_dir/$asset_name"
+            fi
+          }
+
+          if ! gh release view "$PLAN_TAG" >/dev/null 2>&1; then
+            gh release create "$PLAN_TAG" --verify-tag --prerelease \
+              --title "Release plan ${PLAN_TAG#release-plan/}" \
+              --notes "Protected current-plan authority at Git record ${PLAN_COMMIT}; beta authorization ${AUTHORIZATION_COMMIT}."
+          fi
+          repair_asset "$PLAN_TAG" authoritative-release-plan.json release-plan.json
+          repair_asset "$PLAN_TAG" authoritative-release-preparation.json release-preparation.json
+
+          if ! gh release view "$COMPLETION_TAG" >/dev/null 2>&1; then
+            gh release create "$COMPLETION_TAG" --verify-tag --prerelease \
+              --title "Completed beta release candidate ${COMPLETION_TAG##*/}" \
+              --notes "All declared public artifacts were verified. The authoritative Git record is ${COMPLETION_COMMIT}."
+          fi
+          repair_asset "$COMPLETION_TAG" authoritative-release-candidate.json release-candidate.json
+          repair_asset "$COMPLETION_TAG" authoritative-verification.json verification.json
+
+      - name: Retain protected current-plan evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: current-release-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            authoritative-beta-authorization.json
+            authoritative-release-candidate.json
+            authoritative-release-plan.json
+            authoritative-release-preparation.json
+            authoritative-verification.json
+            release-plan-preflight.json
+          if-no-files-found: error
