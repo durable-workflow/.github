@@ -7,7 +7,9 @@ on:
       - .github/ISSUE_TEMPLATE/**
       - .github/workflows/issue-authority.yml
       - issue-authority/**
+      - qualification/policy.json
       - scripts/issue_authority.py
+      - scripts/cross_repository_lifecycle.py
   issues:
     types: [opened, edited, closed, reopened, labeled, unlabeled, milestoned, demilestoned]
   schedule:
@@ -121,8 +123,10 @@ jobs:
     timeout-minutes: 15
     environment: beta-product-work
     permissions:
+      checks: read
       contents: read
       issues: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
 
@@ -168,8 +172,10 @@ jobs:
     timeout-minutes: 15
     environment: beta-product-work
     permissions:
+      checks: read
       contents: read
       issues: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
 

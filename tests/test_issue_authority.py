@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import yaml
 
+from scripts.cross_repository_lifecycle import EVIDENCE_MARKER
 from scripts.issue_authority import (
     COMPLETION_REQUIRED_LABEL,
     COMPLETION_VERIFIED_LABEL,
@@ -65,6 +66,10 @@ def contract_fixture() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], 
     )
 
 
+def qualification_fixture() -> dict[str, Any]:
+    return json.loads((ROOT / "qualification" / "policy.json").read_text(encoding="utf-8"))
+
+
 class FakeGitHubApi:
     def __init__(self, policy: dict[str, Any]) -> None:
         self.labels: dict[str, dict[str, dict[str, str]]] = {repository: {} for repository in policy["repositories"]}
@@ -78,6 +83,12 @@ class FakeGitHubApi:
         self.replacements: list[tuple[str, int, list[str]]] = []
         self.body_updates: list[tuple[str, int, str]] = []
         self.state_updates: list[tuple[str, int, str]] = []
+        self.timelines: dict[tuple[str, int], list[dict[str, Any]]] = {}
+        self.pulls: dict[tuple[str, int], dict[str, Any]] = {}
+        self.reachable: set[tuple[str, str, str]] = set()
+        self.successful_checks: dict[tuple[str, str], set[str]] = {}
+        self.comments: dict[tuple[str, int], str] = {}
+        self.comment_updates: list[tuple[str, int, str]] = []
 
     def ensure_labels(
         self,
@@ -169,6 +180,54 @@ class FakeGitHubApi:
         issue["state"] = state
         self.state_updates.append((repository, number, state))
 
+    def list_issue_timeline(
+        self,
+        _organization: str,
+        repository: str,
+        number: int,
+    ) -> list[dict[str, Any]]:
+        return copy.deepcopy(self.timelines.get((repository, number), []))
+
+    def get_pull_request(self, _organization: str, repository: str, number: int) -> dict[str, Any]:
+        return copy.deepcopy(self.pulls[(repository, number)])
+
+    def commit_reaches_branch(
+        self,
+        _organization: str,
+        repository: str,
+        commit: str,
+        branch: str,
+    ) -> bool:
+        return (repository, commit, branch) in self.reachable
+
+    def successful_check_names(
+        self,
+        _organization: str,
+        repository: str,
+        commit: str,
+    ) -> set[str]:
+        return set(self.successful_checks.get((repository, commit), set()))
+
+    def upsert_lifecycle_comment(
+        self,
+        _organization: str,
+        repository: str,
+        number: int,
+        marker: str,
+        body: str,
+    ) -> None:
+        self.assert_lifecycle_marker(marker, body)
+        key = (repository, number)
+        if self.comments.get(key) == body:
+            return
+        self.comments[key] = body
+        self.comment_updates.append((repository, number, body))
+
+    @staticmethod
+    def assert_lifecycle_marker(marker: str, body: str) -> None:
+        if marker not in body:
+            raise AssertionError("lifecycle comment omitted its stable marker")
+
 
 def label_names(issue: dict[str, Any]) -> set[str]:
     return {label["name"] for label in issue["labels"]}
@@ -222,6 +281,46 @@ def label_event(
         "created_at": created_at,
         "event": event,
         "label": "intake:approved",
+    }
+
+
+def closing_reference(
+    repository: str,
+    number: int,
+    *,
+    will_close_target: bool = True,
+) -> dict[str, Any]:
+    return {
+        "event": "cross-referenced",
+        "source": {
+            "issue": {
+                "pull_request": {"url": f"https://api.github.com/repos/durable-workflow/{repository}/pulls/{number}"}
+            }
+        },
+        "will_close_target": will_close_target,
+    }
+
+
+def pull_request(
+    repository: str,
+    number: int,
+    branch: str,
+    *,
+    created_at: str,
+    commit: str | None = None,
+    state: str = "open",
+) -> dict[str, Any]:
+    return {
+        "base": {
+            "ref": branch,
+            "repo": {"full_name": f"durable-workflow/{repository}"},
+        },
+        "created_at": created_at,
+        "html_url": f"https://github.com/durable-workflow/{repository}/pull/{number}",
+        "merge_commit_sha": commit,
+        "merged_at": "2026-07-24T12:00:00Z" if commit else None,
+        "number": number,
+        "state": "closed" if commit else state,
     }
 
 
@@ -362,6 +461,21 @@ class ContractValidationTest(unittest.TestCase):
                 self.assertNotIn(COMPLETION_REQUIRED_LABEL, form["labels"])
                 self.assertIn("priority:untriaged", form["labels"])
 
+    def test_cross_repository_form_exposes_every_qualified_target(self) -> None:
+        form = yaml.safe_load(
+            (ROOT / ".github" / "ISSUE_TEMPLATE" / "cross_repository.yml").read_text(encoding="utf-8")
+        )
+        qualification = qualification_fixture()
+        affected = next(field for field in form["body"] if field.get("id") == "affected")
+        expected = {
+            f"durable-workflow/{target['repository']}@{target['branch']}"
+            for target in qualification["targets"].values()
+        }
+
+        self.assertEqual("dropdown", affected["type"])
+        self.assertTrue(affected["attributes"]["multiple"])
+        self.assertEqual(expected, set(affected["attributes"]["options"]))
+
     def test_authority_jobs_are_limited_to_the_canonical_github_host(self) -> None:
         workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "issue-authority.yml").read_text(encoding="utf-8"))
         conditions = {
@@ -404,7 +518,15 @@ class ContractValidationTest(unittest.TestCase):
         for name in ("apply", "audit"):
             job = workflow["jobs"][name]
             self.assertEqual("beta-product-work", job["environment"])
-            self.assertEqual({"contents": "read", "issues": "read"}, job["permissions"])
+            self.assertEqual(
+                {
+                    "checks": "read",
+                    "contents": "read",
+                    "issues": "read",
+                    "pull-requests": "read",
+                },
+                job["permissions"],
+            )
             self.assertIn("intake", job["needs"])
             self.assertNotIn("PUBLIC_ISSUE_DISCOVERY_TOKEN", json.dumps(job))
             self.assertIn("GITHUB_TOKEN", json.dumps(job))
@@ -564,6 +686,41 @@ class IssueIntakeTest(unittest.TestCase):
 
         self.assertNotIn(COMPLETION_REQUIRED_LABEL, label_names(verified[".github"][0]))
 
+    def test_cross_repository_targets_are_bound_from_the_vetted_form_section(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
+        qualification = qualification_fixture()
+        issue = intake_issue(
+            author="rmcdaniel",
+            body=(
+                "### Required source targets\n\n"
+                "durable-workflow/.github@main\n"
+                "durable-workflow/workflow@v2\n\n"
+                "### Repository roles\n\nShared authority and consumer.\n"
+            ),
+            labels=["kind:cross-repository"],
+        )
+        discovery = FakeDiscovery(policy, {".github": [(issue, [])]})
+
+        manifest, inventory = reconstruct_intake(
+            policy,
+            discovery,
+            target_qualification=qualification,
+        )
+        targets = manifest["issues"][0]["cross_repository_targets"]
+
+        self.assertEqual([".github", "workflow"], [target["repository"] for target in targets])
+        self.assertEqual(["main", "v2"], [target["branch"] for target in targets])
+        self.assertTrue(all(target["required_checks"] for target in targets))
+        self.assertEqual(
+            inventory,
+            verify_intake_manifest(
+                policy,
+                manifest,
+                FakeDiscovery(policy, {".github": [(issue, [])]}),
+                target_qualification=qualification,
+            ),
+        )
+
     def test_completion_hold_manifest_field_must_be_boolean(self) -> None:
         policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
         issue = intake_issue(author="rmcdaniel")
@@ -689,6 +846,19 @@ class GitHubApiTest(unittest.TestCase):
 
         self.assertEqual(1, urlopen.call_count)
 
+    def test_lifecycle_reads_use_the_job_token_while_mutations_use_the_writer(self) -> None:
+        client = GitHubApi("writer-token", read_token="job-token")
+        responses = [FakeResponse(b'{"state":"open"}'), FakeResponse(b"")]
+
+        with patch("urllib.request.urlopen", side_effect=responses) as urlopen:
+            client.request("GET", "/repos/durable-workflow/workflow")
+            client.request("PATCH", "/repos/durable-workflow/.github/issues/1", {"state": "open"})
+
+        read_request = urlopen.call_args_list[0].args[0]
+        write_request = urlopen.call_args_list[1].args[0]
+        self.assertEqual("Bearer job-token", read_request.get_header("Authorization"))
+        self.assertEqual("Bearer writer-token", write_request.get_header("Authorization"))
+
     def test_read_request_retries_transient_transport_failure(self) -> None:
         client = GitHubApi("secret")
         responses = [
@@ -719,6 +889,7 @@ class MigrationTest(unittest.TestCase):
         self.client.replacements.clear()
         self.client.body_updates.clear()
         self.client.state_updates.clear()
+        self.client.comment_updates.clear()
 
     def assert_no_github_mutations(self) -> None:
         self.assertEqual([], self.client.label_updates)
@@ -727,6 +898,7 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual([], self.client.replacements)
         self.assertEqual([], self.client.body_updates)
         self.assertEqual([], self.client.state_updates)
+        self.assertEqual([], self.client.comment_updates)
 
     def test_apply_creates_only_reviewed_items_with_dependencies(self) -> None:
         evidence = apply_backlog(self.policy, self.backlog, self.client)
@@ -1071,6 +1243,174 @@ class MigrationTest(unittest.TestCase):
         self.assertIn(COMPLETION_REQUIRED_LABEL, label_names(issue))
         self.assertIn((repository, issue["number"], sorted(label_names(issue))), self.client.replacements)
         self.assertEqual([], self.client.state_updates)
+
+    def test_cross_repository_parent_waits_for_every_latest_target_attempt(self) -> None:
+        apply_backlog(self.policy, self.backlog, self.client)
+        qualification = qualification_fixture()
+
+        def target(repository: str) -> dict[str, Any]:
+            value = next(value for value in qualification["targets"].values() if value["repository"] == repository)
+            return {
+                "branch": value["branch"],
+                "repository": repository,
+                "required_checks": sorted({workflow["required_check"] for workflow in value["workflows"]}),
+            }
+
+        parent = {
+            "body": "Vetted cross-repository work.",
+            "html_url": "https://github.com/durable-workflow/.github/issues/99",
+            "labels": [
+                {"name": "authority:github"},
+                {"name": "kind:cross-repository"},
+                {"name": "priority:P1"},
+                {"name": "status:ready"},
+            ],
+            "milestone": None,
+            "number": 99,
+            "state": "closed",
+            "title": "Coordinate source landings",
+        }
+        self.client.issues[".github"].append(parent)
+        source_commit = "a" * 40
+        peer_commit = "b" * 40
+        self.client.timelines[(".github", 99)] = [
+            closing_reference(".github", 51),
+            closing_reference("workflow", 52),
+        ]
+        self.client.pulls[(".github", 51)] = pull_request(
+            ".github",
+            51,
+            "main",
+            created_at="2026-07-24T10:00:00Z",
+            commit=source_commit,
+        )
+        self.client.pulls[("workflow", 52)] = pull_request(
+            "workflow",
+            52,
+            "v2",
+            created_at="2026-07-24T10:01:00Z",
+        )
+        self.client.reachable.add((".github", source_commit, "main"))
+        self.client.successful_checks[(".github", source_commit)] = set(target(".github")["required_checks"])
+        declared = {(".github", 99): [target(".github"), target("workflow")]}
+
+        with self.assertRaisesRegex(AuthorityError, "before every declared target landing"):
+            audit_backlog(
+                self.policy,
+                self.backlog,
+                self.client,
+                cross_repository_targets=declared,
+            )
+
+        self.assertEqual("open", parent["state"])
+        self.assertEqual({"status:ready"}, label_names(parent) & STATUS_LABELS)
+        self.assertIn(EVIDENCE_MARKER, self.client.comments[(".github", 99)])
+        self.assertIn("pending:open", self.client.comments[(".github", 99)])
+
+        self.client.pulls[("workflow", 52)] = pull_request(
+            "workflow",
+            52,
+            "v2",
+            created_at="2026-07-24T10:01:00Z",
+            commit=peer_commit,
+        )
+        self.client.reachable.add(("workflow", peer_commit, "v2"))
+
+        qualification_pending = audit_backlog(
+            self.policy,
+            self.backlog,
+            self.client,
+            cross_repository_targets=declared,
+        )
+
+        self.assertEqual("pass", qualification_pending["outcome"])
+        self.assertEqual("open", parent["state"])
+        self.assertIn("pending:qualification", self.client.comments[(".github", 99)])
+
+        self.client.successful_checks[("workflow", peer_commit)] = set(target("workflow")["required_checks"])
+
+        evidence = audit_backlog(
+            self.policy,
+            self.backlog,
+            self.client,
+            cross_repository_targets=declared,
+        )
+
+        self.assertEqual("pass", evidence["outcome"])
+        self.assertEqual("closed", parent["state"])
+        self.assertEqual({"status:done"}, label_names(parent) & STATUS_LABELS)
+        self.assertIn("Every declared target landing", self.client.comments[(".github", 99)])
+
+        self.client.timelines[(".github", 99)].append(
+            closing_reference("workflow", 53, will_close_target=False)
+        )
+        self.client.pulls[("workflow", 53)] = pull_request(
+            "workflow",
+            53,
+            "v2",
+            created_at="2026-07-24T11:00:00Z",
+            state="closed",
+        )
+
+        unrelated_evidence = audit_backlog(
+            self.policy,
+            self.backlog,
+            self.client,
+            cross_repository_targets=declared,
+        )
+        self.assertEqual("pass", unrelated_evidence["outcome"])
+        self.assertEqual("closed", parent["state"])
+
+        self.client.timelines[(".github", 99)].append(closing_reference("workflow", 54))
+        self.client.pulls[("workflow", 54)] = pull_request(
+            "workflow",
+            54,
+            "v2",
+            created_at="2026-07-24T12:00:00Z",
+            state="closed",
+        )
+
+        with self.assertRaisesRegex(AuthorityError, "before every declared target landing"):
+            audit_backlog(
+                self.policy,
+                self.backlog,
+                self.client,
+                cross_repository_targets=declared,
+            )
+        self.assertEqual("open", parent["state"])
+        self.assertIn("pending:rejected", self.client.comments[(".github", 99)])
+
+        rejected_evidence = audit_backlog(
+            self.policy,
+            self.backlog,
+            self.client,
+            cross_repository_targets=declared,
+        )
+        self.assertEqual("pass", rejected_evidence["outcome"])
+        self.assertEqual("open", parent["state"])
+
+        rebuilt_commit = "c" * 40
+        self.client.timelines[(".github", 99)].append(closing_reference("workflow", 55))
+        self.client.pulls[("workflow", 55)] = pull_request(
+            "workflow",
+            55,
+            "v2",
+            created_at="2026-07-24T13:00:00Z",
+            commit=rebuilt_commit,
+        )
+        self.client.reachable.add(("workflow", rebuilt_commit, "v2"))
+        self.client.successful_checks[("workflow", rebuilt_commit)] = set(target("workflow")["required_checks"])
+
+        rebuilt_evidence = audit_backlog(
+            self.policy,
+            self.backlog,
+            self.client,
+            cross_repository_targets=declared,
+        )
+        self.assertEqual("pass", rebuilt_evidence["outcome"])
+        self.assertEqual("closed", parent["state"])
+        self.assertEqual({"status:done"}, label_names(parent) & STATUS_LABELS)
+        self.assertNotIn(COMPLETION_REQUIRED_LABEL, label_names(parent))
 
     def test_ambiguous_open_status_is_labeled_and_fails(self) -> None:
         apply_backlog(self.policy, self.backlog, self.client)

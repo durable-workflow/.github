@@ -37,6 +37,24 @@ participate in intake. Headings such as `Completion`, `Delete when`, or
 artifacts, and attachments are not queried or interpreted as issue
 instructions.
 
+The cross-repository issue form records every required source target as an
+exact `organization/repository@branch` selection in its required-targets
+section. Intake binds those selections to the same vetted revision and resolves
+their required checks from `qualification/policy.json`. The lifecycle audit
+then evaluates the latest linked implementation pull request for each target.
+A target is complete only when that attempt merged into the declared branch,
+the merge commit remains on the branch, and every required repository check
+succeeded. A newer open, rejected, or rebuilt attempt supersedes earlier
+evidence for the same target.
+
+The audit maintains one generated issue comment containing the complete target
+set, latest pull requests, landed commits, qualification results, and aggregate
+state. This comment is public lifecycle evidence, not an instruction source.
+The parent remains open until the aggregate is complete, while each repository
+pull request may merge independently. If a later correction supersedes a
+completed attempt, the audit reopens the parent. Once all latest attempts
+qualify, it closes the parent and derives `status:done`.
+
 `policy.json` owns the public repository inventory and the shared label and
 milestone vocabulary. `backlog.json` records the deliberate review of the
 unresolved alpha queue and contains only the work selected for migration. A
@@ -56,12 +74,14 @@ the public report must name the fixed version or source identity.
 
 Status labels remain derived triage aids. The audit changes stale labels to
 `status:done` when an ordinary issue closes or an explicitly held issue has
-satisfied its completion gate. A prematurely closed held issue is reopened on
-GitHub and remains in its previous open status (or returns to triage when that
-status is unavailable). Removing a default or obsolete hold remains effective;
-the audit restores the label only when the approved intake manifest explicitly
-declared it. External automation may read or mirror GitHub state; it must not
-send lifecycle state back to this workflow.
+satisfied its completion gate. A prematurely closed held issue or incomplete
+cross-repository parent is reopened on GitHub and remains in its previous open
+status (or returns to triage when that status is unavailable). Removing a
+default or obsolete hold remains effective; target aggregation is normal
+lifecycle completion and does not add an evidence hold. The audit restores an
+evidence label only when the approved intake manifest explicitly declared it.
+External automation may read or mirror GitHub state; it must not send lifecycle
+state back to this workflow.
 
 Every migrated issue contains exactly one stable `beta-work-id` marker, and each
 work ID identifies exactly one issue. Migration first searches open and closed
@@ -105,6 +125,9 @@ environment. That lifecycle credential needs repository metadata read and
 Issues read/write access only for the same public repositories. It does not
 need source, package, release, environment, or private repository access, and
 it is never exposed to an event whose current issue revision failed intake.
+The repository-scoped job token performs the read-only pull-request, commit,
+and check-run lookups used by target aggregation; the writer token is not used
+for those reads.
 
 Private Cloud implementation work is outside this inventory. If public
 components need a Cloud-facing contract, the public issue describes only that

@@ -31,11 +31,33 @@ body:
     validations:
       required: true
 
-  - type: textarea
+  - type: dropdown
     id: affected
     attributes:
-      label: Affected public repositories
-      description: Name every consumer or producer and explain its role in the contract.
+      label: Required source targets
+      description: >-
+        Select every repository that requires a source landing; target branches and required checks are derived from
+        public qualification policy.
+      multiple: true
+      options:
+        - durable-workflow/.github@main
+        - durable-workflow/workflow@v2
+        - durable-workflow/waterline@v2
+        - durable-workflow/server@main
+        - durable-workflow/cli@main
+        - durable-workflow/sdk-php@main
+        - durable-workflow/sdk-python@main
+        - durable-workflow/sdk-rust@main
+        - durable-workflow/sample-app@main
+        - durable-workflow/durable-workflow.github.io@main
+    validations:
+      required: true
+
+  - type: textarea
+    id: roles
+    attributes:
+      label: Repository roles
+      description: Explain the consumer or producer role of every selected repository.
     validations:
       required: true
 

@@ -21,9 +21,16 @@ from typing import Any
 
 from jsonschema import Draft202012Validator, FormatChecker
 
+# GitHub Actions invokes this file directly from the repository root. In that
+# mode Python adds scripts/, rather than the repository root, to sys.path.
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts import cross_repository_lifecycle
+
 POLICY_SCHEMA = "durable-workflow.github-issue-authority/v1"
 BACKLOG_SCHEMA = "durable-workflow.github-beta-backlog/v1"
-INTAKE_SCHEMA = "durable-workflow.github-issue-intake/v2"
+INTAKE_SCHEMA = "durable-workflow.github-issue-intake/v3"
 MARKER_PATTERN = re.compile(r"<!-- beta-work-id: ([a-z0-9][a-z0-9-]{2,79}) -->")
 UNBLOCK_CONTEXT_START = "<!-- beta-unblock-condition:start -->"
 UNBLOCK_CONTEXT_END = "<!-- beta-unblock-condition:end -->"
@@ -555,10 +562,21 @@ def _manifest_completion_holds(manifest: Mapping[str, Any]) -> set[tuple[str, in
     }
 
 
+def _manifest_cross_repository_targets(
+    manifest: Mapping[str, Any],
+) -> dict[tuple[str, int], list[dict[str, Any]]]:
+    return {
+        (record["repository"], record["number"]): list(record["cross_repository_targets"])
+        for record in manifest["issues"]
+        if record["cross_repository_targets"]
+    }
+
+
 def reconstruct_intake(
     policy: dict[str, Any],
     client: Any,
     *,
+    target_qualification: Mapping[str, Any] | None = None,
     trigger_repository: str | None = None,
     trigger_number: int | None = None,
     trigger_action: str | None = None,
@@ -568,6 +586,11 @@ def reconstruct_intake(
     """Build a deterministic manifest and an inventory containing only vetted revisions."""
 
     intake_policy = policy["intake"]
+    lifecycle_targets = (
+        cross_repository_lifecycle.qualification_targets(target_qualification)
+        if target_qualification is not None
+        else {}
+    )
     records: list[dict[str, Any]] = []
     inventory: dict[str, list[dict[str, Any]]] = {repository: [] for repository in policy["repositories"]}
     trigger_assessment: dict[str, Any] | None = None
@@ -620,12 +643,25 @@ def reconstruct_intake(
             if not assessment["approved"]:
                 continue
             inventory[repository].append(issue)
+            try:
+                cross_repository_targets = cross_repository_lifecycle.declared_targets(
+                    str(issue["body"]),
+                    lifecycle_targets,
+                    organization=policy["organization"],
+                )
+            except cross_repository_lifecycle.LifecycleError as error:
+                raise AuthorityError(str(error)) from error
+            if cross_repository_targets and "kind:cross-repository" not in _intake_label_names(issue):
+                raise AuthorityError(
+                    f"GitHub issue {number} declares multiple source targets without cross-repository authority"
+                )
             records.append(
                 {
                     "approval_actor": assessment["approval_actor"],
                     "approval_at": assessment["approval_at"],
                     "approval_mode": assessment["approval_mode"],
                     "completion_evidence_required": COMPLETION_REQUIRED_LABEL in _intake_label_names(issue),
+                    "cross_repository_targets": cross_repository_targets,
                     "number": number,
                     "repository": repository,
                     "revision": assessment["revision"],
@@ -655,6 +691,8 @@ def verify_intake_manifest(
     policy: dict[str, Any],
     manifest: Mapping[str, Any],
     client: Any,
+    *,
+    target_qualification: Mapping[str, Any] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     if manifest.get("schema") != INTAKE_SCHEMA:
         raise AuthorityError("issue-intake manifest uses an unsupported schema")
@@ -673,6 +711,7 @@ def verify_intake_manifest(
         "approval_at",
         "approval_mode",
         "completion_evidence_required",
+        "cross_repository_targets",
         "number",
         "repository",
         "revision",
@@ -692,6 +731,7 @@ def verify_intake_manifest(
             or isinstance(number, bool)
             or number < 1
             or not isinstance(record.get("completion_evidence_required"), bool)
+            or not isinstance(record.get("cross_repository_targets"), list)
         ):
             raise AuthorityError("issue-intake manifest contains invalid issue authority")
         identity = (repository, number)
@@ -706,11 +746,26 @@ def verify_intake_manifest(
             approval_label=intake_policy["approval_label"],
             trusted_actors=intake_policy["trusted_actors"],
         )
+        try:
+            expected_targets = cross_repository_lifecycle.declared_targets(
+                str(issue["body"]),
+                (
+                    cross_repository_lifecycle.qualification_targets(target_qualification)
+                    if target_qualification is not None
+                    else {}
+                ),
+                organization=policy["organization"],
+            )
+        except cross_repository_lifecycle.LifecycleError as error:
+            raise AuthorityError(str(error)) from error
+        if expected_targets and "kind:cross-repository" not in _intake_label_names(issue):
+            raise AuthorityError("vetted issue revisions changed after read-only discovery")
         current = {
             "approval_actor": assessment.get("approval_actor"),
             "approval_at": assessment.get("approval_at"),
             "approval_mode": assessment.get("approval_mode"),
             "completion_evidence_required": record["completion_evidence_required"],
+            "cross_repository_targets": expected_targets,
             "number": issue.get("number"),
             "repository": repository,
             "revision": assessment.get("revision"),
@@ -724,7 +779,13 @@ def verify_intake_manifest(
 class GitHubApi:
     """Bounded GitHub REST client for public issue metadata and lifecycle labels."""
 
-    def __init__(self, token: str, api_url: str = "https://api.github.com") -> None:
+    def __init__(
+        self,
+        token: str,
+        api_url: str = "https://api.github.com",
+        *,
+        read_token: str | None = None,
+    ) -> None:
         if not token:
             raise AuthorityError("BETA_PRODUCT_WORK_TOKEN is required for cross-repository issue authority")
         self.api_url = api_url.rstrip("/")
@@ -733,6 +794,10 @@ class GitHubApi:
             "Authorization": f"Bearer {token}",
             "User-Agent": "durable-workflow-issue-authority/1",
             "X-GitHub-Api-Version": "2022-11-28",
+        }
+        self.read_headers = {
+            **self.headers,
+            "Authorization": f"Bearer {read_token if read_token is not None else token}",
         }
 
     @staticmethod
@@ -744,7 +809,7 @@ class GitHubApi:
 
     def request(self, method: str, path: str, payload: Mapping[str, Any] | None = None) -> Any:
         body = None
-        headers = dict(self.headers)
+        headers = dict(self.read_headers if method == "GET" else self.headers)
         if payload is not None:
             body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
             headers["Content-Type"] = "application/json"
@@ -888,6 +953,94 @@ class GitHubApi:
         state: str,
     ) -> None:
         self.request("PATCH", f"/repos/{organization}/{repository}/issues/{number}", {"state": state})
+
+    def list_issue_timeline(
+        self,
+        organization: str,
+        repository: str,
+        number: int,
+    ) -> list[dict[str, Any]]:
+        return self.list_collection(f"/repos/{organization}/{repository}/issues/{number}/timeline")
+
+    def get_pull_request(self, organization: str, repository: str, number: int) -> dict[str, Any]:
+        result = self.request("GET", f"/repos/{organization}/{repository}/pulls/{number}")
+        if not isinstance(result, dict):
+            raise AuthorityError(f"GitHub did not return linked pull request {repository}#{number}")
+        return result
+
+    def commit_reaches_branch(
+        self,
+        organization: str,
+        repository: str,
+        commit: str,
+        branch: str,
+    ) -> bool:
+        encoded_commit = urllib.parse.quote(commit, safe="")
+        encoded_branch = urllib.parse.quote(branch, safe="")
+        comparison = self.request(
+            "GET",
+            f"/repos/{organization}/{repository}/compare/{encoded_commit}...{encoded_branch}",
+        )
+        return isinstance(comparison, dict) and comparison.get("status") in {"ahead", "identical"}
+
+    def successful_check_names(self, organization: str, repository: str, commit: str) -> set[str]:
+        encoded_commit = urllib.parse.quote(commit, safe="")
+        runs: list[dict[str, Any]] = []
+        for page in range(1, 11):
+            payload = self.request(
+                "GET",
+                f"/repos/{organization}/{repository}/commits/{encoded_commit}/check-runs?per_page=100&page={page}",
+            )
+            page_runs = payload.get("check_runs") if isinstance(payload, dict) else None
+            if not isinstance(page_runs, list):
+                raise AuthorityError(f"GitHub did not return check runs for {repository}@{commit}")
+            runs.extend(run for run in page_runs if isinstance(run, dict))
+            if len(page_runs) < 100:
+                break
+        else:
+            raise AuthorityError(f"GitHub check runs for {repository}@{commit} exceeded the pagination bound")
+        latest: dict[str, tuple[tuple[str, int], dict[str, Any]]] = {}
+        for run in runs:
+            name = run.get("name")
+            identifier = run.get("id")
+            if not isinstance(name, str) or not isinstance(identifier, int):
+                continue
+            timestamp = run.get("completed_at") or run.get("started_at") or ""
+            ordering = (timestamp if isinstance(timestamp, str) else "", identifier)
+            if name not in latest or ordering > latest[name][0]:
+                latest[name] = (ordering, run)
+        return {
+            name
+            for name, (_ordering, run) in latest.items()
+            if run.get("status") == "completed" and run.get("conclusion") == "success"
+        }
+
+    def upsert_lifecycle_comment(
+        self,
+        organization: str,
+        repository: str,
+        number: int,
+        marker: str,
+        body: str,
+    ) -> None:
+        comments = self.list_collection(f"/repos/{organization}/{repository}/issues/{number}/comments")
+        matches = [
+            comment for comment in comments if isinstance(comment.get("body"), str) and marker in comment["body"]
+        ]
+        if len(matches) > 1:
+            raise AuthorityError(
+                f"GitHub issue {repository}#{number} has duplicate cross-repository lifecycle evidence"
+            )
+        if matches:
+            comment = matches[0]
+            if comment["body"] == body:
+                return
+            comment_id = comment.get("id")
+            if not isinstance(comment_id, int):
+                raise AuthorityError(f"GitHub issue {repository}#{number} has lifecycle evidence without an identity")
+            self.request("PATCH", f"/repos/{organization}/{repository}/issues/comments/{comment_id}", {"body": body})
+            return
+        self.request("POST", f"/repos/{organization}/{repository}/issues/{number}/comments", {"body": body})
 
 
 def _label_names(issue: dict[str, Any]) -> set[str]:
@@ -1164,6 +1317,7 @@ def _audit_state_labels(
     client: Any,
     inventory: Mapping[str, list[dict[str, Any]]],
     approved_completion_holds: set[tuple[str, int]],
+    cross_repository_targets: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]],
 ) -> list[str]:
     organization = policy["organization"]
     failures: list[str] = []
@@ -1177,6 +1331,7 @@ def _audit_state_labels(
             statuses = labels & STATUS_LABELS
             state = issue.get("state")
             replacement = set(labels)
+            aggregated_close = False
             approved_completion_hold = (repository, number) in approved_completion_holds
             if (
                 approved_completion_hold
@@ -1190,7 +1345,30 @@ def _audit_state_labels(
                 statuses = labels & STATUS_LABELS
 
             completion_is_pending = COMPLETION_REQUIRED_LABEL in labels and COMPLETION_VERIFIED_LABEL not in labels
-            if state == "closed" and completion_is_pending:
+            declared_targets = cross_repository_targets.get((repository, number), ())
+            target_completion_is_pending = False
+            if declared_targets:
+                try:
+                    assessment = cross_repository_lifecycle.evaluate_lifecycle(
+                        client,
+                        organization,
+                        repository,
+                        issue,
+                        declared_targets,
+                    )
+                    client.upsert_lifecycle_comment(
+                        organization,
+                        repository,
+                        number,
+                        cross_repository_lifecycle.EVIDENCE_MARKER,
+                        cross_repository_lifecycle.render_evidence(assessment),
+                    )
+                except cross_repository_lifecycle.LifecycleError as error:
+                    raise AuthorityError(str(error)) from error
+                target_completion_is_pending = not assessment["complete"]
+
+            must_remain_open = completion_is_pending or target_completion_is_pending
+            if state == "closed" and must_remain_open:
                 client.update_issue_state(organization, repository, number, "open")
                 issue["state"] = "open"
                 replacement -= STATUS_LABELS
@@ -1202,13 +1380,24 @@ def _audit_state_labels(
                 labels = replacement
                 statuses = labels & STATUS_LABELS
                 state = "open"
-                failures.append(f"{location} closed before its required public completion evidence was verified")
+                reason = (
+                    "closed before every declared target landing and repository qualification completed"
+                    if target_completion_is_pending
+                    else "closed before its required public completion evidence was verified"
+                )
+                failures.append(f"{location} {reason}")
+            elif state == "open" and declared_targets and not must_remain_open:
+                client.update_issue_state(organization, repository, number, "closed")
+                issue["state"] = "closed"
+                state = "closed"
+                aggregated_close = True
 
             if state == "closed" and statuses != {"status:done"}:
                 replacement -= STATUS_LABELS
                 replacement.add("status:done")
                 client.replace_issue_labels(organization, repository, number, sorted(replacement))
-                failures.append(f"{location} closed state overrode stale lifecycle labels {sorted(statuses)}")
+                if not aggregated_close:
+                    failures.append(f"{location} closed state overrode stale lifecycle labels {sorted(statuses)}")
             elif state == "open" and "status:done" in statuses:
                 replacement.remove("status:done")
                 if not replacement & OPEN_STATUS_LABELS:
@@ -1256,6 +1445,7 @@ def apply_backlog(
     *,
     inventory: dict[str, list[dict[str, Any]]] | None = None,
     approved_completion_holds: set[tuple[str, int]] | None = None,
+    cross_repository_targets: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     organization = policy["organization"]
     inventory = inventory if inventory is not None else _inventory(policy, client)
@@ -1321,7 +1511,13 @@ def apply_backlog(
             "url": dependency_urls[item["id"]],
         }
 
-    failures = _audit_state_labels(policy, client, inventory, approved_completion_holds or set())
+    failures = _audit_state_labels(
+        policy,
+        client,
+        inventory,
+        approved_completion_holds or set(),
+        cross_repository_targets or {},
+    )
     failures.extend(_audit_migrated_classification(backlog, resolved))
     if failures:
         raise AuthorityError("GitHub issue state drift was corrected or flagged: " + "; ".join(failures))
@@ -1341,13 +1537,20 @@ def audit_backlog(
     *,
     inventory: dict[str, list[dict[str, Any]]] | None = None,
     approved_completion_holds: set[tuple[str, int]] | None = None,
+    cross_repository_targets: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     inventory = inventory if inventory is not None else _inventory(policy, client)
     resolved = _preflight_markers(policy, backlog, client, inventory, allow_missing=False)
     _preflight_unblock_context_layouts(backlog, inventory)
     _plan_unblock_context_updates(backlog, resolved)
     _milestones, metadata_evidence = sync_metadata(policy, client)
-    failures = _audit_state_labels(policy, client, inventory, approved_completion_holds or set())
+    failures = _audit_state_labels(
+        policy,
+        client,
+        inventory,
+        approved_completion_holds or set(),
+        cross_repository_targets or {},
+    )
     failures.extend(_audit_migrated_classification(backlog, resolved))
     if failures:
         raise AuthorityError("GitHub issue state drift was corrected or flagged: " + "; ".join(failures))
@@ -1393,6 +1596,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         command = subparsers.add_parser(name)
         command.add_argument("policy", type=Path)
         command.add_argument("backlog", type=Path)
+        command.add_argument(
+            "--qualification-policy",
+            type=Path,
+            default=Path("qualification/policy.json"),
+        )
         command.add_argument("--policy-schema", type=Path)
         command.add_argument("--backlog-schema", type=Path)
         if name == "discover":
@@ -1419,6 +1627,11 @@ def main(argv: list[str] | None = None) -> int:
             arguments.policy_schema,
             arguments.backlog_schema,
         )
+        target_qualification = _load_json(arguments.qualification_policy, "target qualification policy")
+        try:
+            cross_repository_lifecycle.qualification_targets(target_qualification)
+        except cross_repository_lifecycle.LifecycleError as error:
+            raise AuthorityError(str(error)) from error
         if arguments.command == "validate":
             return 0
         discovery_token = os.environ.get("GITHUB_TOKEN") or ""
@@ -1434,6 +1647,7 @@ def main(argv: list[str] | None = None) -> int:
             manifest, _inventory = reconstruct_intake(
                 policy,
                 discovery,
+                target_qualification=target_qualification,
                 trigger_repository=arguments.trigger_repository,
                 trigger_number=arguments.trigger_number,
                 trigger_action=arguments.trigger_action,
@@ -1445,10 +1659,20 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         manifest = _load_json(arguments.intake_manifest, "issue-intake manifest")
-        inventory = verify_intake_manifest(policy, manifest, discovery)
+        inventory = verify_intake_manifest(
+            policy,
+            manifest,
+            discovery,
+            target_qualification=target_qualification,
+        )
         approved_completion_holds = _manifest_completion_holds(manifest)
+        cross_repository_targets = _manifest_cross_repository_targets(manifest)
         token = os.environ.get("BETA_PRODUCT_WORK_TOKEN") or ""
-        client = GitHubApi(token, os.environ.get("GITHUB_API_URL", "https://api.github.com"))
+        client = GitHubApi(
+            token,
+            os.environ.get("GITHUB_API_URL", "https://api.github.com"),
+            read_token=discovery_token,
+        )
         if arguments.command == "apply":
             evidence = apply_backlog(
                 policy,
@@ -1456,6 +1680,7 @@ def main(argv: list[str] | None = None) -> int:
                 client,
                 inventory=inventory,
                 approved_completion_holds=approved_completion_holds,
+                cross_repository_targets=cross_repository_targets,
             )
         else:
             evidence = audit_backlog(
@@ -1464,6 +1689,7 @@ def main(argv: list[str] | None = None) -> int:
                 client,
                 inventory=inventory,
                 approved_completion_holds=approved_completion_holds,
+                cross_repository_targets=cross_repository_targets,
             )
         evidence["intake"] = _manifest_core(manifest)
         _write_evidence(evidence_path, evidence)
