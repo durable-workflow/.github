@@ -62,10 +62,13 @@ target-set contract took effect. Editing, reapproving, or newly applying the
 cross-repository label after that cutoff requires the current target section,
 so a catalog entry cannot authorize a later revision. Active migrated authority
 uses the normal aggregate landing lifecycle. A separate issue-and-revision-bound
-record covers each archived completion and names its exact target set. Before
-preserving closed/done state, the audit revalidates the catalog's immutable
-landing commit for every target against the protected branch and that branch's
-required checks. Archived issues are not reopened, relabeled, or commented on
+record covers each archived completion and names its exact target set. Every
+archived protected-branch landing stores the exact required-check identities
+that qualified that commit. Before preserving closed/done state, the audit
+revalidates the catalog's immutable landing commit against its protected branch
+and frozen checks without resolving check names from the current qualification
+policy. Changing historical evidence requires a reviewed migration of this
+versioned catalog. Archived issues are not reopened, relabeled, or commented on
 merely to satisfy the new body syntax.
 
 To migrate any revision outside that bounded catalog, edit its body to add at

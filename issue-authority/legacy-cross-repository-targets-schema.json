@@ -98,12 +98,22 @@
           "repository": {
             "pattern": "^[a-z0-9_.-]+$",
             "type": "string"
+          },
+          "required_checks": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
           }
         },
         "required": [
           "repository",
           "branch",
-          "commit"
+          "commit",
+          "required_checks"
         ],
         "type": "object"
       },
@@ -111,7 +121,7 @@
       "type": "array"
     },
     "schema": {
-      "const": "durable-workflow.legacy-cross-repository-targets/v2"
+      "const": "durable-workflow.legacy-cross-repository-targets/v3"
     }
   },
   "required": [

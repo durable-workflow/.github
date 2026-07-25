@@ -391,54 +391,86 @@
     {
       "branch": "main",
       "commit": "88128029486735ee9be54d1ce6442b6b23956bbe",
-      "repository": ".github"
+      "repository": ".github",
+      "required_checks": [
+        "Control-plane source qualification"
+      ]
     },
     {
       "branch": "main",
       "commit": "c1e6ea3b7045312f7699062bffcdc8addefdb2c3",
-      "repository": "cli"
+      "repository": "cli",
+      "required_checks": [
+        "Target branch qualification"
+      ]
     },
     {
       "branch": "main",
       "commit": "23e90eb5f28d2cc79095ff582b7c20be4d6e5657",
-      "repository": "durable-workflow.github.io"
+      "repository": "durable-workflow.github.io",
+      "required_checks": [
+        "Executable documentation contracts"
+      ]
     },
     {
       "branch": "main",
       "commit": "dc710a239ad558974148cc24b67243eac42136c7",
-      "repository": "sample-app"
+      "repository": "sample-app",
+      "required_checks": [
+        "Target branch qualification",
+        "docker compose sample workflows",
+        "polyglot smoke (PHP/Python/Rust)"
+      ]
     },
     {
       "branch": "main",
       "commit": "fa1a07947236a5b4b314aedbddceecdf195ae268",
-      "repository": "sdk-php"
+      "repository": "sdk-php",
+      "required_checks": [
+        "Target branch qualification"
+      ]
     },
     {
       "branch": "main",
       "commit": "9ec515842af0ba1db4bb865ef5927e73df0da19a",
-      "repository": "sdk-python"
+      "repository": "sdk-python",
+      "required_checks": [
+        "Target branch qualification"
+      ]
     },
     {
       "branch": "main",
       "commit": "c8f5e7dac692c8e7b9cd0af980036c10c94ae258",
-      "repository": "sdk-rust"
+      "repository": "sdk-rust",
+      "required_checks": [
+        "Target branch qualification"
+      ]
     },
     {
       "branch": "main",
       "commit": "6abbe41c12c16daf9715578e7a7f7ce79a91f04e",
-      "repository": "server"
+      "repository": "server",
+      "required_checks": [
+        "PHPUnit feature suite"
+      ]
     },
     {
       "branch": "v2",
       "commit": "ab25539cfad2e119ac132be4ef156fad36ec13f2",
-      "repository": "waterline"
+      "repository": "waterline",
+      "required_checks": [
+        "Target branch qualification"
+      ]
     },
     {
       "branch": "v2",
       "commit": "11afa4eeef8cd7ce05bb6834159d80be0348e48d",
-      "repository": "workflow"
+      "repository": "workflow",
+      "required_checks": [
+        "build"
+      ]
     }
   ],
   "created_before": "2026-07-25T00:01:08Z",
-  "schema": "durable-workflow.legacy-cross-repository-targets/v2"
+  "schema": "durable-workflow.legacy-cross-repository-targets/v3"
 }

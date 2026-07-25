@@ -77,11 +77,8 @@ def legacy_target_fixture() -> dict[str, Any]:
 
 
 def historical_landing_fixture(*repositories: str) -> list[dict[str, Any]]:
-    targets = qualification_targets(qualification_fixture())
-    commits = {
-        landing["repository"]: landing["commit"] for landing in legacy_target_fixture()["protected_branch_landings"]
-    }
-    return [{**targets[repository], "commit": commits[repository]} for repository in repositories]
+    landings = {landing["repository"]: landing for landing in legacy_target_fixture()["protected_branch_landings"]}
+    return [copy.deepcopy(landings[repository]) for repository in repositories]
 
 
 class FakeGitHubApi:
@@ -398,7 +395,7 @@ class ContractValidationTest(unittest.TestCase):
             qualification_fixture(),
         )
 
-        self.assertEqual("durable-workflow.legacy-cross-repository-targets/v2", migration["schema"])
+        self.assertEqual("durable-workflow.legacy-cross-repository-targets/v3", migration["schema"])
         self.assertTrue(migration["authorities"])
         self.assertEqual(
             {2, 26, 32, 33, 35, 36, 37, 38, 39, 41, 46, 48},
@@ -992,6 +989,18 @@ class IssueIntakeTest(unittest.TestCase):
                 "targets": closed_targets,
             }
         ]
+        evolved_qualification = qualification_fixture()
+        control_plane = next(
+            target for target in evolved_qualification["targets"].values() if target["repository"] == ".github"
+        )
+        control_plane["workflows"][0]["required_check"] = "Renamed control-plane qualification"
+        control_plane["workflows"].append(
+            {
+                "matrix_independent": True,
+                "path": "future-qualification.yml",
+                "required_check": "Additional control-plane qualification",
+            }
+        )
         issues = {
             ".github": [
                 (closed, []),
@@ -1003,7 +1012,7 @@ class IssueIntakeTest(unittest.TestCase):
         manifest, inventory = reconstruct_intake(
             policy,
             FakeDiscovery(policy, issues),
-            target_qualification=qualification_fixture(),
+            target_qualification=evolved_qualification,
             legacy_cross_repository_targets=migration,
         )
 
@@ -1016,13 +1025,26 @@ class IssueIntakeTest(unittest.TestCase):
         self.assertEqual([], records[42]["historical_cross_repository_completion"])
         self.assertEqual("trusted-creation", records[40]["approval_mode"])
         self.assertEqual("trusted-label", records[42]["approval_mode"])
+        current_control_plane = next(
+            target for target in records[40]["cross_repository_targets"] if target["repository"] == ".github"
+        )
+        archived_control_plane = next(
+            target
+            for target in records[39]["historical_cross_repository_completion"]
+            if target["repository"] == ".github"
+        )
+        self.assertEqual(
+            ["Additional control-plane qualification", "Renamed control-plane qualification"],
+            current_control_plane["required_checks"],
+        )
+        self.assertEqual(["Control-plane source qualification"], archived_control_plane["required_checks"])
         self.assertEqual(
             inventory,
             verify_intake_manifest(
                 policy,
                 manifest,
                 FakeDiscovery(policy, issues),
-                target_qualification=qualification_fixture(),
+                target_qualification=evolved_qualification,
                 legacy_cross_repository_targets=migration,
             ),
         )
@@ -1940,7 +1962,51 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual({"status:done"}, label_names(parent) & STATUS_LABELS)
         self.assert_no_github_mutations()
 
-    def test_invalid_historical_completion_fails_without_reopening_archived_work(self) -> None:
+    def test_archived_completion_ignores_later_required_check_rename_and_addition(self) -> None:
+        for item in self.backlog["items"]:
+            if item["kind"] == "cross-repository":
+                item["kind"] = "feature"
+        apply_backlog(self.policy, self.backlog, self.client)
+        parent = {
+            "body": "Archived cross-repository authority.",
+            "html_url": "https://github.com/durable-workflow/.github/issues/99",
+            "labels": [
+                {"name": "authority:github"},
+                {"name": "kind:cross-repository"},
+                {"name": "priority:P1"},
+                {"name": "status:done"},
+            ],
+            "milestone": None,
+            "number": 99,
+            "state": "closed",
+            "title": "Archived public work",
+        }
+        self.client.issues[".github"].append(parent)
+        landings = historical_landing_fixture(".github", "workflow")
+        for landing in landings:
+            self.client.reachable.add((landing["repository"], landing["commit"], landing["branch"]))
+            self.client.successful_checks[(landing["repository"], landing["commit"])] = set(landing["required_checks"])
+        targets = [{key: value for key, value in landing.items() if key != "commit"} for landing in landings]
+        targets[0]["required_checks"] = [
+            "Additional control-plane qualification",
+            "Renamed control-plane qualification",
+        ]
+        self.clear_mutation_spies()
+
+        evidence = audit_backlog(
+            self.policy,
+            self.backlog,
+            self.client,
+            cross_repository_targets={(".github", 99): targets},
+            historical_cross_repository_completions={(".github", 99): landings},
+        )
+
+        self.assertEqual("pass", evidence["outcome"])
+        self.assertEqual("closed", parent["state"])
+        self.assertEqual({"status:done"}, label_names(parent) & STATUS_LABELS)
+        self.assert_no_github_mutations()
+
+    def test_missing_frozen_historical_check_fails_without_reopening_archived_work(self) -> None:
         for item in self.backlog["items"]:
             if item["kind"] == "cross-repository":
                 item["kind"] = "feature"

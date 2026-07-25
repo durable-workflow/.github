@@ -31,7 +31,7 @@ from scripts import cross_repository_lifecycle
 POLICY_SCHEMA = "durable-workflow.github-issue-authority/v1"
 BACKLOG_SCHEMA = "durable-workflow.github-beta-backlog/v1"
 INTAKE_SCHEMA = "durable-workflow.github-issue-intake/v5"
-LEGACY_TARGET_SCHEMA = "durable-workflow.legacy-cross-repository-targets/v2"
+LEGACY_TARGET_SCHEMA = "durable-workflow.legacy-cross-repository-targets/v3"
 MARKER_PATTERN = re.compile(r"<!-- beta-work-id: ([a-z0-9][a-z0-9-]{2,79}) -->")
 WORK_MARKER_PATTERN = re.compile(r"<!-- durable-workflow-work-id: ([a-z0-9][a-z0-9-]{2,79}) -->")
 LEGACY_TARGET_HEADING = "### Affected public repositories"
@@ -804,16 +804,9 @@ def _legacy_historical_completion(
             f"GitHub issue {issue['number']}: historical completion targets differ from its migrated target set"
         )
     landing_map = {
-        (landing["repository"], landing["branch"]): landing["commit"]
-        for landing in migration["protected_branch_landings"]
+        (landing["repository"], landing["branch"]): landing for landing in migration["protected_branch_landings"]
     }
-    return [
-        {
-            **dict(target),
-            "commit": landing_map[(str(target["repository"]), str(target["branch"]))],
-        }
-        for target in declared
-    ]
+    return [dict(landing_map[(str(target["repository"]), str(target["branch"]))]) for target in declared]
 
 
 def _issue_cross_repository_targets(
@@ -1677,7 +1670,6 @@ def _audit_state_labels(
             (
                 str(target.get("repository")),
                 str(target.get("branch")),
-                tuple(sorted(str(check) for check in target.get("required_checks", ()))),
             )
             for target in declared
         )
@@ -1685,7 +1677,6 @@ def _audit_state_labels(
             (
                 str(landing.get("repository")),
                 str(landing.get("branch")),
-                tuple(sorted(str(check) for check in landing.get("required_checks", ()))),
             )
             for landing in landings
         )
