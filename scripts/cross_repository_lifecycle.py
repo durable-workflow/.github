@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from typing import Any
 
 TARGET_HEADING = "### Required source targets"
@@ -118,17 +119,30 @@ def _pull_identity(event: Mapping[str, Any], organization: str) -> tuple[str, in
     return None
 
 
+def _utc_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if timestamp.tzinfo is None:
+        return None
+    return timestamp.astimezone(UTC)
+
+
 def _approved_head_reviewer(
     client: Any,
     organization: str,
     repository: str,
     number: int,
     head_sha: str,
+    reference_at: datetime,
     trusted_actors: set[str],
-) -> str | None:
-    """Return the authorized reviewer whose latest review approves this exact head."""
+) -> tuple[str, str, int] | None:
+    """Return an authorized exact-head approval recorded after the closing reference."""
 
-    latest_by_reviewer: dict[tuple[int, str], tuple[tuple[str, int], Mapping[str, Any]]] = {}
+    latest_by_reviewer: dict[tuple[int, str], tuple[tuple[datetime, int], Mapping[str, Any]]] = {}
     for review in client.list_pull_request_reviews(organization, repository, number):
         if not isinstance(review, Mapping) or review.get("commit_id") != head_sha:
             continue
@@ -137,6 +151,7 @@ def _approved_head_reviewer(
         login = user.get("login") if isinstance(user, Mapping) else None
         review_id = review.get("id")
         submitted_at = review.get("submitted_at")
+        submitted_timestamp = _utc_timestamp(submitted_at)
         if (
             type(identifier) is not int
             or identifier < 1
@@ -144,22 +159,26 @@ def _approved_head_reviewer(
             or not login
             or type(review_id) is not int
             or review_id < 1
-            or not isinstance(submitted_at, str)
-            or not submitted_at
+            or submitted_timestamp is None
         ):
             continue
         reviewer = (identifier, login.casefold())
-        ordering = (submitted_at, review_id)
+        ordering = (submitted_timestamp, review_id)
         if reviewer not in latest_by_reviewer or ordering > latest_by_reviewer[reviewer][0]:
             latest_by_reviewer[reviewer] = (ordering, review)
     for reviewer in sorted(latest_by_reviewer):
-        review = latest_by_reviewer[reviewer][1]
+        ordering, review = latest_by_reviewer[reviewer]
         user = review["user"]
         login = str(user["login"])
-        if review.get("state") == "APPROVED" and (
-            login.casefold() in trusted_actors or review.get("author_association") in TRUSTED_REPOSITORY_ASSOCIATIONS
+        if (
+            ordering[0] > reference_at
+            and review.get("state") == "APPROVED"
+            and (
+                login.casefold() in trusted_actors
+                or review.get("author_association") in TRUSTED_REPOSITORY_ASSOCIATIONS
+            )
         ):
-            return login
+            return login, str(review["submitted_at"]), int(review["id"])
     return None
 
 
@@ -169,6 +188,7 @@ def _trusted_pull_request(
     repository: str,
     number: int,
     event: Mapping[str, Any],
+    reference_at: datetime,
     pull: Mapping[str, Any],
     trusted_actors: set[str],
 ) -> dict[str, Any] | None:
@@ -222,23 +242,27 @@ def _trusted_pull_request(
         actor_login.casefold() == author_login.casefold()
     )
     trusted_execution = head_repository == target_repository and trusted_author and trusted_reference_actor
-    approved_by = None
+    approval = None
     if not trusted_execution:
-        approved_by = _approved_head_reviewer(
+        approval = _approved_head_reviewer(
             client,
             organization,
             repository,
             number,
             head_sha,
+            reference_at,
             trusted_actors,
         )
-    if not trusted_execution and approved_by is None:
+    if not trusted_execution and approval is None:
         return None
+    approved_by = approval[0] if approval is not None else None
     provenance = f"trusted-author:{author_login}" if trusted_execution else f"approved:{approved_by}"
     return {
         **pull,
         "_provenance": {
             "actor": actor_login,
+            "approval_at": approval[1] if approval is not None else None,
+            "approval_review": approval[2] if approval is not None else None,
             "author": author_login,
             "base_ref": base_ref,
             "base_repository": target_repository,
@@ -247,6 +271,8 @@ def _trusted_pull_request(
             "head_repository": head_repository,
             "head_sha": head_sha,
             "kind": provenance,
+            "reference_at": event["created_at"],
+            "reference_event": event["id"],
         },
     }
 
@@ -259,13 +285,24 @@ def _latest_attempts(
     trusted_actors: set[str],
 ) -> dict[str, dict[str, Any]]:
     attempts: dict[str, dict[str, Any]] = {}
-    seen: set[tuple[str, int]] = set()
+    references: dict[tuple[str, int], tuple[tuple[datetime, int], Mapping[str, Any]]] = {}
+    invalid_references: set[tuple[str, int]] = set()
     for event in events:
         identity = _pull_identity(event, organization)
-        if identity is None or identity in seen:
+        if identity is None:
             continue
-        seen.add(identity)
-        repository, number = identity
+        reference_at = _utc_timestamp(event.get("created_at"))
+        reference_id = event.get("id")
+        if reference_at is None or type(reference_id) is not int or reference_id < 1:
+            invalid_references.add(identity)
+            references.pop(identity, None)
+            continue
+        if identity in invalid_references:
+            continue
+        ordering = (reference_at, reference_id)
+        if identity not in references or ordering > references[identity][0]:
+            references[identity] = (ordering, event)
+    for (repository, number), (reference_ordering, event) in sorted(references.items()):
         if repository not in target_repositories:
             continue
         pull = client.get_pull_request(organization, repository, number)
@@ -275,6 +312,7 @@ def _latest_attempts(
             repository,
             number,
             event,
+            reference_ordering[0],
             pull,
             trusted_actors,
         )
@@ -300,6 +338,8 @@ def _evaluate_target(
     branch = str(target["branch"])
     required_checks = list(target["required_checks"])
     result: dict[str, Any] = {
+        "approval_at": None,
+        "approval_review": None,
         "base_commit": None,
         "base_ref": None,
         "base_repository": None,
@@ -313,6 +353,8 @@ def _evaluate_target(
         "provenance": None,
         "pull_request": None,
         "reference_actor": None,
+        "reference_at": None,
+        "reference_event": None,
         "repository": repository,
         "state": "pending:no-linked-pull-request",
     }
@@ -326,6 +368,8 @@ def _evaluate_target(
     result["pull_request"] = html_url
     if not isinstance(provenance, Mapping):
         raise LifecycleError(f"linked pull request {repository}#{number} has no trusted provenance")
+    result["approval_at"] = provenance["approval_at"]
+    result["approval_review"] = provenance["approval_review"]
     result["base_commit"] = provenance["base_sha"]
     result["base_ref"] = provenance["base_ref"]
     result["base_repository"] = provenance["base_repository"]
@@ -335,6 +379,8 @@ def _evaluate_target(
     result["pull_author"] = provenance["author"]
     result["provenance"] = provenance["kind"]
     result["reference_actor"] = provenance["actor"]
+    result["reference_at"] = provenance["reference_at"]
+    result["reference_event"] = provenance["reference_event"]
     if (
         not isinstance(number, int)
         or not isinstance(html_url, str)
@@ -469,6 +515,13 @@ def render_evidence(assessment: Mapping[str, Any]) -> str:
         pull_author = target["pull_author"]
         provenance = target["provenance"]
         reference_actor = target["reference_actor"]
+        reference_at = target["reference_at"]
+        reference_event = target["reference_event"]
+        approval_at = target["approval_at"]
+        approval_review = target["approval_review"]
+        authority_binding = f"; reference event `{reference_event}` at `{reference_at}`"
+        if approval_at and approval_review:
+            authority_binding += f"; approval review `{approval_review}` at `{approval_at}`"
         bound_provenance = (
             f"head [`{head_repository}@{head_ref}`]"
             f"(https://github.com/{head_repository}/commit/{head_commit}) "
@@ -477,6 +530,7 @@ def render_evidence(assessment: Mapping[str, Any]) -> str:
             f"(https://github.com/{base_repository}/commit/{base_commit}) "
             f"`{base_commit[:12]}`; `{provenance}`; "
             f"author `{pull_author}`; reference actor `{reference_actor}`"
+            f"{authority_binding}"
             if (
                 head_commit
                 and head_repository
@@ -487,6 +541,8 @@ def render_evidence(assessment: Mapping[str, Any]) -> str:
                 and pull_author
                 and provenance
                 and reference_actor
+                and reference_at
+                and reference_event
             )
             else "Pending"
         )

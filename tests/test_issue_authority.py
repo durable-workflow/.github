@@ -16,6 +16,7 @@ from scripts.cross_repository_lifecycle import (
     declared_targets,
     evaluate_lifecycle,
     qualification_targets,
+    render_evidence,
 )
 from scripts.issue_authority import (
     COMPLETION_REQUIRED_LABEL,
@@ -319,12 +320,15 @@ def closing_reference(
     number: int,
     *,
     actor: str = "durable-workflow-ops",
+    created_at: str = "2026-07-24T09:00:00Z",
+    identifier: int | None = None,
     will_close_target: bool = True,
 ) -> dict[str, Any]:
     return {
         "actor": {"login": actor},
-        "created_at": "2026-07-24T09:00:00Z",
+        "created_at": created_at,
         "event": "cross-referenced",
+        "id": identifier or number,
         "source": {
             "issue": {
                 "pull_request": {"url": f"https://api.github.com/repos/durable-workflow/{repository}/pulls/{number}"}
@@ -379,13 +383,14 @@ def approving_review(
     identifier: int = 1,
     reviewer: str = "repository-maintainer",
     state: str = "APPROVED",
+    submitted_at: str = "2026-07-24T09:30:00Z",
 ) -> dict[str, Any]:
     return {
         "author_association": association,
         "commit_id": head_sha,
         "id": identifier,
         "state": state,
-        "submitted_at": "2026-07-24T09:30:00Z",
+        "submitted_at": submitted_at,
         "user": {"id": identifier + 100, "login": reviewer},
     }
 
@@ -2361,6 +2366,9 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual("durable-workflow/workflow", approved["targets"][0]["base_repository"])
         self.assertEqual("v2", approved["targets"][0]["base_ref"])
         self.assertEqual("approved:repository-maintainer", approved["targets"][0]["provenance"])
+        rendered = render_evidence(approved)
+        self.assertIn("reference event `70` at `2026-07-24T09:00:00Z`", rendered)
+        self.assertIn("approval review `1` at `2026-07-24T09:30:00Z`", rendered)
 
         self.client.reviews[("workflow", 71)] = [approving_review(newer_head)]
 
@@ -2380,6 +2388,147 @@ class MigrationTest(unittest.TestCase):
             superseded["targets"][0]["pull_request"],
         )
 
+    def test_external_attempt_requires_fresh_approval_after_latest_closing_reference(self) -> None:
+        target = qualification_targets(qualification_fixture())["workflow"]
+        trusted_actors = self.policy["intake"]["trusted_actors"]
+        issue = {"number": 99}
+        landed_commit = "a" * 40
+        external_head = "b" * 40
+        late_reference = closing_reference(
+            "workflow",
+            91,
+            actor="external-contributor",
+            created_at="2026-07-24T10:00:00Z",
+            identifier=910,
+        )
+        self.client.timelines[(".github", 99)] = [late_reference]
+        self.client.pulls[("workflow", 91)] = pull_request(
+            "workflow",
+            91,
+            "v2",
+            author="external-contributor",
+            author_association="NONE",
+            created_at="2026-07-24T09:00:00Z",
+            head_repository="external-contributor/workflow",
+            head_sha=external_head,
+            state="closed",
+        )
+        self.client.reviews[("workflow", 91)] = [
+            approving_review(
+                external_head,
+                submitted_at="2026-07-24T09:30:00Z",
+            )
+        ]
+
+        before_landing = evaluate_lifecycle(
+            self.client,
+            "durable-workflow",
+            ".github",
+            issue,
+            [target],
+            trusted_actors=trusted_actors,
+        )
+
+        self.assertFalse(before_landing["complete"])
+        self.assertEqual("pending:no-linked-pull-request", before_landing["targets"][0]["state"])
+
+        self.client.timelines[(".github", 99)].insert(
+            0,
+            closing_reference(
+                "workflow",
+                90,
+                created_at="2026-07-24T08:30:00Z",
+                identifier=900,
+            ),
+        )
+        self.client.pulls[("workflow", 90)] = pull_request(
+            "workflow",
+            90,
+            "v2",
+            commit=landed_commit,
+            created_at="2026-07-24T08:00:00Z",
+        )
+        self.client.reachable.add(("workflow", landed_commit, "v2"))
+        self.client.successful_checks[("workflow", landed_commit)] = set(target["required_checks"])
+
+        completed = evaluate_lifecycle(
+            self.client,
+            "durable-workflow",
+            ".github",
+            issue,
+            [target],
+            trusted_actors=trusted_actors,
+        )
+
+        self.assertTrue(completed["complete"])
+        self.assertIn("/pull/90", completed["targets"][0]["pull_request"])
+
+        self.client.reviews[("workflow", 91)].append(
+            approving_review(
+                external_head,
+                identifier=2,
+                submitted_at="2026-07-24T10:30:00Z",
+            )
+        )
+
+        admitted = evaluate_lifecycle(
+            self.client,
+            "durable-workflow",
+            ".github",
+            issue,
+            [target],
+            trusted_actors=trusted_actors,
+        )
+
+        self.assertFalse(admitted["complete"])
+        self.assertEqual("pending:rejected", admitted["targets"][0]["state"])
+        self.assertIn("/pull/91", admitted["targets"][0]["pull_request"])
+
+        self.client.timelines[(".github", 99)].append(
+            closing_reference(
+                "workflow",
+                91,
+                actor="external-contributor",
+                created_at="2026-07-24T11:00:00Z",
+                identifier=911,
+            )
+        )
+
+        reintroduced = evaluate_lifecycle(
+            self.client,
+            "durable-workflow",
+            ".github",
+            issue,
+            [target],
+            trusted_actors=trusted_actors,
+        )
+
+        self.assertTrue(reintroduced["complete"])
+        self.assertIn("/pull/90", reintroduced["targets"][0]["pull_request"])
+
+        self.client.reviews[("workflow", 91)].append(
+            approving_review(
+                external_head,
+                identifier=3,
+                submitted_at="2026-07-24T11:30:00Z",
+            )
+        )
+
+        readmitted = evaluate_lifecycle(
+            self.client,
+            "durable-workflow",
+            ".github",
+            issue,
+            [target],
+            trusted_actors=trusted_actors,
+        )
+
+        self.assertFalse(readmitted["complete"])
+        self.assertEqual("pending:rejected", readmitted["targets"][0]["state"])
+        self.assertIn("/pull/91", readmitted["targets"][0]["pull_request"])
+        self.assertEqual(911, readmitted["targets"][0]["reference_event"])
+        self.assertEqual(3, readmitted["targets"][0]["approval_review"])
+
     def test_trusted_attempt_requires_exact_pull_head_base_and_reference_metadata(self) -> None:
         target = qualification_targets(qualification_fixture())["workflow"]
         trusted_actors = self.policy["intake"]["trusted_actors"]
@@ -2392,6 +2541,8 @@ class MigrationTest(unittest.TestCase):
             ("base repository", "pull", ("base", "repo", "full_name"), "durable-workflow/server"),
             ("base commit", "pull", ("base", "sha"), "invalid"),
             ("reference actor", "event", ("actor", "login"), "public-noise"),
+            ("reference event identity", "event", ("id",), "invalid"),
+            ("reference event timestamp", "event", ("created_at",), "invalid"),
         ]
         for label, location, path, replacement in mutations:
             with self.subTest(label=label):
