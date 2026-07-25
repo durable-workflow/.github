@@ -1,0 +1,35 @@
+{
+  "candidate": "coherent-2-0-beta-14",
+  "channel": "beta",
+  "components": {
+    "cli": {
+      "commit": "6eeea275f3fe1af96cf6c25a347baf93632d76c5",
+      "version": "2.0.0-beta.14"
+    },
+    "sdk-php": {
+      "commit": "47bb5d213b1ebd1504a01b49cd574891b603a747",
+      "version": "2.0.0-beta.14"
+    },
+    "sdk-python": {
+      "commit": "cc4efc00c5fd227caf38067658c5e7253c1fff73",
+      "version": "2.0.0-beta.14"
+    },
+    "sdk-rust": {
+      "commit": "88679659576713238ec156fd35fd543c8e627384",
+      "version": "2.0.0-beta.14"
+    },
+    "server": {
+      "commit": "0ca149a3c861d8b9e652ed2dcbaeb3baabeeac75",
+      "version": "2.0.0-beta.14"
+    },
+    "waterline": {
+      "commit": "417d965f03b5fc58f6e0b3916c539b0fc82a949c",
+      "version": "2.0.0-beta.14"
+    },
+    "workflow": {
+      "commit": "ef844b34dfec8cfe54d4bc699fc21d80574ce028",
+      "version": "2.0.0-beta.14"
+    }
+  },
+  "schema": "durable-workflow.beta-authorization/v1"
+}
