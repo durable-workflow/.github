@@ -131,6 +131,21 @@ evidence label only when the approved intake manifest explicitly declared it.
 External automation may read or mirror GitHub state; it must not send lifecycle
 state back to this workflow.
 
+An immutable prerelease artifact mismatch may make a release blocker's original
+acceptance criteria impossible. `policy.json` may name that issue and one
+explicit active successor. The relationship activates only when both current
+issue revisions pass the same trusted intake and remain evidence-required beta
+blockers in the same milestone. Discovery records both revision digests before
+the lifecycle job can act.
+
+The retired issue keeps its unverified evidence hold, receives
+`status:superseded`, links to the successor in generated lifecycle evidence, and
+closes without `status:done` or `completion:evidence-verified`. Later audits
+preserve that terminal state and do not evaluate its source landings. Comments,
+pull requests, and unapproved issue edits cannot create or redirect this
+relationship. Every issue outside the reviewed mapping retains the ordinary
+fail-closed completion and cross-repository behavior.
+
 Every migrated issue contains exactly one stable `beta-work-id` marker, and each
 work ID identifies exactly one issue. Migration first searches open and closed
 issues across the complete public inventory. One match preserves its current

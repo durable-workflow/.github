@@ -90,6 +90,11 @@
       "name": "status:done"
     },
     {
+      "color": "8250df",
+      "description": "Retired in favor of an active prerelease successor without completion",
+      "name": "status:superseded"
+    },
+    {
       "color": "d93f0b",
       "description": "Close only after all explicit acceptance and operational evidence is public",
       "name": "completion:evidence-required"
@@ -191,6 +196,19 @@
     }
   ],
   "organization": "durable-workflow",
+  "prerelease_supersessions": [
+    {
+      "reason": "The immutable Server 2.0.0-beta.13 image contains Workflow 2.0.0-beta.10 and cannot represent a coherent synchronized beta.13 train.",
+      "retired": {
+        "number": 59,
+        "repository": ".github"
+      },
+      "successor": {
+        "number": 61,
+        "repository": ".github"
+      }
+    }
+  ],
   "repositories": [
     ".github",
     "workflow",

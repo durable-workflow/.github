@@ -24,6 +24,8 @@ from scripts.issue_authority import (
     INTAKE_SCHEMA,
     OWNER_LABELS,
     STATUS_LABELS,
+    SUPERSEDED_STATUS_LABEL,
+    SUPERSESSION_EVIDENCE_MARKER,
     UNBLOCK_CONTEXT_END,
     UNBLOCK_CONTEXT_START,
     AuthorityError,
@@ -66,12 +68,18 @@ class FakeResponse:
         return self.payload
 
 
-def contract_fixture() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+def contract_fixture(
+    *,
+    include_supersessions: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
     directory = ROOT / "issue-authority"
-    return tuple(
+    documents = tuple(
         json.loads((directory / name).read_text(encoding="utf-8"))
         for name in ("policy.json", "backlog.json", "policy-schema.json", "backlog-schema.json")
     )
+    if not include_supersessions:
+        documents[0]["prerelease_supersessions"] = []
+    return documents
 
 
 def qualification_fixture() -> dict[str, Any]:
@@ -307,6 +315,32 @@ def intake_issue(
     }
 
 
+def prerelease_authority_issue(
+    number: int,
+    *,
+    author: str = "rmcdaniel",
+    body: str | None = None,
+    state: str = "open",
+    status: str = "status:ready",
+) -> dict[str, Any]:
+    issue = intake_issue(
+        author=author,
+        body=body or f"Prerelease authority {number}",
+        labels=[
+            "authority:github",
+            "beta:blocker",
+            COMPLETION_REQUIRED_LABEL,
+            "kind:release-blocker",
+            "priority:P0",
+            status,
+        ],
+        number=number,
+    )
+    issue["milestone"] = {"title": "2.0 beta"}
+    issue["state"] = state
+    return issue
+
+
 def label_event(
     actor: str,
     created_at: str,
@@ -516,6 +550,28 @@ class ContractValidationTest(unittest.TestCase):
         self.assertEqual("github-to-mirrors", policy["state_direction"])
         self.assertEqual(["rmcdaniel", "durable-workflow-ops"], policy["intake"]["trusted_actors"])
         self.assertEqual("intake:approved", policy["intake"]["approval_label"])
+        self.assertEqual(
+            [
+                {
+                    "number": 59,
+                    "repository": ".github",
+                }
+            ],
+            [record["retired"] for record in policy["prerelease_supersessions"]],
+        )
+        self.assertEqual(
+            [
+                {
+                    "number": 61,
+                    "repository": ".github",
+                }
+            ],
+            [record["successor"] for record in policy["prerelease_supersessions"]],
+        )
+        self.assertIn(
+            SUPERSEDED_STATUS_LABEL,
+            {label["name"] for label in policy["labels"]},
+        )
         self.assertEqual(4, len(backlog["items"]))
         blocked = [item for item in backlog["items"] if item["status"] == "blocked"]
         self.assertTrue(all(item["depends_on"] or item.get("unblock_condition") for item in blocked))
@@ -579,6 +635,28 @@ class ContractValidationTest(unittest.TestCase):
         self.assertEqual(expected_repositories, policy["repositories"])
         self.assertEqual(expected_repositories, list(OWNER_LABELS))
         self.assertEqual(expected_repositories, policy["milestones"][0]["repositories"])
+
+    def test_prerelease_supersession_requires_a_distinct_active_successor(self) -> None:
+        policy, backlog, policy_schema, backlog_schema = contract_fixture(include_supersessions=True)
+        policy["prerelease_supersessions"][0]["successor"] = copy.deepcopy(
+            policy["prerelease_supersessions"][0]["retired"]
+        )
+
+        with self.assertRaisesRegex(AuthorityError, "distinct active successor"):
+            validate_contract(policy, backlog, policy_schema, backlog_schema)
+
+    def test_prerelease_supersession_cannot_chain_through_a_retired_issue(self) -> None:
+        policy, backlog, policy_schema, backlog_schema = contract_fixture(include_supersessions=True)
+        policy["prerelease_supersessions"].append(
+            {
+                "reason": "A later immutable artifact mismatch requires another train.",
+                "retired": {"repository": ".github", "number": 61},
+                "successor": {"repository": ".github", "number": 62},
+            }
+        )
+
+        with self.assertRaisesRegex(AuthorityError, "must remain active"):
+            validate_contract(policy, backlog, policy_schema, backlog_schema)
 
     def test_review_and_migration_sets_must_match_exactly(self) -> None:
         policy, backlog, policy_schema, backlog_schema = contract_fixture()
@@ -894,6 +972,79 @@ class IssueIntakeTest(unittest.TestCase):
         )
 
         self.assertNotIn(COMPLETION_REQUIRED_LABEL, label_names(verified[".github"][0]))
+
+    def test_prerelease_supersession_binds_both_trusted_issue_revisions(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture(include_supersessions=True)
+        retired = prerelease_authority_issue(59)
+        successor = prerelease_authority_issue(61, body="Coherent replacement train")
+        issues = {".github": [(retired, []), (successor, [])]}
+        manifest, inventory = reconstruct_intake(
+            policy,
+            FakeDiscovery(policy, issues),
+        )
+
+        records = {(record["repository"], record["number"]): record for record in manifest["issues"]}
+        superseded_by = records[(".github", 59)]["superseded_by"]
+        self.assertEqual(".github", superseded_by["repository"])
+        self.assertEqual(61, superseded_by["number"])
+        self.assertEqual(
+            records[(".github", 61)]["revision"],
+            superseded_by["revision"],
+        )
+        self.assertIsNone(records[(".github", 61)]["superseded_by"])
+        self.assertEqual(
+            inventory,
+            verify_intake_manifest(
+                policy,
+                manifest,
+                FakeDiscovery(policy, issues),
+            ),
+        )
+
+    def test_untrusted_retired_issue_cannot_activate_prerelease_supersession(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture(include_supersessions=True)
+        retired = prerelease_authority_issue(59, author="external-contributor")
+        successor = prerelease_authority_issue(61)
+
+        with self.assertRaisesRegex(AuthorityError, "does not have trusted current-revision intake"):
+            reconstruct_intake(
+                policy,
+                FakeDiscovery(policy, {".github": [(retired, []), (successor, [])]}),
+            )
+
+    def test_manifest_cannot_redirect_a_bound_prerelease_successor(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture(include_supersessions=True)
+        retired = prerelease_authority_issue(59)
+        successor = prerelease_authority_issue(61)
+        issues = {".github": [(retired, []), (successor, [])]}
+        manifest, _inventory = reconstruct_intake(
+            policy,
+            FakeDiscovery(policy, issues),
+        )
+        retired_record = next(record for record in manifest["issues"] if record["number"] == 59)
+        retired_record["superseded_by"]["number"] = 62
+
+        with self.assertRaisesRegex(AuthorityError, "changed after read-only discovery"):
+            verify_intake_manifest(
+                policy,
+                manifest,
+                FakeDiscovery(policy, issues),
+            )
+
+    def test_closed_successor_cannot_receive_active_prerelease_authority(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture(include_supersessions=True)
+        retired = prerelease_authority_issue(59)
+        successor = prerelease_authority_issue(
+            61,
+            state="closed",
+            status="status:done",
+        )
+
+        with self.assertRaisesRegex(AuthorityError, "is not an active evidence-required blocker"):
+            reconstruct_intake(
+                policy,
+                FakeDiscovery(policy, {".github": [(retired, []), (successor, [])]}),
+            )
 
     def test_cross_repository_targets_are_bound_from_the_vetted_form_section(self) -> None:
         policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
@@ -1928,6 +2079,75 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual({"status:ready"}, label_names(issue) & STATUS_LABELS)
         self.assertEqual("open", issue["state"])
         self.assertIn((repository, issue["number"], "open"), self.client.state_updates)
+
+    def test_valid_prerelease_supersession_is_terminal_without_false_completion(self) -> None:
+        for item in self.backlog["items"]:
+            if item["kind"] == "cross-repository":
+                item["kind"] = "feature"
+        apply_backlog(self.policy, self.backlog, self.client)
+        retired = prerelease_authority_issue(59)
+        retired["labels"] = [
+            {"name": "kind:cross-repository" if label["name"] == "kind:release-blocker" else label["name"]}
+            for label in retired["labels"]
+        ]
+        successor = prerelease_authority_issue(61, body="Coherent synchronized replacement train")
+        self.client.issues[".github"].extend((retired, successor))
+        targets = qualification_targets(qualification_fixture())
+        successor_revision = issue_revision_digest(successor["title"], successor["body"])
+        supersessions = {
+            (".github", 59): {
+                "number": 61,
+                "reason": "An immutable artifact mismatch requires the replacement train.",
+                "repository": ".github",
+                "revision": successor_revision,
+            }
+        }
+        self.clear_mutation_spies()
+
+        evidence = audit_backlog(
+            self.policy,
+            self.backlog,
+            self.client,
+            approved_completion_holds={(".github", 59), (".github", 61)},
+            cross_repository_targets={
+                (".github", 59): [targets[".github"], targets["workflow"]],
+            },
+            prerelease_supersessions=supersessions,
+        )
+
+        self.assertEqual("pass", evidence["outcome"])
+        self.assertEqual("closed", retired["state"])
+        self.assertEqual({SUPERSEDED_STATUS_LABEL}, label_names(retired) & STATUS_LABELS)
+        self.assertIn(COMPLETION_REQUIRED_LABEL, label_names(retired))
+        self.assertNotIn(COMPLETION_VERIFIED_LABEL, label_names(retired))
+        self.assertNotIn("status:done", label_names(retired))
+        self.assertEqual("open", successor["state"])
+        self.assertEqual({"status:ready"}, label_names(successor) & STATUS_LABELS)
+        self.assertEqual([], self.client.timeline_reads)
+        self.assertIn((".github", 59, "closed"), self.client.state_updates)
+        comment = self.client.comments[(".github", 59)]
+        self.assertIn(SUPERSESSION_EVIDENCE_MARKER, comment)
+        self.assertIn("https://github.com/durable-workflow/.github/issues/61", comment)
+        self.assertEqual("superseded", evidence["prerelease_supersessions"][0]["state"])
+        self.assertEqual(successor_revision, evidence["prerelease_supersessions"][0]["successor"]["revision"])
+
+        self.clear_mutation_spies()
+        repeated = audit_backlog(
+            self.policy,
+            self.backlog,
+            self.client,
+            approved_completion_holds={(".github", 59), (".github", 61)},
+            cross_repository_targets={
+                (".github", 59): [targets[".github"], targets["workflow"]],
+            },
+            prerelease_supersessions=supersessions,
+        )
+
+        self.assertEqual("pass", repeated["outcome"])
+        self.assertEqual("closed", retired["state"])
+        self.assertEqual({SUPERSEDED_STATUS_LABEL}, label_names(retired) & STATUS_LABELS)
+        self.assertEqual([], self.client.timeline_reads)
+        self.assert_no_github_mutations()
 
     def test_verified_public_completion_evidence_allows_closed_state_to_win(self) -> None:
         apply_backlog(self.policy, self.backlog, self.client)

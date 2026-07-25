@@ -12,7 +12,8 @@
     "intake",
     "repositories",
     "labels",
-    "milestones"
+    "milestones",
+    "prerelease_supersessions"
   ],
   "properties": {
     "$schema": {
@@ -126,6 +127,40 @@
               "pattern": "^[A-Za-z0-9._-]+$"
             }
           }
+        }
+      }
+    },
+    "prerelease_supersessions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["retired", "successor", "reason"],
+        "properties": {
+          "retired": {"$ref": "#/$defs/issueIdentity"},
+          "successor": {"$ref": "#/$defs/issueIdentity"},
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "issueIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "number"],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]+$"
+        },
+        "number": {
+          "type": "integer",
+          "minimum": 1
         }
       }
     }
