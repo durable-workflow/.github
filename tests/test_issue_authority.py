@@ -859,6 +859,111 @@ class GitHubApiTest(unittest.TestCase):
         self.assertEqual("Bearer job-token", read_request.get_header("Authorization"))
         self.assertEqual("Bearer writer-token", write_request.get_header("Authorization"))
 
+    def test_lifecycle_upsert_ignores_external_marker_copies_before_and_after_generated_comment(self) -> None:
+        client = GitHubApi("writer-token", read_token="job-token")
+        generated_body = f"{EVIDENCE_MARKER}\nCurrent lifecycle evidence.\n"
+        comments = [
+            {
+                "body": f"{EVIDENCE_MARKER}\nExternal copy before.\n",
+                "id": 10,
+                "user": {"id": 100, "login": "external-before"},
+            },
+            {
+                "body": f"{EVIDENCE_MARKER}\nOutdated lifecycle evidence.\n",
+                "id": 11,
+                "user": {"id": 7, "login": "durable-workflow-ops"},
+            },
+            {
+                "body": f"{EVIDENCE_MARKER}\nExternal copy after.\n",
+                "id": 12,
+                "user": {"id": 101, "login": "external-after"},
+            },
+        ]
+        responses = [
+            FakeResponse(json.dumps(comments).encode()),
+            FakeResponse(b'{"id":7,"login":"durable-workflow-ops"}'),
+            FakeResponse(b""),
+        ]
+
+        with patch("urllib.request.urlopen", side_effect=responses) as urlopen:
+            client.upsert_lifecycle_comment(
+                "durable-workflow",
+                ".github",
+                47,
+                EVIDENCE_MARKER,
+                generated_body,
+            )
+
+        comment_read, identity_read, update = [call.args[0] for call in urlopen.call_args_list]
+        self.assertEqual("Bearer job-token", comment_read.get_header("Authorization"))
+        self.assertEqual("Bearer writer-token", identity_read.get_header("Authorization"))
+        self.assertEqual("https://api.github.com/user", identity_read.full_url)
+        self.assertEqual("PATCH", update.method)
+        self.assertEqual("https://api.github.com/repos/durable-workflow/.github/issues/comments/11", update.full_url)
+        self.assertEqual("Bearer writer-token", update.get_header("Authorization"))
+
+    def test_lifecycle_upsert_does_not_trust_matching_login_with_wrong_writer_id(self) -> None:
+        client = GitHubApi("writer-token", read_token="job-token")
+        generated_body = f"{EVIDENCE_MARKER}\nCurrent lifecycle evidence.\n"
+        comments = [
+            {
+                "body": generated_body,
+                "id": 10,
+                "user": {"id": 8, "login": "durable-workflow-ops"},
+            }
+        ]
+        responses = [
+            FakeResponse(json.dumps(comments).encode()),
+            FakeResponse(b'{"id":7,"login":"durable-workflow-ops"}'),
+            FakeResponse(b'{"id":11}'),
+        ]
+
+        with patch("urllib.request.urlopen", side_effect=responses) as urlopen:
+            client.upsert_lifecycle_comment(
+                "durable-workflow",
+                ".github",
+                47,
+                EVIDENCE_MARKER,
+                generated_body,
+            )
+
+        create = urlopen.call_args_list[2].args[0]
+        self.assertEqual("POST", create.method)
+        self.assertEqual("https://api.github.com/repos/durable-workflow/.github/issues/47/comments", create.full_url)
+
+    def test_lifecycle_upsert_rejects_multiple_generated_comments_from_authenticated_writer(self) -> None:
+        client = GitHubApi("writer-token", read_token="job-token")
+        comments = [
+            {
+                "body": f"{EVIDENCE_MARKER}\nFirst generated comment.\n",
+                "id": 10,
+                "user": {"id": 7, "login": "durable-workflow-ops"},
+            },
+            {
+                "body": f"{EVIDENCE_MARKER}\nSecond generated comment.\n",
+                "id": 11,
+                "user": {"id": 7, "login": "durable-workflow-ops"},
+            },
+        ]
+        responses = [
+            FakeResponse(json.dumps(comments).encode()),
+            FakeResponse(b'{"id":7,"login":"durable-workflow-ops"}'),
+        ]
+
+        with (
+            patch("urllib.request.urlopen", side_effect=responses) as urlopen,
+            self.assertRaisesRegex(AuthorityError, "duplicate cross-repository lifecycle evidence"),
+        ):
+            client.upsert_lifecycle_comment(
+                "durable-workflow",
+                ".github",
+                47,
+                EVIDENCE_MARKER,
+                f"{EVIDENCE_MARKER}\nCurrent lifecycle evidence.\n",
+            )
+
+        self.assertEqual(2, urlopen.call_count)
+
     def test_read_request_retries_transient_transport_failure(self) -> None:
         client = GitHubApi("secret")
         responses = [

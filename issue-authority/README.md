@@ -127,7 +127,10 @@ need source, package, release, environment, or private repository access, and
 it is never exposed to an event whose current issue revision failed intake.
 The repository-scoped job token performs the read-only pull-request, commit,
 and check-run lookups used by target aggregation; the writer token is not used
-for those reads.
+for those reads. Public comment discovery also uses the job token. Before
+updating a generated lifecycle comment, the workflow resolves the authenticated
+writer identity from the lifecycle credential and matches both its immutable
+user ID and login. Marker copies owned by any other user remain inert.
 
 Private Cloud implementation work is outside this inventory. If public
 components need a Cloud-facing contract, the public issue describes only that

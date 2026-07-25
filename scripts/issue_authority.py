@@ -799,6 +799,7 @@ class GitHubApi:
             **self.headers,
             "Authorization": f"Bearer {read_token if read_token is not None else token}",
         }
+        self._writer_identity: tuple[int, str] | None = None
 
     @staticmethod
     def _error_detail(error: urllib.error.HTTPError) -> str:
@@ -807,9 +808,16 @@ class GitHubApi:
         except OSError:
             return "response body unavailable"
 
-    def request(self, method: str, path: str, payload: Mapping[str, Any] | None = None) -> Any:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        payload: Mapping[str, Any] | None = None,
+        *,
+        writer_authenticated_read: bool = False,
+    ) -> Any:
         body = None
-        headers = dict(self.read_headers if method == "GET" else self.headers)
+        headers = dict(self.read_headers if method == "GET" and not writer_authenticated_read else self.headers)
         if payload is not None:
             body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
             headers["Content-Type"] = "application/json"
@@ -833,6 +841,20 @@ class GitHubApi:
                     raise AuthorityError(f"GitHub API {method} {path} failed after bounded retries: {error}") from error
             time.sleep(GITHUB_API_RETRY_SECONDS * (2 ** (attempt - 1)))
         raise AssertionError("GitHub API retry loop ended unexpectedly")
+
+    def request(self, method: str, path: str, payload: Mapping[str, Any] | None = None) -> Any:
+        return self._request(method, path, payload)
+
+    def _authenticated_writer(self) -> tuple[int, str]:
+        if self._writer_identity is not None:
+            return self._writer_identity
+        user = self._request("GET", "/user", writer_authenticated_read=True)
+        identifier = user.get("id") if isinstance(user, Mapping) else None
+        login = user.get("login") if isinstance(user, Mapping) else None
+        if type(identifier) is not int or identifier < 1 or not isinstance(login, str) or not login:
+            raise AuthorityError("BETA_PRODUCT_WORK_TOKEN did not identify an authenticated GitHub writer")
+        self._writer_identity = (identifier, login)
+        return self._writer_identity
 
     def list_collection(self, path: str) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
@@ -1024,8 +1046,19 @@ class GitHubApi:
         body: str,
     ) -> None:
         comments = self.list_collection(f"/repos/{organization}/{repository}/issues/{number}/comments")
+        writer_id, writer_login = self._authenticated_writer()
         matches = [
-            comment for comment in comments if isinstance(comment.get("body"), str) and marker in comment["body"]
+            comment
+            for comment in comments
+            if (
+                isinstance(comment.get("body"), str)
+                and marker in comment["body"]
+                and isinstance(comment.get("user"), Mapping)
+                and type(comment["user"].get("id")) is int
+                and comment["user"]["id"] == writer_id
+                and isinstance(comment["user"].get("login"), str)
+                and comment["user"]["login"].casefold() == writer_login.casefold()
+            )
         ]
         if len(matches) > 1:
             raise AuthorityError(
