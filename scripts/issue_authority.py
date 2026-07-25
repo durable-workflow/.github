@@ -30,8 +30,8 @@ from scripts import cross_repository_lifecycle
 
 POLICY_SCHEMA = "durable-workflow.github-issue-authority/v1"
 BACKLOG_SCHEMA = "durable-workflow.github-beta-backlog/v1"
-INTAKE_SCHEMA = "durable-workflow.github-issue-intake/v4"
-LEGACY_TARGET_SCHEMA = "durable-workflow.legacy-cross-repository-targets/v1"
+INTAKE_SCHEMA = "durable-workflow.github-issue-intake/v5"
+LEGACY_TARGET_SCHEMA = "durable-workflow.legacy-cross-repository-targets/v2"
 MARKER_PATTERN = re.compile(r"<!-- beta-work-id: ([a-z0-9][a-z0-9-]{2,79}) -->")
 WORK_MARKER_PATTERN = re.compile(r"<!-- durable-workflow-work-id: ([a-z0-9][a-z0-9-]{2,79}) -->")
 LEGACY_TARGET_HEADING = "### Affected public repositories"
@@ -329,6 +329,18 @@ def load_legacy_cross_repository_targets(
     _parse_timestamp(migration.get("created_before"), "legacy target migration cutoff")
 
     target_map = cross_repository_lifecycle.qualification_targets(target_qualification)
+    landing_map: dict[str, Mapping[str, Any]] = {}
+    for landing in migration["protected_branch_landings"]:
+        repository = landing["repository"]
+        target = target_map.get(repository)
+        if target is None or target["branch"] != landing["branch"]:
+            raise AuthorityError(
+                f"legacy protected-branch landing names unqualified target {repository}@{landing['branch']}"
+            )
+        if repository in landing_map:
+            raise AuthorityError(f"legacy protected-branch landing repeats repository {repository}")
+        landing_map[repository] = landing
+
     identities: set[tuple[str, str]] = set()
     for authority in migration["authorities"]:
         identity = (authority["marker"], authority["id"])
@@ -344,6 +356,35 @@ def load_legacy_cross_repository_targets(
             )
         except cross_repository_lifecycle.LifecycleError as error:
             raise AuthorityError(str(error)) from error
+
+    completed_identities: set[tuple[str, int]] = set()
+    for completion in migration["historical_completions"]:
+        if completion["repository"] not in target_map:
+            raise AuthorityError(
+                f"legacy historical completion names unqualified source repository {completion['repository']}"
+            )
+        identity = (completion["repository"], completion["number"])
+        if identity in completed_identities:
+            raise AuthorityError(
+                f"legacy historical completion repeats {completion['repository']}#{completion['number']}"
+            )
+        completed_identities.add(identity)
+        try:
+            completed_targets = cross_repository_lifecycle.declared_targets(
+                f"{cross_repository_lifecycle.TARGET_HEADING}\n\n" + "\n".join(completion["targets"]),
+                target_map,
+                organization="durable-workflow",
+                required=True,
+            )
+        except cross_repository_lifecycle.LifecycleError as error:
+            raise AuthorityError(str(error)) from error
+        missing_landings = sorted(
+            target["repository"] for target in completed_targets if target["repository"] not in landing_map
+        )
+        if missing_landings:
+            raise AuthorityError(
+                f"legacy historical completion has no protected-branch landings for {missing_landings}"
+            )
     return migration
 
 
@@ -644,6 +685,16 @@ def _manifest_cross_repository_targets(
     }
 
 
+def _manifest_historical_cross_repository_completions(
+    manifest: Mapping[str, Any],
+) -> dict[tuple[str, int], list[dict[str, Any]]]:
+    return {
+        (record["repository"], record["number"]): list(record["historical_cross_repository_completion"])
+        for record in manifest["issues"]
+        if record["historical_cross_repository_completion"]
+    }
+
+
 def _legacy_form_targets(
     body: str,
     targets: Mapping[str, Mapping[str, Any]],
@@ -675,18 +726,9 @@ def _legacy_migrated_targets(
     *,
     organization: str,
 ) -> list[dict[str, Any]]:
-    if migration is None or assessment.get("approval_mode") != "trusted-creation":
+    if not _legacy_revision_is_eligible(issue, timeline, assessment, migration):
         return []
-    cutoff = _parse_timestamp(migration.get("created_before"), "legacy target migration cutoff")
-    created_at = _parse_timestamp(issue.get("created_at"), "creation timestamp")
-    if created_at >= cutoff or issue.get("last_edited_at") is not None:
-        return []
-    for event in timeline:
-        if event.get("label") != "kind:cross-repository":
-            continue
-        if _parse_timestamp(event.get("created_at"), "cross-repository label timestamp") >= cutoff:
-            return []
-
+    assert migration is not None
     body = str(issue.get("body", ""))
     matches: list[Mapping[str, Any]] = []
     patterns = {
@@ -711,6 +753,67 @@ def _legacy_migrated_targets(
         except cross_repository_lifecycle.LifecycleError as error:
             raise AuthorityError(str(error)) from error
     return _legacy_form_targets(body, targets, organization=organization)
+
+
+def _legacy_revision_is_eligible(
+    issue: Mapping[str, Any],
+    timeline: Sequence[Mapping[str, Any]],
+    assessment: Mapping[str, Any],
+    migration: Mapping[str, Any] | None,
+) -> bool:
+    if migration is None or assessment.get("approval_mode") != "trusted-creation":
+        return False
+    cutoff = _parse_timestamp(migration.get("created_before"), "legacy target migration cutoff")
+    created_at = _parse_timestamp(issue.get("created_at"), "creation timestamp")
+    if created_at >= cutoff or issue.get("last_edited_at") is not None:
+        return False
+    for event in timeline:
+        if event.get("label") != "kind:cross-repository":
+            continue
+        if _parse_timestamp(event.get("created_at"), "cross-repository label timestamp") >= cutoff:
+            return False
+    return True
+
+
+def _legacy_historical_completion(
+    source_repository: str,
+    issue: Mapping[str, Any],
+    timeline: Sequence[Mapping[str, Any]],
+    assessment: Mapping[str, Any],
+    declared: Sequence[Mapping[str, Any]],
+    migration: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if not _legacy_revision_is_eligible(issue, timeline, assessment, migration):
+        return []
+    assert migration is not None
+    matches = [
+        completion
+        for completion in migration["historical_completions"]
+        if completion["repository"] == source_repository
+        and completion["number"] == issue.get("number")
+        and completion["revision"] == assessment.get("revision")
+    ]
+    if not matches:
+        return []
+    if len(matches) != 1:
+        raise AuthorityError("legacy cross-repository revision matches multiple historical completions")
+    completion = matches[0]
+    expected_targets = sorted(f"durable-workflow/{target['repository']}@{target['branch']}" for target in declared)
+    if sorted(completion["targets"]) != expected_targets:
+        raise AuthorityError(
+            f"GitHub issue {issue['number']}: historical completion targets differ from its migrated target set"
+        )
+    landing_map = {
+        (landing["repository"], landing["branch"]): landing["commit"]
+        for landing in migration["protected_branch_landings"]
+    }
+    return [
+        {
+            **dict(target),
+            "commit": landing_map[(str(target["repository"]), str(target["branch"]))],
+        }
+        for target in declared
+    ]
 
 
 def _issue_cross_repository_targets(
@@ -835,6 +938,14 @@ def reconstruct_intake(
                 legacy_cross_repository_targets,
                 organization=policy["organization"],
             )
+            historical_completion = _legacy_historical_completion(
+                repository,
+                issue,
+                timeline,
+                assessment,
+                cross_repository_targets,
+                legacy_cross_repository_targets,
+            )
             records.append(
                 {
                     "approval_actor": assessment["approval_actor"],
@@ -842,6 +953,7 @@ def reconstruct_intake(
                     "approval_mode": assessment["approval_mode"],
                     "completion_evidence_required": COMPLETION_REQUIRED_LABEL in _intake_label_names(issue),
                     "cross_repository_targets": cross_repository_targets,
+                    "historical_cross_repository_completion": historical_completion,
                     "number": number,
                     "repository": repository,
                     "revision": assessment["revision"],
@@ -895,6 +1007,7 @@ def verify_intake_manifest(
         "approval_mode",
         "completion_evidence_required",
         "cross_repository_targets",
+        "historical_cross_repository_completion",
         "number",
         "repository",
         "revision",
@@ -915,6 +1028,7 @@ def verify_intake_manifest(
             or number < 1
             or not isinstance(record.get("completion_evidence_required"), bool)
             or not isinstance(record.get("cross_repository_targets"), list)
+            or not isinstance(record.get("historical_cross_repository_completion"), list)
         ):
             raise AuthorityError("issue-intake manifest contains invalid issue authority")
         identity = (repository, number)
@@ -941,12 +1055,21 @@ def verify_intake_manifest(
             legacy_cross_repository_targets,
             organization=policy["organization"],
         )
+        expected_historical_completion = _legacy_historical_completion(
+            repository,
+            issue,
+            timeline,
+            assessment,
+            expected_targets,
+            legacy_cross_repository_targets,
+        )
         current = {
             "approval_actor": assessment.get("approval_actor"),
             "approval_at": assessment.get("approval_at"),
             "approval_mode": assessment.get("approval_mode"),
             "completion_evidence_required": record["completion_evidence_required"],
             "cross_repository_targets": expected_targets,
+            "historical_cross_repository_completion": expected_historical_completion,
             "number": issue.get("number"),
             "repository": repository,
             "revision": assessment.get("revision"),
@@ -1539,8 +1662,87 @@ def _audit_state_labels(
     inventory: Mapping[str, list[dict[str, Any]]],
     approved_completion_holds: set[tuple[str, int]],
     cross_repository_targets: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] | None,
+    historical_cross_repository_completions: (Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] | None),
 ) -> list[str]:
     organization = policy["organization"]
+    historical_completion_identities = set(historical_cross_repository_completions or {})
+    recorded_landing_results: dict[tuple[str, str, str, tuple[str, ...]], Mapping[str, Any]] = {}
+    for identity, landings in sorted((historical_cross_repository_completions or {}).items()):
+        declared = (cross_repository_targets or {}).get(identity, ())
+        if not declared:
+            raise AuthorityError(
+                f"{identity[0]}#{identity[1]} has historical completion evidence without a declared target set"
+            )
+        declared_contract = sorted(
+            (
+                str(target.get("repository")),
+                str(target.get("branch")),
+                tuple(sorted(str(check) for check in target.get("required_checks", ()))),
+            )
+            for target in declared
+        )
+        landing_contract = sorted(
+            (
+                str(landing.get("repository")),
+                str(landing.get("branch")),
+                tuple(sorted(str(check) for check in landing.get("required_checks", ()))),
+            )
+            for landing in landings
+        )
+        if declared_contract != landing_contract:
+            raise AuthorityError(
+                f"{identity[0]}#{identity[1]} historical completion evidence differs from its declared target set"
+            )
+        pending_landings = [
+            landing
+            for landing in landings
+            if (
+                str(landing.get("repository")),
+                str(landing.get("branch")),
+                str(landing.get("commit")),
+                tuple(sorted(str(check) for check in landing.get("required_checks", ()))),
+            )
+            not in recorded_landing_results
+        ]
+        try:
+            if pending_landings:
+                assessment = cross_repository_lifecycle.evaluate_recorded_landings(
+                    client,
+                    organization,
+                    pending_landings,
+                )
+                for landing, result in zip(pending_landings, assessment["targets"], strict=True):
+                    key = (
+                        str(landing["repository"]),
+                        str(landing["branch"]),
+                        str(landing["commit"]),
+                        tuple(sorted(str(check) for check in landing["required_checks"])),
+                    )
+                    recorded_landing_results[key] = result
+        except cross_repository_lifecycle.LifecycleError as error:
+            raise AuthorityError(str(error)) from error
+        results = [
+            recorded_landing_results[
+                (
+                    str(landing["repository"]),
+                    str(landing["branch"]),
+                    str(landing["commit"]),
+                    tuple(sorted(str(check) for check in landing["required_checks"])),
+                )
+            ]
+            for landing in landings
+        ]
+        if any(result["state"] != "complete" for result in results):
+            failures = [
+                f"{target['repository']}@{target['branch']}={target['state']}"
+                for target in results
+                if target["state"] != "complete"
+            ]
+            raise AuthorityError(
+                f"{identity[0]}#{identity[1]} historical completion evidence failed revalidation: "
+                + ", ".join(failures)
+            )
+
     failures: list[str] = []
     for repository, issues in inventory.items():
         for issue in issues:
@@ -1574,7 +1776,9 @@ def _audit_state_labels(
             )
             target_completion_is_pending = False
             target_contract_failure_reported = False
-            if declared_targets:
+            if (repository, number) in historical_completion_identities:
+                target_completion_is_pending = False
+            elif declared_targets:
                 try:
                     assessment = cross_repository_lifecycle.evaluate_lifecycle(
                         client,
@@ -1680,6 +1884,7 @@ def apply_backlog(
     inventory: dict[str, list[dict[str, Any]]] | None = None,
     approved_completion_holds: set[tuple[str, int]] | None = None,
     cross_repository_targets: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] | None = None,
+    historical_cross_repository_completions: (Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] | None) = None,
 ) -> dict[str, Any]:
     organization = policy["organization"]
     inventory = inventory if inventory is not None else _inventory(policy, client)
@@ -1751,6 +1956,7 @@ def apply_backlog(
         inventory,
         approved_completion_holds or set(),
         cross_repository_targets,
+        historical_cross_repository_completions,
     )
     failures.extend(_audit_migrated_classification(backlog, resolved))
     if failures:
@@ -1772,6 +1978,7 @@ def audit_backlog(
     inventory: dict[str, list[dict[str, Any]]] | None = None,
     approved_completion_holds: set[tuple[str, int]] | None = None,
     cross_repository_targets: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] | None = None,
+    historical_cross_repository_completions: (Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] | None) = None,
 ) -> dict[str, Any]:
     inventory = inventory if inventory is not None else _inventory(policy, client)
     resolved = _preflight_markers(policy, backlog, client, inventory, allow_missing=False)
@@ -1784,6 +1991,7 @@ def audit_backlog(
         inventory,
         approved_completion_holds or set(),
         cross_repository_targets,
+        historical_cross_repository_completions,
     )
     failures.extend(_audit_migrated_classification(backlog, resolved))
     if failures:
@@ -1917,6 +2125,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         approved_completion_holds = _manifest_completion_holds(manifest)
         cross_repository_targets = _manifest_cross_repository_targets(manifest)
+        historical_cross_repository_completions = _manifest_historical_cross_repository_completions(manifest)
         token = os.environ.get("BETA_PRODUCT_WORK_TOKEN") or ""
         client = GitHubApi(
             token,
@@ -1931,6 +2140,7 @@ def main(argv: list[str] | None = None) -> int:
                 inventory=inventory,
                 approved_completion_holds=approved_completion_holds,
                 cross_repository_targets=cross_repository_targets,
+                historical_cross_repository_completions=historical_cross_repository_completions,
             )
         else:
             evidence = audit_backlog(
@@ -1940,6 +2150,7 @@ def main(argv: list[str] | None = None) -> int:
                 inventory=inventory,
                 approved_completion_holds=approved_completion_holds,
                 cross_repository_targets=cross_repository_targets,
+                historical_cross_repository_completions=historical_cross_repository_completions,
             )
         evidence["intake"] = _manifest_core(manifest)
         _write_evidence(evidence_path, evidence)

@@ -76,6 +76,14 @@ def legacy_target_fixture() -> dict[str, Any]:
     return json.loads((ROOT / "issue-authority" / "legacy-cross-repository-targets.json").read_text(encoding="utf-8"))
 
 
+def historical_landing_fixture(*repositories: str) -> list[dict[str, Any]]:
+    targets = qualification_targets(qualification_fixture())
+    commits = {
+        landing["repository"]: landing["commit"] for landing in legacy_target_fixture()["protected_branch_landings"]
+    }
+    return [{**targets[repository], "commit": commits[repository]} for repository in repositories]
+
+
 class FakeGitHubApi:
     def __init__(self, policy: dict[str, Any]) -> None:
         self.labels: dict[str, dict[str, dict[str, str]]] = {repository: {} for repository in policy["repositories"]}
@@ -93,6 +101,8 @@ class FakeGitHubApi:
         self.pulls: dict[tuple[str, int], dict[str, Any]] = {}
         self.reachable: set[tuple[str, str, str]] = set()
         self.successful_checks: dict[tuple[str, str], set[str]] = {}
+        self.reachability_requests: list[tuple[str, str, str]] = []
+        self.check_requests: list[tuple[str, str]] = []
         self.comments: dict[tuple[str, int], str] = {}
         self.comment_updates: list[tuple[str, int, str]] = []
 
@@ -204,6 +214,7 @@ class FakeGitHubApi:
         commit: str,
         branch: str,
     ) -> bool:
+        self.reachability_requests.append((repository, commit, branch))
         return (repository, commit, branch) in self.reachable
 
     def successful_check_names(
@@ -212,6 +223,7 @@ class FakeGitHubApi:
         repository: str,
         commit: str,
     ) -> set[str]:
+        self.check_requests.append((repository, commit))
         return set(self.successful_checks.get((repository, commit), set()))
 
     def upsert_lifecycle_comment(
@@ -386,8 +398,16 @@ class ContractValidationTest(unittest.TestCase):
             qualification_fixture(),
         )
 
-        self.assertEqual("durable-workflow.legacy-cross-repository-targets/v1", migration["schema"])
+        self.assertEqual("durable-workflow.legacy-cross-repository-targets/v2", migration["schema"])
         self.assertTrue(migration["authorities"])
+        self.assertEqual(
+            {2, 26, 32, 33, 35, 36, 37, 38, 39, 41, 46, 48},
+            {completion["number"] for completion in migration["historical_completions"]},
+        )
+        self.assertEqual(
+            set(qualification_targets(qualification_fixture())),
+            {landing["repository"] for landing in migration["protected_branch_landings"]},
+        )
         migrated_beta = {
             authority["id"]: authority["targets"]
             for authority in migration["authorities"]
@@ -958,6 +978,20 @@ class IssueIntakeTest(unittest.TestCase):
             number=39,
         )
         closed["state"] = "closed"
+        migration = legacy_target_fixture()
+        closed_targets = next(
+            authority["targets"]
+            for authority in migration["authorities"]
+            if authority["id"] == "github-actions-trust-boundary"
+        )
+        migration["historical_completions"] = [
+            {
+                "number": 39,
+                "repository": ".github",
+                "revision": issue_revision_digest(closed["title"], closed["body"]),
+                "targets": closed_targets,
+            }
+        ]
         issues = {
             ".github": [
                 (closed, []),
@@ -970,13 +1004,16 @@ class IssueIntakeTest(unittest.TestCase):
             policy,
             FakeDiscovery(policy, issues),
             target_qualification=qualification_fixture(),
-            legacy_cross_repository_targets=legacy_target_fixture(),
+            legacy_cross_repository_targets=migration,
         )
 
         records = {record["number"]: record for record in manifest["issues"]}
         self.assertEqual(8, len(records[40]["cross_repository_targets"]))
         self.assertEqual(10, len(records[42]["cross_repository_targets"]))
         self.assertEqual(10, len(records[39]["cross_repository_targets"]))
+        self.assertEqual(10, len(records[39]["historical_cross_repository_completion"]))
+        self.assertEqual([], records[40]["historical_cross_repository_completion"])
+        self.assertEqual([], records[42]["historical_cross_repository_completion"])
         self.assertEqual("trusted-creation", records[40]["approval_mode"])
         self.assertEqual("trusted-label", records[42]["approval_mode"])
         self.assertEqual(
@@ -986,7 +1023,7 @@ class IssueIntakeTest(unittest.TestCase):
                 manifest,
                 FakeDiscovery(policy, issues),
                 target_qualification=qualification_fixture(),
-                legacy_cross_repository_targets=legacy_target_fixture(),
+                legacy_cross_repository_targets=migration,
             ),
         )
 
@@ -1022,6 +1059,7 @@ class IssueIntakeTest(unittest.TestCase):
         record = manifest["issues"][0]
         self.assertEqual("trusted-label", record["approval_mode"])
         self.assertEqual(8, len(record["cross_repository_targets"]))
+        self.assertEqual([], record["historical_cross_repository_completion"])
 
     def test_legacy_issue_form_revision_migrates_its_bounded_repository_set(self) -> None:
         policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
@@ -1128,6 +1166,16 @@ class IssueIntakeTest(unittest.TestCase):
         discovery = FakeDiscovery(policy, {".github": [(issue, [])]})
         manifest, _inventory = reconstruct_intake(policy, discovery)
         manifest["issues"][0]["completion_evidence_required"] = "false"
+
+        with self.assertRaisesRegex(AuthorityError, "invalid issue authority"):
+            verify_intake_manifest(policy, manifest, discovery)
+
+    def test_historical_completion_manifest_field_must_be_a_list(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
+        issue = intake_issue(author="rmcdaniel")
+        discovery = FakeDiscovery(policy, {".github": [(issue, [])]})
+        manifest, _inventory = reconstruct_intake(policy, discovery)
+        manifest["issues"][0]["historical_cross_repository_completion"] = "complete"
 
         with self.assertRaisesRegex(AuthorityError, "invalid issue authority"):
             verify_intake_manifest(policy, manifest, discovery)
@@ -1762,6 +1810,177 @@ class MigrationTest(unittest.TestCase):
         self.assertIn(COMPLETION_REQUIRED_LABEL, label_names(issue))
         self.assertIn((repository, issue["number"], sorted(label_names(issue))), self.client.replacements)
         self.assertEqual([], self.client.state_updates)
+
+    def test_corrected_apply_converges_all_mutated_archived_states(self) -> None:
+        for item in self.backlog["items"]:
+            if item["kind"] == "cross-repository":
+                item["kind"] = "feature"
+        self.client.issues[".github"] = [
+            {
+                "body": "Unrelated public issue.",
+                "html_url": f"https://github.com/durable-workflow/.github/issues/{number}",
+                "labels": [],
+                "milestone": None,
+                "number": number,
+                "state": "open",
+                "title": "Unrelated public issue",
+            }
+            for number in range(1, 61)
+        ]
+        apply_backlog(self.policy, self.backlog, self.client)
+        migration = legacy_target_fixture()
+        qualified = qualification_targets(qualification_fixture())
+        target_sets: dict[tuple[str, int], list[dict[str, Any]]] = {}
+        completion_sets: dict[tuple[str, int], list[dict[str, Any]]] = {}
+        parents: list[dict[str, Any]] = []
+        for completion in migration["historical_completions"]:
+            identity = (completion["repository"], completion["number"])
+            repositories = [target.split("/", 1)[1].rsplit("@", 1)[0] for target in completion["targets"]]
+            landings = historical_landing_fixture(*repositories)
+            target_sets[identity] = [dict(qualified[repository]) for repository in repositories]
+            completion_sets[identity] = landings
+            parent = {
+                "body": "Archived cross-repository authority.",
+                "html_url": (
+                    f"https://github.com/durable-workflow/{completion['repository']}/issues/{completion['number']}"
+                ),
+                "labels": [
+                    {"name": "authority:github"},
+                    {"name": "kind:cross-repository"},
+                    {"name": "priority:P1"},
+                    {"name": "status:triage"},
+                ],
+                "milestone": None,
+                "number": completion["number"],
+                "state": "open",
+                "title": "Archived public work",
+            }
+            placeholder = next(
+                issue
+                for issue in self.client.issues[completion["repository"]]
+                if issue["number"] == completion["number"]
+            )
+            placeholder.clear()
+            placeholder.update(parent)
+            parents.append(placeholder)
+            self.client.comments[identity] = (
+                f"{EVIDENCE_MARKER}\n"
+                "Cross-repository landing evidence:\n\n"
+                "The parent remains open until every declared target is complete.\n"
+            )
+            for landing in landings:
+                self.client.reachable.add((landing["repository"], landing["commit"], landing["branch"]))
+                self.client.successful_checks[(landing["repository"], landing["commit"])] = set(
+                    landing["required_checks"]
+                )
+        self.clear_mutation_spies()
+
+        evidence = apply_backlog(
+            self.policy,
+            self.backlog,
+            self.client,
+            cross_repository_targets=target_sets,
+            historical_cross_repository_completions=completion_sets,
+        )
+
+        self.assertEqual("pass", evidence["outcome"])
+        self.assertTrue(all(parent["state"] == "closed" for parent in parents))
+        self.assertTrue(all(label_names(parent) & STATUS_LABELS == {"status:done"} for parent in parents))
+        self.assertEqual(
+            {(repository, number, "closed") for repository, number in completion_sets},
+            set(self.client.state_updates),
+        )
+        self.assertEqual(
+            set(completion_sets),
+            {(repository, number) for repository, number, _labels in self.client.replacements},
+        )
+        self.assertEqual([], self.client.comment_updates)
+        self.assertEqual([], self.client.created_issues)
+        self.assertEqual([], self.client.body_updates)
+        self.assertEqual(10, len(self.client.reachability_requests))
+        self.assertEqual(10, len(self.client.check_requests))
+
+    def test_corrected_apply_preserves_already_restored_archived_state(self) -> None:
+        for item in self.backlog["items"]:
+            if item["kind"] == "cross-repository":
+                item["kind"] = "feature"
+        apply_backlog(self.policy, self.backlog, self.client)
+        parent = {
+            "body": "Archived cross-repository authority.",
+            "html_url": "https://github.com/durable-workflow/.github/issues/99",
+            "labels": [
+                {"name": "authority:github"},
+                {"name": "kind:cross-repository"},
+                {"name": "priority:P1"},
+                {"name": "status:done"},
+            ],
+            "milestone": None,
+            "number": 99,
+            "state": "closed",
+            "title": "Archived public work",
+        }
+        self.client.issues[".github"].append(parent)
+        landings = historical_landing_fixture(".github", "workflow")
+        for landing in landings:
+            self.client.reachable.add((landing["repository"], landing["commit"], landing["branch"]))
+            self.client.successful_checks[(landing["repository"], landing["commit"])] = set(landing["required_checks"])
+        targets = [{key: value for key, value in landing.items() if key != "commit"} for landing in landings]
+        self.clear_mutation_spies()
+
+        evidence = apply_backlog(
+            self.policy,
+            self.backlog,
+            self.client,
+            cross_repository_targets={(".github", 99): targets},
+            historical_cross_repository_completions={(".github", 99): landings},
+        )
+
+        self.assertEqual("pass", evidence["outcome"])
+        self.assertEqual("closed", parent["state"])
+        self.assertEqual({"status:done"}, label_names(parent) & STATUS_LABELS)
+        self.assert_no_github_mutations()
+
+    def test_invalid_historical_completion_fails_without_reopening_archived_work(self) -> None:
+        for item in self.backlog["items"]:
+            if item["kind"] == "cross-repository":
+                item["kind"] = "feature"
+        apply_backlog(self.policy, self.backlog, self.client)
+        parent = {
+            "body": "Archived cross-repository authority.",
+            "html_url": "https://github.com/durable-workflow/.github/issues/39",
+            "labels": [
+                {"name": "authority:github"},
+                {"name": "kind:cross-repository"},
+                {"name": "priority:P1"},
+                {"name": "status:done"},
+            ],
+            "milestone": None,
+            "number": 39,
+            "state": "closed",
+            "title": "Archived public work",
+        }
+        self.client.issues[".github"].append(parent)
+        landings = historical_landing_fixture(".github", "workflow")
+        for landing in landings:
+            self.client.reachable.add((landing["repository"], landing["commit"], landing["branch"]))
+        self.client.successful_checks[(landings[0]["repository"], landings[0]["commit"])] = set(
+            landings[0]["required_checks"]
+        )
+        targets = [{key: value for key, value in landing.items() if key != "commit"} for landing in landings]
+        self.clear_mutation_spies()
+
+        with self.assertRaisesRegex(AuthorityError, "historical completion evidence failed revalidation"):
+            audit_backlog(
+                self.policy,
+                self.backlog,
+                self.client,
+                cross_repository_targets={(".github", 39): targets},
+                historical_cross_repository_completions={(".github", 39): landings},
+            )
+
+        self.assertEqual("closed", parent["state"])
+        self.assertEqual({"status:done"}, label_names(parent) & STATUS_LABELS)
+        self.assert_no_github_mutations()
 
     def test_cross_repository_parent_waits_for_every_latest_target_attempt(self) -> None:
         for item in self.backlog["items"]:

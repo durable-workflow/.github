@@ -61,10 +61,12 @@ section. The migration applies only to unchanged revisions created before the
 target-set contract took effect. Editing, reapproving, or newly applying the
 cross-repository label after that cutoff requires the current target section,
 so a catalog entry cannot authorize a later revision. Active migrated authority
-uses the normal aggregate landing lifecycle. Completed migrated authority is
-also reevaluated against its exact target branches, landed commits, and required
-checks instead of being reopened or assigned replacement work merely to satisfy
-the new syntax.
+uses the normal aggregate landing lifecycle. A separate issue-and-revision-bound
+record covers each archived completion and names its exact target set. Before
+preserving closed/done state, the audit revalidates the catalog's immutable
+landing commit for every target against the protected branch and that branch's
+required checks. Archived issues are not reopened, relabeled, or commented on
+merely to satisfy the new body syntax.
 
 To migrate any revision outside that bounded catalog, edit its body to add at
 least two exact qualified targets, then have a trusted maintainer remove and

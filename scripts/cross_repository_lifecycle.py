@@ -223,6 +223,54 @@ def evaluate_lifecycle(
     }
 
 
+def evaluate_recorded_landings(
+    client: Any,
+    organization: str,
+    landings: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Revalidate immutable protected-branch evidence for an archived aggregate."""
+
+    repositories = {str(landing.get("repository")) for landing in landings}
+    if not landings or len(repositories) != len(landings):
+        raise LifecycleError("historical cross-repository landing evidence is empty or duplicated")
+    results: list[dict[str, Any]] = []
+    for landing in landings:
+        repository = landing.get("repository")
+        branch = landing.get("branch")
+        commit = landing.get("commit")
+        required_checks = landing.get("required_checks")
+        if (
+            not isinstance(repository, str)
+            or not repository
+            or not isinstance(branch, str)
+            or not branch
+            or not isinstance(commit, str)
+            or re.fullmatch(r"[0-9a-f]{40}", commit) is None
+            or not isinstance(required_checks, Sequence)
+            or isinstance(required_checks, str | bytes)
+            or any(not isinstance(check, str) or not check for check in required_checks)
+        ):
+            raise LifecycleError("historical cross-repository landing evidence is malformed")
+        result = {
+            "branch": branch,
+            "commit": commit,
+            "missing_checks": list(required_checks),
+            "repository": repository,
+            "state": "pending:landing-not-on-target",
+        }
+        if client.commit_reaches_branch(organization, repository, commit, branch):
+            missing_checks = sorted(
+                set(required_checks) - client.successful_check_names(organization, repository, commit)
+            )
+            result["missing_checks"] = missing_checks
+            result["state"] = "pending:qualification" if missing_checks else "complete"
+        results.append(result)
+    return {
+        "complete": all(result["state"] == "complete" for result in results),
+        "targets": results,
+    }
+
+
 def render_evidence(assessment: Mapping[str, Any]) -> str:
     """Render one replaceable, public lifecycle evidence record."""
 
