@@ -101,6 +101,8 @@ class FakeGitHubApi:
         self.body_updates: list[tuple[str, int, str]] = []
         self.state_updates: list[tuple[str, int, str]] = []
         self.timelines: dict[tuple[str, int], list[dict[str, Any]]] = {}
+        self.timeline_sequences: dict[tuple[str, int], list[list[dict[str, Any]]]] = {}
+        self.timeline_reads: list[tuple[str, int]] = []
         self.pulls: dict[tuple[str, int], dict[str, Any]] = {}
         self.reviews: dict[tuple[str, int], list[dict[str, Any]]] = {}
         self.reachable: set[tuple[str, str, str]] = set()
@@ -206,6 +208,11 @@ class FakeGitHubApi:
         repository: str,
         number: int,
     ) -> list[dict[str, Any]]:
+        self.timeline_reads.append((repository, number))
+        sequence = self.timeline_sequences.get((repository, number))
+        if sequence:
+            value = sequence.pop(0) if len(sequence) > 1 else sequence[0]
+            return copy.deepcopy(value)
         return copy.deepcopy(self.timelines.get((repository, number), []))
 
     def get_pull_request(self, _organization: str, repository: str, number: int) -> dict[str, Any]:
@@ -394,6 +401,79 @@ def approving_review(
         "submitted_at": submitted_at,
         "user": {"id": identifier + 100, "login": reviewer},
     }
+
+
+def closing_reference_race_fixture() -> tuple[Any, ...]:
+    policy, backlog, _policy_schema, _backlog_schema = contract_fixture()
+    for item in backlog["items"]:
+        if item["kind"] == "cross-repository":
+            item["kind"] = "feature"
+    client = FakeGitHubApi(policy)
+    apply_backlog(policy, backlog, client)
+    parent = {
+        "body": "Vetted cross-repository work.",
+        "html_url": "https://github.com/durable-workflow/.github/issues/99",
+        "labels": [
+            {"name": "authority:github"},
+            {"name": "kind:cross-repository"},
+            {"name": "priority:P1"},
+            {"name": "status:ready"},
+        ],
+        "milestone": None,
+        "number": 99,
+        "state": "open",
+        "title": "Coordinate source landings",
+    }
+    client.issues[".github"].append(parent)
+    targets = qualification_targets(qualification_fixture())
+    selected_targets = [targets[".github"], targets["workflow"]]
+    source_commit = "a" * 40
+    workflow_commit = "b" * 40
+    external_head = "c" * 40
+    source_reference = closing_reference(".github", 51, created_at="2026-07-24T08:00:00Z")
+    external_reference = closing_reference(
+        "workflow",
+        70,
+        actor="external-contributor",
+        created_at="2026-07-24T09:00:00Z",
+    )
+    client.pulls[(".github", 51)] = pull_request(
+        ".github",
+        51,
+        "main",
+        commit=source_commit,
+        created_at="2026-07-24T07:30:00Z",
+    )
+    client.pulls[("workflow", 70)] = pull_request(
+        "workflow",
+        70,
+        "v2",
+        author="external-contributor",
+        author_association="NONE",
+        commit=workflow_commit,
+        created_at="2026-07-24T08:30:00Z",
+        head_repository="external-contributor/workflow",
+        head_sha=external_head,
+    )
+    client.reviews[("workflow", 70)] = [
+        approving_review(
+            external_head,
+            submitted_at="2026-07-24T09:30:00Z",
+        )
+    ]
+    for target, commit in ((targets[".github"], source_commit), (targets["workflow"], workflow_commit)):
+        repository = target["repository"]
+        client.reachable.add((repository, commit, target["branch"]))
+        client.successful_checks[(repository, commit)] = set(target["required_checks"])
+    return (
+        policy,
+        backlog,
+        client,
+        parent,
+        {(".github", 99): selected_targets},
+        source_reference,
+        external_reference,
+    )
 
 
 class FakeDiscovery:
@@ -2333,6 +2413,118 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual("closed", parent["state"])
         self.assertEqual({"status:done"}, label_names(parent) & STATUS_LABELS)
         self.assertNotIn(COMPLETION_REQUIRED_LABEL, label_names(parent))
+
+    def test_closing_reference_changes_during_assessment_remain_pending(self) -> None:
+        cases = {
+            "removed": lambda source, _external: [source],
+            "reintroduced": lambda source, _external: [
+                source,
+                closing_reference(
+                    "workflow",
+                    70,
+                    actor="external-contributor",
+                    created_at="2026-07-24T10:00:00Z",
+                    identifier="CRE_kwDOA1b2c84A0071",
+                ),
+            ],
+            "retargeted": lambda source, _external: [
+                source,
+                closing_reference(
+                    "server",
+                    71,
+                    actor="external-contributor",
+                    created_at="2026-07-24T10:00:00Z",
+                    identifier="CRE_kwDOA1b2c84A0072",
+                ),
+            ],
+        }
+        for name, changed_references in cases.items():
+            with self.subTest(name=name):
+                policy, backlog, client, parent, declared, source_reference, external_reference = (
+                    closing_reference_race_fixture()
+                )
+                initial = [source_reference, external_reference]
+                changed = changed_references(source_reference, external_reference)
+                client.timeline_sequences[(".github", 99)] = [initial, changed, changed]
+
+                evidence = audit_backlog(
+                    policy,
+                    backlog,
+                    client,
+                    cross_repository_targets=declared,
+                )
+
+                self.assertEqual("pass", evidence["outcome"])
+                self.assertEqual("open", parent["state"])
+                self.assertNotIn("status:done", label_names(parent))
+                self.assertIn("The parent remains open", client.comments[(".github", 99)])
+                self.assertNotIn("Every declared target landing", client.comments[(".github", 99)])
+                self.assertEqual(4, client.timeline_reads.count((".github", 99)))
+
+    def test_unchanged_external_reference_with_fresh_exact_head_approval_completes(self) -> None:
+        policy, backlog, client, parent, declared, source_reference, external_reference = (
+            closing_reference_race_fixture()
+        )
+        client.timelines[(".github", 99)] = [source_reference, external_reference]
+
+        evidence = audit_backlog(
+            policy,
+            backlog,
+            client,
+            cross_repository_targets=declared,
+        )
+
+        self.assertEqual("pass", evidence["outcome"])
+        self.assertEqual("closed", parent["state"])
+        self.assertEqual({"status:done"}, label_names(parent) & STATUS_LABELS)
+        self.assertIn("Every declared target landing", client.comments[(".github", 99)])
+        self.assertIn("approval review `1` at `2026-07-24T09:30:00Z`", client.comments[(".github", 99)])
+        self.assertEqual(4, client.timeline_reads.count((".github", 99)))
+
+    def test_nonconvergent_reference_snapshot_stops_at_the_retry_bound(self) -> None:
+        policy, backlog, client, parent, declared, source_reference, external_reference = (
+            closing_reference_race_fixture()
+        )
+        unchanged = [source_reference, external_reference]
+        removed = [source_reference]
+        client.timeline_sequences[(".github", 99)] = [unchanged, removed, unchanged, removed]
+
+        evidence = audit_backlog(
+            policy,
+            backlog,
+            client,
+            cross_repository_targets=declared,
+        )
+
+        self.assertEqual("pass", evidence["outcome"])
+        self.assertEqual("open", parent["state"])
+        self.assertNotIn("status:done", label_names(parent))
+        self.assertIn("pending:closing-reference-changed", client.comments[(".github", 99)])
+        self.assertNotIn("Every declared target landing", client.comments[(".github", 99)])
+        self.assertEqual(4, client.timeline_reads.count((".github", 99)))
+
+    def test_closing_reference_change_racing_final_write_is_immediately_reconciled(self) -> None:
+        policy, backlog, client, parent, declared, source_reference, external_reference = (
+            closing_reference_race_fixture()
+        )
+        unchanged = [source_reference, external_reference]
+        removed = [source_reference]
+        client.timeline_sequences[(".github", 99)] = [unchanged, unchanged, unchanged, removed]
+
+        with self.assertRaisesRegex(AuthorityError, "closing-reference authority changed during lifecycle mutation"):
+            audit_backlog(
+                policy,
+                backlog,
+                client,
+                cross_repository_targets=declared,
+            )
+
+        self.assertEqual("open", parent["state"])
+        self.assertEqual({"status:ready"}, label_names(parent) & STATUS_LABELS)
+        self.assertIn("pending:closing-reference-changed", client.comments[(".github", 99)])
+        self.assertIn("The parent remains open", client.comments[(".github", 99)])
+        self.assertNotIn("Every declared target landing", client.comments[(".github", 99)])
+        self.assertEqual(4, client.timeline_reads.count((".github", 99)))
 
     def test_external_attempt_requires_approval_of_its_exact_head(self) -> None:
         target = qualification_targets(qualification_fixture())["workflow"]

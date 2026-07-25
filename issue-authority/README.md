@@ -57,6 +57,12 @@ merged into the declared branch, the merge commit remains on the branch, and
 every required repository check succeeded. A newer trusted open, rejected, or
 rebuilt attempt supersedes earlier evidence for the same target; untrusted
 public references remain inert.
+After pull-request, approval, landing, and check evaluation, the audit rereads
+the target-relevant closing-reference records and requires the complete snapshot
+to remain exact. It retries a changed snapshot only within a fixed bound and
+otherwise publishes pending evidence. A second reread after lifecycle writes
+immediately replaces raced completion evidence, reopens the parent, and restores
+its prior open status when the snapshot changed during mutation.
 
 The same contract applies to issues created through the API or edited outside
 the issue form. A cross-repository revision with a missing, empty, repeated,

@@ -14,6 +14,7 @@ HTML_PULL_PATTERN = re.compile(r"https://github\.com/([^/]+)/([^/]+)/pull/([1-9]
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 TRUSTED_REPOSITORY_ASSOCIATIONS = {"COLLABORATOR", "MEMBER", "OWNER"}
+REFERENCE_SNAPSHOT_ATTEMPTS = 2
 
 
 class LifecycleError(RuntimeError):
@@ -142,6 +143,70 @@ def _utc_timestamp(value: Any) -> datetime | None:
     if timestamp.tzinfo is None:
         return None
     return timestamp.astimezone(UTC)
+
+
+def _closing_reference_snapshot(
+    events: Sequence[Mapping[str, Any]],
+    organization: str,
+    target_repositories: set[str],
+) -> tuple[tuple[str, int, str, str, str, bool], ...]:
+    """Bind every target-relevant positive closing reference to its exact authority fields."""
+
+    snapshot: list[tuple[str, int, str, str, str, bool]] = []
+    for event in events:
+        identity = _pull_identity(event, organization)
+        if identity is None or identity[0] not in target_repositories:
+            continue
+        reference_id = event.get("id")
+        referenced_at = event.get("referencedAt")
+        actor = event.get("actor")
+        actor_login = actor.get("login") if isinstance(actor, Mapping) else None
+        if (
+            not isinstance(reference_id, str)
+            or not reference_id
+            or _utc_timestamp(referenced_at) is None
+            or not isinstance(referenced_at, str)
+            or not isinstance(actor_login, str)
+            or not actor_login
+        ):
+            continue
+        snapshot.append((identity[0], identity[1], reference_id, referenced_at, actor_login, True))
+    return tuple(sorted(snapshot))
+
+
+def pending_reference_change(assessment: Mapping[str, Any]) -> dict[str, Any]:
+    """Fail a stale assessment closed without carrying completed landing evidence forward."""
+
+    targets = []
+    for value in assessment["targets"]:
+        target = dict(value)
+        target["commit"] = None
+        target["state"] = "pending:closing-reference-changed"
+        targets.append(target)
+    return {
+        "_closing_reference_snapshot": assessment.get("_closing_reference_snapshot", ()),
+        "complete": False,
+        "targets": targets,
+    }
+
+
+def closing_references_are_current(
+    client: Any,
+    organization: str,
+    source_repository: str,
+    issue: Mapping[str, Any],
+    assessment: Mapping[str, Any],
+) -> bool:
+    """Re-read GraphQL authority and compare it with the snapshot that produced an assessment."""
+
+    number = issue.get("number")
+    if not isinstance(number, int):
+        raise LifecycleError("cross-repository issue has no numeric identity")
+    repositories = {str(target["repository"]) for target in assessment["targets"]}
+    events = client.list_issue_closing_references(organization, source_repository, number)
+    return _closing_reference_snapshot(events, organization, repositories) == assessment.get(
+        "_closing_reference_snapshot"
+    )
 
 
 def _approved_head_reviewer(
@@ -434,7 +499,7 @@ def evaluate_lifecycle(
     *,
     trusted_actors: Sequence[str],
 ) -> dict[str, Any]:
-    """Evaluate the latest linked implementation attempt for every declared target."""
+    """Evaluate attempts only from a bounded, convergent closing-reference snapshot."""
 
     number = issue.get("number")
     if not isinstance(number, int):
@@ -445,15 +510,26 @@ def evaluate_lifecycle(
     trusted = {actor.casefold() for actor in trusted_actors if isinstance(actor, str) and actor}
     if not trusted:
         raise LifecycleError("cross-repository lifecycle has no trusted execution actors")
-    events = client.list_issue_closing_references(organization, source_repository, number)
-    attempts = _latest_attempts(client, organization, events, repositories, trusted)
-    results = [
-        _evaluate_target(client, organization, target, attempts.get(str(target["repository"]))) for target in targets
-    ]
-    return {
-        "complete": bool(results) and all(result["state"] == "complete" for result in results),
-        "targets": results,
-    }
+    assessment: dict[str, Any] | None = None
+    for _attempt in range(REFERENCE_SNAPSHOT_ATTEMPTS):
+        events = client.list_issue_closing_references(organization, source_repository, number)
+        snapshot = _closing_reference_snapshot(events, organization, repositories)
+        attempts = _latest_attempts(client, organization, events, repositories, trusted)
+        results = [
+            _evaluate_target(client, organization, target, attempts.get(str(target["repository"])))
+            for target in targets
+        ]
+        assessment = {
+            "_closing_reference_snapshot": snapshot,
+            "complete": bool(results) and all(result["state"] == "complete" for result in results),
+            "targets": results,
+        }
+        final_events = client.list_issue_closing_references(organization, source_repository, number)
+        if _closing_reference_snapshot(final_events, organization, repositories) == snapshot:
+            return assessment
+    if assessment is None:
+        raise LifecycleError("cross-repository lifecycle did not evaluate a closing-reference snapshot")
+    return pending_reference_change(assessment)
 
 
 def evaluate_recorded_landings(
@@ -566,7 +642,13 @@ def render_evidence(assessment: Mapping[str, Any]) -> str:
             else "Pending"
         )
         missing = target["missing_checks"]
-        qualification = "Passed" if not missing else "Pending: " + ", ".join(f"`{name}`" for name in missing)
+        qualification = (
+            "Pending: closing-reference authority changed"
+            if target["state"] == "pending:closing-reference-changed"
+            else "Passed"
+            if not missing
+            else "Pending: " + ", ".join(f"`{name}`" for name in missing)
+        )
         rows.append(
             f"| `durable-workflow/{repository}@{branch}` | {attempt} | {bound_provenance} | {landing} | "
             f"{qualification} | `{target['state']}` |"

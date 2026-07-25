@@ -1834,9 +1834,11 @@ def _audit_state_labels(
             number = int(issue["number"])
             location = f"{repository}#{number}"
             statuses = labels & STATUS_LABELS
+            open_statuses_before_lifecycle = statuses & OPEN_STATUS_LABELS
             state = issue.get("state")
             replacement = set(labels)
             aggregated_close = False
+            assessment: dict[str, Any] | None = None
             approved_completion_hold = (repository, number) in approved_completion_holds
             if (
                 approved_completion_hold
@@ -1877,6 +1879,21 @@ def _audit_state_labels(
                         cross_repository_lifecycle.EVIDENCE_MARKER,
                         cross_repository_lifecycle.render_evidence(assessment),
                     )
+                    if assessment["complete"] and not cross_repository_lifecycle.closing_references_are_current(
+                        client,
+                        organization,
+                        repository,
+                        issue,
+                        assessment,
+                    ):
+                        assessment = cross_repository_lifecycle.pending_reference_change(assessment)
+                        client.upsert_lifecycle_comment(
+                            organization,
+                            repository,
+                            number,
+                            cross_repository_lifecycle.EVIDENCE_MARKER,
+                            cross_repository_lifecycle.render_evidence(assessment),
+                        )
                 except cross_repository_lifecycle.LifecycleError as error:
                     raise AuthorityError(str(error)) from error
                 target_completion_is_pending = not assessment["complete"]
@@ -1917,6 +1934,8 @@ def _audit_state_labels(
                 replacement -= STATUS_LABELS
                 replacement.add("status:done")
                 client.replace_issue_labels(organization, repository, number, sorted(replacement))
+                issue["labels"] = [{"name": label} for label in sorted(replacement)]
+                labels = replacement
                 if not aggregated_close:
                     failures.append(f"{location} closed state overrode stale lifecycle labels {sorted(statuses)}")
             elif state == "open" and "status:done" in statuses:
@@ -1924,11 +1943,46 @@ def _audit_state_labels(
                 if not replacement & OPEN_STATUS_LABELS:
                     replacement.add("status:triage")
                 client.replace_issue_labels(organization, repository, number, sorted(replacement))
+                issue["labels"] = [{"name": label} for label in sorted(replacement)]
+                labels = replacement
                 failures.append(f"{location} open state overrode stale status:done")
             elif state == "open" and len(statuses & OPEN_STATUS_LABELS) != 1:
                 replacement.add("authority:conflict")
                 client.replace_issue_labels(organization, repository, number, sorted(replacement))
+                issue["labels"] = [{"name": label} for label in sorted(replacement)]
+                labels = replacement
                 failures.append(f"{location} has ambiguous open lifecycle labels {sorted(statuses)}")
+
+            if (
+                assessment is not None
+                and assessment["complete"]
+                and not cross_repository_lifecycle.closing_references_are_current(
+                    client,
+                    organization,
+                    repository,
+                    issue,
+                    assessment,
+                )
+            ):
+                assessment = cross_repository_lifecycle.pending_reference_change(assessment)
+                client.upsert_lifecycle_comment(
+                    organization,
+                    repository,
+                    number,
+                    cross_repository_lifecycle.EVIDENCE_MARKER,
+                    cross_repository_lifecycle.render_evidence(assessment),
+                )
+                if state == "closed":
+                    client.update_issue_state(organization, repository, number, "open")
+                    issue["state"] = "open"
+                    state = "open"
+                replacement = set(labels) - STATUS_LABELS
+                replacement.update(open_statuses_before_lifecycle or {"status:triage"})
+                if replacement != labels:
+                    client.replace_issue_labels(organization, repository, number, sorted(replacement))
+                    issue["labels"] = [{"name": label} for label in sorted(replacement)]
+                    labels = replacement
+                failures.append(f"{location} closing-reference authority changed during lifecycle mutation")
 
             if len(labels & KIND_LABELS) != 1:
                 failures.append(f"{location} must have exactly one kind label")
