@@ -835,7 +835,7 @@ class ContractValidationTest(unittest.TestCase):
             conditions["audit"],
         )
 
-    def test_public_and_local_issue_events_have_isolated_concurrency(self) -> None:
+    def test_public_runs_share_workflow_level_concurrency_before_jobs_start(self) -> None:
         workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "issue-authority.yml").read_text(encoding="utf-8"))
         concurrency = workflow["concurrency"]
 
@@ -846,9 +846,17 @@ class ContractValidationTest(unittest.TestCase):
             "github.repository, github.event.issue.number) }}",
             " ".join(concurrency["group"].split()),
         )
+        for job in workflow["jobs"].values():
+            self.assertNotIn("concurrency", job)
+
+    def test_protected_push_cancels_superseded_public_reconciliation(self) -> None:
+        workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "issue-authority.yml").read_text(encoding="utf-8"))
+        concurrency = workflow["concurrency"]
+
         self.assertEqual(
-            "${{ github.server_url != 'https://github.com' && github.event_name == 'issues' }}",
-            concurrency["cancel-in-progress"],
+            "${{ (github.server_url == 'https://github.com' && github.event_name == 'push') || "
+            "(github.server_url != 'https://github.com' && github.event_name == 'issues') }}",
+            " ".join(concurrency["cancel-in-progress"].split()),
         )
 
     def test_unapproved_events_cannot_reach_a_privileged_environment(self) -> None:
@@ -1014,6 +1022,37 @@ class IssueIntakeTest(unittest.TestCase):
         self.assertEqual([issue], first_inventory[".github"])
         verified = verify_intake_manifest(policy, first, FakeDiscovery(policy, issues))
         self.assertEqual(first_inventory, verified)
+
+    def test_issue_trigger_reconstructs_every_vetted_revision(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
+        trigger = intake_issue(author="rmcdaniel")
+        other = intake_issue(
+            author="durable-workflow-ops",
+            body="A separate approved revision",
+            number=2,
+        )
+
+        manifest, inventory = reconstruct_intake(
+            policy,
+            FakeDiscovery(
+                policy,
+                {
+                    ".github": [(trigger, [])],
+                    "workflow": [(other, [])],
+                },
+            ),
+            trigger_repository=".github",
+            trigger_number=1,
+            trigger_action="closed",
+        )
+
+        self.assertTrue(manifest["trigger"]["approved"])
+        self.assertEqual(
+            {(".github", 1), ("workflow", 2)},
+            {(record["repository"], record["number"]) for record in manifest["issues"]},
+        )
+        self.assertEqual([trigger], inventory[".github"])
+        self.assertEqual([other], inventory["workflow"])
 
     def test_completion_hold_is_bound_as_structured_intake_authority(self) -> None:
         policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
