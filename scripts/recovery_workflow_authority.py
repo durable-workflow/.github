@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import urllib.parse
 from collections.abc import Mapping
 from typing import Any
 
@@ -221,3 +222,45 @@ def verify_workflow_source(name: str, source: str, expected_sha256: str) -> str:
             f"{name} recovery workflow does not match the protected source identity"
         )
     return actual_sha256
+
+
+def verify_authority_workflow_sources(
+    client: Any,
+    workflows: Mapping[str, Mapping[str, str]],
+) -> dict[str, dict[str, Any]]:
+    evidence: dict[str, dict[str, Any]] = {}
+    for name, expected in workflows.items():
+        repository = expected["repository"]
+        path = expected["path"]
+        branch = expected["ref"].removeprefix("refs/heads/")
+        workflow = client.json(
+            f"https://api.github.com/repos/{repository}/actions/workflows/"
+            f"{path.rsplit('/', 1)[-1]}"
+        )
+        if workflow.get("path") != path or workflow.get("state") != expected["state"]:
+            raise RecoveryWorkflowAuthorityError(
+                f"{name} recovery workflow does not expose the protected path and state"
+            )
+
+        ref = urllib.parse.quote(branch, safe="")
+        source_url = f"https://api.github.com/repos/{repository}/contents/{path}?ref={ref}"
+        try:
+            source = client.bytes(
+                source_url,
+                accept="application/vnd.github.raw+json",
+            ).decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise RecoveryWorkflowAuthorityError(
+                f"{name} recovery workflow is not valid UTF-8"
+            ) from error
+        digest = verify_workflow_source(name, source, expected["sha256"])
+        evidence[name] = {
+            "repository": repository,
+            "ref": expected["ref"],
+            "path": path,
+            "state": workflow["state"],
+            "sha256": digest,
+            "workflow_id": workflow.get("id"),
+            "url": workflow.get("html_url"),
+        }
+    return evidence

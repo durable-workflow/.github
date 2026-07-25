@@ -15,7 +15,7 @@
       "ref": "refs/heads/v2",
       "path": ".github/workflows/release-plan-recovery.yml",
       "state": "active",
-      "sha256": "07843a0cb5396114b276024782551c6786d9a944a1045132796652220388a2b2"
+      "sha256": "133b519f71aee37b00fe3e96cf8177190ea50ca98211d9a69e9c7dc632ae281d"
     },
     "waterline": {
       "repository": "durable-workflow/waterline",
@@ -29,7 +29,7 @@
       "ref": "refs/heads/main",
       "path": ".github/workflows/release-plan-recovery.yml",
       "state": "active",
-      "sha256": "d8425e770a753dab9b73e468405f7089e362967a398789a71eb50de96ab0eb2b"
+      "sha256": "37ef78fd199d9354d5faa6c157414cdce1695a2225e3209e7041c2517876379e"
     },
     "cli": {
       "repository": "durable-workflow/cli",
@@ -50,7 +50,7 @@
       "ref": "refs/heads/main",
       "path": ".github/workflows/release-plan-recovery.yml",
       "state": "active",
-      "sha256": "2e409f834a8f1390252f0b795cb563ff3f2d3ae441104d467b6fe9655dbf5bc4"
+      "sha256": "6045b3131dae466f17308e50f65067b8664aedba46a5694ee6a2e82810020fa5"
     },
     "sdk-rust": {
       "repository": "durable-workflow/sdk-rust",

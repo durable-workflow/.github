@@ -16,11 +16,13 @@ from scripts.recovery_workflow_authority import (
     AUTHORITY_PATH,
     QUALIFICATION_EVENT,
     QUALIFICATION_WORKFLOW,
+    RecoveryWorkflowAuthorityError,
     authority_ref_url,
     authority_url,
     normalized_source_sha256,
     qualification_runs_url,
     validate_authority,
+    verify_authority_workflow_sources,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -77,6 +79,38 @@ class FixtureClient:
         if url != authority_url(AUTHORITY_COMMIT):
             raise AssertionError(f"unexpected fixture URL: {url}")
         return self.raw
+
+
+class WorkflowSourceClient:
+    def __init__(self) -> None:
+        self.authority = copy.deepcopy(AUTHORITY)
+        self.sources = {
+            name: f"name: Recover {name}\non:\n  workflow_dispatch:\n"
+            for name in COMPONENTS
+        }
+        for name, source in self.sources.items():
+            self.authority["workflows"][name]["sha256"] = normalized_source_sha256(source)
+
+    def _entry(self, url: str) -> tuple[str, dict[str, str]]:
+        for name, entry in self.authority["workflows"].items():
+            if f"/repos/{entry['repository']}/" in url:
+                return name, entry
+        raise AssertionError(f"unexpected workflow source URL: {url}")
+
+    def json(self, url: str) -> dict[str, object]:
+        name, entry = self._entry(url)
+        return {
+            "id": len(name),
+            "path": entry["path"],
+            "state": entry["state"],
+            "html_url": f"https://github.com/{entry['repository']}/actions",
+        }
+
+    def bytes(self, url: str, *, accept: str | None = None) -> bytes:
+        name, _entry = self._entry(url)
+        if accept != "application/vnd.github.raw+json":
+            raise AssertionError(f"unexpected workflow source media type: {accept}")
+        return self.sources[name].encode("utf-8")
 
 
 class RecoveryWorkflowAuthorityTest(unittest.TestCase):
@@ -176,6 +210,29 @@ class RecoveryWorkflowAuthorityTest(unittest.TestCase):
         self.assertEqual(digest, verify_recovery_workflow_source("server", source, digest))
         with self.assertRaisesRegex(RecoveryError, "protected source identity"):
             verify_recovery_workflow_source("server", source + "# modified\n", digest)
+
+    def test_source_qualification_verifies_every_protected_workflow_source(self) -> None:
+        client = WorkflowSourceClient()
+        workflows = validate_authority(client.authority, IDENTITIES)
+
+        evidence = verify_authority_workflow_sources(client, workflows)
+
+        self.assertEqual(set(COMPONENTS), set(evidence))
+        for name, entry in evidence.items():
+            with self.subTest(component=name):
+                self.assertEqual(workflows[name]["sha256"], entry["sha256"])
+                self.assertEqual(workflows[name]["ref"], entry["ref"])
+
+    def test_source_qualification_rejects_protected_workflow_drift(self) -> None:
+        client = WorkflowSourceClient()
+        workflows = validate_authority(client.authority, IDENTITIES)
+        client.sources["workflow"] += "# changed after authority qualification\n"
+
+        with self.assertRaisesRegex(
+            RecoveryWorkflowAuthorityError,
+            "workflow recovery workflow does not match the protected source identity",
+        ):
+            verify_authority_workflow_sources(client, workflows)
 
 
 if __name__ == "__main__":

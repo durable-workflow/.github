@@ -45,6 +45,9 @@ jobs:
           python -m json.tool release-recovery/authority.json >/dev/null
           python -m json.tool release-recovery/schema.json >/dev/null
           python -m jsonschema -i release-recovery/authority.json release-recovery/schema.json
+          python scripts/release_plan.py verify-recovery-authority \
+            release-recovery/authority.json \
+            /tmp/recovery-workflow-authority-verification.json
           python -m json.tool product-train/current.json >/dev/null
           python -m json.tool product-train/schema.json >/dev/null
           python -m jsonschema -i product-train/current.json product-train/schema.json
@@ -88,3 +91,4 @@ jobs:
           python scripts/qualification_policy.py validate
         env:
           CONFORMANCE_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          GITHUB_TOKEN: ${{ github.server_url == 'https://github.com' && github.token || '' }}

@@ -55,7 +55,9 @@ from scripts.beta_candidate import (
 from scripts.product_train import require_current_product_train
 from scripts.recovery_workflow_authority import (
     RecoveryWorkflowAuthorityError,
+    decode_authority,
     load_qualified_authority,
+    verify_authority_workflow_sources,
     verify_workflow_source,
 )
 
@@ -152,6 +154,33 @@ def load_recovery_workflow_authority(
         return load_qualified_authority(client, identities)
     except RecoveryWorkflowAuthorityError as error:
         raise CandidateError(f"invalid component release recovery authority: {error}") from error
+
+
+def verify_local_recovery_workflow_authority(
+    path: Path,
+    client: PublicClient,
+) -> dict[str, Any]:
+    try:
+        raw = path.read_bytes()
+    except OSError as error:
+        raise CandidateError(f"cannot read recovery workflow authority {path}: {error}") from error
+    if len(raw) > 64 * 1024:
+        raise CandidateError("recovery workflow authority exceeds the 64 KiB limit")
+    identities = {
+        name: (component.repository, EXPECTED_DEFAULT_BRANCHES[name])
+        for name, component in COMPONENTS.items()
+    }
+    try:
+        workflows = decode_authority(raw, identities)
+        verified = verify_authority_workflow_sources(client, workflows)
+    except RecoveryWorkflowAuthorityError as error:
+        raise CandidateError(f"invalid component release recovery authority: {error}") from error
+    return {
+        "schema": "durable-workflow.component-release-recovery-authority-verification/v1",
+        "authority_sha256": hashlib.sha256(raw).hexdigest(),
+        "outcome": "verified",
+        "workflows": verified,
+    }
 
 
 def load_plan(path: Path, *, require_current: bool = False) -> dict[str, Any]:
@@ -3455,6 +3484,10 @@ def main() -> int:
     validate_current.add_argument("plan_destination", type=Path)
     validate_current.add_argument("candidate_destination", type=Path)
 
+    verify_recovery_authority = subparsers.add_parser("verify-recovery-authority")
+    verify_recovery_authority.add_argument("authority", type=Path)
+    verify_recovery_authority.add_argument("evidence", type=Path)
+
     preflight = subparsers.add_parser("preflight")
     preflight.add_argument("plan", type=Path)
     preflight.add_argument("evidence", type=Path)
@@ -3557,6 +3590,12 @@ def main() -> int:
             plan, candidate = validate_current_plan_authority(args.plan, args.candidate)
             args.plan_destination.write_bytes(canonical_json(plan))
             args.candidate_destination.write_bytes(canonical_json(candidate))
+        elif args.command == "verify-recovery-authority":
+            evidence = verify_local_recovery_workflow_authority(
+                args.authority,
+                PublicClient(token),
+            )
+            args.evidence.write_bytes(canonical_json(evidence))
         elif args.command == "preflight":
             plan = load_plan(args.plan)
             evidence = preflight_plan(
