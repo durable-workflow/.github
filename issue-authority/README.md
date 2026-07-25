@@ -47,6 +47,16 @@ the merge commit remains on the branch, and every required repository check
 succeeded. A newer open, rejected, or rebuilt attempt supersedes earlier
 evidence for the same target.
 
+The same contract applies to issues created through the API or edited outside
+the issue form. A cross-repository revision with a missing, empty, repeated,
+unqualified, or single-target section is not admitted to the intake manifest.
+To migrate an earlier approved revision, edit its body to add at least two exact
+qualified targets, then have a trusted maintainer remove and reapply
+`intake:approved` after that edit. If the work has only one source target,
+replace its cross-repository kind with the appropriate single-repository kind
+instead. Until one of those migrations is reviewed, intake and lifecycle
+reconciliation fail closed.
+
 The audit maintains one generated issue comment containing the complete target
 set, latest pull requests, landed commits, qualification results, and aggregate
 state. This comment is public lifecycle evidence, not an instruction source.

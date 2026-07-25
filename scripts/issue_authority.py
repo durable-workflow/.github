@@ -643,15 +643,18 @@ def reconstruct_intake(
             if not assessment["approved"]:
                 continue
             inventory[repository].append(issue)
+            labels = _intake_label_names(issue)
+            is_cross_repository = "kind:cross-repository" in labels
             try:
                 cross_repository_targets = cross_repository_lifecycle.declared_targets(
                     str(issue["body"]),
                     lifecycle_targets,
                     organization=policy["organization"],
+                    required=is_cross_repository,
                 )
             except cross_repository_lifecycle.LifecycleError as error:
                 raise AuthorityError(str(error)) from error
-            if cross_repository_targets and "kind:cross-repository" not in _intake_label_names(issue):
+            if cross_repository_targets and not is_cross_repository:
                 raise AuthorityError(
                     f"GitHub issue {number} declares multiple source targets without cross-repository authority"
                 )
@@ -746,6 +749,8 @@ def verify_intake_manifest(
             approval_label=intake_policy["approval_label"],
             trusted_actors=intake_policy["trusted_actors"],
         )
+        labels = _intake_label_names(issue)
+        is_cross_repository = "kind:cross-repository" in labels
         try:
             expected_targets = cross_repository_lifecycle.declared_targets(
                 str(issue["body"]),
@@ -755,10 +760,11 @@ def verify_intake_manifest(
                     else {}
                 ),
                 organization=policy["organization"],
+                required=is_cross_repository,
             )
         except cross_repository_lifecycle.LifecycleError as error:
             raise AuthorityError(str(error)) from error
-        if expected_targets and "kind:cross-repository" not in _intake_label_names(issue):
+        if expected_targets and not is_cross_repository:
             raise AuthorityError("vetted issue revisions changed after read-only discovery")
         current = {
             "approval_actor": assessment.get("approval_actor"),
@@ -1350,7 +1356,7 @@ def _audit_state_labels(
     client: Any,
     inventory: Mapping[str, list[dict[str, Any]]],
     approved_completion_holds: set[tuple[str, int]],
-    cross_repository_targets: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]],
+    cross_repository_targets: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] | None,
 ) -> list[str]:
     organization = policy["organization"]
     failures: list[str] = []
@@ -1378,8 +1384,14 @@ def _audit_state_labels(
                 statuses = labels & STATUS_LABELS
 
             completion_is_pending = COMPLETION_REQUIRED_LABEL in labels and COMPLETION_VERIFIED_LABEL not in labels
-            declared_targets = cross_repository_targets.get((repository, number), ())
+            declared_targets = (
+                cross_repository_targets.get((repository, number), ()) if cross_repository_targets is not None else ()
+            )
+            target_contract_is_missing = (
+                cross_repository_targets is not None and "kind:cross-repository" in labels and not declared_targets
+            )
             target_completion_is_pending = False
+            target_contract_failure_reported = False
             if declared_targets:
                 try:
                     assessment = cross_repository_lifecycle.evaluate_lifecycle(
@@ -1399,6 +1411,8 @@ def _audit_state_labels(
                 except cross_repository_lifecycle.LifecycleError as error:
                     raise AuthorityError(str(error)) from error
                 target_completion_is_pending = not assessment["complete"]
+            elif target_contract_is_missing:
+                target_completion_is_pending = True
 
             must_remain_open = completion_is_pending or target_completion_is_pending
             if state == "closed" and must_remain_open:
@@ -1414,16 +1428,21 @@ def _audit_state_labels(
                 statuses = labels & STATUS_LABELS
                 state = "open"
                 reason = (
-                    "closed before every declared target landing and repository qualification completed"
+                    "closed without a valid declared target set"
+                    if target_contract_is_missing
+                    else "closed before every declared target landing and repository qualification completed"
                     if target_completion_is_pending
                     else "closed before its required public completion evidence was verified"
                 )
                 failures.append(f"{location} {reason}")
+                target_contract_failure_reported = target_contract_is_missing
             elif state == "open" and declared_targets and not must_remain_open:
                 client.update_issue_state(organization, repository, number, "closed")
                 issue["state"] = "closed"
                 state = "closed"
                 aggregated_close = True
+            if target_contract_is_missing and not target_contract_failure_reported:
+                failures.append(f"{location} has cross-repository authority without a valid declared target set")
 
             if state == "closed" and statuses != {"status:done"}:
                 replacement -= STATUS_LABELS
@@ -1549,7 +1568,7 @@ def apply_backlog(
         client,
         inventory,
         approved_completion_holds or set(),
-        cross_repository_targets or {},
+        cross_repository_targets,
     )
     failures.extend(_audit_migrated_classification(backlog, resolved))
     if failures:
@@ -1582,7 +1601,7 @@ def audit_backlog(
         client,
         inventory,
         approved_completion_holds or set(),
-        cross_repository_targets or {},
+        cross_repository_targets,
     )
     failures.extend(_audit_migrated_classification(backlog, resolved))
     if failures:

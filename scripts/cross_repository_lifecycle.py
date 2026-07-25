@@ -59,11 +59,14 @@ def declared_targets(
     targets: Mapping[str, Mapping[str, Any]],
     *,
     organization: str,
+    required: bool = False,
 ) -> list[dict[str, Any]]:
     """Read exact form selections from the bounded affected-repositories section."""
 
     heading_count = body.count(TARGET_HEADING)
     if heading_count == 0:
+        if required:
+            raise LifecycleError("cross-repository authority must declare its required source targets")
         return []
     if heading_count != 1:
         raise LifecycleError("cross-repository issue repeats its affected public repositories section")

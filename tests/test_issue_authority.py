@@ -721,6 +721,123 @@ class IssueIntakeTest(unittest.TestCase):
             ),
         )
 
+    def test_cross_repository_intake_rejects_invalid_target_sets(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
+        qualification = qualification_fixture()
+        invalid_bodies = {
+            "missing": ("Current body", "must declare its required source targets"),
+            "empty": (
+                "### Required source targets\n\n### Repository roles\n\nShared authority.",
+                "at least two public targets",
+            ),
+            "single": (
+                "### Required source targets\n\ndurable-workflow/.github@main",
+                "at least two public targets",
+            ),
+            "duplicate": (
+                "### Required source targets\n\ndurable-workflow/.github@main\ndurable-workflow/.github@main",
+                "duplicate target",
+            ),
+            "unqualified": (
+                "### Required source targets\n\ndurable-workflow/.github@main\ndurable-workflow/workflow@main",
+                "not a qualified target",
+            ),
+        }
+
+        for name, (body, message) in invalid_bodies.items():
+            with self.subTest(name=name):
+                issue = intake_issue(
+                    author="rmcdaniel",
+                    body=body,
+                    labels=["kind:cross-repository"],
+                )
+                discovery = FakeDiscovery(policy, {".github": [(issue, [])]})
+
+                with self.assertRaisesRegex(AuthorityError, message):
+                    reconstruct_intake(
+                        policy,
+                        discovery,
+                        target_qualification=qualification,
+                    )
+
+    def test_non_cross_repository_intake_rejects_multiple_targets(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
+        issue = intake_issue(
+            author="rmcdaniel",
+            body=("### Required source targets\n\ndurable-workflow/.github@main\ndurable-workflow/workflow@v2"),
+        )
+
+        with self.assertRaisesRegex(AuthorityError, "without cross-repository authority"):
+            reconstruct_intake(
+                policy,
+                FakeDiscovery(policy, {".github": [(issue, [])]}),
+                target_qualification=qualification_fixture(),
+            )
+
+    def test_legacy_cross_repository_authority_requires_edit_and_reapproval(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
+        legacy = intake_issue(
+            author="rmcdaniel",
+            labels=["kind:cross-repository"],
+        )
+
+        with self.assertRaisesRegex(AuthorityError, "must declare its required source targets"):
+            reconstruct_intake(
+                policy,
+                FakeDiscovery(policy, {".github": [(legacy, [])]}),
+                target_qualification=qualification_fixture(),
+            )
+
+        migrated = intake_issue(
+            author="rmcdaniel",
+            body=("### Required source targets\n\ndurable-workflow/.github@main\ndurable-workflow/workflow@v2"),
+            edited_at="2026-07-21T10:02:00Z",
+            labels=["intake:approved", "kind:cross-repository"],
+        )
+        manifest, _inventory = reconstruct_intake(
+            policy,
+            FakeDiscovery(
+                policy,
+                {
+                    ".github": [
+                        (
+                            migrated,
+                            [
+                                label_event(
+                                    "durable-workflow-ops",
+                                    "2026-07-21T10:02:30Z",
+                                    event="unlabeled",
+                                ),
+                                label_event("durable-workflow-ops", "2026-07-21T10:03:00Z"),
+                            ],
+                        )
+                    ]
+                },
+            ),
+            target_qualification=qualification_fixture(),
+        )
+
+        self.assertEqual(2, len(manifest["issues"][0]["cross_repository_targets"]))
+
+    def test_manifest_revalidation_rejects_cross_repository_label_without_targets(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
+        issue = intake_issue(author="rmcdaniel")
+        manifest, _inventory = reconstruct_intake(
+            policy,
+            FakeDiscovery(policy, {".github": [(issue, [])]}),
+            target_qualification=qualification_fixture(),
+        )
+        relabeled = copy.deepcopy(issue)
+        relabeled["labels"] = [{"name": "kind:cross-repository"}]
+
+        with self.assertRaisesRegex(AuthorityError, "must declare its required source targets"):
+            verify_intake_manifest(
+                policy,
+                manifest,
+                FakeDiscovery(policy, {".github": [(relabeled, [])]}),
+                target_qualification=qualification_fixture(),
+            )
+
     def test_completion_hold_manifest_field_must_be_boolean(self) -> None:
         policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
         issue = intake_issue(author="rmcdaniel")
@@ -1350,6 +1467,9 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual([], self.client.state_updates)
 
     def test_cross_repository_parent_waits_for_every_latest_target_attempt(self) -> None:
+        for item in self.backlog["items"]:
+            if item["kind"] == "cross-repository":
+                item["kind"] = "feature"
         apply_backlog(self.policy, self.backlog, self.client)
         qualification = qualification_fixture()
 
@@ -1516,6 +1636,38 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual("closed", parent["state"])
         self.assertEqual({"status:done"}, label_names(parent) & STATUS_LABELS)
         self.assertNotIn(COMPLETION_REQUIRED_LABEL, label_names(parent))
+
+    def test_cross_repository_parent_without_manifest_targets_cannot_remain_done(self) -> None:
+        for item in self.backlog["items"]:
+            if item["kind"] == "cross-repository":
+                item["kind"] = "feature"
+        apply_backlog(self.policy, self.backlog, self.client)
+        parent = {
+            "body": "Legacy cross-repository authority.",
+            "html_url": "https://github.com/durable-workflow/.github/issues/99",
+            "labels": [
+                {"name": "authority:github"},
+                {"name": "kind:cross-repository"},
+                {"name": "priority:P1"},
+                {"name": "status:done"},
+            ],
+            "milestone": None,
+            "number": 99,
+            "state": "closed",
+            "title": "Coordinate source landings",
+        }
+        self.client.issues[".github"].append(parent)
+
+        with self.assertRaisesRegex(AuthorityError, "without a valid declared target set"):
+            audit_backlog(
+                self.policy,
+                self.backlog,
+                self.client,
+                cross_repository_targets={},
+            )
+
+        self.assertEqual("open", parent["state"])
+        self.assertEqual({"status:triage"}, label_names(parent) & STATUS_LABELS)
 
     def test_ambiguous_open_status_is_labeled_and_fails(self) -> None:
         apply_backlog(self.policy, self.backlog, self.client)

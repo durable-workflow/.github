@@ -36,8 +36,8 @@ body:
     attributes:
       label: Required source targets
       description: >-
-        Select every repository that requires a source landing; target branches and required checks are derived from
-        public qualification policy.
+        Select at least two repositories that require source landings; target branches and required checks are derived
+        from public qualification policy.
       multiple: true
       options:
         - durable-workflow/.github@main
