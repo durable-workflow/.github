@@ -59,8 +59,8 @@
       "items": {
         "$ref": "#/$defs/case"
       },
-      "maxItems": 8,
-      "minItems": 8,
+      "maxItems": 9,
+      "minItems": 9,
       "type": "array",
       "uniqueItems": true
     },
