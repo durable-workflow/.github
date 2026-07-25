@@ -29,8 +29,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: github-issue-authority
-  cancel-in-progress: false
+  group: >-
+    ${{ github.server_url == 'https://github.com' &&
+        'github-issue-authority-public' ||
+        format('github-issue-authority-local-{0}-{1}', github.repository, github.event.issue.number) }}
+  cancel-in-progress: >-
+    ${{ github.server_url != 'https://github.com' && github.event_name == 'issues' }}
 
 jobs:
   validate:

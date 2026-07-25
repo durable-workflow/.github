@@ -71,7 +71,7 @@ def declared_targets(
     if heading_count != 1:
         raise LifecycleError("cross-repository issue repeats its affected public repositories section")
     section = body.split(TARGET_HEADING, 1)[1]
-    section = re.split(r"(?m)^### ", section, maxsplit=1)[0]
+    section = re.split(r"(?m)^#{1,3} ", section, maxsplit=1)[0]
     selected: list[str] = []
     candidate_pattern = re.compile(rf"^(?:-\s*)?{re.escape(organization)}/([a-z0-9_.-]+)@(main|v2)\s*$")
     for raw_line in section.splitlines():

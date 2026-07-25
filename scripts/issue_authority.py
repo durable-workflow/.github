@@ -30,8 +30,11 @@ from scripts import cross_repository_lifecycle
 
 POLICY_SCHEMA = "durable-workflow.github-issue-authority/v1"
 BACKLOG_SCHEMA = "durable-workflow.github-beta-backlog/v1"
-INTAKE_SCHEMA = "durable-workflow.github-issue-intake/v3"
+INTAKE_SCHEMA = "durable-workflow.github-issue-intake/v4"
+LEGACY_TARGET_SCHEMA = "durable-workflow.legacy-cross-repository-targets/v1"
 MARKER_PATTERN = re.compile(r"<!-- beta-work-id: ([a-z0-9][a-z0-9-]{2,79}) -->")
+WORK_MARKER_PATTERN = re.compile(r"<!-- durable-workflow-work-id: ([a-z0-9][a-z0-9-]{2,79}) -->")
+LEGACY_TARGET_HEADING = "### Affected public repositories"
 UNBLOCK_CONTEXT_START = "<!-- beta-unblock-condition:start -->"
 UNBLOCK_CONTEXT_END = "<!-- beta-unblock-condition:end -->"
 UNBLOCK_CONTEXT_MARKERS = (UNBLOCK_CONTEXT_START, UNBLOCK_CONTEXT_END)
@@ -310,6 +313,66 @@ def load_contract(
     return policy, backlog
 
 
+def load_legacy_cross_repository_targets(
+    path: Path,
+    target_qualification: Mapping[str, Any],
+    schema_path: Path | None = None,
+) -> dict[str, Any]:
+    migration = _load_json(path, "legacy cross-repository target migration")
+    schema = _load_json(
+        schema_path or path.with_name("legacy-cross-repository-targets-schema.json"),
+        "legacy cross-repository target migration schema",
+    )
+    _validate_schema(migration, schema, "legacy cross-repository target migration")
+    if migration.get("schema") != LEGACY_TARGET_SCHEMA:
+        raise AuthorityError("legacy cross-repository target migration uses an unsupported schema")
+    _parse_timestamp(migration.get("created_before"), "legacy target migration cutoff")
+
+    target_map = cross_repository_lifecycle.qualification_targets(target_qualification)
+    identities: set[tuple[str, str]] = set()
+    for authority in migration["authorities"]:
+        identity = (authority["marker"], authority["id"])
+        if identity in identities:
+            raise AuthorityError(f"legacy cross-repository target migration repeats {authority['id']}")
+        identities.add(identity)
+        try:
+            cross_repository_lifecycle.declared_targets(
+                f"{cross_repository_lifecycle.TARGET_HEADING}\n\n" + "\n".join(authority["targets"]),
+                target_map,
+                organization="durable-workflow",
+                required=True,
+            )
+        except cross_repository_lifecycle.LifecycleError as error:
+            raise AuthorityError(str(error)) from error
+    return migration
+
+
+def validate_backlog_cross_repository_targets(
+    backlog: Mapping[str, Any],
+    target_qualification: Mapping[str, Any],
+    *,
+    organization: str,
+) -> None:
+    target_map = cross_repository_lifecycle.qualification_targets(target_qualification)
+    for item in backlog["items"]:
+        selections = item.get("required_source_targets")
+        if item["kind"] != "cross-repository":
+            if selections is not None:
+                raise AuthorityError(f"non-cross-repository backlog item {item['id']} declares multiple source targets")
+            continue
+        if not isinstance(selections, list):
+            raise AuthorityError(f"cross-repository backlog item {item['id']} has no required source targets")
+        try:
+            cross_repository_lifecycle.declared_targets(
+                f"{cross_repository_lifecycle.TARGET_HEADING}\n\n" + "\n".join(selections),
+                target_map,
+                organization=organization,
+                required=True,
+            )
+        except cross_repository_lifecycle.LifecycleError as error:
+            raise AuthorityError(f"cross-repository backlog item {item['id']}: {error}") from error
+
+
 def _object_digest(value: Any) -> str:
     encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -551,7 +614,16 @@ class GitHubDiscovery:
 
 
 def _manifest_core(manifest: Mapping[str, Any]) -> dict[str, Any]:
-    return {key: manifest.get(key) for key in ("schema", "organization", "policy_digest", "issues")}
+    return {
+        key: manifest.get(key)
+        for key in (
+            "schema",
+            "organization",
+            "policy_digest",
+            "legacy_target_migration_digest",
+            "issues",
+        )
+    }
 
 
 def _manifest_completion_holds(manifest: Mapping[str, Any]) -> set[tuple[str, int]]:
@@ -572,11 +644,121 @@ def _manifest_cross_repository_targets(
     }
 
 
+def _legacy_form_targets(
+    body: str,
+    targets: Mapping[str, Mapping[str, Any]],
+    *,
+    organization: str,
+) -> list[dict[str, Any]]:
+    heading_count = body.count(LEGACY_TARGET_HEADING)
+    if heading_count == 0:
+        return []
+    if heading_count != 1:
+        raise AuthorityError("legacy cross-repository issue repeats its affected public repositories section")
+    section = body.split(LEGACY_TARGET_HEADING, 1)[1]
+    section = re.split(r"(?m)^### ", section, maxsplit=1)[0]
+    mentioned = set(re.findall(rf"\b{re.escape(organization)}/([a-z0-9_.-]+)\b", section))
+    unknown = mentioned - set(targets)
+    if unknown:
+        raise AuthorityError(f"legacy cross-repository issue names unqualified targets {sorted(unknown)}")
+    if len(mentioned) < 2:
+        raise AuthorityError("legacy cross-repository issue does not bind at least two public targets")
+    return [dict(targets[repository]) for repository in sorted(mentioned)]
+
+
+def _legacy_migrated_targets(
+    issue: Mapping[str, Any],
+    timeline: Sequence[Mapping[str, Any]],
+    assessment: Mapping[str, Any],
+    migration: Mapping[str, Any] | None,
+    targets: Mapping[str, Mapping[str, Any]],
+    *,
+    organization: str,
+) -> list[dict[str, Any]]:
+    if migration is None or assessment.get("approval_mode") != "trusted-creation":
+        return []
+    cutoff = _parse_timestamp(migration.get("created_before"), "legacy target migration cutoff")
+    created_at = _parse_timestamp(issue.get("created_at"), "creation timestamp")
+    if created_at >= cutoff or issue.get("last_edited_at") is not None:
+        return []
+    for event in timeline:
+        if event.get("label") != "kind:cross-repository":
+            continue
+        if _parse_timestamp(event.get("created_at"), "cross-repository label timestamp") >= cutoff:
+            return []
+
+    body = str(issue.get("body", ""))
+    matches: list[Mapping[str, Any]] = []
+    patterns = {
+        "beta-work-id": MARKER_PATTERN,
+        "durable-workflow-work-id": WORK_MARKER_PATTERN,
+    }
+    for authority in migration["authorities"]:
+        pattern = patterns[authority["marker"]]
+        if authority["id"] in pattern.findall(body):
+            matches.append(authority)
+    if len(matches) > 1:
+        raise AuthorityError("legacy cross-repository revision matches multiple target migrations")
+    if matches:
+        authority = matches[0]
+        try:
+            return cross_repository_lifecycle.declared_targets(
+                f"{cross_repository_lifecycle.TARGET_HEADING}\n\n" + "\n".join(authority["targets"]),
+                targets,
+                organization=organization,
+                required=True,
+            )
+        except cross_repository_lifecycle.LifecycleError as error:
+            raise AuthorityError(str(error)) from error
+    return _legacy_form_targets(body, targets, organization=organization)
+
+
+def _issue_cross_repository_targets(
+    issue: Mapping[str, Any],
+    timeline: Sequence[Mapping[str, Any]],
+    assessment: Mapping[str, Any],
+    targets: Mapping[str, Mapping[str, Any]],
+    migration: Mapping[str, Any] | None,
+    *,
+    organization: str,
+) -> list[dict[str, Any]]:
+    labels = _intake_label_names(issue)
+    is_cross_repository = "kind:cross-repository" in labels
+    try:
+        declared = cross_repository_lifecycle.declared_targets(
+            str(issue["body"]),
+            targets,
+            organization=organization,
+        )
+    except cross_repository_lifecycle.LifecycleError as error:
+        raise AuthorityError(str(error)) from error
+    if declared:
+        if not is_cross_repository:
+            raise AuthorityError(
+                f"GitHub issue {issue['number']} declares multiple source targets without cross-repository authority"
+            )
+        return declared
+    if not is_cross_repository:
+        return []
+    migrated = _legacy_migrated_targets(
+        issue,
+        timeline,
+        assessment,
+        migration,
+        targets,
+        organization=organization,
+    )
+    if migrated:
+        return migrated
+    raise AuthorityError("cross-repository authority must declare its required source targets")
+
+
 def reconstruct_intake(
     policy: dict[str, Any],
     client: Any,
     *,
     target_qualification: Mapping[str, Any] | None = None,
+    legacy_cross_repository_targets: Mapping[str, Any] | None = None,
     trigger_repository: str | None = None,
     trigger_number: int | None = None,
     trigger_action: str | None = None,
@@ -643,21 +825,14 @@ def reconstruct_intake(
             if not assessment["approved"]:
                 continue
             inventory[repository].append(issue)
-            labels = _intake_label_names(issue)
-            is_cross_repository = "kind:cross-repository" in labels
-            try:
-                cross_repository_targets = cross_repository_lifecycle.declared_targets(
-                    str(issue["body"]),
-                    lifecycle_targets,
-                    organization=policy["organization"],
-                    required=is_cross_repository,
-                )
-            except cross_repository_lifecycle.LifecycleError as error:
-                raise AuthorityError(str(error)) from error
-            if cross_repository_targets and not is_cross_repository:
-                raise AuthorityError(
-                    f"GitHub issue {number} declares multiple source targets without cross-repository authority"
-                )
+            cross_repository_targets = _issue_cross_repository_targets(
+                issue,
+                timeline,
+                assessment,
+                lifecycle_targets,
+                legacy_cross_repository_targets,
+                organization=policy["organization"],
+            )
             records.append(
                 {
                     "approval_actor": assessment["approval_actor"],
@@ -675,6 +850,7 @@ def reconstruct_intake(
         "schema": INTAKE_SCHEMA,
         "organization": policy["organization"],
         "policy_digest": _object_digest(policy),
+        "legacy_target_migration_digest": _object_digest(legacy_cross_repository_targets or {}),
         "issues": records,
     }
     if trigger_repository is not None or trigger_number is not None:
@@ -696,12 +872,14 @@ def verify_intake_manifest(
     client: Any,
     *,
     target_qualification: Mapping[str, Any] | None = None,
+    legacy_cross_repository_targets: Mapping[str, Any] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     if manifest.get("schema") != INTAKE_SCHEMA:
         raise AuthorityError("issue-intake manifest uses an unsupported schema")
     if (
         manifest.get("organization") != policy["organization"]
         or manifest.get("policy_digest") != _object_digest(policy)
+        or manifest.get("legacy_target_migration_digest") != _object_digest(legacy_cross_repository_targets or {})
     ):
         raise AuthorityError("vetted issue revisions changed after read-only discovery")
 
@@ -749,23 +927,18 @@ def verify_intake_manifest(
             approval_label=intake_policy["approval_label"],
             trusted_actors=intake_policy["trusted_actors"],
         )
-        labels = _intake_label_names(issue)
-        is_cross_repository = "kind:cross-repository" in labels
-        try:
-            expected_targets = cross_repository_lifecycle.declared_targets(
-                str(issue["body"]),
-                (
-                    cross_repository_lifecycle.qualification_targets(target_qualification)
-                    if target_qualification is not None
-                    else {}
-                ),
-                organization=policy["organization"],
-                required=is_cross_repository,
-            )
-        except cross_repository_lifecycle.LifecycleError as error:
-            raise AuthorityError(str(error)) from error
-        if expected_targets and not is_cross_repository:
-            raise AuthorityError("vetted issue revisions changed after read-only discovery")
+        expected_targets = _issue_cross_repository_targets(
+            issue,
+            timeline,
+            assessment,
+            (
+                cross_repository_lifecycle.qualification_targets(target_qualification)
+                if target_qualification is not None
+                else {}
+            ),
+            legacy_cross_repository_targets,
+            organization=policy["organization"],
+        )
         current = {
             "approval_actor": assessment.get("approval_actor"),
             "approval_at": assessment.get("approval_at"),
@@ -1139,10 +1312,17 @@ def _render_body(
         )
     else:
         dependency_lines = "None."
+    required_targets = item.get("required_source_targets")
+    target_section = (
+        f"\n\n{cross_repository_lifecycle.TARGET_HEADING}\n\n" + "\n".join(required_targets)
+        if isinstance(required_targets, list)
+        else ""
+    )
     unblock_context = _render_unblock_context(item)
     rendered_unblock_context = f"\n\n{unblock_context}" if unblock_context else ""
     return (
-        f"{item['body'].rstrip()}\n\n"
+        f"{item['body'].rstrip()}"
+        f"{target_section}\n\n"
         f"## Dependencies\n\n{dependency_lines}"
         f"{rendered_unblock_context}\n\n"
         f"<!-- beta-work-id: {item['id']} -->\n"
@@ -1653,6 +1833,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             type=Path,
             default=Path("qualification/policy.json"),
         )
+        command.add_argument(
+            "--legacy-cross-repository-targets",
+            type=Path,
+            default=Path("issue-authority/legacy-cross-repository-targets.json"),
+        )
         command.add_argument("--policy-schema", type=Path)
         command.add_argument("--backlog-schema", type=Path)
         if name == "discover":
@@ -1684,6 +1869,15 @@ def main(argv: list[str] | None = None) -> int:
             cross_repository_lifecycle.qualification_targets(target_qualification)
         except cross_repository_lifecycle.LifecycleError as error:
             raise AuthorityError(str(error)) from error
+        legacy_cross_repository_targets = load_legacy_cross_repository_targets(
+            arguments.legacy_cross_repository_targets,
+            target_qualification,
+        )
+        validate_backlog_cross_repository_targets(
+            backlog,
+            target_qualification,
+            organization=policy["organization"],
+        )
         if arguments.command == "validate":
             return 0
         discovery_token = os.environ.get("GITHUB_TOKEN") or ""
@@ -1700,6 +1894,7 @@ def main(argv: list[str] | None = None) -> int:
                 policy,
                 discovery,
                 target_qualification=target_qualification,
+                legacy_cross_repository_targets=legacy_cross_repository_targets,
                 trigger_repository=arguments.trigger_repository,
                 trigger_number=arguments.trigger_number,
                 trigger_action=arguments.trigger_action,
@@ -1716,6 +1911,7 @@ def main(argv: list[str] | None = None) -> int:
             manifest,
             discovery,
             target_qualification=target_qualification,
+            legacy_cross_repository_targets=legacy_cross_repository_targets,
         )
         approved_completion_holds = _manifest_completion_holds(manifest)
         cross_repository_targets = _manifest_cross_repository_targets(manifest)

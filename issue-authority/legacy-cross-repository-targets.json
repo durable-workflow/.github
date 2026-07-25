@@ -1,0 +1,219 @@
+{
+  "$schema": "./legacy-cross-repository-targets-schema.json",
+  "authorities": [
+    {
+      "id": "release-plan-versioned-changelogs",
+      "marker": "beta-work-id",
+      "targets": [
+        "durable-workflow/.github@main",
+        "durable-workflow/cli@main",
+        "durable-workflow/sdk-php@main",
+        "durable-workflow/sdk-python@main",
+        "durable-workflow/sdk-rust@main",
+        "durable-workflow/server@main"
+      ]
+    },
+    {
+      "id": "github-only-beta-continuity-drill",
+      "marker": "beta-work-id",
+      "targets": [
+        "durable-workflow/.github@main",
+        "durable-workflow/cli@main",
+        "durable-workflow/durable-workflow.github.io@main",
+        "durable-workflow/sample-app@main",
+        "durable-workflow/sdk-php@main",
+        "durable-workflow/sdk-python@main",
+        "durable-workflow/sdk-rust@main",
+        "durable-workflow/server@main",
+        "durable-workflow/waterline@v2",
+        "durable-workflow/workflow@v2"
+      ]
+    },
+    {
+      "id": "github-actions-trust-boundary",
+      "marker": "durable-workflow-work-id",
+      "targets": [
+        "durable-workflow/.github@main",
+        "durable-workflow/cli@main",
+        "durable-workflow/durable-workflow.github.io@main",
+        "durable-workflow/sample-app@main",
+        "durable-workflow/sdk-php@main",
+        "durable-workflow/sdk-python@main",
+        "durable-workflow/sdk-rust@main",
+        "durable-workflow/server@main",
+        "durable-workflow/waterline@v2",
+        "durable-workflow/workflow@v2"
+      ]
+    },
+    {
+      "id": "qualification-bind-privileged-artifact-digests",
+      "marker": "durable-workflow-work-id",
+      "targets": [
+        "durable-workflow/.github@main",
+        "durable-workflow/cli@main",
+        "durable-workflow/sdk-php@main",
+        "durable-workflow/sdk-python@main",
+        "durable-workflow/sdk-rust@main",
+        "durable-workflow/waterline@v2"
+      ]
+    },
+    {
+      "id": "coherent-2-0-beta-4-train",
+      "marker": "durable-workflow-work-id",
+      "targets": [
+        "durable-workflow/.github@main",
+        "durable-workflow/durable-workflow.github.io@main",
+        "durable-workflow/sample-app@main",
+        "durable-workflow/server@main",
+        "durable-workflow/waterline@v2"
+      ]
+    },
+    {
+      "id": "coherent-component-release-recovery-authority",
+      "marker": "durable-workflow-work-id",
+      "targets": [
+        "durable-workflow/.github@main",
+        "durable-workflow/workflow@v2"
+      ]
+    },
+    {
+      "id": "qualified-immutable-recovery-workflow-authority",
+      "marker": "durable-workflow-work-id",
+      "targets": [
+        "durable-workflow/.github@main",
+        "durable-workflow/cli@main",
+        "durable-workflow/sdk-php@main",
+        "durable-workflow/sdk-python@main",
+        "durable-workflow/sdk-rust@main",
+        "durable-workflow/server@main",
+        "durable-workflow/waterline@v2",
+        "durable-workflow/workflow@v2"
+      ]
+    },
+    {
+      "id": "verify-release-plan-supersession-approval-against-github-authority",
+      "marker": "durable-workflow-work-id",
+      "targets": [
+        "durable-workflow/.github@main",
+        "durable-workflow/cli@main",
+        "durable-workflow/sdk-php@main",
+        "durable-workflow/sdk-python@main",
+        "durable-workflow/sdk-rust@main",
+        "durable-workflow/server@main",
+        "durable-workflow/waterline@v2",
+        "durable-workflow/workflow@v2"
+      ]
+    },
+    {
+      "id": "release-plan-discovery-reject-ambiguous-continuity-successors",
+      "marker": "durable-workflow-work-id",
+      "targets": [
+        "durable-workflow/.github@main",
+        "durable-workflow/cli@main",
+        "durable-workflow/sdk-php@main",
+        "durable-workflow/sdk-python@main",
+        "durable-workflow/sdk-rust@main",
+        "durable-workflow/server@main",
+        "durable-workflow/waterline@v2",
+        "durable-workflow/workflow@v2"
+      ]
+    },
+    {
+      "id": "waterline-dual-distribution-release-authority",
+      "marker": "durable-workflow-work-id",
+      "targets": [
+        "durable-workflow/.github@main",
+        "durable-workflow/waterline@v2"
+      ]
+    },
+    {
+      "id": "release-plan-discovery-stable-authority-snapshot",
+      "marker": "durable-workflow-work-id",
+      "targets": [
+        "durable-workflow/.github@main",
+        "durable-workflow/cli@main",
+        "durable-workflow/sdk-php@main",
+        "durable-workflow/sdk-python@main",
+        "durable-workflow/sdk-rust@main",
+        "durable-workflow/server@main",
+        "durable-workflow/waterline@v2",
+        "durable-workflow/workflow@v2"
+      ]
+    },
+    {
+      "id": "release-plan-explicit-recovery-terminal-lifecycle-gate",
+      "marker": "durable-workflow-work-id",
+      "targets": [
+        "durable-workflow/.github@main",
+        "durable-workflow/cli@main",
+        "durable-workflow/sdk-python@main",
+        "durable-workflow/sdk-rust@main",
+        "durable-workflow/server@main",
+        "durable-workflow/waterline@v2",
+        "durable-workflow/workflow@v2"
+      ]
+    },
+    {
+      "id": "release-plan-discovery-ignore-mutable-release-order",
+      "marker": "durable-workflow-work-id",
+      "targets": [
+        "durable-workflow/.github@main",
+        "durable-workflow/cli@main",
+        "durable-workflow/sdk-php@main",
+        "durable-workflow/sdk-python@main",
+        "durable-workflow/sdk-rust@main",
+        "durable-workflow/server@main",
+        "durable-workflow/waterline@v2",
+        "durable-workflow/workflow@v2"
+      ]
+    },
+    {
+      "id": "release-plan-strict-semver-authority-validation",
+      "marker": "durable-workflow-work-id",
+      "targets": [
+        "durable-workflow/cli@main",
+        "durable-workflow/sdk-php@main",
+        "durable-workflow/sdk-rust@main",
+        "durable-workflow/workflow@v2"
+      ]
+    },
+    {
+      "id": "release-plan-semver-successor-transition-safety",
+      "marker": "durable-workflow-work-id",
+      "targets": [
+        "durable-workflow/.github@main",
+        "durable-workflow/cli@main",
+        "durable-workflow/sdk-php@main",
+        "durable-workflow/sdk-python@main",
+        "durable-workflow/sdk-rust@main",
+        "durable-workflow/server@main",
+        "durable-workflow/waterline@v2",
+        "durable-workflow/workflow@v2"
+      ]
+    },
+    {
+      "id": "version-component-release-recovery-consumer-conformance",
+      "marker": "durable-workflow-work-id",
+      "targets": [
+        "durable-workflow/.github@main",
+        "durable-workflow/cli@main",
+        "durable-workflow/sdk-php@main",
+        "durable-workflow/sdk-python@main",
+        "durable-workflow/sdk-rust@main",
+        "durable-workflow/server@main",
+        "durable-workflow/waterline@v2",
+        "durable-workflow/workflow@v2"
+      ]
+    },
+    {
+      "id": "remove-hosted-runtime-target-contract",
+      "marker": "durable-workflow-work-id",
+      "targets": [
+        "durable-workflow/server@main",
+        "durable-workflow/workflow@v2"
+      ]
+    }
+  ],
+  "created_before": "2026-07-25T00:01:08Z",
+  "schema": "durable-workflow.legacy-cross-repository-targets/v1"
+}

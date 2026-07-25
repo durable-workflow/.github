@@ -50,12 +50,28 @@ evidence for the same target.
 The same contract applies to issues created through the API or edited outside
 the issue form. A cross-repository revision with a missing, empty, repeated,
 unqualified, or single-target section is not admitted to the intake manifest.
-To migrate an earlier approved revision, edit its body to add at least two exact
-qualified targets, then have a trusted maintainer remove and reapply
-`intake:approved` after that edit. If the work has only one source target,
-replace its cross-repository kind with the appropriate single-repository kind
-instead. Until one of those migrations is reviewed, intake and lifecycle
-reconciliation fail closed.
+The selective public backlog stores the same qualified target identities as
+structured data, and its API issue renderer emits the required section in every
+new cross-repository body.
+Earlier trusted-created revisions are covered by a bounded, checked-in migration
+catalog. Each catalog entry names a stable body marker and at least two exact
+qualified targets; revisions created by the original issue form may instead
+bind the exact repository identities in its legacy affected-repositories
+section. The migration applies only to unchanged revisions created before the
+target-set contract took effect. Editing, reapproving, or newly applying the
+cross-repository label after that cutoff requires the current target section,
+so a catalog entry cannot authorize a later revision. Active migrated authority
+uses the normal aggregate landing lifecycle. Completed migrated authority is
+also reevaluated against its exact target branches, landed commits, and required
+checks instead of being reopened or assigned replacement work merely to satisfy
+the new syntax.
+
+To migrate any revision outside that bounded catalog, edit its body to add at
+least two exact qualified targets, then have a trusted maintainer remove and
+reapply `intake:approved` after that edit. If the work has only one source
+target, replace its cross-repository kind with the appropriate
+single-repository kind instead. Until that migration is reviewed, intake and
+lifecycle reconciliation fail closed.
 
 The audit maintains one generated issue comment containing the complete target
 set, latest pull requests, landed commits, qualification results, and aggregate

@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import yaml
 
-from scripts.cross_repository_lifecycle import EVIDENCE_MARKER
+from scripts.cross_repository_lifecycle import EVIDENCE_MARKER, declared_targets, qualification_targets
 from scripts.issue_authority import (
     COMPLETION_REQUIRED_LABEL,
     COMPLETION_VERIFIED_LABEL,
@@ -28,7 +28,9 @@ from scripts.issue_authority import (
     audit_backlog,
     issue_revision_digest,
     load_contract,
+    load_legacy_cross_repository_targets,
     reconstruct_intake,
+    validate_backlog_cross_repository_targets,
     validate_contract,
     verify_intake_manifest,
 )
@@ -68,6 +70,10 @@ def contract_fixture() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], 
 
 def qualification_fixture() -> dict[str, Any]:
     return json.loads((ROOT / "qualification" / "policy.json").read_text(encoding="utf-8"))
+
+
+def legacy_target_fixture() -> dict[str, Any]:
+    return json.loads((ROOT / "issue-authority" / "legacy-cross-repository-targets.json").read_text(encoding="utf-8"))
 
 
 class FakeGitHubApi:
@@ -275,12 +281,13 @@ def label_event(
     created_at: str,
     *,
     event: str = "labeled",
+    label: str = "intake:approved",
 ) -> dict[str, Any]:
     return {
         "actor": actor,
         "created_at": created_at,
         "event": event,
-        "label": "intake:approved",
+        "label": label,
     }
 
 
@@ -367,6 +374,39 @@ class ContractValidationTest(unittest.TestCase):
         self.assertEqual(4, len(backlog["items"]))
         blocked = [item for item in backlog["items"] if item["status"] == "blocked"]
         self.assertTrue(all(item["depends_on"] or item.get("unblock_condition") for item in blocked))
+        validate_backlog_cross_repository_targets(
+            backlog,
+            qualification_fixture(),
+            organization=policy["organization"],
+        )
+
+    def test_checked_in_legacy_target_migration_is_qualified(self) -> None:
+        migration = load_legacy_cross_repository_targets(
+            ROOT / "issue-authority" / "legacy-cross-repository-targets.json",
+            qualification_fixture(),
+        )
+
+        self.assertEqual("durable-workflow.legacy-cross-repository-targets/v1", migration["schema"])
+        self.assertTrue(migration["authorities"])
+        migrated_beta = {
+            authority["id"]: authority["targets"]
+            for authority in migration["authorities"]
+            if authority["marker"] == "beta-work-id"
+        }
+        _policy, backlog, _policy_schema, _backlog_schema = contract_fixture()
+        current_beta = {
+            item["id"]: item["required_source_targets"]
+            for item in backlog["items"]
+            if item["kind"] == "cross-repository"
+        }
+        self.assertEqual(current_beta, migrated_beta)
+
+    def test_cross_repository_backlog_items_must_declare_qualified_targets(self) -> None:
+        policy, backlog, policy_schema, backlog_schema = contract_fixture()
+        backlog["items"][0].pop("required_source_targets")
+
+        with self.assertRaisesRegex(AuthorityError, "required_source_targets"):
+            validate_contract(policy, backlog, policy_schema, backlog_schema)
 
     def test_public_repository_inventory_is_exact(self) -> None:
         policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
@@ -505,6 +545,22 @@ class ContractValidationTest(unittest.TestCase):
             "(github.event_name == 'issues' && needs.intake.outputs.trigger_approved == 'true') || "
             "(github.event_name == 'workflow_dispatch' && inputs.mode == 'audit')) }}",
             conditions["audit"],
+        )
+
+    def test_public_and_local_issue_events_have_isolated_concurrency(self) -> None:
+        workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "issue-authority.yml").read_text(encoding="utf-8"))
+        concurrency = workflow["concurrency"]
+
+        self.assertEqual(
+            "${{ github.server_url == 'https://github.com' && "
+            "'github-issue-authority-public' || "
+            "format('github-issue-authority-local-{0}-{1}', "
+            "github.repository, github.event.issue.number) }}",
+            " ".join(concurrency["group"].split()),
+        )
+        self.assertEqual(
+            "${{ github.server_url != 'https://github.com' && github.event_name == 'issues' }}",
+            concurrency["cancel-in-progress"],
         )
 
     def test_unapproved_events_cannot_reach_a_privileged_environment(self) -> None:
@@ -818,6 +874,198 @@ class IssueIntakeTest(unittest.TestCase):
         )
 
         self.assertEqual(2, len(manifest["issues"][0]["cross_repository_targets"]))
+
+    def test_captured_legacy_active_and_closed_revisions_use_exact_migrated_targets(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
+        active = intake_issue(
+            author="rmcdaniel",
+            body=(
+                "Approved API-created authority.\n\n"
+                "<!-- durable-workflow-work-id: version-component-release-recovery-consumer-conformance -->"
+            ),
+            labels=["authority:github", "kind:cross-repository", "priority:P1", "status:ready"],
+            number=40,
+        )
+        active_hygiene = intake_issue(
+            author="durable-workflow-ops",
+            body=(
+                "### Required source targets\n\n"
+                "durable-workflow/.github@main\n"
+                "durable-workflow/cli@main\n"
+                "durable-workflow/durable-workflow.github.io@main\n"
+                "durable-workflow/sample-app@main\n"
+                "durable-workflow/sdk-php@main\n"
+                "durable-workflow/sdk-python@main\n"
+                "durable-workflow/sdk-rust@main\n"
+                "durable-workflow/server@main\n"
+                "durable-workflow/waterline@v2\n"
+                "durable-workflow/workflow@v2\n\n"
+                "### Repository roles\n\nActive public source hygiene."
+            ),
+            edited_at="2026-07-25T02:05:00Z",
+            labels=[
+                "authority:github",
+                "intake:approved",
+                "kind:cross-repository",
+                "priority:P2",
+                "status:ready",
+            ],
+            number=42,
+        )
+        closed = intake_issue(
+            author="rmcdaniel",
+            body=(
+                "Completed trusted-created authority.\n\n"
+                "<!-- durable-workflow-work-id: github-actions-trust-boundary -->"
+            ),
+            labels=["authority:github", "kind:cross-repository", "priority:P1", "status:done"],
+            number=39,
+        )
+        closed["state"] = "closed"
+        issues = {
+            ".github": [
+                (closed, []),
+                (active, []),
+                (active_hygiene, [label_event("durable-workflow-ops", "2026-07-25T02:06:00Z")]),
+            ]
+        }
+
+        manifest, inventory = reconstruct_intake(
+            policy,
+            FakeDiscovery(policy, issues),
+            target_qualification=qualification_fixture(),
+            legacy_cross_repository_targets=legacy_target_fixture(),
+        )
+
+        records = {record["number"]: record for record in manifest["issues"]}
+        self.assertEqual(8, len(records[40]["cross_repository_targets"]))
+        self.assertEqual(10, len(records[42]["cross_repository_targets"]))
+        self.assertEqual(10, len(records[39]["cross_repository_targets"]))
+        self.assertEqual("trusted-creation", records[40]["approval_mode"])
+        self.assertEqual("trusted-label", records[42]["approval_mode"])
+        self.assertEqual(
+            inventory,
+            verify_intake_manifest(
+                policy,
+                manifest,
+                FakeDiscovery(policy, issues),
+                target_qualification=qualification_fixture(),
+                legacy_cross_repository_targets=legacy_target_fixture(),
+            ),
+        )
+
+    def test_edited_api_created_revision_uses_its_declared_targets_not_legacy_migration(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
+        issue = intake_issue(
+            author="rmcdaniel",
+            body=(
+                "### Required source targets\n\n"
+                "durable-workflow/.github@main\n"
+                "durable-workflow/workflow@v2\n"
+                "durable-workflow/waterline@v2\n"
+                "durable-workflow/server@main\n"
+                "durable-workflow/cli@main\n"
+                "durable-workflow/sdk-php@main\n"
+                "durable-workflow/sdk-python@main\n"
+                "durable-workflow/sdk-rust@main\n\n"
+                "### Repository roles\n\nActive source and consumers."
+            ),
+            edited_at="2026-07-25T01:59:00Z",
+            labels=["intake:approved", "kind:cross-repository"],
+            number=52,
+        )
+        timeline = [label_event("rmcdaniel", "2026-07-25T02:00:00Z")]
+
+        manifest, _inventory = reconstruct_intake(
+            policy,
+            FakeDiscovery(policy, {".github": [(issue, timeline)]}),
+            target_qualification=qualification_fixture(),
+            legacy_cross_repository_targets=legacy_target_fixture(),
+        )
+
+        record = manifest["issues"][0]
+        self.assertEqual("trusted-label", record["approval_mode"])
+        self.assertEqual(8, len(record["cross_repository_targets"]))
+
+    def test_legacy_issue_form_revision_migrates_its_bounded_repository_set(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
+        issue = intake_issue(
+            author="rmcdaniel",
+            body=(
+                "### Affected public repositories\n\n"
+                "- `durable-workflow/.github` owns the decision.\n"
+                "- `durable-workflow/workflow` consumes it.\n\n"
+                "### Shared public contract\n\nLegacy form revision."
+            ),
+            labels=["kind:cross-repository"],
+        )
+
+        manifest, _inventory = reconstruct_intake(
+            policy,
+            FakeDiscovery(policy, {".github": [(issue, [])]}),
+            target_qualification=qualification_fixture(),
+            legacy_cross_repository_targets=legacy_target_fixture(),
+        )
+
+        self.assertEqual(
+            [".github", "workflow"],
+            [target["repository"] for target in manifest["issues"][0]["cross_repository_targets"]],
+        )
+
+    def test_legacy_target_migration_cannot_authorize_later_revisions_or_relabels(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
+        body = (
+            "Legacy authority.\n\n"
+            "<!-- durable-workflow-work-id: version-component-release-recovery-consumer-conformance -->"
+        )
+        cases: dict[str, tuple[dict[str, Any], list[dict[str, Any]]]] = {}
+
+        created_late = intake_issue(
+            author="rmcdaniel",
+            body=body,
+            labels=["kind:cross-repository"],
+        )
+        created_late["created_at"] = "2026-07-25T00:02:00Z"
+        cases["created-after-cutoff"] = (created_late, [])
+
+        edited = intake_issue(
+            author="rmcdaniel",
+            body=body,
+            edited_at="2026-07-25T00:02:00Z",
+            labels=["intake:approved", "kind:cross-repository"],
+        )
+        cases["edited-and-reapproved"] = (
+            edited,
+            [label_event("rmcdaniel", "2026-07-25T00:03:00Z")],
+        )
+
+        relabeled = intake_issue(
+            author="rmcdaniel",
+            body=body,
+            labels=["kind:cross-repository"],
+        )
+        cases["relabeled-after-cutoff"] = (
+            relabeled,
+            [
+                label_event(
+                    "rmcdaniel",
+                    "2026-07-25T00:03:00Z",
+                    label="kind:cross-repository",
+                )
+            ],
+        )
+
+        for name, (issue, timeline) in cases.items():
+            with (
+                self.subTest(name=name),
+                self.assertRaisesRegex(AuthorityError, "must declare its required source targets"),
+            ):
+                reconstruct_intake(
+                    policy,
+                    FakeDiscovery(policy, {".github": [(issue, timeline)]}),
+                    target_qualification=qualification_fixture(),
+                    legacy_cross_repository_targets=legacy_target_fixture(),
+                )
 
     def test_manifest_revalidation_rejects_cross_repository_label_without_targets(self) -> None:
         policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
@@ -1137,6 +1385,19 @@ class MigrationTest(unittest.TestCase):
             self.assertEqual("2.0 beta", issue["milestone"]["title"])
             self.assertIn(OWNER_LABELS[repository], label_names(issue))
             self.assertNotIn(COMPLETION_REQUIRED_LABEL, label_names(issue))
+            if item["kind"] == "cross-repository":
+                targets = declared_targets(
+                    issue["body"],
+                    qualification_targets(qualification_fixture()),
+                    organization=self.policy["organization"],
+                    required=True,
+                )
+                self.assertEqual(
+                    sorted(item["required_source_targets"]),
+                    sorted(
+                        f"{self.policy['organization']}/{target['repository']}@{target['branch']}" for target in targets
+                    ),
+                )
 
         _repository, authorization = find_work_item(self.client, "authorize-2-0-beta")
         _drill_repository, drill = find_work_item(self.client, "github-only-beta-continuity-drill")

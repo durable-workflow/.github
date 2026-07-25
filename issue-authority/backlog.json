@@ -9,6 +9,14 @@
       "kind": "cross-repository",
       "priority": "P2",
       "repository": ".github",
+      "required_source_targets": [
+        "durable-workflow/.github@main",
+        "durable-workflow/cli@main",
+        "durable-workflow/sdk-php@main",
+        "durable-workflow/sdk-python@main",
+        "durable-workflow/sdk-rust@main",
+        "durable-workflow/server@main"
+      ],
       "status": "ready",
       "title": "Prepare versioned changelogs without guessing release tags"
     },
@@ -31,6 +39,18 @@
       "kind": "cross-repository",
       "priority": "P2",
       "repository": ".github",
+      "required_source_targets": [
+        "durable-workflow/.github@main",
+        "durable-workflow/cli@main",
+        "durable-workflow/durable-workflow.github.io@main",
+        "durable-workflow/sample-app@main",
+        "durable-workflow/sdk-php@main",
+        "durable-workflow/sdk-python@main",
+        "durable-workflow/sdk-rust@main",
+        "durable-workflow/server@main",
+        "durable-workflow/waterline@v2",
+        "durable-workflow/workflow@v2"
+      ],
       "status": "ready",
       "title": "Prove beta continuity from GitHub and public registries"
     },
