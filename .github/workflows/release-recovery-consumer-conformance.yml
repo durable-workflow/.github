@@ -7,8 +7,7 @@ on:
       - '.github/workflows/release-recovery-consumer-conformance.yml'
       - 'release-recovery/consumer-conformance/**'
       - 'scripts/release_recovery_consumer_conformance.py'
-  schedule:
-    - cron: '41 5 * * *'
+      - 'scripts/release_recovery_target_qualification.py'
   workflow_dispatch:
 
 permissions:
@@ -35,15 +34,14 @@ jobs:
 
       - name: Audit public target conformance
         run: >-
-          python scripts/release_recovery_consumer_conformance.py
+          python scripts/release_recovery_target_qualification.py
           --contract release-recovery/consumer-conformance/contract.json
-          --audit-public-targets
-          --evidence release-recovery-consumer-conformance-evidence.json
+          --evidence release-recovery-target-qualification-evidence.json
 
       - name: Retain target conformance evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: release-recovery-consumer-conformance-${{ github.run_id }}-${{ github.run_attempt }}
-          path: release-recovery-consumer-conformance-evidence.json
+          path: release-recovery-target-qualification-evidence.json
           if-no-files-found: error
           retention-days: 90

@@ -16,8 +16,12 @@ Component CI compares a changed contract with the previous target revision and
 rejects changed contract content at the same version. Passing evidence records
 the source commit, target branch, contract version and digests, every required
 case, and the adapter-owned verification result. The control-plane target audit
-also compares the contract, suite, and adapter pins on all seven public target
-branches.
+resolves every protected target ref to an exact commit before comparing the
+contract, suite, identity, and adapter pins on all seven public target branches.
+That aggregate audit runs on target-branch activity and on a schedule under the
+required control-plane qualification context. Pull requests remain available
+for staging a coordinated contract update; the protected target check stays
+failing until every consumer publishes the synchronized artifacts.
 
 To validate this source copy without contacting another repository:
 

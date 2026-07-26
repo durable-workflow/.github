@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: '41 5 * * *'
   workflow_dispatch:
 
 permissions:
@@ -97,3 +99,25 @@ jobs:
             /tmp/recovery-workflow-authority-verification.json
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Audit synchronized release-recovery consumers
+        if: >-
+          github.server_url == 'https://github.com' &&
+          github.ref == 'refs/heads/main' &&
+          github.event_name != 'pull_request'
+        run: >-
+          python scripts/release_recovery_target_qualification.py
+          --contract release-recovery/consumer-conformance/contract.json
+          --evidence release-recovery-target-qualification-evidence.json
+
+      - name: Retain release-recovery target evidence
+        if: >-
+          github.server_url == 'https://github.com' &&
+          github.ref == 'refs/heads/main' &&
+          github.event_name != 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: release-recovery-target-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-recovery-target-qualification-evidence.json
+          if-no-files-found: error
+          retention-days: 90
