@@ -208,6 +208,44 @@
         "number": 61,
         "repository": ".github"
       }
+    },
+    {
+      "activation_commit": "f5d65b9bad402492222ec309e91ae61e5895e353",
+      "reason": "The coherent 2.0.0-beta.14 train is superseded by the later immutable coherent 2.0.0-beta.16 public product train, while its historical direct target-branch landings cannot be reconstructed as linked pull requests.",
+      "retired": {
+        "number": 61,
+        "repository": ".github"
+      },
+      "successor": {
+        "commit": "f5d65b9bad402492222ec309e91ae61e5895e353",
+        "path": "product-train/current.json",
+        "release_plan": {
+          "sha256": "f875636b0bb024d5365ffedd472beb8b0a439d4df0eb7700f22ef2897801be89",
+          "tag": "release-plan/coherent-2-0-beta-16"
+        },
+        "repository": ".github",
+        "sha256": "12cffa18e0ff50ac209b758525bd71d42e4b38f722facd3d6cb44883cd7edbf4",
+        "train": "2.0.0-beta.16"
+      }
+    },
+    {
+      "activation_commit": "f5d65b9bad402492222ec309e91ae61e5895e353",
+      "reason": "The prerelease-specific 2.0.0-beta.16 authority is retired in favor of its later immutable coherent public product-train record, while its historical direct target-branch landings cannot be reconstructed as linked pull requests.",
+      "retired": {
+        "number": 65,
+        "repository": ".github"
+      },
+      "successor": {
+        "commit": "f5d65b9bad402492222ec309e91ae61e5895e353",
+        "path": "product-train/current.json",
+        "release_plan": {
+          "sha256": "f875636b0bb024d5365ffedd472beb8b0a439d4df0eb7700f22ef2897801be89",
+          "tag": "release-plan/coherent-2-0-beta-16"
+        },
+        "repository": ".github",
+        "sha256": "12cffa18e0ff50ac209b758525bd71d42e4b38f722facd3d6cb44883cd7edbf4",
+        "train": "2.0.0-beta.16"
+      }
     }
   ],
   "repositories": [

@@ -142,7 +142,12 @@
             "pattern": "^[0-9a-f]{40}$"
           },
           "retired": {"$ref": "#/$defs/issueIdentity"},
-          "successor": {"$ref": "#/$defs/issueIdentity"},
+          "successor": {
+            "oneOf": [
+              {"$ref": "#/$defs/issueIdentity"},
+              {"$ref": "#/$defs/immutableProductTrainIdentity"}
+            ]
+          },
           "reason": {
             "type": "string",
             "minLength": 1,
@@ -165,6 +170,47 @@
         "number": {
           "type": "integer",
           "minimum": 1
+        }
+      }
+    },
+    "immutableProductTrainIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit", "path", "sha256", "train", "release_plan"],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]+$"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "path": {
+          "const": "product-train/current.json"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "train": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+-(?:alpha|beta)\\.[0-9]+$"
+        },
+        "release_plan": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tag", "sha256"],
+          "properties": {
+            "tag": {
+              "type": "string",
+              "pattern": "^release-plan/[a-z0-9][a-z0-9-]{2,79}$"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
         }
       }
     }

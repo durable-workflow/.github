@@ -14,7 +14,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -30,7 +30,7 @@ from scripts import cross_repository_lifecycle
 
 POLICY_SCHEMA = "durable-workflow.github-issue-authority/v1"
 BACKLOG_SCHEMA = "durable-workflow.github-beta-backlog/v1"
-INTAKE_SCHEMA = "durable-workflow.github-issue-intake/v7"
+INTAKE_SCHEMA = "durable-workflow.github-issue-intake/v8"
 LEGACY_TARGET_SCHEMA = "durable-workflow.legacy-cross-repository-targets/v3"
 MARKER_PATTERN = re.compile(r"<!-- beta-work-id: ([a-z0-9][a-z0-9-]{2,79}) -->")
 WORK_MARKER_PATTERN = re.compile(r"<!-- durable-workflow-work-id: ([a-z0-9][a-z0-9-]{2,79}) -->")
@@ -294,28 +294,46 @@ def validate_contract(
         raise AuthorityError("selective backlog milestone is not declared by issue-authority policy")
 
     retired_identities: set[tuple[str, int]] = set()
-    successor_identities: set[tuple[str, int]] = set()
     for supersession in policy["prerelease_supersessions"]:
         retired = supersession["retired"]
         successor = supersession["successor"]
         retired_identity = (retired["repository"], retired["number"])
-        successor_identity = (successor["repository"], successor["number"])
         if retired["repository"] not in repositories or successor["repository"] not in repositories:
             raise AuthorityError("prerelease supersession names an unknown public repository")
-        if retired_identity == successor_identity:
-            raise AuthorityError("prerelease supersession must name a distinct active successor")
         if retired_identity in retired_identities:
             raise AuthorityError(
                 f"prerelease supersession repeats retired issue {retired['repository']}#{retired['number']}"
             )
         retired_identities.add(retired_identity)
-        successor_identities.add(successor_identity)
-    chained = retired_identities & successor_identities
-    if chained:
-        raise AuthorityError(
-            "prerelease supersession successor must remain active rather than naming another retired issue: "
-            + ", ".join(f"{repository}#{number}" for repository, number in sorted(chained))
-        )
+        successor_number = successor.get("number")
+        if type(successor_number) is int:
+            successor_identity = (successor["repository"], successor_number)
+            if retired_identity == successor_identity:
+                raise AuthorityError("prerelease supersession must name a distinct successor")
+        elif (
+            successor["repository"] != policy["authority_repository"]
+            or successor["commit"] != supersession["activation_commit"]
+        ):
+            raise AuthorityError(
+                "immutable prerelease successor must be an exact authority-repository activation commit"
+            )
+
+    successor_by_retired = {
+        (record["retired"]["repository"], record["retired"]["number"]): record["successor"]
+        for record in policy["prerelease_supersessions"]
+    }
+    for start in retired_identities:
+        seen: set[tuple[str, int]] = set()
+        current = start
+        while current in successor_by_retired:
+            if current in seen:
+                raise AuthorityError("prerelease supersession issue chain contains a cycle")
+            seen.add(current)
+            successor = successor_by_retired[current]
+            successor_number = successor.get("number")
+            if type(successor_number) is not int:
+                break
+            current = (successor["repository"], successor_number)
 
     items = backlog["items"]
     item_ids = [item["id"] for item in items]
@@ -712,6 +730,37 @@ class GitHubDiscovery:
             time.sleep(GITHUB_API_RETRY_SECONDS * (2 ** (attempt - 1)))
         raise AssertionError("GitHub REST issue discovery retry loop ended unexpectedly")
 
+    def _bytes(self, path: str) -> bytes:
+        request = urllib.request.Request(
+            f"{self.api_url}{path}",
+            headers={**self.headers, "Accept": "application/vnd.github.raw+json"},
+            method="GET",
+        )
+        for attempt in range(1, GITHUB_API_ATTEMPTS + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    return response.read()
+            except urllib.error.HTTPError as error:
+                retryable = error.code == 429 or 500 <= error.code <= 599
+                if not retryable or attempt == GITHUB_API_ATTEMPTS:
+                    raise AuthorityError(f"GitHub REST content discovery returned {error.code}") from error
+            except (urllib.error.URLError, ConnectionError, TimeoutError) as error:
+                if attempt == GITHUB_API_ATTEMPTS:
+                    raise AuthorityError("GitHub REST content discovery failed after bounded retries") from error
+            time.sleep(GITHUB_API_RETRY_SECONDS * (2 ** (attempt - 1)))
+        raise AssertionError("GitHub REST content discovery retry loop ended unexpectedly")
+
+    def read_file(
+        self,
+        organization: str,
+        repository: str,
+        commit: str,
+        path: str,
+    ) -> bytes:
+        encoded_path = urllib.parse.quote(path, safe="/")
+        encoded_commit = urllib.parse.quote(commit, safe="")
+        return self._bytes(f"/repos/{organization}/{repository}/contents/{encoded_path}?ref={encoded_commit}")
+
     def list_commit_statuses(
         self,
         organization: str,
@@ -824,16 +873,60 @@ def _manifest_prerelease_supersessions(
     }
 
 
+def _is_issue_successor(successor: Mapping[str, Any]) -> bool:
+    return type(successor.get("number")) is int
+
+
+def _validate_immutable_product_train_successor(
+    successor: Mapping[str, Any],
+    raw: bytes,
+) -> None:
+    if hashlib.sha256(raw).hexdigest() != successor["sha256"]:
+        raise AuthorityError("immutable prerelease successor product-train digest changed")
+    try:
+        product_train = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise AuthorityError("immutable prerelease successor product train is not valid UTF-8 JSON") from error
+
+    train = successor["train"]
+    trains = product_train.get("trains") if isinstance(product_train, Mapping) else None
+    selected = trains.get(train) if isinstance(trains, Mapping) else None
+    components = product_train.get("components") if isinstance(product_train, Mapping) else None
+    versions = selected.get("versions") if isinstance(selected, Mapping) else None
+    if (
+        not isinstance(product_train, Mapping)
+        or product_train.get("schema") != "durable-workflow.product-train/v2"
+        or product_train.get("current") != train
+        or not isinstance(components, list)
+        or not components
+        or len(components) != len(set(components))
+        or not isinstance(versions, Mapping)
+        or set(versions) != set(components)
+        or set(versions.values()) != {train}
+        or selected.get("status") != "supported"
+        or selected.get("release_plan") != successor["release_plan"]
+    ):
+        raise AuthorityError("immutable prerelease successor is not one coherent supported public product train")
+
+
 def _supersession_activation(
     supersession: Mapping[str, Any],
     retired_record: Mapping[str, Any],
-    successor_record: Mapping[str, Any],
+    successor_record: Mapping[str, Any] | None,
 ) -> dict[str, str]:
     retired = supersession["retired"]
     successor = supersession["successor"]
     context = f"{SUPERSESSION_ACTIVATION_CONTEXT_PREFIX}/{retired['repository']}/{retired['number']}"
     if len(context) > 100:
         raise AuthorityError("prerelease supersession activation context exceeds the GitHub status bound")
+    if _is_issue_successor(successor):
+        assert successor_record is not None
+        successor_authority = {
+            **successor,
+            "revision": successor_record["revision"],
+        }
+    else:
+        successor_authority = dict(successor)
     activation = {
         "commit": supersession["activation_commit"],
         "context": context,
@@ -845,10 +938,7 @@ def _supersession_activation(
                     **retired,
                     "revision": retired_record["revision"],
                 },
-                "successor": {
-                    **successor,
-                    "revision": successor_record["revision"],
-                },
+                "successor": successor_authority,
             }
         ),
     }
@@ -910,10 +1000,17 @@ def _bind_prerelease_supersessions(
     issue_by_identity = {
         (repository, int(issue["number"])): issue for repository, issues in inventory.items() for issue in issues
     }
+    retired_identities = {
+        (record["retired"]["repository"], record["retired"]["number"]) for record in policy["prerelease_supersessions"]
+    }
+    validated_product_trains: set[tuple[str, str, str, str]] = set()
     milestone_titles = {milestone["title"] for milestone in policy["milestones"]}
-    required_labels = {
+    blocker_labels = {
         "authority:github",
         "beta:blocker",
+    }
+    active_labels = {
+        *blocker_labels,
         COMPLETION_REQUIRED_LABEL,
     }
 
@@ -921,37 +1018,22 @@ def _bind_prerelease_supersessions(
         retired = supersession["retired"]
         successor = supersession["successor"]
         retired_identity = (retired["repository"], retired["number"])
-        successor_identity = (successor["repository"], successor["number"])
         retired_record = record_by_identity.get(retired_identity)
-        successor_record = record_by_identity.get(successor_identity)
         retired_issue = issue_by_identity.get(retired_identity)
-        successor_issue = issue_by_identity.get(successor_identity)
         if retired_record is None or retired_issue is None:
             raise AuthorityError(
                 f"retired prerelease issue {retired['repository']}#{retired['number']} "
                 "does not have trusted current-revision intake"
             )
-        if successor_record is None or successor_issue is None:
-            raise AuthorityError(
-                f"active prerelease successor {successor['repository']}#{successor['number']} "
-                "does not have trusted current-revision intake"
-            )
 
         retired_labels = _intake_label_names(retired_issue)
-        successor_labels = _intake_label_names(successor_issue)
         retired_statuses = retired_labels & STATUS_LABELS
-        successor_statuses = successor_labels & STATUS_LABELS
         retired_milestone = retired_issue.get("milestone")
-        successor_milestone = successor_issue.get("milestone")
         retired_milestone_title = retired_milestone.get("title") if isinstance(retired_milestone, Mapping) else None
-        successor_milestone_title = (
-            successor_milestone.get("title") if isinstance(successor_milestone, Mapping) else None
-        )
         if (
-            not required_labels <= retired_labels
-            or COMPLETION_VERIFIED_LABEL in retired_labels
+            not blocker_labels <= retired_labels
             or len(retired_labels & KIND_LABELS) != 1
-            or len(retired_statuses) != 1
+            or not retired_statuses
             or retired_issue.get("state") not in {"open", "closed"}
             or retired_milestone_title not in milestone_titles
         ):
@@ -959,43 +1041,106 @@ def _bind_prerelease_supersessions(
                 f"retired prerelease issue {retired['repository']}#{retired['number']} "
                 "does not retain evidence-required blocker authority"
             )
-        successor_is_active = (
-            required_labels <= successor_labels
-            and COMPLETION_VERIFIED_LABEL not in successor_labels
-            and len(successor_labels & KIND_LABELS) == 1
-            and len(successor_statuses) == 1
-            and successor_statuses <= OPEN_STATUS_LABELS
-            and successor_issue.get("state") == "open"
-            and successor_milestone_title == retired_milestone_title
-        )
-        successor_is_completed = (
-            {"authority:github", "beta:blocker", COMPLETION_VERIFIED_LABEL} <= successor_labels
-            and len(successor_labels & KIND_LABELS) == 1
-            and successor_statuses == {"status:done"}
-            and successor_issue.get("state") == "closed"
-            and successor_milestone_title == retired_milestone_title
-        )
-        if not successor_is_active and not successor_is_completed:
-            raise AuthorityError(
-                f"prerelease successor {successor['repository']}#{successor['number']} "
-                "is neither an active evidence-required blocker nor a verified completed blocker "
-                "in the same release milestone"
-            )
 
+        if _is_issue_successor(successor):
+            successor_identity = (successor["repository"], successor["number"])
+            successor_record = record_by_identity.get(successor_identity)
+            successor_issue = issue_by_identity.get(successor_identity)
+            if successor_record is None or successor_issue is None:
+                raise AuthorityError(
+                    f"prerelease successor {successor['repository']}#{successor['number']} "
+                    "does not have trusted current-revision intake"
+                )
+
+            successor_labels = _intake_label_names(successor_issue)
+            successor_statuses = successor_labels & STATUS_LABELS
+            successor_milestone = successor_issue.get("milestone")
+            successor_milestone_title = (
+                successor_milestone.get("title") if isinstance(successor_milestone, Mapping) else None
+            )
+            successor_is_active = (
+                active_labels <= successor_labels
+                and COMPLETION_VERIFIED_LABEL not in successor_labels
+                and len(successor_labels & KIND_LABELS) == 1
+                and len(successor_statuses) == 1
+                and successor_statuses <= OPEN_STATUS_LABELS
+                and successor_issue.get("state") == "open"
+                and successor_milestone_title == retired_milestone_title
+            )
+            successor_is_completed = (
+                {"authority:github", "beta:blocker", COMPLETION_VERIFIED_LABEL} <= successor_labels
+                and len(successor_labels & KIND_LABELS) == 1
+                and successor_statuses == {"status:done"}
+                and successor_issue.get("state") == "closed"
+                and successor_milestone_title == retired_milestone_title
+            )
+            successor_is_retiring = (
+                successor_identity in retired_identities
+                and blocker_labels <= successor_labels
+                and len(successor_labels & KIND_LABELS) == 1
+                and bool(successor_statuses)
+                and successor_issue.get("state") in {"open", "closed"}
+                and successor_milestone_title == retired_milestone_title
+            )
+            if not successor_is_active and not successor_is_completed and not successor_is_retiring:
+                raise AuthorityError(
+                    f"prerelease successor {successor['repository']}#{successor['number']} "
+                    "is neither active, verified completed, nor bound to a later retirement "
+                    "in the same release milestone"
+                )
+
+            activation = _supersession_activation(
+                supersession,
+                retired_record,
+                successor_record,
+            )
+            if (
+                retired_issue.get("state") == "closed"
+                or SUPERSEDED_STATUS_LABEL in retired_statuses
+                or successor_is_completed
+                or successor_is_retiring
+            ):
+                _require_supersession_activation(policy, client, activation)
+            retired_record["superseded_by"] = {
+                "activation": activation,
+                "number": successor["number"],
+                "reason": supersession["reason"],
+                "repository": successor["repository"],
+                "revision": successor_record["revision"],
+            }
+            continue
+
+        product_train_identity = (
+            successor["repository"],
+            successor["commit"],
+            successor["path"],
+            successor["sha256"],
+        )
+        if product_train_identity not in validated_product_trains:
+            raw = client.read_file(
+                policy["organization"],
+                successor["repository"],
+                successor["commit"],
+                successor["path"],
+            )
+            _validate_immutable_product_train_successor(successor, raw)
+            validated_product_trains.add(product_train_identity)
         activation = _supersession_activation(
             supersession,
             retired_record,
-            successor_record,
+            None,
         )
-        if successor_is_completed:
+        if retired_issue.get("state") == "closed" or SUPERSEDED_STATUS_LABEL in retired_statuses:
             _require_supersession_activation(policy, client, activation)
-
         retired_record["superseded_by"] = {
             "activation": activation,
-            "number": successor["number"],
+            "commit": successor["commit"],
+            "path": successor["path"],
             "reason": supersession["reason"],
+            "release_plan": dict(successor["release_plan"]),
             "repository": successor["repository"],
-            "revision": successor_record["revision"],
+            "sha256": successor["sha256"],
+            "train": successor["train"],
         }
 
 
@@ -1279,6 +1424,60 @@ def reconstruct_intake(
     return manifest, inventory
 
 
+def _valid_superseded_by(
+    value: Any,
+    repositories: Collection[str],
+) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    activation = value.get("activation")
+    if (
+        not isinstance(activation, Mapping)
+        or set(activation) != {"commit", "context", "digest"}
+        or not re.fullmatch(r"[0-9a-f]{40}", str(activation.get("commit", "")))
+        or not isinstance(activation.get("context"), str)
+        or not activation["context"].startswith(SUPERSESSION_ACTIVATION_CONTEXT_PREFIX + "/")
+        or not re.fullmatch(r"[0-9a-f]{64}", str(activation.get("digest", "")))
+        or not isinstance(value.get("reason"), str)
+        or not value["reason"]
+        or not isinstance(value.get("repository"), str)
+        or value["repository"] not in repositories
+    ):
+        return False
+
+    if "number" in value:
+        return (
+            set(value) == {"activation", "number", "reason", "repository", "revision"}
+            and type(value.get("number")) is int
+            and value["number"] > 0
+            and isinstance(value.get("revision"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", value["revision"]) is not None
+        )
+
+    release_plan = value.get("release_plan")
+    return (
+        set(value)
+        == {
+            "activation",
+            "commit",
+            "path",
+            "reason",
+            "release_plan",
+            "repository",
+            "sha256",
+            "train",
+        }
+        and re.fullmatch(r"[0-9a-f]{40}", str(value.get("commit", ""))) is not None
+        and value.get("path") == "product-train/current.json"
+        and re.fullmatch(r"[0-9a-f]{64}", str(value.get("sha256", ""))) is not None
+        and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+-(?:alpha|beta)\.[0-9]+", str(value.get("train", ""))) is not None
+        and isinstance(release_plan, Mapping)
+        and set(release_plan) == {"sha256", "tag"}
+        and re.fullmatch(r"[0-9a-f]{64}", str(release_plan.get("sha256", ""))) is not None
+        and re.fullmatch(r"release-plan/[a-z0-9][a-z0-9-]{2,79}", str(release_plan.get("tag", ""))) is not None
+    )
+
+
 def verify_intake_manifest(
     policy: dict[str, Any],
     manifest: Mapping[str, Any],
@@ -1331,36 +1530,7 @@ def verify_intake_manifest(
             or not isinstance(record.get("completion_evidence_required"), bool)
             or not isinstance(record.get("cross_repository_targets"), list)
             or not isinstance(record.get("historical_cross_repository_completion"), list)
-            or (
-                superseded_by is not None
-                and (
-                    not isinstance(superseded_by, Mapping)
-                    or set(superseded_by)
-                    != {
-                        "activation",
-                        "number",
-                        "reason",
-                        "repository",
-                        "revision",
-                    }
-                    or not isinstance(superseded_by.get("activation"), Mapping)
-                    or set(superseded_by["activation"]) != {"commit", "context", "digest"}
-                    or not re.fullmatch(r"[0-9a-f]{40}", str(superseded_by["activation"].get("commit", "")))
-                    or not isinstance(superseded_by["activation"].get("context"), str)
-                    or not superseded_by["activation"]["context"].startswith(
-                        SUPERSESSION_ACTIVATION_CONTEXT_PREFIX + "/"
-                    )
-                    or not re.fullmatch(r"[0-9a-f]{64}", str(superseded_by["activation"].get("digest", "")))
-                    or not isinstance(superseded_by.get("repository"), str)
-                    or superseded_by["repository"] not in inventory
-                    or type(superseded_by.get("number")) is not int
-                    or superseded_by["number"] < 1
-                    or not isinstance(superseded_by.get("reason"), str)
-                    or not superseded_by["reason"]
-                    or not isinstance(superseded_by.get("revision"), str)
-                    or not re.fullmatch(r"[0-9a-f]{64}", superseded_by["revision"])
-                )
-            )
+            or (superseded_by is not None and not _valid_superseded_by(superseded_by, inventory))
         ):
             raise AuthorityError("issue-intake manifest contains invalid issue authority")
         identity = (repository, number)
@@ -1870,12 +2040,23 @@ def _render_supersession_evidence(
     successor: Mapping[str, Any],
 ) -> str:
     successor_repository = str(successor["repository"])
-    successor_number = int(successor["number"])
-    successor_url = f"https://github.com/{organization}/{successor_repository}/issues/{successor_number}"
+    if "number" in successor:
+        successor_number = int(successor["number"])
+        successor_url = f"https://github.com/{organization}/{successor_repository}/issues/{successor_number}"
+        successor_line = f"[{organization}/{successor_repository}#{successor_number}]({successor_url})"
+    else:
+        successor_commit = str(successor["commit"])
+        successor_path = str(successor["path"])
+        successor_url = (
+            f"https://github.com/{organization}/{successor_repository}/blob/{successor_commit}/{successor_path}"
+        )
+        successor_line = (
+            f"[{successor['train']} immutable product train]({successor_url}) (`{successor['release_plan']['tag']}`)"
+        )
     return (
         f"{SUPERSESSION_EVIDENCE_MARKER}\n"
         "This prerelease authority is retired without recording completion of its original acceptance criteria.\n\n"
-        f"- Successor: [{organization}/{successor_repository}#{successor_number}]({successor_url})\n"
+        f"- Successor: {successor_line}\n"
         f"- Reason: {successor['reason']}\n"
         f"- Retired authority: `{organization}/{retired_repository}#{retired_number}`\n"
     )
@@ -2238,8 +2419,10 @@ def _audit_state_labels(
             aggregated_close = False
             assessment: dict[str, Any] | None = None
             approved_completion_hold = (repository, number) in approved_completion_holds
+            supersession = (prerelease_supersessions or {}).get((repository, number))
             if (
-                approved_completion_hold
+                supersession is None
+                and approved_completion_hold
                 and COMPLETION_REQUIRED_LABEL not in labels
                 and COMPLETION_VERIFIED_LABEL not in labels
             ):
@@ -2249,7 +2432,6 @@ def _audit_state_labels(
                 labels = replacement
                 statuses = labels & STATUS_LABELS
 
-            supersession = (prerelease_supersessions or {}).get((repository, number))
             if supersession is not None:
                 client.ensure_supersession_activation(
                     organization,
@@ -2279,6 +2461,7 @@ def _audit_state_labels(
                     issue["state"] = "closed"
                     issue["state_reason"] = "not_planned"
                 replacement = set(labels) - STATUS_LABELS
+                replacement -= COMPLETION_LABELS
                 replacement.add(SUPERSEDED_STATUS_LABEL)
                 if replacement != labels:
                     client.replace_issue_labels(
@@ -2640,6 +2823,28 @@ def _supersession_evidence(
     organization: str,
     supersessions: Mapping[tuple[str, int], Mapping[str, Any]] | None,
 ) -> list[dict[str, Any]]:
+    def successor_evidence(successor: Mapping[str, Any]) -> dict[str, Any]:
+        repository = str(successor["repository"])
+        if "number" in successor:
+            number = int(successor["number"])
+            return {
+                "number": number,
+                "repository": repository,
+                "revision": successor["revision"],
+                "url": f"https://github.com/{organization}/{repository}/issues/{number}",
+            }
+        commit = str(successor["commit"])
+        path = str(successor["path"])
+        return {
+            "commit": commit,
+            "path": path,
+            "release_plan": dict(successor["release_plan"]),
+            "repository": repository,
+            "sha256": successor["sha256"],
+            "train": successor["train"],
+            "url": f"https://github.com/{organization}/{repository}/blob/{commit}/{path}",
+        }
+
     return [
         {
             "retired": {
@@ -2649,12 +2854,7 @@ def _supersession_evidence(
             },
             "state": "superseded",
             "activation": dict(successor["activation"]),
-            "successor": {
-                "number": successor["number"],
-                "repository": successor["repository"],
-                "revision": successor["revision"],
-                "url": (f"https://github.com/{organization}/{successor['repository']}/issues/{successor['number']}"),
-            },
+            "successor": successor_evidence(successor),
         }
         for (repository, number), successor in sorted((supersessions or {}).items())
     ]
