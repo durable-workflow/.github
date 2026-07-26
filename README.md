@@ -46,3 +46,8 @@ The [public target qualification policy](qualification/README.md) also enforces
 the organization-wide Actions trust boundary: immutable action and container
 references, job-scoped credentials, isolated pull requests and caches, and
 reviewed artifact consumers.
+
+The machine-readable
+[public repository hygiene inventory](repository-hygiene/inventory.json)
+records the maintained protected branches, the synchronized release train, and
+the cleanup completed for the 2.0 product surface.
