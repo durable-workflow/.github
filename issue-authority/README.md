@@ -57,6 +57,27 @@ merged into the declared branch, the merge commit remains on the branch, and
 every required repository check succeeded. A newer trusted open, rejected, or
 rebuilt attempt supersedes earlier evidence for the same target; untrusted
 public references remain inert.
+
+The protected merge gates may also land an implementation directly on each
+target branch without creating public implementation pull requests. In that
+case the lifecycle writer's aggregate completion record is the provenance
+boundary. The record must contain the complete declared target set, each exact
+`organization/repository@branch` identity, a full immutable landing commit, and
+the immutable GitHub Actions run identity that qualified it. The primary target
+is bound by the completion line and public qualification run; every peer uses
+the merge gate's exact `repository:branch` landing-and-qualification entry, and
+the record also carries one full-SHA completion-source marker matching the
+primary landing. The audit accepts this path only when there is no trusted
+linked pull-request attempt to supersede, the record belongs to the lifecycle
+credential's immutable user identity, every recorded commit remains reachable
+from its declared protected branch, each cited workflow run is green for that
+exact repository and commit, and every policy-required check is independently
+green on the commit. Retained evidence names both the cited run and the actual
+run carrying each required check; they need not be the same workflow. Other
+comments, mutable commit or run references, partial records, mismatched branches
+or commits, and qualification claims that differ from the vetted target
+contract remain non-completing.
+
 After pull-request, approval, landing, and check evaluation, the audit rereads
 the target-relevant closing-reference records and requires the complete snapshot
 to remain exact. It retries a changed snapshot only within a fixed bound and

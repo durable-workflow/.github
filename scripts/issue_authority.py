@@ -2035,7 +2035,7 @@ class GitHubApi:
         )
         return isinstance(comparison, dict) and comparison.get("status") in {"ahead", "identical"}
 
-    def successful_check_names(self, organization: str, repository: str, commit: str) -> set[str]:
+    def _latest_check_runs(self, organization: str, repository: str, commit: str) -> dict[str, dict[str, Any]]:
         encoded_commit = urllib.parse.quote(commit, safe="")
         runs: list[dict[str, Any]] = []
         for page in range(1, 11):
@@ -2061,11 +2061,76 @@ class GitHubApi:
             ordering = (timestamp if isinstance(timestamp, str) else "", identifier)
             if name not in latest or ordering > latest[name][0]:
                 latest[name] = (ordering, run)
+        return {name: run for name, (_ordering, run) in latest.items()}
+
+    def successful_check_names(self, organization: str, repository: str, commit: str) -> set[str]:
         return {
             name
-            for name, (_ordering, run) in latest.items()
+            for name, run in self._latest_check_runs(organization, repository, commit).items()
             if run.get("status") == "completed" and run.get("conclusion") == "success"
         }
+
+    def successful_check_run_ids(self, organization: str, repository: str, commit: str) -> dict[str, int]:
+        """Bind each latest green check name to its immutable GitHub Actions run identity."""
+
+        pattern = re.compile(
+            rf"https://github\.com/{re.escape(organization)}/{re.escape(repository)}/actions/runs/"
+            r"([1-9][0-9]*)(?:/job/[1-9][0-9]*)?(?:\?[^#\s]*)?"
+        )
+        identities: dict[str, int] = {}
+        for name, run in self._latest_check_runs(organization, repository, commit).items():
+            details_url = run.get("details_url")
+            match = pattern.fullmatch(details_url) if isinstance(details_url, str) else None
+            if run.get("status") == "completed" and run.get("conclusion") == "success" and match is not None:
+                identities[name] = int(match.group(1))
+        return identities
+
+    def successful_workflow_run(
+        self,
+        organization: str,
+        repository: str,
+        run_id: int,
+        commit: str,
+    ) -> bool:
+        """Verify one cited Actions run is green and belongs to the recorded repository and commit."""
+
+        run = self.request("GET", f"/repos/{organization}/{repository}/actions/runs/{run_id}")
+        run_repository = run.get("repository") if isinstance(run, Mapping) else None
+        return (
+            isinstance(run, Mapping)
+            and type(run.get("id")) is int
+            and run["id"] == run_id
+            and run.get("status") == "completed"
+            and run.get("conclusion") == "success"
+            and run.get("head_sha") == commit
+            and run.get("html_url") == f"https://github.com/{organization}/{repository}/actions/runs/{run_id}"
+            and isinstance(run_repository, Mapping)
+            and run_repository.get("full_name") == f"{organization}/{repository}"
+        )
+
+    def list_trusted_issue_comments(
+        self,
+        organization: str,
+        repository: str,
+        number: int,
+    ) -> list[dict[str, Any]]:
+        """Return comments owned by the exact authenticated lifecycle writer identity."""
+
+        comments = self.list_collection(f"/repos/{organization}/{repository}/issues/{number}/comments")
+        writer_id, writer_login = self._authenticated_writer()
+        return [
+            comment
+            for comment in comments
+            if (
+                isinstance(comment.get("body"), str)
+                and type(comment.get("id")) is int
+                and isinstance(comment.get("user"), Mapping)
+                and type(comment["user"].get("id")) is int
+                and comment["user"]["id"] == writer_id
+                and isinstance(comment["user"].get("login"), str)
+                and comment["user"]["login"].casefold() == writer_login.casefold()
+            )
+        ]
 
     def upsert_lifecycle_comment(
         self,
@@ -2075,21 +2140,8 @@ class GitHubApi:
         marker: str,
         body: str,
     ) -> None:
-        comments = self.list_collection(f"/repos/{organization}/{repository}/issues/{number}/comments")
-        writer_id, writer_login = self._authenticated_writer()
-        matches = [
-            comment
-            for comment in comments
-            if (
-                isinstance(comment.get("body"), str)
-                and marker in comment["body"]
-                and isinstance(comment.get("user"), Mapping)
-                and type(comment["user"].get("id")) is int
-                and comment["user"]["id"] == writer_id
-                and isinstance(comment["user"].get("login"), str)
-                and comment["user"]["login"].casefold() == writer_login.casefold()
-            )
-        ]
+        comments = self.list_trusted_issue_comments(organization, repository, number)
+        matches = [comment for comment in comments if marker in comment["body"]]
         if len(matches) > 1:
             raise AuthorityError(
                 f"GitHub issue {repository}#{number} has duplicate cross-repository lifecycle evidence"
@@ -2599,7 +2651,7 @@ def _audit_state_labels(
                         cross_repository_lifecycle.EVIDENCE_MARKER,
                         cross_repository_lifecycle.render_evidence(assessment),
                     )
-                    if assessment["complete"] and not cross_repository_lifecycle.closing_references_are_current(
+                    if assessment["complete"] and not cross_repository_lifecycle.lifecycle_authority_is_current(
                         client,
                         organization,
                         repository,
@@ -2690,7 +2742,7 @@ def _audit_state_labels(
             if (
                 assessment is not None
                 and assessment["complete"]
-                and not cross_repository_lifecycle.closing_references_are_current(
+                and not cross_repository_lifecycle.lifecycle_authority_is_current(
                     client,
                     organization,
                     repository,

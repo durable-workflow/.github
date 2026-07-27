@@ -184,7 +184,9 @@ def pending_reference_change(assessment: Mapping[str, Any]) -> dict[str, Any]:
         target["state"] = "pending:closing-reference-changed"
         targets.append(target)
     return {
+        "_authority_kind": assessment.get("_authority_kind"),
         "_closing_reference_snapshot": assessment.get("_closing_reference_snapshot", ()),
+        "_completion_record_identity": assessment.get("_completion_record_identity"),
         "complete": False,
         "targets": targets,
     }
@@ -206,6 +208,172 @@ def closing_references_are_current(
     events = client.list_issue_closing_references(organization, source_repository, number)
     return _closing_reference_snapshot(events, organization, repositories) == assessment.get(
         "_closing_reference_snapshot"
+    )
+
+
+def _pipeline_completion_record(
+    body: str,
+    organization: str,
+    source_repository: str,
+    targets: Sequence[Mapping[str, Any]],
+) -> tuple[str, tuple[tuple[str, str, str, tuple[str, ...], int], ...]] | None:
+    """Read the exact immutable landing and run identities emitted by the protected merge gate."""
+
+    expected = {
+        (str(target["repository"]), str(target["branch"])): tuple(sorted(set(target["required_checks"])))
+        for target in targets
+    }
+    source_targets = [identity for identity in expected if identity[0] == source_repository]
+    if len(source_targets) != 1:
+        return None
+    source_branch = source_targets[0][1]
+    lines = body.splitlines()
+    primary_pattern = re.compile(
+        rf"Completed in \[`([0-9a-f]{{7,40}})`\]\("
+        rf"https://github\.com/{re.escape(organization)}/{re.escape(source_repository)}/commit/"
+        rf"({COMMIT_PATTERN.pattern})\) on `({re.escape(source_branch)})`\."
+    )
+    primary_matches = [match for line in lines if (match := primary_pattern.fullmatch(line.strip())) is not None]
+    if len(primary_matches) != 1 or not primary_matches[0].group(2).startswith(primary_matches[0].group(1)):
+        return None
+    source_commit = primary_matches[0].group(2)
+
+    source_qualification_pattern = re.compile(
+        r"Required public qualification passed: "
+        rf"https://github\.com/{re.escape(organization)}/{re.escape(source_repository)}/actions/runs/"
+        r"([1-9][0-9]*)"
+    )
+    source_run_matches = [
+        match for line in lines if (match := source_qualification_pattern.fullmatch(line.strip())) is not None
+    ]
+    if len(source_run_matches) != 1:
+        return None
+    source_run = int(source_run_matches[0].group(1))
+
+    peer_heading = "Required cross-repository target qualification passed:"
+    headings = [index for index, line in enumerate(lines) if line.strip() == peer_heading]
+    if len(headings) != 1:
+        return None
+    peer_pattern = re.compile(
+        rf"- `([a-z0-9_.-]+):(main|v2)` at \[`([0-9a-f]{{7,40}})`\]\("
+        rf"https://github\.com/{re.escape(organization)}/([a-z0-9_.-]+)/commit/"
+        rf"({COMMIT_PATTERN.pattern})\) \(\[qualification\]\("
+        rf"https://github\.com/{re.escape(organization)}/([a-z0-9_.-]+)/actions/runs/"
+        r"([1-9][0-9]*)\)\)"
+    )
+    peer_records: list[tuple[str, str, str, tuple[str, ...], int]] = []
+    peer_lines_started = False
+    for line in lines[headings[0] + 1 :]:
+        stripped = line.strip()
+        if not stripped:
+            if peer_lines_started:
+                break
+            continue
+        if not stripped.startswith("- "):
+            if peer_lines_started:
+                break
+            return None
+        peer_lines_started = True
+        match = peer_pattern.fullmatch(stripped)
+        if match is None:
+            return None
+        repository, branch, short_commit, url_repository, commit, run_repository, run_id = match.groups()
+        identity = (repository, branch)
+        if (
+            repository != url_repository
+            or repository != run_repository
+            or identity not in expected
+            or repository == source_repository
+            or not commit.startswith(short_commit)
+        ):
+            return None
+        peer_records.append((repository, branch, commit, expected[identity], int(run_id)))
+
+    expected_peers = set(expected) - set(source_targets)
+    observed_peers = [(repository, branch) for repository, branch, _commit, _checks, _run in peer_records]
+    if (
+        not peer_lines_started
+        or len(observed_peers) != len(set(observed_peers))
+        or set(observed_peers) != expected_peers
+    ):
+        return None
+
+    marker_pattern = re.compile(rf"<!--\s*durable-workflow-completion-source:\s*({COMMIT_PATTERN.pattern})\s*-->")
+    marker_matches = marker_pattern.findall(body)
+    if (
+        len(marker_matches) != 1
+        or body.count("durable-workflow-completion-source:") != 1
+        or marker_matches[0] != source_commit
+    ):
+        return None
+    records = [
+        (
+            source_repository,
+            source_branch,
+            source_commit,
+            expected[(source_repository, source_branch)],
+            source_run,
+        )
+    ]
+    records.extend(peer_records)
+    return marker_matches[0], tuple(sorted(records))
+
+
+def _recorded_completion(
+    client: Any,
+    organization: str,
+    source_repository: str,
+    issue: Mapping[str, Any],
+    targets: Sequence[Mapping[str, Any]],
+) -> tuple[str, tuple[tuple[str, str, str, tuple[str, ...], int], ...]] | None:
+    """Select one semantically exact aggregate record from the authenticated lifecycle writer."""
+
+    number = issue.get("number")
+    if not isinstance(number, int):
+        raise LifecycleError("cross-repository issue has no numeric identity")
+    candidates = {
+        record
+        for comment in client.list_trusted_issue_comments(organization, source_repository, number)
+        if isinstance(comment, Mapping)
+        and isinstance(comment.get("body"), str)
+        and (
+            record := _pipeline_completion_record(
+                comment["body"],
+                organization,
+                source_repository,
+                targets,
+            )
+        )
+        is not None
+    }
+    if len(candidates) > 1:
+        raise LifecycleError("trusted cross-repository completion records disagree")
+    return next(iter(candidates)) if candidates else None
+
+
+def lifecycle_authority_is_current(
+    client: Any,
+    organization: str,
+    source_repository: str,
+    issue: Mapping[str, Any],
+    assessment: Mapping[str, Any],
+) -> bool:
+    """Re-read the authority source that produced a complete lifecycle assessment."""
+
+    if not closing_references_are_current(client, organization, source_repository, issue, assessment):
+        return False
+    if assessment.get("_authority_kind") != "protected-branch-record":
+        return True
+    targets = [
+        {
+            "branch": target["branch"],
+            "repository": target["repository"],
+            "required_checks": target["required_checks"],
+        }
+        for target in assessment["targets"]
+    ]
+    return _recorded_completion(client, organization, source_repository, issue, targets) == assessment.get(
+        "_completion_record_identity"
     )
 
 
@@ -434,6 +602,7 @@ def _evaluate_target(
         "reference_at": None,
         "reference_event": None,
         "repository": repository,
+        "required_checks": required_checks,
         "state": "pending:no-linked-pull-request",
     }
     if pull is None:
@@ -490,6 +659,70 @@ def _evaluate_target(
     return result
 
 
+def _evaluate_recorded_target(
+    client: Any,
+    organization: str,
+    target: Mapping[str, Any],
+    completion: tuple[str, str, str, tuple[str, ...], int],
+    completion_source: str,
+) -> dict[str, Any]:
+    """Independently revalidate one exact commit from a trusted aggregate completion record."""
+
+    repository, branch, commit, required_checks, qualification_run = completion
+    result: dict[str, Any] = {
+        "approval_at": None,
+        "approval_review": None,
+        "base_commit": None,
+        "base_ref": None,
+        "base_repository": None,
+        "branch": branch,
+        "commit": commit,
+        "completion_source": completion_source,
+        "head_commit": None,
+        "head_ref": None,
+        "head_repository": None,
+        "missing_checks": list(required_checks),
+        "provenance": "authenticated-completion-record",
+        "pull_author": None,
+        "pull_request": None,
+        "qualification_run": qualification_run,
+        "reference_actor": None,
+        "reference_at": None,
+        "reference_event": None,
+        "repository": repository,
+        "required_check_runs": {},
+        "required_checks": list(required_checks),
+        "state": "pending:landing-not-on-target",
+    }
+    if repository != target["repository"] or branch != target["branch"]:
+        result["state"] = "pending:wrong-target"
+        return result
+    if tuple(sorted(set(target["required_checks"]))) != required_checks:
+        result["state"] = "pending:qualification-identity"
+        return result
+    if not client.commit_reaches_branch(organization, repository, commit, branch):
+        return result
+    if not client.successful_workflow_run(
+        organization,
+        repository,
+        qualification_run,
+        commit,
+    ):
+        result["state"] = "pending:qualification-identity"
+        return result
+    successful_checks = client.successful_check_run_ids(organization, repository, commit)
+    result["required_check_runs"] = {
+        check: successful_checks[check] for check in required_checks if check in successful_checks
+    }
+    missing_checks = sorted(set(required_checks) - set(successful_checks))
+    result["missing_checks"] = missing_checks
+    if missing_checks:
+        result["state"] = "pending:qualification"
+    else:
+        result["state"] = "complete"
+    return result
+
+
 def evaluate_lifecycle(
     client: Any,
     organization: str,
@@ -519,8 +752,34 @@ def evaluate_lifecycle(
             _evaluate_target(client, organization, target, attempts.get(str(target["repository"])))
             for target in targets
         ]
+        authority_kind = "closing-references"
+        completion_record = None
+        if results and all(result["state"] == "pending:no-linked-pull-request" for result in results):
+            completion_record = _recorded_completion(
+                client,
+                organization,
+                source_repository,
+                issue,
+                targets,
+            )
+            if completion_record is not None:
+                completion_source, recorded_targets = completion_record
+                by_repository = {record[0]: record for record in recorded_targets}
+                results = [
+                    _evaluate_recorded_target(
+                        client,
+                        organization,
+                        target,
+                        by_repository[str(target["repository"])],
+                        completion_source,
+                    )
+                    for target in targets
+                ]
+                authority_kind = "protected-branch-record"
         assessment = {
+            "_authority_kind": authority_kind,
             "_closing_reference_snapshot": snapshot,
+            "_completion_record_identity": completion_record,
             "complete": bool(results) and all(result["state"] == "complete" for result in results),
             "targets": results,
         }
@@ -585,16 +844,34 @@ def render_evidence(assessment: Mapping[str, Any]) -> str:
 
     rows = [
         f"{EVIDENCE_MARKER}",
-        "Cross-repository landing evidence (generated from trusted implementation pull requests):",
-        "",
-        "| Target | Latest attempt | Bound provenance | Landing | Required qualification | State |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "Cross-repository landing evidence (generated from trusted implementation pull requests or authenticated "
+        "protected-branch completion records):",
     ]
+    completion_record = assessment.get("_completion_record_identity")
+    if (
+        assessment.get("_authority_kind") == "protected-branch-record"
+        and isinstance(completion_record, tuple)
+        and completion_record
+    ):
+        rows.append(f"Completion source: `{completion_record[0]}`")
+    rows.extend(
+        [
+            "",
+            "| Target | Latest attempt | Bound provenance | Landing | Required qualification | State |",
+            "| --- | --- | --- | --- | --- | --- |",
+        ]
+    )
     for target in assessment["targets"]:
         repository = target["repository"]
         branch = target["branch"]
         pull_url = target["pull_request"]
-        attempt = f"[pull request]({pull_url})" if pull_url else "Not linked"
+        attempt = (
+            f"[pull request]({pull_url})"
+            if pull_url
+            else "Authenticated protected-branch completion record"
+            if target.get("provenance") == "authenticated-completion-record"
+            else "Not linked"
+        )
         head_commit = target["head_commit"]
         head_repository = target["head_repository"]
         head_ref = target["head_ref"]
@@ -611,30 +888,33 @@ def render_evidence(assessment: Mapping[str, Any]) -> str:
         authority_binding = f"; reference event `{reference_event}` at `{reference_at}`"
         if approval_at and approval_review:
             authority_binding += f"; approval review `{approval_review}` at `{approval_at}`"
-        bound_provenance = (
-            f"head [`{head_repository}@{head_ref}`]"
-            f"(https://github.com/{head_repository}/commit/{head_commit}) "
-            f"`{head_commit[:12]}` → base "
-            f"[`{base_repository}@{base_ref}`]"
-            f"(https://github.com/{base_repository}/commit/{base_commit}) "
-            f"`{base_commit[:12]}`; `{provenance}`; "
-            f"author `{pull_author}`; reference actor `{reference_actor}`"
-            f"{authority_binding}"
-            if (
-                head_commit
-                and head_repository
-                and head_ref
-                and base_commit
-                and base_repository
-                and base_ref
-                and pull_author
-                and provenance
-                and reference_actor
-                and reference_at
-                and reference_event
+        if provenance == "authenticated-completion-record":
+            bound_provenance = "Authenticated lifecycle-writer record; exact commit revalidated on protected branch"
+        elif (
+            head_commit
+            and head_repository
+            and head_ref
+            and base_commit
+            and base_repository
+            and base_ref
+            and pull_author
+            and provenance
+            and reference_actor
+            and reference_at
+            and reference_event
+        ):
+            bound_provenance = (
+                f"head [`{head_repository}@{head_ref}`]"
+                f"(https://github.com/{head_repository}/commit/{head_commit}) "
+                f"`{head_commit[:12]}` → base "
+                f"[`{base_repository}@{base_ref}`]"
+                f"(https://github.com/{base_repository}/commit/{base_commit}) "
+                f"`{base_commit[:12]}`; `{provenance}`; "
+                f"author `{pull_author}`; reference actor `{reference_actor}`"
+                f"{authority_binding}"
             )
-            else "Pending"
-        )
+        else:
+            bound_provenance = "Pending"
         commit = target["commit"]
         landing = (
             f"[`{commit[:12]}`](https://github.com/durable-workflow/{repository}/commit/{commit})"
@@ -642,12 +922,34 @@ def render_evidence(assessment: Mapping[str, Any]) -> str:
             else "Pending"
         )
         missing = target["missing_checks"]
+        required_checks = target["required_checks"]
+        required_check_runs = target.get("required_check_runs", {})
+        check_identity = ", ".join(
+            (
+                f"`{name}` ([check run `{required_check_runs[name]}`]"
+                f"(https://github.com/durable-workflow/{repository}/actions/runs/{required_check_runs[name]}))"
+                if name in required_check_runs
+                else f"`{name}`"
+            )
+            for name in required_checks
+        )
+        qualification_run = target.get("qualification_run")
+        run_identity = (
+            f"; [cited qualification run `{qualification_run}`]"
+            f"(https://github.com/durable-workflow/{repository}/actions/runs/{qualification_run})"
+            if isinstance(qualification_run, int)
+            else ""
+        )
         qualification = (
             "Pending: closing-reference authority changed"
             if target["state"] == "pending:closing-reference-changed"
-            else "Passed"
-            if not missing
-            else "Pending: " + ", ".join(f"`{name}`" for name in missing)
+            else f"Passed: {check_identity}{run_identity}"
+            if target["state"] == "complete"
+            else "Pending: "
+            + ", ".join(f"`{name}`" for name in missing)
+            + f"; required: {check_identity}{run_identity}"
+            if missing
+            else f"Required: {check_identity}{run_identity}"
         )
         rows.append(
             f"| `durable-workflow/{repository}@{branch}` | {attempt} | {bound_provenance} | {landing} | "
