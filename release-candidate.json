@@ -1,0 +1,41 @@
+{
+  "candidate": "coherent-2-0-beta-18",
+  "channel": "beta",
+  "components": {
+    "cli": {
+      "commit": "cca8c1f083bacd57212eced5f087b153d6a9311a",
+      "version": "2.0.0-beta.18"
+    },
+    "sdk-php": {
+      "commit": "f60f75232e5fd635c73da00f8fb97059d12dbc5d",
+      "version": "2.0.0-beta.18"
+    },
+    "sdk-python": {
+      "commit": "36833d5c73c0db6f91413204334a78816eb0cd54",
+      "version": "2.0.0-beta.18"
+    },
+    "sdk-rust": {
+      "commit": "dbbc6e3b59fcb9c29212362d169f5e42babcff61",
+      "version": "2.0.0-beta.18"
+    },
+    "server": {
+      "commit": "10da84d35d2fa251a0c053ea37f5b30ae8e31c5c",
+      "version": "2.0.0-beta.18"
+    },
+    "waterline": {
+      "commit": "c1d6e24a227c59ff2766d3f7f2520d5115e69e0a",
+      "version": "2.0.0-beta.18"
+    },
+    "workflow": {
+      "commit": "8853baf7d42e2bbdf08ed101dc0ba4e7bb0f4a31",
+      "version": "2.0.0-beta.18"
+    }
+  },
+  "release_plan": {
+    "commit": "02f1734d43ac76d6475def644abbdaa48809332f",
+    "sha256": "86cc812174eec381fe4d8b08a80f57c8ece4efc67c4fce6a3622a63491c39283",
+    "tag": "release-plan/coherent-2-0-beta-18"
+  },
+  "release_preparation_sha256": "fd39ac5cf999e451c477f792a5b6a2fc1f82d5ee85c2e1d98b59ad63f4fc0063",
+  "schema": "durable-workflow.release-candidate/v1"
+}
