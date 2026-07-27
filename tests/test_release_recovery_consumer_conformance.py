@@ -75,6 +75,18 @@ class ReleaseRecoveryConsumerConformanceTest(unittest.TestCase):
                 previous, current = self.changed_contract(previous_version, current_version)
                 conformance.require_versioned_contract_change(previous, current)
 
+    def test_suite_digest_change_requires_strictly_advancing_version(self) -> None:
+        current = copy.deepcopy(self.contract)
+        current["version"] = "1.4.2"
+        previous = copy.deepcopy(current)
+        previous["suite"]["sha256"] = "0" * 64
+
+        with self.assertRaisesRegex(conformance.ConformanceError, "strictly advancing"):
+            conformance.require_versioned_contract_change(previous, current)
+
+        current["version"] = "1.4.3"
+        conformance.require_versioned_contract_change(previous, current)
+
     def test_contract_version_uses_exact_semver(self) -> None:
         validator = Draft202012Validator(self.contract_schema)
         valid = ("0.0.0", "1.0.0-rc.1", "1.0.0-0A.0", "1.0.0+build.01")
