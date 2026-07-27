@@ -148,6 +148,13 @@ later discovery can distinguish that activation from mutable issue state.
 Successor issue chains are allowed only when each retired identity is explicit
 and the earlier activation is already retained.
 
+Already-retired authorities can be bootstrapped with the protected
+`workflow_dispatch` `activate` mode. That job reconstructs the exact current
+trusted title/body revisions and immutable product-train bytes directly from
+the checked-in policy, rejects any conflicting GitHub Actions status authority,
+and creates only missing statuses. Its token cannot write issue content or
+lifecycle state, and dispatch accepts no commit, context, or digest input.
+
 The retired issue receives `status:superseded`, links to the successor in
 generated lifecycle evidence, and closes as not planned without `status:done`,
 `completion:evidence-required`, or `completion:evidence-verified`. Retirement

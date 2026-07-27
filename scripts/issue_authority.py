@@ -960,20 +960,22 @@ def _supersession_activation_is_recorded(
     statuses: Sequence[Mapping[str, Any]],
     activation: Mapping[str, str],
 ) -> bool:
-    trusted_successes = [
+    trusted_authorities = [
         status
         for status in statuses
         if (
             status.get("context") == activation["context"]
-            and status.get("state") == "success"
             and _activation_status_is_trusted(status)
         )
     ]
-    descriptions = {status.get("description") for status in trusted_successes}
     expected_description = SUPERSESSION_ACTIVATION_DESCRIPTION_PREFIX + activation["digest"]
-    if descriptions and descriptions != {expected_description}:
+    authorities = {
+        (status.get("state"), status.get("description"))
+        for status in trusted_authorities
+    }
+    if authorities and authorities != {("success", expected_description)}:
         raise AuthorityError("prerelease supersession has conflicting immutable activation authority")
-    return descriptions == {expected_description}
+    return authorities == {("success", expected_description)}
 
 
 def _require_supersession_activation(
@@ -995,6 +997,8 @@ def _bind_prerelease_supersessions(
     records: Sequence[dict[str, Any]],
     inventory: Mapping[str, Sequence[Mapping[str, Any]]],
     client: Any,
+    *,
+    require_activations: bool = True,
 ) -> None:
     record_by_identity = {(record["repository"], record["number"]): record for record in records}
     issue_by_identity = {
@@ -1099,7 +1103,7 @@ def _bind_prerelease_supersessions(
                 or SUPERSEDED_STATUS_LABEL in retired_statuses
                 or successor_is_completed
                 or successor_is_retiring
-            ):
+            ) and require_activations:
                 _require_supersession_activation(policy, client, activation)
             retired_record["superseded_by"] = {
                 "activation": activation,
@@ -1130,7 +1134,10 @@ def _bind_prerelease_supersessions(
             retired_record,
             None,
         )
-        if retired_issue.get("state") == "closed" or SUPERSEDED_STATUS_LABEL in retired_statuses:
+        if (
+            retired_issue.get("state") == "closed"
+            or SUPERSEDED_STATUS_LABEL in retired_statuses
+        ) and require_activations:
             _require_supersession_activation(policy, client, activation)
         retired_record["superseded_by"] = {
             "activation": activation,
@@ -1311,6 +1318,7 @@ def reconstruct_intake(
     trigger_action: str | None = None,
     trigger_actor: str | None = None,
     trigger_label: str | None = None,
+    require_supersession_activations: bool = True,
 ) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
     """Build a deterministic manifest and an inventory containing only vetted revisions."""
 
@@ -1403,7 +1411,13 @@ def reconstruct_intake(
                 }
             )
 
-    _bind_prerelease_supersessions(policy, records, inventory, client)
+    _bind_prerelease_supersessions(
+        policy,
+        records,
+        inventory,
+        client,
+        require_activations=require_supersession_activations,
+    )
     manifest: dict[str, Any] = {
         "schema": INTAKE_SCHEMA,
         "organization": policy["organization"],
@@ -1422,6 +1436,84 @@ def reconstruct_intake(
             "repository": trigger_repository,
         }
     return manifest, inventory
+
+
+def activate_prerelease_supersessions(
+    policy: dict[str, Any],
+    discovery: Any,
+    client: Any,
+    *,
+    target_qualification: Mapping[str, Any] | None = None,
+    legacy_cross_repository_targets: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Create only missing status authority derived from the current trusted intake."""
+
+    manifest, _inventory = reconstruct_intake(
+        policy,
+        discovery,
+        target_qualification=target_qualification,
+        legacy_cross_repository_targets=legacy_cross_repository_targets,
+        require_supersession_activations=False,
+    )
+    supersessions = _manifest_prerelease_supersessions(manifest)
+    activations: list[dict[str, str]] = []
+    for supersession in policy["prerelease_supersessions"]:
+        retired = supersession["retired"]
+        identity = (retired["repository"], retired["number"])
+        bound = supersessions.get(identity)
+        if bound is None:
+            raise AuthorityError(
+                f"prerelease supersession {retired['repository']}#{retired['number']} "
+                "did not bind to trusted current-revision intake"
+            )
+        activations.append(dict(bound["activation"]))
+
+    authority_repository = policy["authority_repository"]
+    statuses_by_commit: dict[str, list[dict[str, Any]]] = {}
+    recorded: list[bool] = []
+    for activation in activations:
+        commit = activation["commit"]
+        if commit not in statuses_by_commit:
+            statuses_by_commit[commit] = client.list_commit_statuses(
+                policy["organization"],
+                authority_repository,
+                commit,
+            )
+        recorded.append(
+            _supersession_activation_is_recorded(
+                statuses_by_commit[commit],
+                activation,
+            )
+        )
+
+    evidence_activations: list[dict[str, Any]] = []
+    for activation, already_recorded in zip(activations, recorded, strict=True):
+        created = False
+        if not already_recorded:
+            created = client.ensure_supersession_activation(
+                policy["organization"],
+                authority_repository,
+                activation,
+            )
+        evidence_activations.append(
+            {
+                **activation,
+                "creator": {
+                    "id": GITHUB_ACTIONS_BOT_ID,
+                    "login": GITHUB_ACTIONS_BOT_LOGIN,
+                    "type": "Bot",
+                },
+                "result": "created" if created else "existing",
+            }
+        )
+
+    return {
+        "schema": "durable-workflow.github-issue-authority-evidence/v1",
+        "mode": "activate",
+        "outcome": "pass",
+        "activations": evidence_activations,
+        "intake": _manifest_core(manifest),
+    }
 
 
 def _valid_superseded_by(
@@ -1722,14 +1814,14 @@ class GitHubApi:
         organization: str,
         repository: str,
         activation: Mapping[str, str],
-    ) -> None:
+    ) -> bool:
         statuses = self.list_commit_statuses(
             organization,
             repository,
             activation["commit"],
         )
         if _supersession_activation_is_recorded(statuses, activation):
-            return
+            return False
 
         encoded_commit = urllib.parse.quote(activation["commit"], safe="")
         payload = {
@@ -1756,6 +1848,7 @@ class GitHubApi:
             raise AuthorityError("GitHub could not persist immutable prerelease supersession activation") from error
         if not isinstance(result, Mapping) or not _supersession_activation_is_recorded([result], activation):
             raise AuthorityError("GitHub returned untrusted prerelease supersession activation")
+        return True
 
     def ensure_labels(
         self,
@@ -2882,7 +2975,7 @@ def _write_discovery_outputs(path: Path | None, manifest: dict[str, Any]) -> Non
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for name in ("validate", "discover", "apply", "audit"):
+    for name in ("validate", "discover", "activate", "apply", "audit"):
         command = subparsers.add_parser(name)
         command.add_argument("policy", type=Path)
         command.add_argument("backlog", type=Path)
@@ -2906,7 +2999,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             command.add_argument("--trigger-action")
             command.add_argument("--trigger-actor")
             command.add_argument("--trigger-label")
-        elif name != "validate":
+        elif name == "activate":
+            command.add_argument("--evidence", type=Path)
+        elif name in {"apply", "audit"}:
             command.add_argument("--evidence", type=Path)
             command.add_argument("--intake-manifest", type=Path, required=True)
     return parser.parse_args(argv)
@@ -2962,6 +3057,24 @@ def main(argv: list[str] | None = None) -> int:
             )
             _write_evidence(arguments.output, manifest)
             _write_discovery_outputs(arguments.github_output, manifest)
+            return 0
+
+        if arguments.command == "activate":
+            client = GitHubApi(
+                discovery_token,
+                os.environ.get("GITHUB_API_URL", "https://api.github.com"),
+                activation_token=discovery_token,
+                read_token=discovery_token,
+                graphql_url=os.environ.get("GITHUB_GRAPHQL_URL", "https://api.github.com/graphql"),
+            )
+            evidence = activate_prerelease_supersessions(
+                policy,
+                discovery,
+                client,
+                target_qualification=target_qualification,
+                legacy_cross_repository_targets=legacy_cross_repository_targets,
+            )
+            _write_evidence(evidence_path, evidence)
             return 0
 
         manifest = _load_json(arguments.intake_manifest, "issue-intake manifest")

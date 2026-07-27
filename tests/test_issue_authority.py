@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import copy
+import io
 import json
 import re
 import unittest
@@ -31,12 +33,14 @@ from scripts.issue_authority import (
     AuthorityError,
     GitHubApi,
     GitHubDiscovery,
+    activate_prerelease_supersessions,
     apply_backlog,
     assess_issue_intake,
     audit_backlog,
     issue_revision_digest,
     load_contract,
     load_legacy_cross_repository_targets,
+    parse_args,
     reconstruct_intake,
     validate_backlog_cross_repository_targets,
     validate_contract,
@@ -307,13 +311,14 @@ class FakeGitHubApi:
         _organization: str,
         repository: str,
         activation: dict[str, str],
-    ) -> None:
+    ) -> bool:
         key = (repository, activation["commit"])
         expected = activation_status(activation)
         if expected in self.commit_statuses.get(key, []):
-            return
+            return False
         self.commit_statuses.setdefault(key, []).append(expected)
         self.status_updates.append((repository, activation["commit"], activation["digest"]))
+        return True
 
     @staticmethod
     def assert_lifecycle_marker(marker: str, body: str) -> None:
@@ -857,7 +862,7 @@ class ContractValidationTest(unittest.TestCase):
         workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "issue-authority.yml").read_text(encoding="utf-8"))
         conditions = {
             job: " ".join(workflow["jobs"][job]["if"].split())
-            for job in ("validate", "intake", "apply", "audit")
+            for job in ("validate", "intake", "activate", "apply", "audit")
         }
 
         self.assertEqual(
@@ -867,8 +872,14 @@ class ContractValidationTest(unittest.TestCase):
         self.assertEqual(
             "${{ github.server_url == 'https://github.com' && "
             "(github.event_name == 'push' || github.event_name == 'schedule' || "
-            "github.event_name == 'issues' || github.event_name == 'workflow_dispatch') }}",
+            "github.event_name == 'issues' || "
+            "(github.event_name == 'workflow_dispatch' && inputs.mode != 'activate')) }}",
             conditions["intake"],
+        )
+        self.assertEqual(
+            "${{ github.ref == 'refs/heads/main' && github.server_url == 'https://github.com' && "
+            "github.event_name == 'workflow_dispatch' && inputs.mode == 'activate' }}",
+            conditions["activate"],
         )
         self.assertEqual(
             "${{ github.ref == 'refs/heads/main' && github.server_url == 'https://github.com' && "
@@ -937,6 +948,47 @@ class ContractValidationTest(unittest.TestCase):
             self.assertNotIn("PUBLIC_ISSUE_DISCOVERY_TOKEN", json.dumps(job))
             self.assertIn("GITHUB_TOKEN", json.dumps(job))
             self.assertIn("BETA_PRODUCT_WORK_TOKEN", json.dumps(job))
+
+        activation = workflow["jobs"]["activate"]
+        self.assertEqual("beta-product-work", activation["environment"])
+        self.assertEqual(
+            {"contents": "read", "issues": "read", "statuses": "write"},
+            activation["permissions"],
+        )
+        self.assertEqual("validate", activation["needs"])
+        self.assertNotIn("intake", activation["needs"])
+        self.assertNotIn("BETA_PRODUCT_WORK_TOKEN", json.dumps(activation))
+        self.assertEqual("${{ github.token }}", activation["steps"][-2]["env"]["GITHUB_TOKEN"])
+
+    def test_activation_dispatch_has_no_caller_supplied_authority_payload(self) -> None:
+        workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "issue-authority.yml").read_text(encoding="utf-8"))
+        dispatch_inputs = workflow[True]["workflow_dispatch"]["inputs"]
+
+        self.assertEqual({"mode"}, set(dispatch_inputs))
+        self.assertEqual(["audit", "apply", "activate"], dispatch_inputs["mode"]["options"])
+        source = json.dumps(workflow["jobs"]["activate"])
+        self.assertNotIn("inputs.commit", source)
+        self.assertNotIn("inputs.context", source)
+        self.assertNotIn("inputs.digest", source)
+        for option, value in (
+            ("--commit", "a" * 40),
+            ("--context", "issue-authority/prerelease-supersession/.github/61"),
+            ("--digest", "b" * 64),
+        ):
+            with (
+                self.subTest(option=option),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit),
+            ):
+                parse_args(
+                    [
+                        "activate",
+                        "issue-authority/policy.json",
+                        "issue-authority/backlog.json",
+                        option,
+                        value,
+                    ]
+                )
 
     def test_comments_and_pull_request_content_are_not_event_inputs(self) -> None:
         source = (ROOT / ".github" / "workflows" / "issue-authority.yml").read_text(encoding="utf-8")
@@ -1347,6 +1399,137 @@ class IssueIntakeTest(unittest.TestCase):
                     commit_statuses=statuses,
                 ),
             )
+
+    def test_activation_bootstraps_completed_retirements_without_issue_or_contract_mutation(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = immutable_retirement_contract()
+        issues = {
+            ".github": [
+                (
+                    prerelease_authority_issue(
+                        number,
+                        state="closed",
+                        status=SUPERSEDED_STATUS_LABEL,
+                    ),
+                    [],
+                )
+                for number in (61, 65)
+            ]
+        }
+        public_files = immutable_product_train_files(policy)
+        original_policy = copy.deepcopy(policy)
+        original_issues = copy.deepcopy(issues)
+        discovery = FakeDiscovery(policy, issues, public_files=public_files)
+        client = FakeGitHubApi(policy)
+
+        with self.assertRaisesRegex(AuthorityError, "has no immutable active-successor activation"):
+            reconstruct_intake(
+                policy,
+                FakeDiscovery(policy, issues, public_files=public_files),
+            )
+
+        evidence = activate_prerelease_supersessions(policy, discovery, client)
+        manifest, _inventory = reconstruct_intake(
+            policy,
+            FakeDiscovery(
+                policy,
+                issues,
+                commit_statuses=client.commit_statuses,
+                public_files=public_files,
+            ),
+        )
+
+        self.assertEqual("pass", evidence["outcome"])
+        self.assertEqual(2, len([record for record in manifest["issues"] if record["superseded_by"] is not None]))
+        self.assertEqual(
+            {
+                "issue-authority/prerelease-supersession/.github/61",
+                "issue-authority/prerelease-supersession/.github/65",
+            },
+            {activation["context"] for activation in evidence["activations"]},
+        )
+        self.assertEqual({"created"}, {activation["result"] for activation in evidence["activations"]})
+        self.assertEqual(
+            {
+                "id": 41_898_282,
+                "login": "github-actions[bot]",
+                "type": "Bot",
+            },
+            evidence["activations"][0]["creator"],
+        )
+        self.assertEqual(2, len(client.status_updates))
+        self.assertEqual([], client.label_updates)
+        self.assertEqual([], client.milestone_updates)
+        self.assertEqual([], client.created_issues)
+        self.assertEqual([], client.replacements)
+        self.assertEqual([], client.body_updates)
+        self.assertEqual([], client.state_updates)
+        self.assertEqual([], client.comment_updates)
+        self.assertEqual(original_policy, policy)
+        self.assertEqual(original_issues, issues)
+        self.assertEqual(public_files, discovery.public_files)
+
+    def test_activation_is_idempotent_after_statuses_exist(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = immutable_retirement_contract()
+        issues = {
+            ".github": [
+                (
+                    prerelease_authority_issue(
+                        number,
+                        state="closed",
+                        status=SUPERSEDED_STATUS_LABEL,
+                    ),
+                    [],
+                )
+                for number in (61, 65)
+            ]
+        }
+        discovery = FakeDiscovery(
+            policy,
+            issues,
+            public_files=immutable_product_train_files(policy),
+        )
+        client = FakeGitHubApi(policy)
+        activate_prerelease_supersessions(policy, discovery, client)
+        first_updates = list(client.status_updates)
+
+        evidence = activate_prerelease_supersessions(policy, discovery, client)
+
+        self.assertEqual(first_updates, client.status_updates)
+        self.assertEqual({"existing"}, {activation["result"] for activation in evidence["activations"]})
+
+    def test_activation_rejects_all_writes_when_any_trusted_status_conflicts(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = immutable_retirement_contract()
+        issues = {
+            ".github": [
+                (
+                    prerelease_authority_issue(
+                        number,
+                        state="closed",
+                        status=SUPERSEDED_STATUS_LABEL,
+                    ),
+                    [],
+                )
+                for number in (61, 65)
+            ]
+        }
+        discovery = FakeDiscovery(
+            policy,
+            issues,
+            public_files=immutable_product_train_files(policy),
+        )
+        derived_client = FakeGitHubApi(policy)
+        derived = activate_prerelease_supersessions(policy, discovery, derived_client)
+        conflicting = activation_status(derived["activations"][1])
+        conflicting["description"] = f"sha256:{'0' * 64}"
+        client = FakeGitHubApi(policy)
+        activation_commit = derived["activations"][1]["commit"]
+        client.commit_statuses[(".github", activation_commit)] = [conflicting]
+
+        with self.assertRaisesRegex(AuthorityError, "conflicting immutable activation authority"):
+            activate_prerelease_supersessions(policy, discovery, client)
+
+        self.assertEqual([], client.status_updates)
+        self.assertEqual([conflicting], client.commit_statuses[(".github", activation_commit)])
 
     def test_cross_repository_targets_are_bound_from_the_vetted_form_section(self) -> None:
         policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
