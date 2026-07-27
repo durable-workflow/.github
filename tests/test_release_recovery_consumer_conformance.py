@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from types import ModuleType
@@ -101,6 +102,138 @@ class ReleaseRecoveryConsumerConformanceTest(unittest.TestCase):
                     contract,
                     conformance.canonical_json(contract),
                     SUITE_PATH,
+                )
+
+    def adapter_fixture(
+        self,
+        root: Path,
+    ) -> tuple[dict, dict, str, Path, Path]:
+        suite_path = root / "scripts" / "ci" / "release_recovery_consumer_conformance.py"
+        contract_path = root / "scripts" / "ci" / "release-recovery-consumer-contract.json"
+        consumer_path = root / "scripts" / "ci" / "component-release-recovery.py"
+        verifier_path = root / "scripts" / "ci" / "test-component-release-recovery.py"
+        suite_path.parent.mkdir(parents=True)
+        suite_path.write_bytes(SUITE_PATH.read_bytes())
+        contract = copy.deepcopy(self.contract)
+        contract_raw = conformance.canonical_json(contract)
+        contract_path.write_bytes(contract_raw)
+        consumer_path.write_text("# consumer fixture\n")
+        verifier_path.write_text("# verifier fixture\n")
+        adapter = {
+            "component": "workflow",
+            "consumer": consumer_path.relative_to(root).as_posix(),
+            "contract": {
+                "path": contract_path.relative_to(root).as_posix(),
+                "sha256": conformance.sha256_bytes(contract_raw),
+                "version": contract["version"],
+            },
+            "distribution_verification": {"command": ["{python}", verifier_path.relative_to(root).as_posix()]},
+            "repository": "durable-workflow/workflow",
+            "schema": conformance.ADAPTER_SCHEMA,
+            "suite": {
+                "path": suite_path.relative_to(root).as_posix(),
+                "sha256": contract["suite"]["sha256"],
+            },
+            "target_branch": "v2",
+        }
+        return adapter, contract, conformance.sha256_bytes(contract_raw), suite_path, contract_path
+
+    def validate_adapter_fixture(
+        self,
+        adapter: dict,
+        contract: dict,
+        contract_sha256: str,
+        root: Path,
+        suite_path: Path,
+        contract_path: Path,
+    ) -> tuple[Path, list[str]]:
+        return conformance.validate_adapter(
+            adapter,
+            contract,
+            contract_sha256,
+            root,
+            suite_path,
+            contract_path,
+        )
+
+    def test_adapter_declared_and_invoked_contract_identity_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            adapter, contract, digest, suite_path, contract_path = self.adapter_fixture(root)
+
+            consumer, command = self.validate_adapter_fixture(
+                adapter,
+                contract,
+                digest,
+                root,
+                suite_path,
+                contract_path,
+            )
+
+        self.assertEqual("component-release-recovery.py", consumer.name)
+        self.assertEqual(["{python}", "scripts/ci/test-component-release-recovery.py"], command)
+
+    def test_alternate_invoked_contract_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            adapter, contract, digest, suite_path, contract_path = self.adapter_fixture(root)
+            alternate_path = contract_path.with_name("alternate-contract.json")
+            alternate_path.write_bytes(contract_path.read_bytes())
+
+            with self.assertRaisesRegex(
+                conformance.ConformanceError,
+                "invoked contract is not the adapter's declared contract",
+            ):
+                self.validate_adapter_fixture(
+                    adapter,
+                    contract,
+                    digest,
+                    root,
+                    suite_path,
+                    alternate_path,
+                )
+
+    def test_stale_declared_contract_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            adapter, contract, _, suite_path, contract_path = self.adapter_fixture(root)
+            stale_contract = copy.deepcopy(contract)
+            stale_contract["version"] = "1.4.0"
+            stale_raw = conformance.canonical_json(stale_contract)
+            contract_path.write_bytes(stale_raw)
+
+            with self.assertRaisesRegex(
+                conformance.ConformanceError,
+                "declared contract does not match its version and digest pins",
+            ):
+                self.validate_adapter_fixture(
+                    adapter,
+                    stale_contract,
+                    conformance.sha256_bytes(stale_raw),
+                    root,
+                    suite_path,
+                    contract_path,
+                )
+
+    def test_mismatched_declared_contract_bytes_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            adapter, contract, digest, suite_path, contract_path = self.adapter_fixture(root)
+            mismatched = copy.deepcopy(contract)
+            mismatched["cases"][0]["requirement"] += " (mismatched declared bytes)"
+            contract_path.write_bytes(conformance.canonical_json(mismatched))
+
+            with self.assertRaisesRegex(
+                conformance.ConformanceError,
+                "declared contract does not match its version and digest pins",
+            ):
+                self.validate_adapter_fixture(
+                    adapter,
+                    contract,
+                    digest,
+                    root,
+                    suite_path,
+                    contract_path,
                 )
 
     def test_previous_contract_distinguishes_first_adoption_from_unavailable_commit(self) -> None:
