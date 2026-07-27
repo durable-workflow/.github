@@ -49,7 +49,12 @@ jobs:
           python -m jsonschema -i release-recovery/authority.json release-recovery/schema.json
           python -m json.tool product-train/current.json >/dev/null
           python -m json.tool product-train/schema.json >/dev/null
+          python -m json.tool product-train/sdk-server-qualification.json >/dev/null
+          python -m json.tool product-train/sdk-server-qualification-schema.json >/dev/null
           python -m jsonschema -i product-train/current.json product-train/schema.json
+          python -m jsonschema \
+            -i product-train/sdk-server-qualification.json \
+            product-train/sdk-server-qualification-schema.json
           python -m json.tool release-plans/current.json >/dev/null
           python -m json.tool release-plans/current-source-preparation.json >/dev/null
           python -m json.tool release-plans/schema.json >/dev/null

@@ -56,9 +56,13 @@ jobs:
           python -m unittest discover -v
           python -m json.tool candidates/main.json >/dev/null
           python -m json.tool product-train/current.json >/dev/null
+          python -m json.tool product-train/sdk-server-qualification.json >/dev/null
           python -m json.tool release-plans/current.json >/dev/null
           python -m json.tool release-plans/current-source-preparation.json >/dev/null
           python -m jsonschema -i product-train/current.json product-train/schema.json
+          python -m jsonschema \
+            -i product-train/sdk-server-qualification.json \
+            product-train/sdk-server-qualification-schema.json
           python -m jsonschema -i release-plans/current.json release-plans/schema.json
           python -m jsonschema \
             -i release-plans/current-source-preparation.json \

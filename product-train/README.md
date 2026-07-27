@@ -13,6 +13,15 @@ The supported train also binds its exact immutable `release-plan/*` tag and
 canonical plan digest. A train is not complete authority until that plan and
 its matching terminal completion record are public.
 
+The same train binds
+[`sdk-server-qualification.json`](sdk-server-qualification.json) by SHA-256.
+That record carries the exact source identity, outcome, and published-artifact
+conformance source for every PHP, Python, and Rust SDK binding to Server. A
+missing, failed, stale, or tuple-mismatched qualification is not a supported
+train and cannot become public compatibility guidance. Validation downloads the
+pinned conformance suite, verifies its bytes, and requires passing heartbeat,
+replay, and signal/query results that exercised all three SDK clients.
+
 New beta release plans must use every version in the current train. A beta
 increment advances all seven component identities together. After stable 2.0,
 compatible capabilities follow ordinary semantic-version progression: fixes

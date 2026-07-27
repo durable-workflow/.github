@@ -126,7 +126,8 @@
         "versions",
         "registry_versions",
         "install",
-        "release_plan"
+        "release_plan",
+        "sdk_server_qualification"
       ],
       "properties": {
         "channel": {"const": "beta"},
@@ -134,7 +135,8 @@
         "versions": {"$ref": "#/$defs/componentVersions"},
         "registry_versions": {"$ref": "#/$defs/componentVersions"},
         "install": {"$ref": "#/$defs/installCommands"},
-        "release_plan": {"$ref": "#/$defs/releasePlan"}
+        "release_plan": {"$ref": "#/$defs/releasePlan"},
+        "sdk_server_qualification": {"$ref": "#/$defs/sdkServerQualification"}
       }
     },
     "releasePlan": {
@@ -145,6 +147,23 @@
         "tag": {
           "type": "string",
           "pattern": "^release-plan/[a-z0-9][a-z0-9._-]{0,55}$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "sdkServerQualification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "source_url", "sha256"],
+      "properties": {
+        "schema": {
+          "const": "durable-workflow.sdk-server-qualification/v1"
+        },
+        "source_url": {
+          "const": "https://raw.githubusercontent.com/durable-workflow/.github/main/product-train/sdk-server-qualification.json"
         },
         "sha256": {
           "type": "string",
