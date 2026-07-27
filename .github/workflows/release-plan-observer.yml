@@ -27,6 +27,7 @@ concurrency:
 jobs:
   observe:
     name: Observe real public release surfaces without write authority
+    if: ${{ github.server_url == 'https://github.com' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -136,7 +137,10 @@ jobs:
   record:
     name: Record observation from a fresh checkout
     needs: observe
-    if: needs.observe.outputs.plan-available == 'true' && github.ref == 'refs/heads/main'
+    if: >-
+      github.server_url == 'https://github.com' &&
+      needs.observe.outputs.plan-available == 'true' &&
+      github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

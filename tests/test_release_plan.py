@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import yaml
 from jsonschema import Draft202012Validator, ValidationError
 
 from scripts.beta_candidate import CandidateError, canonical_json
@@ -458,6 +459,15 @@ def supersession_record(
 
 
 class ReleasePlanEntryPointTest(unittest.TestCase):
+    def test_observer_jobs_only_run_on_the_authoritative_github_host(self) -> None:
+        workflow = yaml.safe_load(
+            (REPOSITORY_ROOT / ".github" / "workflows" / "release-plan-observer.yml").read_text(encoding="utf-8")
+        )
+        host_guard = "github.server_url == 'https://github.com'"
+
+        self.assertEqual(f"${{{{ {host_guard} }}}}", workflow["jobs"]["observe"]["if"])
+        self.assertIn(host_guard, workflow["jobs"]["record"]["if"])
+
     def test_observer_uses_the_shared_immutable_discovery_contract(self) -> None:
         candidate = release_plan("beta")
         tag = f"{PLAN_TAG_PREFIX}{candidate['plan']}"
