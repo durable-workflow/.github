@@ -20,26 +20,34 @@ class ProductTrainTest(unittest.TestCase):
         Draft202012Validator(schema).validate(contract)
 
         current = contract["current"]
-        self.assertEqual("2.0.0-beta.17", current)
+        self.assertEqual("2.0.0-beta.18", current)
         supported = [
             name for name, train in contract["trains"].items() if train["status"] == "supported"
         ]
         self.assertEqual([current], supported)
         self.assertEqual({name: current for name in COMPONENTS}, contract["trains"][current]["versions"])
-        self.assertEqual("2.0.0b17", contract["trains"][current]["registry_versions"]["sdk-python"])
+        self.assertEqual("2.0.0b18", contract["trains"][current]["registry_versions"]["sdk-python"])
 
         install = contract["trains"][current]["install"]
-        self.assertEqual("cargo add durable-workflow@=2.0.0-beta.17", install["sdk-rust"])
         self.assertEqual(
-            "composer require "
-            "durable-workflow/waterline:2.0.0-beta.17@beta "
-            "durable-workflow/workflow:2.0.0-beta.17@beta "
-            "durable-workflow/sdk:2.0.0-beta.17@beta",
-            install["waterline"]["embedded"],
-        )
-        self.assertEqual(
-            "docker pull durableworkflow/waterline:2.0.0-beta.17",
-            install["waterline"]["service"],
+            {
+                "workflow": "composer require durable-workflow/workflow:2.0.0-beta.18@beta",
+                "sdk-php": "composer require durable-workflow/sdk:2.0.0-beta.18@beta",
+                "waterline": {
+                    "embedded": (
+                        "composer require "
+                        "durable-workflow/waterline:2.0.0-beta.18@beta "
+                        "durable-workflow/workflow:2.0.0-beta.18@beta "
+                        "durable-workflow/sdk:2.0.0-beta.18@beta"
+                    ),
+                    "service": "docker pull durableworkflow/waterline:2.0.0-beta.18",
+                },
+                "server": "docker pull durableworkflow/server:2.0.0-beta.18",
+                "cli": "curl -fsSL https://durable-workflow.com/install.sh | VERSION=2.0.0-beta.18 sh",
+                "sdk-python": "pip install durable-workflow==2.0.0-beta.18",
+                "sdk-rust": "cargo add durable-workflow@=2.0.0-beta.18",
+            },
+            install,
         )
 
         incomplete = json.loads(json.dumps(contract))
@@ -48,9 +56,9 @@ class ProductTrainTest(unittest.TestCase):
             Draft202012Validator(schema).validate(incomplete)
 
     def test_new_beta_tuple_must_match_current_train(self) -> None:
-        components = {name: {"version": "2.0.0-beta.17", "commit": "a" * 40} for name in COMPONENTS}
-        self.assertEqual("2.0.0-beta.17", require_current_product_train(components))
+        components = {name: {"version": "2.0.0-beta.18", "commit": "a" * 40} for name in COMPONENTS}
+        self.assertEqual("2.0.0-beta.18", require_current_product_train(components))
 
         components["cli"]["version"] = "0.1.95"
-        with self.assertRaisesRegex(CandidateError, "supported product train 2.0.0-beta.17"):
+        with self.assertRaisesRegex(CandidateError, "supported product train 2.0.0-beta.18"):
             require_current_product_train(components)

@@ -5,6 +5,7 @@ import copy
 import io
 import json
 import re
+import subprocess
 import unittest
 import urllib.error
 from pathlib import Path
@@ -99,11 +100,13 @@ def immutable_product_train_files(policy: dict[str, Any]) -> dict[tuple[str, str
     successor = next(
         record["successor"] for record in policy["prerelease_supersessions"] if "commit" in record["successor"]
     )
-    return {
-        (successor["repository"], successor["commit"], successor["path"]): (
-            ROOT / "product-train/current.json"
-        ).read_bytes()
-    }
+    historical_product_train = subprocess.run(
+        ["git", "show", f"{successor['commit']}:{successor['path']}"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    ).stdout
+    return {(successor["repository"], successor["commit"], successor["path"]): historical_product_train}
 
 
 def qualification_fixture() -> dict[str, Any]:

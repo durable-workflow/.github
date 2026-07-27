@@ -38,6 +38,7 @@ from scripts.release_plan import (
     load_continuity_supersession,
     load_plan,
     load_public_supersession,
+    load_source_preparation,
     manifest_digest,
     parse_conflict_components,
     preflight_plan,
@@ -577,10 +578,76 @@ class ReleasePlanEntryPointTest(unittest.TestCase):
 
 
 class ReleasePlanValidationTest(unittest.TestCase):
+    def test_current_beta_18_authority_binds_exact_published_sources(self) -> None:
+        plan = load_plan(REPOSITORY_ROOT / "release-plans" / "current.json", require_current=True)
+        expected_components = {
+            "cli": {
+                "commit": "cca8c1f083bacd57212eced5f087b153d6a9311a",
+                "version": "2.0.0-beta.18",
+            },
+            "sdk-php": {
+                "commit": "f60f75232e5fd635c73da00f8fb97059d12dbc5d",
+                "version": "2.0.0-beta.18",
+            },
+            "sdk-python": {
+                "commit": "36833d5c73c0db6f91413204334a78816eb0cd54",
+                "version": "2.0.0-beta.18",
+            },
+            "sdk-rust": {
+                "commit": "dbbc6e3b59fcb9c29212362d169f5e42babcff61",
+                "version": "2.0.0-beta.18",
+            },
+            "server": {
+                "commit": "10da84d35d2fa251a0c053ea37f5b30ae8e31c5c",
+                "version": "2.0.0-beta.18",
+            },
+            "waterline": {
+                "commit": "c1d6e24a227c59ff2766d3f7f2520d5115e69e0a",
+                "version": "2.0.0-beta.18",
+            },
+            "workflow": {
+                "commit": "8853baf7d42e2bbdf08ed101dc0ba4e7bb0f4a31",
+                "version": "2.0.0-beta.18",
+            },
+        }
+        self.assertEqual("coherent-2-0-beta-18", plan["plan"])
+        self.assertEqual(expected_components, plan["components"])
+        self.assertEqual(
+            {
+                "commit": "6e350ba4a7395ffd37ceaa8003808d7f809c8fac",
+                "tag": "beta-authorization/coherent-2-0-beta-18",
+            },
+            plan["beta_authorization"],
+        )
+
+        candidate = json.loads((REPOSITORY_ROOT / "candidates" / "main.json").read_text(encoding="utf-8"))
+        self.assertEqual(candidate_manifest(plan), candidate)
+
+        preparation = load_source_preparation()
+        self.assertEqual(
+            expected_components,
+            {
+                name: {"commit": identity["commit"], "version": identity["version"]}
+                for name, identity in preparation["components"].items()
+            },
+        )
+        self.assertEqual(
+            {
+                "cli": "19aaad8c0caa0923d3da955cd508f98c3c1220045cae6f49ff280f5c900d310d",
+                "sdk-php": "684e8c075b1b35cf2fb956784852966f0cf5916b001dc6ac69010ba842683c10",
+                "sdk-python": "2c90dfac7dae5a82c4dd734bd8cb11f9b746da81e745e8f8ffd0742baeb2263b",
+                "sdk-rust": "19aaad8c0caa0923d3da955cd508f98c3c1220045cae6f49ff280f5c900d310d",
+                "server": "19aaad8c0caa0923d3da955cd508f98c3c1220045cae6f49ff280f5c900d310d",
+                "waterline": "e7c7e9fb95cc8c0605f2781f48b90084b1c6e8c9066eeb2c2c43a55bfbcfb04c",
+                "workflow": "ef8198ffb4afe964b3c5ab8e0b78b312aef681dc18f98d8379ce33821ef1f788",
+            },
+            {name: identity["release_notes"]["sha256"] for name, identity in preparation["components"].items()},
+        )
+
     def test_new_beta_plan_requires_current_product_train(self) -> None:
         plan = release_plan("beta")
         plan["components"] = {
-            name: {"version": "2.0.0-beta.17", "commit": identity["commit"]}
+            name: {"version": "2.0.0-beta.18", "commit": identity["commit"]}
             for name, identity in plan["components"].items()
         }
 
@@ -591,7 +658,7 @@ class ReleasePlanValidationTest(unittest.TestCase):
 
             plan["components"]["server"]["version"] = "0.2.701"
             path.write_bytes(canonical_json(plan))
-            with self.assertRaisesRegex(CandidateError, "supported product train 2.0.0-beta.17"):
+            with self.assertRaisesRegex(CandidateError, "supported product train 2.0.0-beta.18"):
                 load_plan(path, require_current=True)
 
     def test_supersession_handoff_binds_dispatch_identities(self) -> None:
@@ -2756,7 +2823,7 @@ class ReleasePlanRecordTest(unittest.TestCase):
 
         self.assertEqual("created", created["status"])
         self.assertEqual("existing", repeated["status"])
-        self.assertEqual("b024309e2fef13f0b2ed063f194ea4c4f3c126e7", created["commit"])
+        self.assertEqual("6e350ba4a7395ffd37ceaa8003808d7f809c8fac", created["commit"])
         self.assertEqual(created["commit"], repeated["commit"])
         files = subprocess.run(
             ["git", "--git-dir", str(self.remote), "ls-tree", "-r", "--name-only", created["commit"]],
