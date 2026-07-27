@@ -281,6 +281,11 @@ class ReleaseRecoveryConsumerConformanceTest(unittest.TestCase):
         with self.assertRaisesRegex(RecoveryError, "blanket two-successor rejection"):
             conformance.case_continuity_ambiguity_rejection(mutant)
 
+    def test_continuity_case_exercises_exact_transport_authorities(self) -> None:
+        consumer = conformance.load_consumer(ROOT / "scripts" / "component_release_recovery.py")
+
+        conformance.case_continuity_ambiguity_rejection(consumer)
+
     def test_public_audit_requires_every_target_to_pin_identical_bytes(self) -> None:
         suite_raw = SUITE_PATH.read_bytes()
         consumers = {
