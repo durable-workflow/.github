@@ -210,14 +210,14 @@
       }
     },
     {
-      "activation_commit": "741214e956a11baaa7aed45eb7c4e3d42e3ac972",
+      "activation_commit": "bf822f3ba0ca4f05a00649112fad9848a2557140",
       "reason": "The coherent 2.0.0-beta.14 train is superseded by the later immutable coherent 2.0.0-beta.17 public product train, while its historical direct target-branch landings cannot be reconstructed as linked pull requests.",
       "retired": {
         "number": 61,
         "repository": ".github"
       },
       "successor": {
-        "commit": "741214e956a11baaa7aed45eb7c4e3d42e3ac972",
+        "commit": "bf822f3ba0ca4f05a00649112fad9848a2557140",
         "path": "product-train/current.json",
         "release_plan": {
           "sha256": "8084152882a3c7751db1315a4251b93c7f44b9dd83f01c25e5a097c59bdcf3f5",
@@ -229,14 +229,14 @@
       }
     },
     {
-      "activation_commit": "741214e956a11baaa7aed45eb7c4e3d42e3ac972",
+      "activation_commit": "bf822f3ba0ca4f05a00649112fad9848a2557140",
       "reason": "The prerelease-specific 2.0.0-beta.16 authority is retired in favor of its later immutable coherent 2.0.0-beta.17 public product-train record, while its historical direct target-branch landings cannot be reconstructed as linked pull requests.",
       "retired": {
         "number": 65,
         "repository": ".github"
       },
       "successor": {
-        "commit": "741214e956a11baaa7aed45eb7c4e3d42e3ac972",
+        "commit": "bf822f3ba0ca4f05a00649112fad9848a2557140",
         "path": "product-train/current.json",
         "release_plan": {
           "sha256": "8084152882a3c7751db1315a4251b93c7f44b9dd83f01c25e5a097c59bdcf3f5",

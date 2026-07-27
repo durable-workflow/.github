@@ -666,6 +666,26 @@ def verify_workflow_source(name: str, branch: str, workflow: dict[str, Any], sou
     if workflow["matrix_independent"] and not re.search(r"(?m)^\s+fail-fast:\s*false\s*$", source):
         raise PolicyError(f"{label} does not keep matrix cells independent")
 
+    document = _parse_yaml(source, label)
+    jobs = document.get("jobs") if isinstance(document, dict) else None
+    if not isinstance(jobs, dict) or not jobs:
+        raise PolicyError(f"{label} must declare jobs")
+    required_check = workflow["required_check"]
+    stable_jobs: list[str] = []
+    for job_id, job in jobs.items():
+        if not isinstance(job_id, str) or not isinstance(job, dict):
+            continue
+        job_name = job.get("name", job_id)
+        strategy = job.get("strategy")
+        has_matrix = isinstance(strategy, dict) and "matrix" in strategy
+        if isinstance(job_name, str) and job_name == required_check and "${{" not in job_name and not has_matrix:
+            stable_jobs.append(job_id)
+    if len(stable_jobs) != 1:
+        raise PolicyError(
+            f"{label} does not emit required check {required_check!r} as exactly one stable non-matrix job; "
+            f"matching jobs={stable_jobs}"
+        )
+
 
 def _parse_yaml(source: str, label: str) -> Any:
     try:

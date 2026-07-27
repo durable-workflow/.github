@@ -194,7 +194,12 @@ jobs:
             --github-output "$GITHUB_OUTPUT"
 """.encode()
         repository = self._repository(path)
-        branch = self.targets_by_repository[repository]["branch"]
+        target = self.targets_by_repository[repository]
+        branch = target["branch"]
+        required_check = next(
+            (workflow["required_check"] for workflow in target["workflows"] if f"/{workflow['path']}?" in path),
+            "Fixture qualification",
+        )
         return f"""name: qualification
 on:
   push:
@@ -206,6 +211,7 @@ permissions:
   contents: read
 jobs:
   test:
+    name: {json.dumps(required_check)}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -1342,6 +1348,88 @@ jobs:
                 "jobs:\n  test:\n    timeout-minutes: 5\n    fail-fast: false\n",
             )
 
+    def test_audit_rejects_a_dynamic_matrix_without_polling_for_its_required_check(self) -> None:
+        policy = policy_fixture()
+
+        class DynamicMatrixClient(FakeGitHubClient):
+            def __init__(self, dynamic_policy: dict[str, Any]) -> None:
+                super().__init__(dynamic_policy)
+                self.check_run_requests = 0
+
+            def bytes(self, path: str) -> bytes:
+                if "/repos/durable-workflow/cli/contents/.github/workflows/build.yml?" in path:
+                    return f"""name: qualification
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    name: Target branch qualification
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.3", "8.4"]
+    steps:
+      - uses: actions/checkout@{CHECKOUT_PIN} # v6
+""".encode()
+                return super().bytes(path)
+
+            def collection(self, path: str, key: str) -> list[dict[str, Any]]:
+                self.check_run_requests += 1
+                return super().collection(path, key)
+
+        client = DynamicMatrixClient(policy)
+        with self.assertRaisesRegex(
+            PolicyError,
+            "does not emit required check 'Target branch qualification' as exactly one stable non-matrix job",
+        ):
+            audit_policy(policy, client)
+
+        self.assertEqual(0, client.check_run_requests)
+
+    def test_workflow_contract_accepts_an_exact_aggregate_for_dynamic_matrix_cells(self) -> None:
+        workflow = {
+            "path": "ci.yml",
+            "required_check": "Target branch qualification",
+            "matrix_independent": True,
+        }
+
+        verify_workflow_source(
+            "sdk-python",
+            "main",
+            workflow,
+            """name: qualification
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  test:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+  aggregate:
+    name: Target branch qualification
+    needs: [test]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+""",
+        )
+
     def test_latest_check_run_uses_the_latest_attempt(self) -> None:
         latest = _latest_check_runs(
             [
@@ -1438,7 +1526,7 @@ jobs:
         with self.assertRaisesRegex(PolicyError, "completed/failure"):
             audit_policy(policy, FailedCheckClient(policy))
 
-    def test_audit_waits_for_a_concurrent_target_qualification(self) -> None:
+    def test_valid_source_retries_bounded_check_run_creation(self) -> None:
         policy = policy_fixture()
 
         class DelayedCheckClient(FakeGitHubClient):

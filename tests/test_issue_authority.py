@@ -668,8 +668,8 @@ class ContractValidationTest(unittest.TestCase):
         self.assertEqual(
             [
                 "93fab46b8eb028d0302b0438591a8c67bd4b0d9f",
-                "741214e956a11baaa7aed45eb7c4e3d42e3ac972",
-                "741214e956a11baaa7aed45eb7c4e3d42e3ac972",
+                "bf822f3ba0ca4f05a00649112fad9848a2557140",
+                "bf822f3ba0ca4f05a00649112fad9848a2557140",
             ],
             [record["activation_commit"] for record in policy["prerelease_supersessions"]],
         )
