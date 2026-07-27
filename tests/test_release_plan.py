@@ -580,7 +580,7 @@ class ReleasePlanValidationTest(unittest.TestCase):
     def test_new_beta_plan_requires_current_product_train(self) -> None:
         plan = release_plan("beta")
         plan["components"] = {
-            name: {"version": "2.0.0-beta.16", "commit": identity["commit"]}
+            name: {"version": "2.0.0-beta.17", "commit": identity["commit"]}
             for name, identity in plan["components"].items()
         }
 
@@ -591,7 +591,7 @@ class ReleasePlanValidationTest(unittest.TestCase):
 
             plan["components"]["server"]["version"] = "0.2.701"
             path.write_bytes(canonical_json(plan))
-            with self.assertRaisesRegex(CandidateError, "supported product train 2.0.0-beta.16"):
+            with self.assertRaisesRegex(CandidateError, "supported product train 2.0.0-beta.17"):
                 load_plan(path, require_current=True)
 
     def test_supersession_handoff_binds_dispatch_identities(self) -> None:
@@ -2756,7 +2756,7 @@ class ReleasePlanRecordTest(unittest.TestCase):
 
         self.assertEqual("created", created["status"])
         self.assertEqual("existing", repeated["status"])
-        self.assertEqual("12e33fffc6f605213e4694ed359c4554c7a55deb", created["commit"])
+        self.assertEqual("b024309e2fef13f0b2ed063f194ea4c4f3c126e7", created["commit"])
         self.assertEqual(created["commit"], repeated["commit"])
         files = subprocess.run(
             ["git", "--git-dir", str(self.remote), "ls-tree", "-r", "--name-only", created["commit"]],

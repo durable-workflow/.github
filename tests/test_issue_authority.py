@@ -656,20 +656,20 @@ class ContractValidationTest(unittest.TestCase):
         self.assertEqual(61, policy["prerelease_supersessions"][0]["successor"]["number"])
         immutable_successors = [record["successor"] for record in policy["prerelease_supersessions"][1:]]
         self.assertEqual(
-            ["2.0.0-beta.16", "2.0.0-beta.16"],
+            ["2.0.0-beta.17", "2.0.0-beta.17"],
             [successor["train"] for successor in immutable_successors],
         )
         self.assertTrue(
             all(
-                successor["release_plan"]["tag"] == "release-plan/coherent-2-0-beta-16"
+                successor["release_plan"]["tag"] == "release-plan/coherent-2-0-beta-17"
                 for successor in immutable_successors
             )
         )
         self.assertEqual(
             [
                 "93fab46b8eb028d0302b0438591a8c67bd4b0d9f",
-                "f5d65b9bad402492222ec309e91ae61e5895e353",
-                "f5d65b9bad402492222ec309e91ae61e5895e353",
+                "741214e956a11baaa7aed45eb7c4e3d42e3ac972",
+                "741214e956a11baaa7aed45eb7c4e3d42e3ac972",
             ],
             [record["activation_commit"] for record in policy["prerelease_supersessions"]],
         )
@@ -1173,8 +1173,8 @@ class IssueIntakeTest(unittest.TestCase):
         records = {(record["repository"], record["number"]): record for record in manifest["issues"]}
         for number in (61, 65):
             successor = records[(".github", number)]["superseded_by"]
-            self.assertEqual("2.0.0-beta.16", successor["train"])
-            self.assertEqual("release-plan/coherent-2-0-beta-16", successor["release_plan"]["tag"])
+            self.assertEqual("2.0.0-beta.17", successor["train"])
+            self.assertEqual("release-plan/coherent-2-0-beta-17", successor["release_plan"]["tag"])
             self.assertRegex(successor["activation"]["digest"], r"^[0-9a-f]{64}$")
         self.assertEqual(1, len(discovery.file_requests))
         self.assertEqual(
@@ -1247,8 +1247,8 @@ class IssueIntakeTest(unittest.TestCase):
 
         records = {record["number"]: record for record in manifest["issues"]}
         self.assertEqual(61, records[59]["superseded_by"]["number"])
-        self.assertEqual("2.0.0-beta.16", records[61]["superseded_by"]["train"])
-        self.assertEqual("2.0.0-beta.16", records[65]["superseded_by"]["train"])
+        self.assertEqual("2.0.0-beta.17", records[61]["superseded_by"]["train"])
+        self.assertEqual("2.0.0-beta.17", records[65]["superseded_by"]["train"])
 
     def test_untrusted_retired_issue_cannot_activate_prerelease_supersession(self) -> None:
         policy, _backlog, _policy_schema, _backlog_schema = contract_fixture(include_supersessions=True)
