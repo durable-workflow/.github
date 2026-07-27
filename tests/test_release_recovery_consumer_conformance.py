@@ -4,6 +4,7 @@ import copy
 import json
 import unittest
 from pathlib import Path
+from types import ModuleType
 from unittest import mock
 
 from jsonschema import Draft202012Validator
@@ -120,6 +121,32 @@ class ReleaseRecoveryConsumerConformanceTest(unittest.TestCase):
             self.assertRaisesRegex(conformance.ConformanceError, "commit is unavailable"),
         ):
             conformance.previous_contract(ROOT, contract_path, commit)
+
+    def test_blanket_two_successor_rejection_fails_the_shared_continuity_case(self) -> None:
+        mutant = ModuleType("blanket_continuity_rejection")
+
+        class RecoveryError(RuntimeError):
+            pass
+
+        mutant.RecoveryError = RecoveryError
+        mutant.CONTROL_REPOSITORY = "durable-workflow/.github"
+        mutant.CONTINUITY_RESOLUTION_SCHEMA = "durable-workflow.release-plan-continuity-resolution/v2"
+        mutant.CONTINUITY_RESOLUTION_TAG_PREFIX = "release-plan-continuity-resolution/"
+        mutant.CONTINUITY_RESOLUTION_QUALIFICATION_WORKFLOW = ".github/workflows/beta-candidate.yml"
+        mutant.CONTINUITY_RESOLUTION_QUALIFICATION_EVENT = "push"
+        mutant.CONTINUITY_RESOLUTION_QUALIFICATION_BRANCH = "main"
+        mutant.manifest_digest = lambda value: conformance.sha256_bytes(conformance.canonical_json(value))
+        mutant.list_continuity_resolution_tags = lambda *_args: []
+        mutant.resolve_tag = lambda *_args: None
+        mutant.read_record = lambda *_args: {}
+
+        def reject_every_fork(*_args):
+            raise RecoveryError("blanket two-successor rejection")
+
+        mutant.resolve_continuity_successor_fork = reject_every_fork
+
+        with self.assertRaisesRegex(RecoveryError, "blanket two-successor rejection"):
+            conformance.case_continuity_ambiguity_rejection(mutant)
 
     def test_public_audit_requires_every_target_to_pin_identical_bytes(self) -> None:
         suite_raw = SUITE_PATH.read_bytes()

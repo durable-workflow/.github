@@ -141,7 +141,7 @@ class ReleaseRecoveryTargetQualificationTest(unittest.TestCase):
 
     def test_one_consumer_advance_fails_and_a_synchronized_advance_passes(self) -> None:
         advanced = copy.deepcopy(self.contract)
-        advanced["version"] = "1.4.0"
+        advanced["version"] = "1.5.0"
         advanced_raw = conformance.canonical_json(advanced)
         conformance.validate_contract(advanced, advanced_raw, SUITE_PATH)
 
