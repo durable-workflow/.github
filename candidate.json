@@ -1,0 +1,34 @@
+{
+  "candidate": "beta-coherent-2-0-beta-17",
+  "components": {
+    "cli": {
+      "commit": "f4719510abb987fad932546daa248a5c038ab155",
+      "version": "2.0.0-beta.17"
+    },
+    "sdk-php": {
+      "commit": "175ab6396df4fd3809dccceebcf957c03e14ee86",
+      "version": "2.0.0-beta.17"
+    },
+    "sdk-python": {
+      "commit": "ac58dc50f91bc115e13c3581695fef6f67058673",
+      "version": "2.0.0-beta.17"
+    },
+    "sdk-rust": {
+      "commit": "4c9d3142f243837db04b04d2a82eb039676f3244",
+      "version": "2.0.0-beta.17"
+    },
+    "server": {
+      "commit": "f83878c36cc3467fbb0435ef0b34b43050d16e57",
+      "version": "2.0.0-beta.17"
+    },
+    "waterline": {
+      "commit": "bb6e1847ab094c6b1769959d4ef30adad0df6d19",
+      "version": "2.0.0-beta.17"
+    },
+    "workflow": {
+      "commit": "f1ef7d4edd8b1cea28192bfe360d3a233721c0ca",
+      "version": "2.0.0-beta.17"
+    }
+  },
+  "schema": "durable-workflow.beta-candidate/v2"
+}
