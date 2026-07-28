@@ -54,6 +54,17 @@ release-plan action then re-reads the public sources and creates the dated,
 immutable preparation record; source preparation does not bypass or impersonate
 the protected authorization decision.
 
+The first release-candidate source tuple is prepared separately in
+[`first-release-candidate-source-preparation.json`](first-release-candidate-source-preparation.json),
+and [`first-release-candidate.json`](first-release-candidate.json) retains the
+immutable qualification of the beta train from which it advances. Landing
+those source authorities triggers the protected release-plan workflow. The
+release-candidate plan becomes the recoverable publication identity, while
+`current.json` and the public product-train authority continue to describe the
+already-published beta until every release-candidate artifact and completion
+record verifies. Release-candidate authorization does not authorize a stable
+2.0 release or alter the stable 1.x documentation default.
+
 For the workspace-unavailable continuity drill, scheduled component recovery
 recognizes the public `beta-continuity/<plan>/accepted` record and waits until
 the matching `resumed` record exists. An explicit recovery dispatch naming the

@@ -71,6 +71,7 @@ VERSION_PATTERN = recovery_discovery.VERSION_PATTERN
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 ALPHA_VERSION_PATTERN = re.compile(r"^2\.0\.0-alpha\.[1-9][0-9]*$")
 BETA_VERSION_PATTERN = re.compile(r"^2\.0\.0-beta\.[1-9][0-9]*$")
+RC_VERSION_PATTERN = re.compile(r"^2\.0\.0-rc\.[1-9][0-9]*$")
 PLAN_TAG_PREFIX = "release-plan/"
 COMPLETION_TAG_PREFIX = "release-candidate/"
 FAILURE_TAG_PREFIX = "release-plan-failure/"
@@ -136,6 +137,9 @@ SOURCE_CHANGELOGS = {
 }
 
 SOURCE_PREPARATION_PATH = Path(__file__).resolve().parent.parent / "release-plans" / "current-source-preparation.json"
+RELEASE_CANDIDATE_SOURCE_PREPARATION_PATH = (
+    Path(__file__).resolve().parent.parent / "release-plans" / "first-release-candidate-source-preparation.json"
+)
 CURRENT_PLAN_PATH = Path(__file__).resolve().parent.parent / "release-plans" / "current.json"
 CURRENT_CANDIDATE_PATH = Path(__file__).resolve().parent.parent / "candidates" / "main.json"
 CURRENT_AUTHORIZATION_DATE = "2026-07-25T00:00:00Z"
@@ -221,8 +225,8 @@ def _validate_plan(plan: Any, schemas: set[str]) -> None:
         raise CandidateError(f"release plan schema must be one of {sorted(schemas)}")
     if not isinstance(plan["plan"], str) or not PLAN_PATTERN.fullmatch(plan["plan"]):
         raise CandidateError("plan must be 1-56 lowercase letters, digits, dots, underscores, or hyphens")
-    if plan["channel"] not in {"alpha", "beta"}:
-        raise CandidateError("release channel must be alpha or beta")
+    if plan["channel"] not in {"alpha", "beta", "rc"}:
+        raise CandidateError("release channel must be alpha, beta, or rc")
     if plan["foundation"] != {"tag": FOUNDATION_TAG, "commit": FOUNDATION_COMMIT}:
         raise CandidateError("release plan must name the proven immutable candidate foundation")
 
@@ -237,8 +241,13 @@ def _validate_plan(plan: Any, schemas: set[str]) -> None:
         if not isinstance(identity["commit"], str) or not COMMIT_PATTERN.fullmatch(identity["commit"]):
             raise CandidateError(f"components.{name}.commit must be a full lowercase Git commit identity")
 
-    prerelease_pattern = ALPHA_VERSION_PATTERN if plan["channel"] == "alpha" else BETA_VERSION_PATTERN
-    for component in ("workflow", "waterline"):
+    prerelease_pattern = {
+        "alpha": ALPHA_VERSION_PATTERN,
+        "beta": BETA_VERSION_PATTERN,
+        "rc": RC_VERSION_PATTERN,
+    }[plan["channel"]]
+    channel_components = COMPONENTS if plan["channel"] == "rc" else ("workflow", "waterline")
+    for component in channel_components:
         version = components[component]["version"]
         if not prerelease_pattern.fullmatch(version):
             raise CandidateError(f"{component} version {version} is not an exact 2.0.0-{plan['channel']}.N identity")
@@ -253,7 +262,9 @@ def _validate_plan(plan: Any, schemas: set[str]) -> None:
         or not re.fullmatch(r"beta-authorization/[a-z0-9][a-z0-9._-]{0,55}", str(authorization.get("tag", "")))
         or not COMMIT_PATTERN.fullmatch(str(authorization.get("commit", "")))
     ):
-        raise CandidateError("beta release plans require an immutable beta authorization tag and commit")
+        raise CandidateError(
+            "beta and release-candidate plans require an immutable beta qualification tag and commit"
+        )
 
 
 def load_source_preparation(path: Path = SOURCE_PREPARATION_PATH) -> dict[str, Any]:
@@ -287,21 +298,27 @@ def validate_source_preparation(preparation: Any) -> None:
     if (
         preparation["$schema"] != "./source-preparation-schema.json"
         or preparation["schema"] != SOURCE_PREPARATION_SCHEMA
-        or preparation["channel"] != "beta"
+        or preparation["channel"] not in {"beta", "rc"}
         or preparation["status"] != "source-prepared"
         or not isinstance(preparation["plan"], str)
         or not PLAN_PATTERN.fullmatch(preparation["plan"])
     ):
         raise CandidateError("release source preparation has an invalid identity")
+    expected_producer = (
+        "protected-beta-authorization"
+        if preparation["channel"] == "beta"
+        else "protected-release-candidate-authorization"
+    )
     if preparation["authorization"] != {
         "state": "required-after-source-landing",
-        "producer": "protected-beta-authorization",
+        "producer": expected_producer,
     }:
         raise CandidateError("release source preparation must retain the protected authorization boundary")
 
     components = preparation["components"]
     if not isinstance(components, dict) or set(components) != set(COMPONENTS):
         raise CandidateError(f"release source preparation components must be exactly {sorted(COMPONENTS)}")
+    version_pattern = BETA_VERSION_PATTERN if preparation["channel"] == "beta" else RC_VERSION_PATTERN
     product_components: dict[str, dict[str, str]] = {}
     for name, identity in components.items():
         if not isinstance(identity, dict) or set(identity) != {"version", "commit", "release_notes"}:
@@ -310,7 +327,7 @@ def validate_source_preparation(preparation: Any) -> None:
         commit = identity["commit"]
         if (
             not isinstance(version, str)
-            or not BETA_VERSION_PATTERN.fullmatch(version)
+            or not version_pattern.fullmatch(version)
             or not isinstance(commit, str)
             or not COMMIT_PATTERN.fullmatch(commit)
         ):
@@ -328,28 +345,43 @@ def validate_source_preparation(preparation: Any) -> None:
             raise CandidateError(f"release source preparation component {name} has invalid note authority")
         product_components[name] = {"version": version, "commit": commit}
 
-    current = require_current_product_train(product_components)
-    if preparation["train"] != current:
-        raise CandidateError("release source preparation does not identify the supported product train")
+    if preparation["channel"] == "beta":
+        current = require_current_product_train(product_components)
+        if preparation["train"] != current:
+            raise CandidateError("release source preparation does not identify the supported product train")
+    elif not RC_VERSION_PATTERN.fullmatch(str(preparation["train"])):
+        raise CandidateError("release source preparation does not identify one coherent release-candidate train")
 
 
 def require_current_source_preparation(plan: dict[str, Any]) -> dict[str, Any] | None:
-    if plan["channel"] != "beta":
+    if plan["channel"] == "alpha":
         return None
-    preparation = load_source_preparation()
+    preparation_path = (
+        SOURCE_PREPARATION_PATH
+        if plan["channel"] == "beta"
+        else RELEASE_CANDIDATE_SOURCE_PREPARATION_PATH
+    )
+    preparation = load_source_preparation(preparation_path)
     if plan["plan"] != preparation["plan"]:
         raise CandidateError(
-            f"beta release plan {plan['plan']} does not match prepared source plan {preparation['plan']}"
+            f"{plan['channel']} release plan {plan['plan']} does not match prepared source plan "
+            f"{preparation['plan']}"
         )
     expected_components = {
         name: {"version": identity["version"], "commit": identity["commit"]}
         for name, identity in preparation["components"].items()
     }
     if plan["components"] != expected_components:
-        raise CandidateError("beta release plan does not match the exact prepared seven-component source tuple")
+        raise CandidateError(
+            f"{plan['channel']} release plan does not match the exact prepared seven-component source tuple"
+        )
     authorization = plan["beta_authorization"]
-    if authorization["tag"] != f"beta-authorization/{preparation['plan']}":
+    if plan["channel"] == "beta" and authorization["tag"] != f"beta-authorization/{preparation['plan']}":
         raise CandidateError("beta release plan authorization does not match the prepared source plan")
+    if plan["channel"] == "rc":
+        current_beta = load_plan(CURRENT_PLAN_PATH, require_current=True)
+        if current_beta["channel"] != "beta" or authorization != current_beta["beta_authorization"]:
+            raise CandidateError("release-candidate plan does not retain the qualified current beta authority")
     return preparation
 
 
@@ -406,13 +438,21 @@ def verify_beta_authorization(client: PublicClient, plan: dict[str, Any]) -> Non
     if authorization is None:
         return
     record = read_public_record(client, authorization["tag"], authorization["commit"], "beta-authorization.json")
+    authorized_plan = plan
+    is_release_candidate = plan.get("channel") == "rc"
+    if is_release_candidate:
+        authorized_plan = load_plan(CURRENT_PLAN_PATH, require_current=True)
+        if authorization != authorized_plan["beta_authorization"]:
+            raise CandidateError("release-candidate plan does not retain the qualified current beta authority")
     expected = {
         "schema": "durable-workflow.beta-authorization/v1",
         "channel": "beta",
-        "candidate": plan["plan"],
-        "components": plan["components"],
+        "candidate": authorized_plan["plan"],
+        "components": authorized_plan["components"],
     }
     if record != expected:
+        if is_release_candidate:
+            raise CandidateError("beta qualification does not authorize this prerelease transition")
         raise CandidateError("beta authorization does not name the same candidate and seven-component tuple")
 
 
@@ -2107,7 +2147,11 @@ def preflight_plan(plan: dict[str, Any], client: PublicClient, *, release_date: 
     }
     if source_preparation is not None:
         evidence["source_preparation"] = {
-            "path": "release-plans/current-source-preparation.json",
+            "path": (
+                "release-plans/current-source-preparation.json"
+                if plan["channel"] == "beta"
+                else "release-plans/first-release-candidate-source-preparation.json"
+            ),
             "plan": source_preparation["plan"],
             "sha256": manifest_digest(source_preparation),
         }

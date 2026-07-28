@@ -21,10 +21,10 @@
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9._-]{0,55}$"
     },
-    "channel": {"const": "beta"},
+    "channel": {"enum": ["beta", "rc"]},
     "train": {
       "type": "string",
-      "pattern": "^2\\.0\\.0-beta\\.[1-9][0-9]*$"
+      "pattern": "^2\\.0\\.0-(?:beta|rc)\\.[1-9][0-9]*$"
     },
     "status": {"const": "source-prepared"},
     "components": {
@@ -55,7 +55,12 @@
       "required": ["state", "producer"],
       "properties": {
         "state": {"const": "required-after-source-landing"},
-        "producer": {"const": "protected-beta-authorization"}
+        "producer": {
+          "enum": [
+            "protected-beta-authorization",
+            "protected-release-candidate-authorization"
+          ]
+        }
       }
     }
   },
@@ -66,7 +71,7 @@
       "properties": {
         "version": {
           "type": "string",
-          "pattern": "^2\\.0\\.0-beta\\.[1-9][0-9]*$"
+          "pattern": "^2\\.0\\.0-(?:beta|rc)\\.[1-9][0-9]*$"
         },
         "commit": {
           "type": "string",
@@ -117,5 +122,47 @@
         "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"channel": {"const": "beta"}},
+        "required": ["channel"]
+      },
+      "then": {
+        "properties": {
+          "train": {"pattern": "^2\\.0\\.0-beta\\.[1-9][0-9]*$"},
+          "components": {
+            "additionalProperties": {
+              "properties": {
+                "version": {"pattern": "^2\\.0\\.0-beta\\.[1-9][0-9]*$"}
+              }
+            }
+          },
+          "authorization": {
+            "properties": {
+              "producer": {"const": "protected-beta-authorization"}
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "train": {"pattern": "^2\\.0\\.0-rc\\.[1-9][0-9]*$"},
+          "components": {
+            "additionalProperties": {
+              "properties": {
+                "version": {"pattern": "^2\\.0\\.0-rc\\.[1-9][0-9]*$"}
+              }
+            }
+          },
+          "authorization": {
+            "properties": {
+              "producer": {"const": "protected-release-candidate-authorization"}
+            }
+          }
+        }
+      }
+    }
+  ]
 }

@@ -84,7 +84,7 @@ class ReleaseRecoveryConsumerConformanceTest(unittest.TestCase):
         with self.assertRaisesRegex(conformance.ConformanceError, "strictly advancing"):
             conformance.require_versioned_contract_change(previous, current)
 
-        current["version"] = "1.4.3"
+        current["version"] = "1.5.0"
         conformance.require_versioned_contract_change(previous, current)
 
     def test_contract_version_uses_exact_semver(self) -> None:

@@ -57,12 +57,23 @@ jobs:
             product-train/sdk-server-qualification-schema.json
           python -m json.tool release-plans/current.json >/dev/null
           python -m json.tool release-plans/current-source-preparation.json >/dev/null
+          python -m json.tool release-plans/first-release-candidate.json >/dev/null
+          python -m json.tool release-plans/first-release-candidate-source-preparation.json >/dev/null
           python -m json.tool release-plans/schema.json >/dev/null
           python -m json.tool release-plans/source-preparation-schema.json >/dev/null
           python -m jsonschema -i release-plans/current.json release-plans/schema.json
           python -m jsonschema \
             -i release-plans/current-source-preparation.json \
             release-plans/source-preparation-schema.json
+          python -m jsonschema \
+            -i release-plans/first-release-candidate.json \
+            release-plans/schema.json
+          python -m jsonschema \
+            -i release-plans/first-release-candidate-source-preparation.json \
+            release-plans/source-preparation-schema.json
+          python scripts/release_plan.py validate \
+            release-plans/first-release-candidate.json \
+            /tmp/first-release-candidate.json
           python scripts/release_plan.py validate-current \
             release-plans/current.json candidates/main.json \
             /tmp/current-release-plan.json /tmp/current-candidate.json

@@ -1,0 +1,43 @@
+{
+  "beta_authorization": {
+    "commit": "73985d0c906d96e6edce6915ebe8000bbc19896e",
+    "tag": "beta-authorization/coherent-2-0-beta-21"
+  },
+  "channel": "rc",
+  "components": {
+    "cli": {
+      "commit": "f06ed54d3adefa686d8b5575c989268fc15f8529",
+      "version": "2.0.0-rc.1"
+    },
+    "sdk-php": {
+      "commit": "5136659df919f80bcac788f7148135fdb373ebbd",
+      "version": "2.0.0-rc.1"
+    },
+    "sdk-python": {
+      "commit": "e8f21a0a886d055f662a1c893467d1edd0b50b1c",
+      "version": "2.0.0-rc.1"
+    },
+    "sdk-rust": {
+      "commit": "0c69fed9a17e50c041e27d427d6dd043c014df84",
+      "version": "2.0.0-rc.1"
+    },
+    "server": {
+      "commit": "2627e13c0a9c52572b6732f9696f5f78681eca7b",
+      "version": "2.0.0-rc.2"
+    },
+    "waterline": {
+      "commit": "16c2fde277c19199ac3465fa79555aab97cd4115",
+      "version": "2.0.0-rc.1"
+    },
+    "workflow": {
+      "commit": "864cd6f2e11a60ddbd221548019df8ef0cd8f812",
+      "version": "2.0.0-rc.1"
+    }
+  },
+  "foundation": {
+    "commit": "4995052410bd4301c5796ffba54e0b6d2f490ed1",
+    "tag": "beta-candidate/beta-continuity-foundation"
+  },
+  "plan": "coherent-2-0-rc-1",
+  "schema": "durable-workflow.release-plan/v2"
+}

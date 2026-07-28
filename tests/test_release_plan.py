@@ -144,7 +144,7 @@ def python_source_manifest_record(commit: str, version: str) -> dict[str, object
 
 
 def release_plan(channel: str = "alpha") -> dict[str, object]:
-    prerelease = "alpha" if channel == "alpha" else "beta"
+    prerelease = channel
     return {
         "schema": SCHEMA,
         "plan": "recovery-proof-1",
@@ -158,7 +158,9 @@ def release_plan(channel: str = "alpha") -> dict[str, object]:
             for index, name in enumerate(COMPONENTS)
         },
         "beta_authorization": (
-            {"tag": "beta-authorization/recovery-proof-1", "commit": "f" * 40} if channel == "beta" else None
+            {"tag": "beta-authorization/recovery-proof-1", "commit": "f" * 40}
+            if channel in {"beta", "rc"}
+            else None
         ),
     }
 
@@ -585,6 +587,13 @@ class ReleasePlanEntryPointTest(unittest.TestCase):
         self.assertIn("needs: validate-and-record", source)
         self.assertIn("python scripts/beta_continuity.py dispatch-accepted", source)
         self.assertIn("permissions:\n      actions: write\n      contents: read", source)
+
+    def test_first_rc_plan_uses_the_protected_push_entrypoint_without_beta_continuity(self) -> None:
+        source = (REPOSITORY_ROOT / ".github" / "workflows" / "release-plan.yml").read_text(encoding="utf-8")
+
+        self.assertIn("release-plans/first-release-candidate.json", source)
+        self.assertIn("environment: beta-authorization", source)
+        self.assertIn("needs.validate-and-record.outputs.channel != 'rc'", source)
 
 
 class ReleasePlanValidationTest(unittest.TestCase):
@@ -1067,6 +1076,35 @@ class ReleasePlanValidationTest(unittest.TestCase):
         plan["components"]["workflow"]["version"] = "2.0.0-alpha.99"
         with self.assertRaisesRegex(CandidateError, "not an exact 2.0.0-beta.N identity"):
             validate_plan(plan)
+
+    def test_first_release_candidate_binds_the_exact_same_channel_tuple(self) -> None:
+        plan = load_plan(REPOSITORY_ROOT / "release-plans" / "first-release-candidate.json")
+        schema = json.loads((REPOSITORY_ROOT / "release-plans" / "schema.json").read_bytes())
+
+        Draft202012Validator(schema).validate(plan)
+        self.assertEqual("rc", plan["channel"])
+        self.assertEqual("coherent-2-0-rc-1", plan["plan"])
+        self.assertEqual(
+            {
+                "cli": "2.0.0-rc.1",
+                "sdk-php": "2.0.0-rc.1",
+                "sdk-python": "2.0.0-rc.1",
+                "sdk-rust": "2.0.0-rc.1",
+                "server": "2.0.0-rc.2",
+                "waterline": "2.0.0-rc.1",
+                "workflow": "2.0.0-rc.1",
+            },
+            {name: identity["version"] for name, identity in plan["components"].items()},
+        )
+        self.assertEqual(
+            load_plan(REPOSITORY_ROOT / "release-plans" / "current.json")["beta_authorization"],
+            plan["beta_authorization"],
+        )
+
+        changed = copy.deepcopy(plan)
+        changed["components"]["cli"]["version"] = "2.0.0-beta.21"
+        with self.assertRaisesRegex(CandidateError, "cli version .* is not an exact 2.0.0-rc.N identity"):
+            validate_plan(changed)
 
     def test_plan_component_versions_require_strict_semver(self) -> None:
         schema = json.loads((REPOSITORY_ROOT / "release-plans" / "schema.json").read_bytes())

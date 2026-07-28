@@ -28,6 +28,7 @@ from scripts.component_release_recovery import (
     PublicClient,
     PublicInfrastructureError,
     RecoveryError,
+    beta_authorization_matches_plan,
     canonical_json,
     current_product_train_authorities,
     direct_plan_lifecycle,
@@ -65,7 +66,7 @@ def github_http_error(status: int, body: bytes = b"error", **headers: str) -> ur
 
 
 def plan(channel: str = "alpha") -> dict[str, object]:
-    prerelease = "alpha" if channel == "alpha" else "beta"
+    prerelease = channel
     return {
         "schema": SCHEMA,
         "plan": "component-recovery",
@@ -79,7 +80,9 @@ def plan(channel: str = "alpha") -> dict[str, object]:
             for index, name in enumerate(COMPONENTS)
         },
         "beta_authorization": (
-            {"tag": "beta-authorization/component-recovery", "commit": "f" * 40} if channel == "beta" else None
+            {"tag": "beta-authorization/component-recovery", "commit": "f" * 40}
+            if channel in {"beta", "rc"}
+            else None
         ),
     }
 
@@ -2001,6 +2004,28 @@ jobs:
             self.assertEqual("plan-discovery", evidence["phase"])
             self.assertEqual("failed", evidence["outcome"])
             self.assertFalse(github_output.exists())
+
+
+class ReleaseCandidateChannelTest(unittest.TestCase):
+    def test_rc_plan_retains_coherent_beta_qualification(self) -> None:
+        candidate = plan("rc")
+        validate_plan(candidate)
+        beta = plan("beta")
+        record = {
+            "schema": "durable-workflow.beta-authorization/v1",
+            "channel": "beta",
+            "candidate": beta["plan"],
+            "components": beta["components"],
+        }
+        for identity in record["components"].values():
+            identity["version"] = "2.0.0-beta.21"
+        self.assertTrue(
+            beta_authorization_matches_plan(
+                candidate,
+                candidate["beta_authorization"],
+                record,
+            )
+        )
 
 
 if __name__ == "__main__":
