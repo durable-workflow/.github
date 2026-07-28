@@ -1,0 +1,319 @@
+{
+  "candidate": "coherent-2-0-rc-1",
+  "channel": "rc",
+  "public_verification": {
+    "candidate": "rc-coherent-2-0-rc-1",
+    "components": {
+      "cli": {
+        "commit": "f06ed54d3adefa686d8b5575c989268fc15f8529",
+        "distribution": {
+          "assets": [
+            {
+              "asset_id": 492104314,
+              "name": "dw-linux-aarch64",
+              "sha256": "9864a9df45de79d139ef2bfd147a6fff5379a93713a9621e3b13333ec31b24ef",
+              "size": 22276285,
+              "url": "https://github.com/durable-workflow/cli/releases/download/2.0.0-rc.1/dw-linux-aarch64"
+            },
+            {
+              "asset_id": 492104311,
+              "name": "dw-linux-x86_64",
+              "sha256": "7a2e4ccb0ba0c9d2b67b119a6265ca27c8b11a920418d07299b33c5348e9dba8",
+              "size": 22279669,
+              "url": "https://github.com/durable-workflow/cli/releases/download/2.0.0-rc.1/dw-linux-x86_64"
+            },
+            {
+              "asset_id": 492104312,
+              "name": "dw-macos-aarch64",
+              "sha256": "6d529ef5d9644626e316996938852dee939641e0008668eb9ea11e9f546a89b9",
+              "size": 23047597,
+              "url": "https://github.com/durable-workflow/cli/releases/download/2.0.0-rc.1/dw-macos-aarch64"
+            },
+            {
+              "asset_id": 492104306,
+              "name": "dw-windows-x86_64.exe",
+              "sha256": "80632f321609254fa4b063a160123cb06af4454fd1466e6188d4db61525cd2e7",
+              "size": 22451429,
+              "url": "https://github.com/durable-workflow/cli/releases/download/2.0.0-rc.1/dw-windows-x86_64.exe"
+            },
+            {
+              "asset_id": 492104307,
+              "name": "dw.phar",
+              "sha256": "f83b3826881924efcbc365de16f0ce09064f353b55a44430ee8c2454d4f125aa",
+              "size": 615141,
+              "url": "https://github.com/durable-workflow/cli/releases/download/2.0.0-rc.1/dw.phar"
+            },
+            {
+              "asset_id": 492104305,
+              "name": "dw.rb",
+              "sha256": "d05ee06287844f774ec8d098816b383d9ec51f6f0bb9e7102273814bf9cc1cfc",
+              "size": 520,
+              "url": "https://github.com/durable-workflow/cli/releases/download/2.0.0-rc.1/dw.rb"
+            },
+            {
+              "asset_id": 492104304,
+              "name": "install.ps1",
+              "sha256": "1befdfe98af3f52d8b88daec5ff9779efe6b6b958525f868acdf83a258f4223b",
+              "size": 4117,
+              "url": "https://github.com/durable-workflow/cli/releases/download/2.0.0-rc.1/install.ps1"
+            },
+            {
+              "asset_id": 492104303,
+              "name": "install.sh",
+              "sha256": "895280f6e0b1a409cf69c768f3028d1e1056734c4ad2c54f48c95a2ad4285c20",
+              "size": 4040,
+              "url": "https://github.com/durable-workflow/cli/releases/download/2.0.0-rc.1/install.sh"
+            },
+            {
+              "asset_id": 492104302,
+              "name": "verify-release.sh",
+              "sha256": "2d92b04e3c11cacc5caec3b05904043f3e9ab66ffbf14aa82360f5b5bfbac93d",
+              "size": 2457,
+              "url": "https://github.com/durable-workflow/cli/releases/download/2.0.0-rc.1/verify-release.sh"
+            },
+            {
+              "asset_id": 492104308,
+              "name": "SHA256SUMS",
+              "sha256": "4941377624439a7b4ffa96c4b9bae872eb1b956e29fe8b7ea1863b22cb8565a2",
+              "size": 721,
+              "url": "https://github.com/durable-workflow/cli/releases/download/2.0.0-rc.1/SHA256SUMS"
+            }
+          ],
+          "build_attestation_authority": {
+            "commit": "f06ed54d3adefa686d8b5575c989268fc15f8529",
+            "mode": "exact-tag",
+            "ref": "refs/tags/2.0.0-rc.1"
+          },
+          "build_attestations_verified": true,
+          "kind": "github-release",
+          "package_source": {
+            "commit": "f06ed54d3adefa686d8b5575c989268fc15f8529",
+            "embedded_phar_identity": "dw 2.0.0-rc.1 (commit f06ed54d3ade)"
+          },
+          "release_id": 360773108,
+          "release_url": "https://github.com/durable-workflow/cli/releases/tag/2.0.0-rc.1",
+          "repository": "durable-workflow/cli"
+        },
+        "outcome": "verified",
+        "source": {
+          "commit": "f06ed54d3adefa686d8b5575c989268fc15f8529",
+          "repository": "durable-workflow/cli",
+          "tag": "2.0.0-rc.1",
+          "tag_object": "8876499ae76f9974cd580825f1b7e4c4f3867bfb",
+          "url": "https://github.com/durable-workflow/cli/tree/2.0.0-rc.1"
+        },
+        "version": "2.0.0-rc.1"
+      },
+      "sdk-php": {
+        "commit": "5136659df919f80bcac788f7148135fdb373ebbd",
+        "distribution": {
+          "dist": {
+            "sha256": "2dd1d19131588f2a684406b26d761bc2ec06e4819eee348d71c618ee77cd5c2b",
+            "size": 179440,
+            "url": "https://api.github.com/repos/durable-workflow/sdk-php/zipball/5136659df919f80bcac788f7148135fdb373ebbd"
+          },
+          "dist_reference": "5136659df919f80bcac788f7148135fdb373ebbd",
+          "kind": "composer",
+          "package": "durable-workflow/sdk",
+          "registry": "https://repo.packagist.org/p2/durable-workflow/sdk.json",
+          "source_reference": "5136659df919f80bcac788f7148135fdb373ebbd"
+        },
+        "outcome": "verified",
+        "source": {
+          "commit": "5136659df919f80bcac788f7148135fdb373ebbd",
+          "repository": "durable-workflow/sdk-php",
+          "tag": "2.0.0-rc.1",
+          "tag_object": "213e3d1482e71909bb91f5974b78a8519c80fd0c",
+          "url": "https://github.com/durable-workflow/sdk-php/tree/2.0.0-rc.1"
+        },
+        "version": "2.0.0-rc.1"
+      },
+      "sdk-python": {
+        "commit": "e8f21a0a886d055f662a1c893467d1edd0b50b1c",
+        "distribution": {
+          "files": [
+            {
+              "filename": "durable_workflow-2.0.0rc1-py3-none-any.whl",
+              "package_type": "bdist_wheel",
+              "sha256": "ed5fe72d18b15ffaed56cb24d108a374c993cff55e549c7bfedf82e18dfcb6ae",
+              "size": 166994,
+              "url": "https://files.pythonhosted.org/packages/4c/ff/059a414df6d6f0a6a37fa0a11693ee610f5146d839d6a7c0846c6aed8566/durable_workflow-2.0.0rc1-py3-none-any.whl"
+            },
+            {
+              "filename": "durable_workflow-2.0.0rc1.tar.gz",
+              "package_type": "sdist",
+              "sha256": "c8be2257bf0f780949af195b98f6fdf76aba1b3d09f1f44b0828bc5d310690c8",
+              "size": 272485,
+              "url": "https://files.pythonhosted.org/packages/db/2f/58ee38c488f179aa3fd155054d89fc4d31e6777aa1014332aab3d1f7e2f0/durable_workflow-2.0.0rc1.tar.gz"
+            }
+          ],
+          "kind": "pypi",
+          "package": "durable-workflow",
+          "registry": "https://pypi.org/pypi/durable-workflow/2.0.0rc1/json",
+          "source_identity": {
+            "source_archive": {
+              "sha256": "ce020c5befbd8dd63cc8d1278a360e3d810fa040eba92a4bc56119b4837355bc",
+              "size": 389999,
+              "url": "https://github.com/durable-workflow/sdk-python/archive/e8f21a0a886d055f662a1c893467d1edd0b50b1c.tar.gz"
+            },
+            "source_commit": "e8f21a0a886d055f662a1c893467d1edd0b50b1c",
+            "source_files_compared": 64,
+            "wheel_files_compared": 25
+          }
+        },
+        "outcome": "verified",
+        "source": {
+          "commit": "e8f21a0a886d055f662a1c893467d1edd0b50b1c",
+          "repository": "durable-workflow/sdk-python",
+          "tag": "2.0.0-rc.1",
+          "tag_object": "19fd8ab9a5fbb1ba77796b8fe595166974b4e467",
+          "url": "https://github.com/durable-workflow/sdk-python/tree/2.0.0-rc.1"
+        },
+        "version": "2.0.0-rc.1"
+      },
+      "sdk-rust": {
+        "commit": "0c69fed9a17e50c041e27d427d6dd043c014df84",
+        "distribution": {
+          "archive": {
+            "sha256": "c0b97b5e05369ce0a337b50ca39b3784002417e22ee2926d1d01de82b848ecb3",
+            "size": 93755,
+            "url": "https://crates.io/api/v1/crates/durable-workflow/2.0.0-rc.1/download"
+          },
+          "archive_vcs_commit": "0c69fed9a17e50c041e27d427d6dd043c014df84",
+          "archive_vcs_dirty": false,
+          "kind": "crates.io",
+          "package": "durable-workflow",
+          "registry": "https://crates.io/api/v1/crates/durable-workflow/2.0.0-rc.1"
+        },
+        "outcome": "verified",
+        "source": {
+          "commit": "0c69fed9a17e50c041e27d427d6dd043c014df84",
+          "repository": "durable-workflow/sdk-rust",
+          "tag": "2.0.0-rc.1",
+          "tag_object": "11c1bf8b4d75eb9f4c5b494cd18c92b7e0266ecb",
+          "url": "https://github.com/durable-workflow/sdk-rust/tree/2.0.0-rc.1"
+        },
+        "version": "2.0.0-rc.1"
+      },
+      "server": {
+        "commit": "2627e13c0a9c52572b6732f9696f5f78681eca7b",
+        "distribution": {
+          "configs": [
+            {
+              "digest": "sha256:308c6959c707e40a6e8eeed5f99ffa725b7d24883241848f9f71b146542371c8",
+              "labels": {
+                "dev.durable-workflow.release.tag": "2.0.0-rc.2",
+                "org.opencontainers.image.revision": "2627e13c0a9c52572b6732f9696f5f78681eca7b"
+              }
+            },
+            {
+              "digest": "sha256:566bc01f6736238cf6df020acc7d0299018d45ca7941bd48960865da5631f7f4",
+              "labels": {
+                "dev.durable-workflow.release.tag": "2.0.0-rc.2",
+                "org.opencontainers.image.revision": "2627e13c0a9c52572b6732f9696f5f78681eca7b"
+              }
+            }
+          ],
+          "image": "docker.io/durableworkflow/server:2.0.0-rc.2",
+          "kind": "oci",
+          "manifest_digest": "sha256:5947ac2ca169c018336453c30adc3afed2971cb74b396c2167bc5b10c1292547",
+          "platforms": [
+            "linux/amd64",
+            "linux/arm64"
+          ]
+        },
+        "outcome": "verified",
+        "source": {
+          "commit": "2627e13c0a9c52572b6732f9696f5f78681eca7b",
+          "repository": "durable-workflow/server",
+          "tag": "2.0.0-rc.2",
+          "tag_object": "b840c2f49591e5fb3650b39d52e4b6c7adc37472",
+          "url": "https://github.com/durable-workflow/server/tree/2.0.0-rc.2"
+        },
+        "version": "2.0.0-rc.2"
+      },
+      "waterline": {
+        "commit": "16c2fde277c19199ac3465fa79555aab97cd4115",
+        "distributions": {
+          "embedded": {
+            "dist": {
+              "sha256": "e4eb5f80e30d8010e6e78b2bdbcb4d3cf41cf42548537db800ee366e72303a67",
+              "size": 3285655,
+              "url": "https://api.github.com/repos/durable-workflow/waterline/zipball/16c2fde277c19199ac3465fa79555aab97cd4115"
+            },
+            "dist_reference": "16c2fde277c19199ac3465fa79555aab97cd4115",
+            "kind": "composer",
+            "package": "durable-workflow/waterline",
+            "registry": "https://repo.packagist.org/p2/durable-workflow/waterline.json",
+            "source_reference": "16c2fde277c19199ac3465fa79555aab97cd4115"
+          },
+          "service": {
+            "configs": [
+              {
+                "digest": "sha256:82f5b8b9fc74db370c45150664c18545099a1c9ab789f7977e8012e64973c732",
+                "labels": {
+                  "dev.durable-workflow.release.tag": "2.0.0-rc.1",
+                  "org.opencontainers.image.revision": "16c2fde277c19199ac3465fa79555aab97cd4115"
+                }
+              },
+              {
+                "digest": "sha256:61da49583f09d0ed94bffdc9d7f4a36aace2328bd545bae13721a589e7528f74",
+                "labels": {
+                  "dev.durable-workflow.release.tag": "2.0.0-rc.1",
+                  "org.opencontainers.image.revision": "16c2fde277c19199ac3465fa79555aab97cd4115"
+                }
+              }
+            ],
+            "image": "docker.io/durableworkflow/waterline:2.0.0-rc.1",
+            "kind": "oci",
+            "manifest_digest": "sha256:20b884b3044659dd76451d2f9a5e48569a7dbcc961102371714bfc176471b70f",
+            "platforms": [
+              "linux/amd64",
+              "linux/arm64"
+            ]
+          }
+        },
+        "outcome": "verified",
+        "source": {
+          "commit": "16c2fde277c19199ac3465fa79555aab97cd4115",
+          "repository": "durable-workflow/waterline",
+          "tag": "2.0.0-rc.1",
+          "tag_object": "6ace6af73070917fc608f0027528e8cae93bdc5f",
+          "url": "https://github.com/durable-workflow/waterline/tree/2.0.0-rc.1"
+        },
+        "version": "2.0.0-rc.1"
+      },
+      "workflow": {
+        "commit": "864cd6f2e11a60ddbd221548019df8ef0cd8f812",
+        "distribution": {
+          "dist": {
+            "sha256": "1e924c1d25eb2eb5ec52d2fb7c3c1bdba9e0e5ab28262cddbc3d2b8272b263da",
+            "size": 2197965,
+            "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/864cd6f2e11a60ddbd221548019df8ef0cd8f812"
+          },
+          "dist_reference": "864cd6f2e11a60ddbd221548019df8ef0cd8f812",
+          "kind": "composer",
+          "package": "durable-workflow/workflow",
+          "registry": "https://repo.packagist.org/p2/durable-workflow/workflow.json",
+          "source_reference": "864cd6f2e11a60ddbd221548019df8ef0cd8f812"
+        },
+        "outcome": "verified",
+        "source": {
+          "commit": "864cd6f2e11a60ddbd221548019df8ef0cd8f812",
+          "repository": "durable-workflow/workflow",
+          "tag": "2.0.0-rc.1",
+          "tag_object": "906adb14b0c7879d789fdf45ee86bb39cc4c67e9",
+          "url": "https://github.com/durable-workflow/workflow/tree/2.0.0-rc.1"
+        },
+        "version": "2.0.0-rc.1"
+      }
+    },
+    "manifest_sha256": "9b09d82337d4d506f09a7813c26143d08bebe0d9f22ce6f9c8fd145c49a82285",
+    "outcome": "verified",
+    "schema": "durable-workflow.beta-candidate-verification/v2",
+    "verified_at": "2026-07-28T23:33:03Z"
+  },
+  "release_plan_sha256": "4c898828b74ee4b4339f4f91dc08e9b2ac4acf886b8a5eefce1993184048d78f",
+  "release_preparation_sha256": "4ffb61cf8e916d594e8a98f3054f242ae51414a7548e5901898b5b45e01d18c2",
+  "schema": "durable-workflow.release-candidate-verification/v1"
+}
