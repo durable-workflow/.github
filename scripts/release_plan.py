@@ -472,16 +472,22 @@ def validate_current_plan_authority(
     plan_path: Path = CURRENT_PLAN_PATH,
     candidate_path: Path = CURRENT_CANDIDATE_PATH,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    plan = load_plan(plan_path, require_current=True)
-    require_current_source_preparation(plan)
+    plan, expected_candidate = materialize_current_plan_authority(plan_path)
     candidate = load_manifest(candidate_path)
-    expected_candidate = candidate_manifest(plan)
     if canonical_json(candidate) != canonical_json(expected_candidate):
         raise CandidateError("current candidate does not match the exact current release plan")
+    return plan, candidate
+
+
+def materialize_current_plan_authority(
+    plan_path: Path = CURRENT_PLAN_PATH,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    plan = load_plan(plan_path, require_current=True)
+    require_current_source_preparation(plan)
     authorization = plan["beta_authorization"]
     if authorization["tag"] != f"beta-authorization/{plan['plan']}":
         raise CandidateError("current release plan has a mismatched authorization tag")
-    return plan, candidate
+    return plan, candidate_manifest(plan)
 
 
 def record_current_plan_authorization(
@@ -491,7 +497,7 @@ def record_current_plan_authorization(
     remote: str,
     authoritative_authorization: Path,
 ) -> dict[str, str]:
-    plan, _candidate = validate_current_plan_authority(plan_path)
+    plan, _candidate = materialize_current_plan_authority(plan_path)
     authorization = beta_authorization_manifest(plan)
     canonical = canonical_json(authorization)
     identity = plan["beta_authorization"]
@@ -3528,6 +3534,11 @@ def main() -> int:
     validate_current.add_argument("plan_destination", type=Path)
     validate_current.add_argument("candidate_destination", type=Path)
 
+    materialize_current = subparsers.add_parser("materialize-current")
+    materialize_current.add_argument("plan", type=Path)
+    materialize_current.add_argument("plan_destination", type=Path)
+    materialize_current.add_argument("candidate_destination", type=Path)
+
     verify_recovery_authority = subparsers.add_parser("verify-recovery-authority")
     verify_recovery_authority.add_argument("authority", type=Path)
     verify_recovery_authority.add_argument("evidence", type=Path)
@@ -3632,6 +3643,10 @@ def main() -> int:
             args.destination.write_bytes(canonical_json(plan))
         elif args.command == "validate-current":
             plan, candidate = validate_current_plan_authority(args.plan, args.candidate)
+            args.plan_destination.write_bytes(canonical_json(plan))
+            args.candidate_destination.write_bytes(canonical_json(candidate))
+        elif args.command == "materialize-current":
+            plan, candidate = materialize_current_plan_authority(args.plan)
             args.plan_destination.write_bytes(canonical_json(plan))
             args.candidate_destination.write_bytes(canonical_json(candidate))
         elif args.command == "verify-recovery-authority":

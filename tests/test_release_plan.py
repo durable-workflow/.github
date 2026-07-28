@@ -41,6 +41,7 @@ from scripts.release_plan import (
     load_public_supersession,
     load_source_preparation,
     manifest_digest,
+    materialize_current_plan_authority,
     parse_conflict_components,
     preflight_plan,
     prepare_release,
@@ -470,6 +471,47 @@ class ReleasePlanEntryPointTest(unittest.TestCase):
         self.assertEqual(f"${{{{ {host_guard} }}}}", workflow["jobs"]["observe"]["if"])
         self.assertIn(host_guard, workflow["jobs"]["record"]["if"])
 
+    def test_observer_preserves_failed_verification_handoffs_and_queues_current_completion(self) -> None:
+        workflow = yaml.safe_load(
+            (REPOSITORY_ROOT / ".github" / "workflows" / "release-plan-observer.yml").read_text(encoding="utf-8")
+        )
+        record = workflow["jobs"]["record"]
+        publish_current = workflow["jobs"]["publish-current"]
+        self.assertEqual(
+            {"actions": "read", "attestations": "read", "contents": "write"},
+            record["permissions"],
+        )
+        self.assertEqual("write", publish_current["permissions"]["actions"])
+        self.assertEqual("read", publish_current["permissions"]["contents"])
+        package = next(
+            step
+            for step in workflow["jobs"]["observe"]["steps"]
+            if step.get("name") == "Package the privileged recorder handoff as one immutable file"
+        )
+        self.assertIn("if [ -f verification.json ]; then", package["run"])
+        publish = next(
+            step
+            for step in publish_current["steps"]
+            if step.get("name") == "Publish the matching aggregate current authority"
+        )
+        self.assertIn("gh workflow run current-release-plan.yml --ref main", publish["run"])
+        self.assertEqual("record", publish_current["needs"])
+        self.assertIn("success()", publish_current["if"])
+        self.assertIn("needs.record.outputs.current-plan == 'true'", publish_current["if"])
+        self.assertNotIn("actions/download-artifact", str(publish_current))
+
+    def test_current_train_checks_derive_their_candidate_from_the_current_plan(self) -> None:
+        current_workflow = (
+            REPOSITORY_ROOT / ".github" / "workflows" / "current-release-plan.yml"
+        ).read_text(encoding="utf-8")
+        source_qualification = (
+            REPOSITORY_ROOT / ".github" / "workflows" / "source-qualification.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn("- 'candidates/main.json'", current_workflow)
+        self.assertIn("release_plan.py materialize-current", current_workflow)
+        self.assertIn("release_plan.py materialize-current", source_qualification)
+
     def test_observer_uses_the_shared_immutable_discovery_contract(self) -> None:
         candidate = release_plan("beta")
         tag = f"{PLAN_TAG_PREFIX}{candidate['plan']}"
@@ -549,6 +591,7 @@ class ReleasePlanEntryPointTest(unittest.TestCase):
         for command in (
             "validate",
             "validate-current",
+            "materialize-current",
             "check",
             "preflight",
             "record",
@@ -597,6 +640,16 @@ class ReleasePlanEntryPointTest(unittest.TestCase):
 
 
 class ReleasePlanValidationTest(unittest.TestCase):
+    def test_current_authority_materializes_independently_of_the_next_candidate(self) -> None:
+        plan, candidate = materialize_current_plan_authority()
+        next_candidate = json.loads(
+            (REPOSITORY_ROOT / "candidates" / "main.json").read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(candidate_manifest(plan), candidate)
+        self.assertEqual("2.0.0-beta.21", plan["components"]["server"]["version"])
+        self.assertEqual("2.0.0-rc.5", next_candidate["components"]["server"]["version"])
+
     def test_current_beta_21_authority_binds_exact_published_sources(self) -> None:
         plan = load_plan(REPOSITORY_ROOT / "release-plans" / "current.json", require_current=True)
         expected_components = {
@@ -638,9 +691,6 @@ class ReleasePlanValidationTest(unittest.TestCase):
             },
             plan["beta_authorization"],
         )
-
-        candidate = json.loads((REPOSITORY_ROOT / "candidates" / "main.json").read_text(encoding="utf-8"))
-        self.assertEqual(candidate_manifest(plan), candidate)
 
         preparation = load_source_preparation()
         self.assertEqual(

@@ -74,8 +74,8 @@ jobs:
           python scripts/release_plan.py validate \
             release-plans/first-release-candidate.json \
             /tmp/first-release-candidate.json
-          python scripts/release_plan.py validate-current \
-            release-plans/current.json candidates/main.json \
+          python scripts/release_plan.py materialize-current \
+            release-plans/current.json \
             /tmp/current-release-plan.json /tmp/current-candidate.json
           python -m json.tool release-recovery/consumer-conformance/contract.json >/dev/null
           python -m json.tool release-recovery/consumer-conformance/contract-schema.json >/dev/null

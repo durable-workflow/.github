@@ -33,6 +33,7 @@ class HandoffError(RuntimeError):
 class HandoffKind:
     artifact_prefix: str
     filenames: tuple[str, ...]
+    optional_filenames: tuple[str, ...] = ()
 
 
 KINDS = {
@@ -47,8 +48,8 @@ KINDS = {
             "release-preparation.json",
             "candidate-verifier-input.json",
             "release-state.json",
-            "verification.json",
         ),
+        ("verification.json",),
     ),
 }
 
@@ -108,6 +109,13 @@ def create_handoff(
     run_attempt = positive_integer(run_attempt, "handoff run attempt")
     contract = KINDS[kind]
     files = {filename: hash_file(directory / filename) for filename in contract.filenames}
+    files.update(
+        {
+            filename: hash_file(directory / filename)
+            for filename in contract.optional_filenames
+            if (directory / filename).exists()
+        }
+    )
     handoff = {
         "schema": HANDOFF_SCHEMA,
         "kind": kind,
@@ -192,16 +200,22 @@ def validate_handoff(
 
     contract = KINDS[kind]
     files = handoff["files"]
-    if not isinstance(files, dict) or set(files) != set(contract.filenames):
+    required_files = set(contract.filenames)
+    optional_files = set(contract.optional_filenames)
+    if (
+        not isinstance(files, dict)
+        or not required_files.issubset(files)
+        or not set(files).issubset(required_files | optional_files)
+    ):
         raise HandoffError("verifier handoff file set does not match its contract")
-    expected_entries = {*contract.filenames, manifest.name}
+    expected_entries = {*files, manifest.name}
     try:
         actual_entries = {path.name for path in directory.iterdir()}
     except OSError as error:
         raise HandoffError(f"cannot inspect verifier handoff directory: {error}") from error
     if actual_entries != expected_entries:
         raise HandoffError("verifier handoff artifact contains unexpected or missing files")
-    for filename in contract.filenames:
+    for filename in files:
         digest = files[filename]
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise HandoffError(f"verifier handoff has an invalid digest for {filename}")

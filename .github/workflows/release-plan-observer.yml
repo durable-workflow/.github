@@ -119,9 +119,17 @@ jobs:
           PLAN_AVAILABLE: ${{ steps.plan.outputs.available }}
         run: |
           if [ "$PLAN_AVAILABLE" = true ]; then
-            tar -cf observation-recorder-handoff.tar \
-              release-plan.json release-preparation.json candidate-verifier-input.json \
-              release-state.json verification.json handoff.json
+            handoff_files=(
+              release-plan.json
+              release-preparation.json
+              candidate-verifier-input.json
+              release-state.json
+              handoff.json
+            )
+            if [ -f verification.json ]; then
+              handoff_files+=(verification.json)
+            fi
+            tar -cf observation-recorder-handoff.tar "${handoff_files[@]}"
           else
             tar -cf observation-recorder-handoff.tar --files-from /dev/null
           fi
@@ -147,6 +155,8 @@ jobs:
       actions: read
       attestations: read
       contents: write
+    outputs:
+      current-plan: ${{ steps.aggregate.outputs.current }}
     steps:
       - name: Check out a fresh qualified control plane
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
@@ -340,3 +350,35 @@ jobs:
           }
           repair_asset authoritative-release-candidate.json release-candidate.json
           repair_asset authoritative-verification.json verification.json
+
+      - name: Classify whether the completed plan is current
+        id: aggregate
+        run: |
+          set -euo pipefail
+          if cmp --silent \
+            validated-observation/release-plan.json \
+            release-plans/current.json; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "Completed plan is not the declared current product train."
+          fi
+
+  publish-current:
+    name: Queue aggregate publication after current-plan completion
+    needs: record
+    if: >-
+      success() &&
+      github.server_url == 'https://github.com' &&
+      github.ref == 'refs/heads/main' &&
+      needs.record.outputs.current-plan == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Publish the matching aggregate current authority
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run current-release-plan.yml --ref main

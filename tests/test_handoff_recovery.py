@@ -190,6 +190,48 @@ class HandoffManifestTest(unittest.TestCase):
                         producer_attempt=1,
                     )
 
+    def test_failed_observation_handoff_omits_only_verification_evidence(self) -> None:
+        kind = "release-plan-observation"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self._create_fixture(root, kind)
+            failed = validate_handoff(
+                kind,
+                root,
+                manifest,
+                repository=REPOSITORY,
+                workflow_ref=WORKFLOW_REFS[kind],
+                source_sha=SOURCE_SHA,
+                run_id=RUN_ID,
+                current_attempt=1,
+                producer_attempt=1,
+            )
+            self.assertNotIn("verification.json", failed["files"])
+
+            (root / "verification.json").write_text("verified\n", encoding="utf-8")
+            create_handoff(
+                kind,
+                root,
+                manifest,
+                repository=REPOSITORY,
+                workflow_ref=WORKFLOW_REFS[kind],
+                source_sha=SOURCE_SHA,
+                run_id=RUN_ID,
+                run_attempt=1,
+            )
+            verified = validate_handoff(
+                kind,
+                root,
+                manifest,
+                repository=REPOSITORY,
+                workflow_ref=WORKFLOW_REFS[kind],
+                source_sha=SOURCE_SHA,
+                run_id=RUN_ID,
+                current_attempt=1,
+                producer_attempt=1,
+            )
+            self.assertIn("verification.json", verified["files"])
+
     def test_identity_mismatch_and_unexpected_files_fail_before_use(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

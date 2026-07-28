@@ -3,7 +3,9 @@
 The `Beta candidate` GitHub workflow verifies and records a coherent public
 release tuple. A dispatch supplies one JSON value conforming to
 [`schema.json`](schema.json). The fixed [`main.json`](main.json) tuple exercises
-the same path whenever this repository's main branch changes.
+the same path whenever this repository's main branch changes. It is the next
+candidate to qualify, not the mutable supported-train pointer; current-train
+verification derives its candidate input from the current release plan.
 
 Every component version must be an exact release and every commit must be its
 full 40-character source identity. Repository and registry locations are owned

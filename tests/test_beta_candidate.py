@@ -29,6 +29,7 @@ from scripts.beta_candidate import (
     PublicInfrastructureError,
     canonical_cli_embedded_identity,
     canonical_json,
+    canonical_pypi_version,
     check_candidate_compatibility,
     inspect_cli_phar_identity,
     load_verification,
@@ -41,6 +42,7 @@ from scripts.beta_candidate import (
     validate_verification,
     verify_composer,
     verify_github_release,
+    verify_pypi,
     verify_python_archive_identity,
 )
 from tests.verification_fixture import (
@@ -111,6 +113,67 @@ def verification(candidate: dict[str, object]) -> dict[str, object]:
 
 
 class ManifestTest(unittest.TestCase):
+    def test_python_registry_normalizes_every_supported_prerelease_channel(self) -> None:
+        self.assertEqual("2.0.0a7", canonical_pypi_version("2.0.0-alpha.7"))
+        self.assertEqual("2.0.0b21", canonical_pypi_version("2.0.0-beta.21"))
+        self.assertEqual("2.0.0rc5", canonical_pypi_version("2.0.0-rc.5"))
+        self.assertEqual("2.0.0", canonical_pypi_version("2.0.0"))
+
+    def test_python_release_lookup_uses_pep_440_rc_identity(self) -> None:
+        component = COMPONENTS["sdk-python"]
+        commit = "a" * 40
+
+        class FixtureClient:
+            requested_url = ""
+
+            def json(self, url: str) -> dict[str, object]:
+                self.requested_url = url
+                return {
+                    "info": {
+                        "version": "2.0.0rc5",
+                        "project_urls": {"Repository": "https://github.com/durable-workflow/sdk-python"},
+                    },
+                    "urls": [],
+                }
+
+        client = FixtureClient()
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            self.assertRaisesRegex(
+                CandidateError,
+                "wheel and source archive",
+            ),
+        ):
+            verify_pypi(
+                client,
+                component,
+                "2.0.0-rc.5",
+                commit,
+                Path(temporary),
+            )
+        self.assertEqual(
+            "https://pypi.org/pypi/durable-workflow/2.0.0rc5/json",
+            client.requested_url,
+        )
+
+    def test_python_evidence_accepts_only_exact_semver_or_pep_440_registry_urls(self) -> None:
+        candidate = manifest()
+        candidate["components"]["sdk-python"]["version"] = "2.0.0-rc.5"
+        result = verification(candidate)
+        registry = result["components"]["sdk-python"]["distribution"]
+        semver_url = "https://pypi.org/pypi/durable-workflow/2.0.0-rc.5/json"
+        pep_440_url = "https://pypi.org/pypi/durable-workflow/2.0.0rc5/json"
+
+        self.assertEqual(semver_url, registry["registry"])
+        validate_verification(result, candidate)
+
+        registry["registry"] = pep_440_url
+        validate_verification(result, candidate)
+
+        registry["registry"] = "https://pypi.org/pypi/durable-workflow/2.0.0rc05/json"
+        with self.assertRaisesRegex(CandidateError, "planned PyPI package identity"):
+            validate_verification(result, candidate)
+
     def test_waterline_alpha_139_expands_minified_metadata_and_checks_effective_provenance(self) -> None:
         component = COMPONENTS["waterline"]
         commit = "a" * 40

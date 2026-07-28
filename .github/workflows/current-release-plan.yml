@@ -8,7 +8,6 @@ on:
       - main
     paths:
       - '.github/workflows/current-release-plan.yml'
-      - 'candidates/main.json'
       - 'product-train/**'
       - 'release-plans/**'
       - 'scripts/beta_candidate.py'
@@ -54,7 +53,6 @@ jobs:
           python -m yamllint .github/workflows
           python -m compileall -q scripts tests
           python -m unittest discover -v
-          python -m json.tool candidates/main.json >/dev/null
           python -m json.tool product-train/current.json >/dev/null
           python -m json.tool product-train/sdk-server-qualification.json >/dev/null
           python -m json.tool release-plans/current.json >/dev/null
@@ -70,8 +68,8 @@ jobs:
 
       - name: Bind the exact supported train to one current plan
         run: |
-          python scripts/release_plan.py validate-current \
-            release-plans/current.json candidates/main.json \
+          python scripts/release_plan.py materialize-current \
+            release-plans/current.json \
             current-release-plan.json current-candidate.json
 
       - name: Verify every existing public source and distribution identity

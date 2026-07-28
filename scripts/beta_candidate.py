@@ -78,6 +78,7 @@ MAX_TEXT_LENGTH = 4096
 MAX_PYPI_FILES = 32
 PHAR_BUILD_INFO_MAX_BYTES = 16 * 1024
 RFC3339_SECONDS_PATTERN = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+PYPI_PRERELEASE_LABELS = {"alpha": "a", "beta": "b", "rc": "rc"}
 
 
 @dataclass(frozen=True)
@@ -216,6 +217,18 @@ def canonical_cli_embedded_identity(version: str, commit: str) -> str:
     return f"dw {version.lstrip('v')} (commit {commit[:12]})"
 
 
+def canonical_pypi_version(version: str) -> str:
+    """Translate the supported SemVer prerelease spelling to PEP 440."""
+    match = re.fullmatch(
+        r"([0-9]+\.[0-9]+\.[0-9]+)-(alpha|beta|rc)\.([1-9][0-9]*)",
+        version,
+    )
+    if match is None:
+        return version
+    base, channel, sequence = match.groups()
+    return f"{base}{PYPI_PRERELEASE_LABELS[channel]}{sequence}"
+
+
 def _require_exact_keys(value: Any, keys: set[str], context: str) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != keys:
         raise CandidateError(f"{context} keys must be exactly {sorted(keys)}")
@@ -350,11 +363,14 @@ def _validate_github_release_evidence(
 def _validate_pypi_evidence(value: Any, component: Component, version: str, commit: str, context: str) -> None:
     distribution = _require_exact_keys(value, {"kind", "package", "registry", "source_identity", "files"}, context)
     encoded_package = urllib.parse.quote(component.package, safe="")
-    encoded_version = urllib.parse.quote(version, safe="")
+    registry_urls = {
+        f"https://pypi.org/pypi/{encoded_package}/{urllib.parse.quote(registry_version, safe='')}/json"
+        for registry_version in {version, canonical_pypi_version(version)}
+    }
     if (
         distribution["kind"] != "pypi"
         or distribution["package"] != component.package
-        or distribution["registry"] != f"https://pypi.org/pypi/{encoded_package}/{encoded_version}/json"
+        or distribution["registry"] not in registry_urls
     ):
         raise CandidateError(f"{context} does not prove the planned PyPI package identity")
     source_identity = _require_exact_keys(
@@ -1091,12 +1107,12 @@ def verify_pypi(
     client: PublicClient, component: Component, version: str, expected_commit: str, directory: Path
 ) -> dict[str, Any]:
     encoded_package = urllib.parse.quote(component.package, safe="")
-    encoded_version = urllib.parse.quote(version, safe="")
+    registry_version = canonical_pypi_version(version)
+    encoded_version = urllib.parse.quote(registry_version, safe="")
     api_url = f"https://pypi.org/pypi/{encoded_package}/{encoded_version}/json"
     payload = client.json(api_url)
     published_version = payload.get("info", {}).get("version")
-    normalized_expected = re.sub(r"(?i)^([0-9]+\.[0-9]+\.[0-9]+)-beta\.([0-9]+)$", r"\1b\2", version)
-    if published_version not in {version, normalized_expected}:
+    if published_version not in {version, registry_version}:
         raise CandidateError(f"PyPI does not expose {component.package}=={version}")
     project_urls = payload.get("info", {}).get("project_urls") or {}
     repository_urls = {str(value).rstrip("/") for value in project_urls.values()}
