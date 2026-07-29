@@ -3178,6 +3178,24 @@ def main() -> int:
                 args.evidence.write_bytes(canonical_json(state))
                 write_output(args.github_output, outputs)
             except RecoveryError as error:
+                if (
+                    args.allow_empty
+                    and args.plan_tag is None
+                    and error.phase == "plan-discovery"
+                    and str(error) == "no public release plan is available"
+                ):
+                    no_op = base_state(args.component)
+                    no_op.update(
+                        {
+                            "phase": "plan-discovery",
+                            "outcome": "no-op",
+                            "reason": str(error),
+                            "resume_action": "No action is required; scheduled recovery found no eligible release plan",
+                        }
+                    )
+                    args.evidence.write_bytes(canonical_json(no_op))
+                    write_output(args.github_output, {"action": "none"})
+                    return 0
                 failure = base_state(args.component, tag, plan)
                 if record_commit is not None:
                     failure["plan_record_commit"] = record_commit

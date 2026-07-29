@@ -1971,7 +1971,7 @@ jobs:
                 self.assertEqual(plan_tag, evidence["durable_evidence"]["release_plan"])
                 self.assertTrue(evidence["resume_action"].endswith(f" for {plan_tag}"))
 
-    def test_scheduled_discovery_without_plan_authority_fails_closed(self) -> None:
+    def test_scheduled_discovery_without_plan_authority_records_no_op(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             evidence_output = root / "release-recovery-evidence.json"
@@ -1999,12 +1999,12 @@ jobs:
                     side_effect=RecoveryError("no public release plan is available", "plan-discovery"),
                 ),
             ):
-                self.assertEqual(1, main())
+                self.assertEqual(0, main())
 
             evidence = json.loads(evidence_output.read_bytes())
             self.assertEqual("plan-discovery", evidence["phase"])
-            self.assertEqual("failed", evidence["outcome"])
-            self.assertFalse(github_output.exists())
+            self.assertEqual("no-op", evidence["outcome"])
+            self.assertEqual("action=none\n", github_output.read_text())
 
 
 class ReleaseCandidateChannelTest(unittest.TestCase):

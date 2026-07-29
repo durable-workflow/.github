@@ -298,6 +298,16 @@ class ReleaseRecoveryConsumerConformanceTest(unittest.TestCase):
 
         conformance.case_continuity_ambiguity_rejection(consumer)
 
+    def test_current_consumer_accepts_only_exact_authoritative_rc_foundations(self) -> None:
+        consumer = conformance.load_consumer(ROOT / "scripts" / "component_release_recovery.py")
+
+        conformance.case_authoritative_rc_foundation(consumer)
+
+    def test_current_consumer_records_scheduled_empty_recovery_as_no_op(self) -> None:
+        consumer = conformance.load_consumer(ROOT / "scripts" / "component_release_recovery.py")
+
+        conformance.case_scheduled_empty_no_op(consumer)
+
     def test_public_audit_requires_every_target_to_pin_identical_bytes(self) -> None:
         suite_raw = SUITE_PATH.read_bytes()
         consumers = {
