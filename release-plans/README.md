@@ -9,10 +9,11 @@ Release asset.
 [`current.json`](current.json) binds the supported already-published train to
 the same plan contract. The protected `Current release plan` workflow verifies
 all seven public source and distribution identities before it records that
-plan, its beta authorization, and its terminal completion record. Repeating
-the workflow compares the immutable records and current public evidence; it
-does not move component tags or republish packages, crates, archives, or
-images.
+plan and its terminal completion record. A release-candidate plan binds the
+exact immutable candidate record that verified its public artifacts. Repeating
+the workflow reads and validates an existing immutable completion instead of
+regenerating evidence; it does not move component tags or republish packages,
+crates, archives, or images.
 
 Before recording the plan, the workflow also prepares exact dated release
 notes for every component. The resulting record, validated by
@@ -45,25 +46,24 @@ candidate verification and conformance for Waterline. New plans must use v2.
 The readers retain v1 support only for the exact canonical plan documents
 recorded before the Waterline service image became a required distribution.
 
-The current beta source selection is prepared in
+The current synchronized prerelease source selection is prepared in
 [`current-source-preparation.json`](current-source-preparation.json). It binds
 the exact seven source commits and the digests of their Unreleased changelogs
-or source commit messages before protected beta authorization. A beta plan must
-match that source tuple, authorization name, and note authority exactly. The
-release-plan action then re-reads the public sources and creates the dated,
-immutable preparation record; source preparation does not bypass or impersonate
-the protected authorization decision.
+or source commit messages before protected aggregate publication. A current
+plan must match that source tuple and note authority exactly. The release-plan
+action then re-reads the public sources and creates the dated, immutable
+preparation record; source preparation does not bypass or impersonate the
+protected publication decision.
 
 The first release-candidate source tuple is prepared separately in
 [`first-release-candidate-source-preparation.json`](first-release-candidate-source-preparation.json),
 and [`first-release-candidate.json`](first-release-candidate.json) retains the
-immutable qualification of the beta train from which it advances. Landing
-those source authorities triggers the protected release-plan workflow. The
-release-candidate plan becomes the recoverable publication identity, while
-`current.json` and the public product-train authority continue to describe the
-already-published beta until every release-candidate artifact and completion
-record verifies. Release-candidate authorization does not authorize a stable
-2.0 release or alter the stable 1.x documentation default.
+immutable qualification of the beta train from which that historical plan
+advanced. Landing source authorities triggers the protected release-plan
+workflow. A release-candidate plan becomes the recoverable publication
+identity only after every artifact and completion record verifies.
+Release-candidate authorization does not authorize a stable 2.0 release or
+alter the stable 1.x documentation default.
 
 For the workspace-unavailable continuity drill, scheduled component recovery
 recognizes the public `beta-continuity/<plan>/accepted` record and waits until

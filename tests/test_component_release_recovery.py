@@ -49,6 +49,7 @@ from scripts.component_release_recovery import (
     validate_successor_transition,
     verify_cli,
     verify_composer,
+    verify_plan_authority,
     verify_recovery_workflow_source,
 )
 from scripts.recovery_workflow_authority import normalized_source_sha256
@@ -2009,6 +2010,8 @@ jobs:
 class ReleaseCandidateChannelTest(unittest.TestCase):
     def test_rc_plan_retains_coherent_beta_qualification(self) -> None:
         candidate = plan("rc")
+        for identity in candidate["components"].values():
+            identity["version"] = "2.0.0-rc.5"
         validate_plan(candidate)
         beta = plan("beta")
         record = {
@@ -2026,6 +2029,39 @@ class ReleaseCandidateChannelTest(unittest.TestCase):
                 record,
             )
         )
+
+    def test_aggregate_rc_plan_uses_its_exact_candidate_foundation(self) -> None:
+        candidate = plan("rc")
+        for identity in candidate["components"].values():
+            identity["version"] = "2.0.0-rc.5"
+        candidate["foundation"] = {
+            "tag": f"beta-candidate/rc-{candidate['plan']}",
+            "commit": "e" * 40,
+        }
+        candidate["beta_authorization"] = None
+
+        validate_plan(candidate)
+
+    def test_aggregate_rc_plan_rejects_a_moved_candidate_foundation_tag(self) -> None:
+        candidate = plan("rc")
+        for identity in candidate["components"].values():
+            identity["version"] = "2.0.0-rc.5"
+        candidate["foundation"] = {
+            "tag": f"beta-candidate/rc-{candidate['plan']}",
+            "commit": "e" * 40,
+        }
+        candidate["beta_authorization"] = None
+
+        with (
+            mock.patch(
+                "scripts.component_release_recovery.resolve_tag",
+                return_value="d" * 40,
+            ),
+            mock.patch("scripts.component_release_recovery.read_record") as read_record,
+            self.assertRaisesRegex(RecoveryError, "tag does not match its pinned commit"),
+        ):
+            verify_plan_authority(mock.Mock(), candidate)
+        read_record.assert_not_called()
 
 
 if __name__ == "__main__":

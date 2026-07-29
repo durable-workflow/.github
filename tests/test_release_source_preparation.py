@@ -10,8 +10,6 @@ from jsonschema import Draft202012Validator
 from scripts.beta_candidate import COMPONENTS, CandidateError
 from scripts.product_train import load_product_train
 from scripts.release_plan import (
-    FOUNDATION_COMMIT,
-    FOUNDATION_TAG,
     RELEASE_CANDIDATE_SOURCE_PREPARATION_PATH,
     load_plan,
     load_source_preparation,
@@ -40,21 +38,8 @@ class ReleaseSourcePreparationTest(unittest.TestCase):
             {name: identity["version"] for name, identity in self.preparation["components"].items()},
         )
 
-    def test_beta_plan_must_match_the_exact_prepared_sources(self) -> None:
-        plan = {
-            "schema": "durable-workflow.release-plan/v2",
-            "plan": self.preparation["plan"],
-            "channel": "beta",
-            "foundation": {"tag": FOUNDATION_TAG, "commit": FOUNDATION_COMMIT},
-            "components": {
-                name: {"version": identity["version"], "commit": identity["commit"]}
-                for name, identity in self.preparation["components"].items()
-            },
-            "beta_authorization": {
-                "tag": f"beta-authorization/{self.preparation['plan']}",
-                "commit": "f" * 40,
-            },
-        }
+    def test_current_plan_must_match_the_exact_prepared_sources(self) -> None:
+        plan = load_plan(ROOT / "release-plans" / "current.json")
         self.assertEqual(self.preparation, require_current_source_preparation(plan))
 
         plan["components"]["server"]["commit"] = "e" * 40

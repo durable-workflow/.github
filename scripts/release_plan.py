@@ -41,7 +41,7 @@ from scripts.beta_candidate import (
     resolve_github_tag,
     revalidate_verification,
     run_git,
-    validate_verification,
+    validate_recorded_verification,
     verify_candidate,
     verify_github_release,
     write_github_output,
@@ -199,7 +199,7 @@ def load_plan(path: Path, *, require_current: bool = False) -> dict[str, Any]:
     except json.JSONDecodeError as error:
         raise CandidateError(f"release plan is not valid JSON: {error}") from error
     validate_plan(plan)
-    if require_current and plan["channel"] == "beta":
+    if require_current:
         require_current_product_train(plan["components"])
     return plan
 
@@ -227,8 +227,17 @@ def _validate_plan(plan: Any, schemas: set[str]) -> None:
         raise CandidateError("plan must be 1-56 lowercase letters, digits, dots, underscores, or hyphens")
     if plan["channel"] not in {"alpha", "beta", "rc"}:
         raise CandidateError("release channel must be alpha, beta, or rc")
-    if plan["foundation"] != {"tag": FOUNDATION_TAG, "commit": FOUNDATION_COMMIT}:
-        raise CandidateError("release plan must name the proven immutable candidate foundation")
+    foundation = plan["foundation"]
+    legacy_foundation = {"tag": FOUNDATION_TAG, "commit": FOUNDATION_COMMIT}
+    aggregate_rc_foundation = (
+        plan["channel"] == "rc"
+        and isinstance(foundation, dict)
+        and set(foundation) == {"tag", "commit"}
+        and foundation.get("tag") == f"beta-candidate/rc-{plan['plan']}"
+        and COMMIT_PATTERN.fullmatch(str(foundation.get("commit", ""))) is not None
+    )
+    if foundation != legacy_foundation and not aggregate_rc_foundation:
+        raise CandidateError("release plan must name its proven immutable candidate foundation")
 
     components = plan["components"]
     if not isinstance(components, dict) or set(components) != set(COMPONENTS):
@@ -256,6 +265,9 @@ def _validate_plan(plan: Any, schemas: set[str]) -> None:
     if plan["channel"] == "alpha":
         if authorization is not None:
             raise CandidateError("alpha release plans must not claim beta authorization")
+    elif aggregate_rc_foundation:
+        if authorization is not None:
+            raise CandidateError("aggregate release-candidate plans must not claim beta authorization")
     elif (
         not isinstance(authorization, dict)
         or set(authorization) != {"tag", "commit"}
@@ -356,11 +368,10 @@ def validate_source_preparation(preparation: Any) -> None:
 def require_current_source_preparation(plan: dict[str, Any]) -> dict[str, Any] | None:
     if plan["channel"] == "alpha":
         return None
-    preparation_path = (
-        SOURCE_PREPARATION_PATH
-        if plan["channel"] == "beta"
-        else RELEASE_CANDIDATE_SOURCE_PREPARATION_PATH
-    )
+    current_preparation = load_source_preparation(SOURCE_PREPARATION_PATH)
+    preparation_path = SOURCE_PREPARATION_PATH
+    if plan["channel"] == "rc" and current_preparation["plan"] != plan["plan"]:
+        preparation_path = RELEASE_CANDIDATE_SOURCE_PREPARATION_PATH
     preparation = load_source_preparation(preparation_path)
     if plan["plan"] != preparation["plan"]:
         raise CandidateError(
@@ -378,10 +389,18 @@ def require_current_source_preparation(plan: dict[str, Any]) -> dict[str, Any] |
     authorization = plan["beta_authorization"]
     if plan["channel"] == "beta" and authorization["tag"] != f"beta-authorization/{preparation['plan']}":
         raise CandidateError("beta release plan authorization does not match the prepared source plan")
-    if plan["channel"] == "rc":
-        current_beta = load_plan(CURRENT_PLAN_PATH, require_current=True)
-        if current_beta["channel"] != "beta" or authorization != current_beta["beta_authorization"]:
-            raise CandidateError("release-candidate plan does not retain the qualified current beta authority")
+    if (
+        plan["channel"] == "rc"
+        and plan["foundation"] == {"tag": FOUNDATION_TAG, "commit": FOUNDATION_COMMIT}
+        and not isinstance(authorization, dict)
+    ):
+        raise CandidateError("historical release-candidate plan does not retain beta qualification")
+    if (
+        plan["channel"] == "rc"
+        and plan["foundation"] != {"tag": FOUNDATION_TAG, "commit": FOUNDATION_COMMIT}
+        and authorization is not None
+    ):
+        raise CandidateError("aggregate release-candidate plan must use its exact candidate foundation")
     return preparation
 
 
@@ -433,27 +452,70 @@ def read_public_record(client: PublicClient, tag: str, commit: str, filename: st
         raise CandidateError(f"public record {tag}:{filename} is not valid JSON") from error
 
 
+def verify_candidate_foundation(client: PublicClient, plan: dict[str, Any]) -> None:
+    foundation = plan["foundation"]
+    if foundation["tag"] != FOUNDATION_TAG:
+        foundation_commit = resolve_tag(client, CONTROL_REPOSITORY, foundation["tag"])
+        if foundation_commit != foundation["commit"]:
+            raise CandidateError("immutable candidate foundation tag does not match its pinned commit")
+    manifest = read_public_record(
+        client,
+        foundation["tag"],
+        foundation["commit"],
+        "candidate.json",
+    )
+    if foundation["tag"] == FOUNDATION_TAG:
+        if manifest.get("candidate") != "beta-continuity-foundation":
+            raise CandidateError("immutable candidate foundation has an unexpected identity")
+        return
+    expected = candidate_manifest(plan)
+    if canonical_json(manifest) != canonical_json(expected):
+        raise CandidateError("aggregate release-candidate foundation names a different exact tuple")
+    verification = read_public_record(
+        client,
+        foundation["tag"],
+        foundation["commit"],
+        "verification.json",
+    )
+    validate_recorded_verification(verification, manifest)
+
+
 def verify_beta_authorization(client: PublicClient, plan: dict[str, Any]) -> None:
     authorization = plan["beta_authorization"]
     if authorization is None:
         return
     record = read_public_record(client, authorization["tag"], authorization["commit"], "beta-authorization.json")
-    authorized_plan = plan
-    is_release_candidate = plan.get("channel") == "rc"
-    if is_release_candidate:
-        authorized_plan = load_plan(CURRENT_PLAN_PATH, require_current=True)
-        if authorization != authorized_plan["beta_authorization"]:
-            raise CandidateError("release-candidate plan does not retain the qualified current beta authority")
-    expected = {
-        "schema": "durable-workflow.beta-authorization/v1",
-        "channel": "beta",
-        "candidate": authorized_plan["plan"],
-        "components": authorized_plan["components"],
-    }
-    if record != expected:
-        if is_release_candidate:
-            raise CandidateError("beta qualification does not authorize this prerelease transition")
-        raise CandidateError("beta authorization does not name the same candidate and seven-component tuple")
+    if plan.get("channel", "beta") == "beta":
+        expected = {
+            "schema": "durable-workflow.beta-authorization/v1",
+            "channel": "beta",
+            "candidate": plan["plan"],
+            "components": plan["components"],
+        }
+        if record != expected:
+            raise CandidateError("beta authorization does not name the same candidate and seven-component tuple")
+        return
+    candidate = record.get("candidate") if isinstance(record, dict) else None
+    components = record.get("components") if isinstance(record, dict) else None
+    if (
+        not isinstance(record, dict)
+        or set(record) != {"schema", "channel", "candidate", "components"}
+        or record.get("schema") != "durable-workflow.beta-authorization/v1"
+        or record.get("channel") != "beta"
+        or not isinstance(candidate, str)
+        or authorization["tag"] != f"beta-authorization/{candidate}"
+        or not isinstance(components, dict)
+        or set(components) != set(COMPONENTS)
+        or any(
+            not isinstance(identity, dict)
+            or set(identity) != {"version", "commit"}
+            or BETA_VERSION_PATTERN.fullmatch(str(identity.get("version", ""))) is None
+            or COMMIT_PATTERN.fullmatch(str(identity.get("commit", ""))) is None
+            for identity in components.values()
+        )
+        or len({identity["version"] for identity in components.values()}) != 1
+    ):
+        raise CandidateError("beta qualification does not authorize this prerelease transition")
 
 
 def beta_authorization_manifest(plan: dict[str, Any]) -> dict[str, Any]:
@@ -482,11 +544,19 @@ def validate_current_plan_authority(
 def materialize_current_plan_authority(
     plan_path: Path = CURRENT_PLAN_PATH,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    plan = load_plan(plan_path, require_current=True)
+    plan = load_plan(plan_path)
+    require_current_product_train(plan["components"])
     require_current_source_preparation(plan)
     authorization = plan["beta_authorization"]
-    if authorization["tag"] != f"beta-authorization/{plan['plan']}":
-        raise CandidateError("current release plan has a mismatched authorization tag")
+    if plan["channel"] == "beta":
+        if authorization["tag"] != f"beta-authorization/{plan['plan']}":
+            raise CandidateError("current release plan has a mismatched authorization tag")
+    elif (
+        plan["channel"] != "rc"
+        or authorization is not None
+        or plan["foundation"]["tag"] != f"beta-candidate/rc-{plan['plan']}"
+    ):
+        raise CandidateError("current release-candidate plan has a mismatched candidate foundation")
     return plan, candidate_manifest(plan)
 
 
@@ -2042,9 +2112,7 @@ def require_prior_plans_completed(plan: dict[str, Any], client: PublicClient) ->
 
 def preflight_plan(plan: dict[str, Any], client: PublicClient, *, release_date: str | None = None) -> dict[str, Any]:
     source_preparation = require_current_source_preparation(plan)
-    foundation = read_public_record(client, FOUNDATION_TAG, FOUNDATION_COMMIT, "candidate.json")
-    if foundation.get("candidate") != "beta-continuity-foundation":
-        raise CandidateError("immutable candidate foundation has an unexpected identity")
+    verify_candidate_foundation(client, plan)
 
     plan_tag = f"{PLAN_TAG_PREFIX}{plan['plan']}"
     plan_commit = resolve_tag(client, CONTROL_REPOSITORY, plan_tag)
@@ -2152,12 +2220,13 @@ def preflight_plan(plan: dict[str, Any], client: PublicClient, *, release_date: 
         "version_tags": tags,
     }
     if source_preparation is not None:
+        source_preparation_path = (
+            "release-plans/current-source-preparation.json"
+            if source_preparation["plan"] == load_source_preparation(SOURCE_PREPARATION_PATH)["plan"]
+            else "release-plans/first-release-candidate-source-preparation.json"
+        )
         evidence["source_preparation"] = {
-            "path": (
-                "release-plans/current-source-preparation.json"
-                if plan["channel"] == "beta"
-                else "release-plans/first-release-candidate-source-preparation.json"
-            ),
+            "path": source_preparation_path,
             "plan": source_preparation["plan"],
             "sha256": manifest_digest(source_preparation),
         }
@@ -2973,7 +3042,7 @@ def validate_completion_verification(
     value: Any,
     plan: dict[str, Any],
     candidate: dict[str, Any],
-    current_verification: dict[str, Any],
+    current_verification: dict[str, Any] | None,
     preparation: dict[str, Any] | None,
 ) -> None:
     expected_keys = {
@@ -2992,18 +3061,114 @@ def validate_completion_verification(
         or value.get("candidate") != plan["plan"]
         or value.get("channel") != plan["channel"]
         or value.get("release_plan_sha256") != manifest_digest(plan)
-        or (
-            preparation is not None
-            and value.get("release_preparation_sha256") != manifest_digest(preparation)
-        )
+        or (preparation is not None and value.get("release_preparation_sha256") != manifest_digest(preparation))
     ):
         raise CandidateError(f"completed release candidate {plan['plan']} has invalid verification authority")
     recorded = value["public_verification"]
-    validate_verification(recorded, candidate)
-    if recorded["components"] != current_verification["components"]:
+    validate_recorded_verification(recorded, candidate)
+    if current_verification is not None and recorded["components"] != current_verification["components"]:
         raise CandidateError(
             f"completed release candidate {plan['plan']} verification differs from current public evidence"
         )
+
+
+def read_existing_completion_record(
+    repository: Path,
+    plan: dict[str, Any],
+    plan_record_commit: str,
+    preparation: dict[str, Any] | None,
+    *,
+    remote: str,
+    authoritative_completion: Path,
+    authoritative_verification: Path,
+) -> dict[str, str] | None:
+    candidate = candidate_manifest(plan)
+    completion = completion_manifest(plan, plan_record_commit, preparation)
+    canonical_completion = canonical_json(completion)
+    tag = f"{COMPLETION_TAG_PREFIX}{plan['channel']}/{plan['plan']}"
+    existing_ref = fetch_existing_record(repository, remote, tag)
+    if not existing_ref:
+        return None
+    existing = read_record_file(repository, existing_ref, "release-candidate.json")
+    if existing != canonical_completion:
+        raise CandidateError(f"completed release candidate {plan['plan']} is immutable and differs")
+    existing_verification = read_record_file(repository, existing_ref, "verification.json")
+    try:
+        existing_verification_value = json.loads(existing_verification)
+    except json.JSONDecodeError as error:
+        raise CandidateError(
+            f"completed release candidate {plan['plan']} has invalid verification authority"
+        ) from error
+    validate_completion_verification(
+        existing_verification_value,
+        plan,
+        candidate,
+        None,
+        preparation,
+    )
+    authoritative_completion.write_bytes(existing)
+    authoritative_verification.write_bytes(existing_verification)
+    return {
+        "status": "existing",
+        "candidate": plan["plan"],
+        "channel": plan["channel"],
+        "tag": tag,
+        "commit": run_git(["rev-parse", f"{existing_ref}^{{commit}}"], cwd=repository),
+    }
+
+
+def read_current_completion_authority(
+    repository: Path,
+    plan_path: Path,
+    *,
+    remote: str,
+    authoritative_plan: Path,
+    authoritative_preparation: Path,
+    authoritative_completion: Path,
+    authoritative_verification: Path,
+) -> dict[str, str]:
+    plan = load_plan(plan_path)
+    plan_tag = f"{PLAN_TAG_PREFIX}{plan['plan']}"
+    plan_ref = fetch_existing_record(repository, remote, plan_tag)
+    base = {
+        "status": "new",
+        "candidate": plan["plan"],
+        "channel": plan["channel"],
+        "plan_tag": plan_tag,
+        "completion_tag": f"{COMPLETION_TAG_PREFIX}{plan['channel']}/{plan['plan']}",
+    }
+    if not plan_ref:
+        return base
+    existing_plan = read_record_file(repository, plan_ref, "release-plan.json")
+    if existing_plan != canonical_json(plan):
+        raise CandidateError(f"release plan {plan['plan']} is immutable and the requested tuple is different")
+    plan_commit = run_git(["rev-parse", f"{plan_ref}^{{commit}}"], cwd=repository)
+    try:
+        existing_preparation = read_record_file(repository, plan_ref, "release-preparation.json")
+        preparation = json.loads(existing_preparation)
+    except json.JSONDecodeError as error:
+        raise CandidateError(f"release plan {plan['plan']} has invalid preparation authority") from error
+    validate_release_preparation(preparation, plan)
+    completed = read_existing_completion_record(
+        repository,
+        plan,
+        plan_commit,
+        preparation,
+        remote=remote,
+        authoritative_completion=authoritative_completion,
+        authoritative_verification=authoritative_verification,
+    )
+    if completed is None:
+        return {**base, "plan_commit": plan_commit}
+    authoritative_plan.write_bytes(existing_plan)
+    authoritative_preparation.write_bytes(existing_preparation)
+    return {
+        **completed,
+        "plan_tag": plan_tag,
+        "plan_commit": plan_commit,
+        "completion_tag": completed["tag"],
+        "completion_commit": completed["commit"],
+    }
 
 
 def record_completion(
@@ -3045,9 +3210,21 @@ def record_completion(
         preparation = None
     if preparation is not None:
         validate_release_preparation(preparation, plan)
+    candidate = candidate_manifest(plan)
+    existing = read_existing_completion_record(
+        repository,
+        plan,
+        plan_record_commit,
+        preparation,
+        remote=remote,
+        authoritative_completion=authoritative_completion,
+        authoritative_verification=authoritative_verification,
+    )
+    if existing is not None:
+        return existing
+
     completion = completion_manifest(plan, plan_record_commit, preparation)
     canonical_completion = canonical_json(completion)
-    candidate = candidate_manifest(plan)
     verification = load_verification(verification_path, candidate)
     completion_verification = {
         "schema": "durable-workflow.release-candidate-verification/v1",
@@ -3060,34 +3237,6 @@ def record_completion(
         completion_verification["release_preparation_sha256"] = manifest_digest(preparation)
     canonical_verification = canonical_json(completion_verification)
     tag = f"{COMPLETION_TAG_PREFIX}{plan['channel']}/{plan['plan']}"
-    existing_ref = fetch_existing_record(repository, remote, tag)
-    if existing_ref:
-        existing = read_record_file(repository, existing_ref, "release-candidate.json")
-        if existing != canonical_completion:
-            raise CandidateError(f"completed release candidate {plan['plan']} is immutable and differs")
-        existing_verification = read_record_file(repository, existing_ref, "verification.json")
-        try:
-            existing_verification_value = json.loads(existing_verification)
-        except json.JSONDecodeError as error:
-            raise CandidateError(
-                f"completed release candidate {plan['plan']} has invalid verification authority"
-            ) from error
-        validate_completion_verification(
-            existing_verification_value,
-            plan,
-            candidate,
-            verification,
-            preparation,
-        )
-        authoritative_completion.write_bytes(existing)
-        authoritative_verification.write_bytes(existing_verification)
-        return {
-            "status": "existing",
-            "candidate": plan["plan"],
-            "channel": plan["channel"],
-            "tag": tag,
-            "commit": run_git(["rev-parse", f"{existing_ref}^{{commit}}"], cwd=repository),
-        }
 
     verification = revalidate_verification(verification, candidate, client)
     completion_verification["public_verification"] = verification
@@ -3538,6 +3687,19 @@ def main() -> int:
     materialize_current.add_argument("plan", type=Path)
     materialize_current.add_argument("plan_destination", type=Path)
     materialize_current.add_argument("candidate_destination", type=Path)
+    materialize_current.add_argument("--github-output", type=Path)
+
+    current_completion = subparsers.add_parser(
+        "current-completion",
+        help="read and validate an already-completed current authority without regenerating evidence",
+    )
+    current_completion.add_argument("plan", type=Path)
+    current_completion.add_argument("--remote", default="origin")
+    current_completion.add_argument("--authoritative-plan", required=True, type=Path)
+    current_completion.add_argument("--authoritative-preparation", required=True, type=Path)
+    current_completion.add_argument("--authoritative-completion", required=True, type=Path)
+    current_completion.add_argument("--authoritative-verification", required=True, type=Path)
+    current_completion.add_argument("--github-output", type=Path)
 
     verify_recovery_authority = subparsers.add_parser("verify-recovery-authority")
     verify_recovery_authority.add_argument("authority", type=Path)
@@ -3639,7 +3801,7 @@ def main() -> int:
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     try:
         if args.command == "validate":
-            plan = load_plan(args.source, require_current=True)
+            plan = load_plan(args.source)
             args.destination.write_bytes(canonical_json(plan))
         elif args.command == "validate-current":
             plan, candidate = validate_current_plan_authority(args.plan, args.candidate)
@@ -3649,6 +3811,27 @@ def main() -> int:
             plan, candidate = materialize_current_plan_authority(args.plan)
             args.plan_destination.write_bytes(canonical_json(plan))
             args.candidate_destination.write_bytes(canonical_json(candidate))
+            write_github_output(
+                args.github_output,
+                {
+                    "candidate": plan["plan"],
+                    "channel": plan["channel"],
+                    "plan_tag": f"{PLAN_TAG_PREFIX}{plan['plan']}",
+                    "completion_tag": f"{COMPLETION_TAG_PREFIX}{plan['channel']}/{plan['plan']}",
+                },
+            )
+        elif args.command == "current-completion":
+            result = read_current_completion_authority(
+                Path.cwd(),
+                args.plan,
+                remote=args.remote,
+                authoritative_plan=args.authoritative_plan,
+                authoritative_preparation=args.authoritative_preparation,
+                authoritative_completion=args.authoritative_completion,
+                authoritative_verification=args.authoritative_verification,
+            )
+            write_github_output(args.github_output, result)
+            print(json.dumps(result, sort_keys=True))
         elif args.command == "verify-recovery-authority":
             evidence = verify_local_recovery_workflow_authority(
                 args.authority,

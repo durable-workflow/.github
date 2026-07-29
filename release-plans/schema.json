@@ -24,17 +24,36 @@
       "enum": ["alpha", "beta", "rc"]
     },
     "foundation": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["tag", "commit"],
-      "properties": {
-        "tag": {
-          "const": "beta-candidate/beta-continuity-foundation"
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tag", "commit"],
+          "properties": {
+            "tag": {
+              "const": "beta-candidate/beta-continuity-foundation"
+            },
+            "commit": {
+              "const": "4995052410bd4301c5796ffba54e0b6d2f490ed1"
+            }
+          }
         },
-        "commit": {
-          "const": "4995052410bd4301c5796ffba54e0b6d2f490ed1"
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tag", "commit"],
+          "properties": {
+            "tag": {
+              "type": "string",
+              "pattern": "^beta-candidate/rc-[a-z0-9][a-z0-9._-]{0,55}$"
+            },
+            "commit": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            }
+          }
         }
-      }
+      ]
     },
     "components": {
       "type": "object",

@@ -67,12 +67,26 @@ jobs:
             release-plans/source-preparation-schema.json
 
       - name: Bind the exact supported train to one current plan
+        id: current
         run: |
           python scripts/release_plan.py materialize-current \
             release-plans/current.json \
-            current-release-plan.json current-candidate.json
+            current-release-plan.json current-candidate.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Read an already-completed immutable current authority
+        id: existing
+        run: |
+          python scripts/release_plan.py current-completion \
+            current-release-plan.json \
+            --authoritative-plan authoritative-release-plan.json \
+            --authoritative-preparation authoritative-release-preparation.json \
+            --authoritative-completion authoritative-release-candidate.json \
+            --authoritative-verification authoritative-verification.json \
+            --github-output "$GITHUB_OUTPUT"
 
       - name: Verify every existing public source and distribution identity
+        if: steps.existing.outputs.status != 'existing'
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -80,6 +94,9 @@ jobs:
 
       - name: Create or verify protected beta authorization
         id: authorization
+        if: >-
+          steps.existing.outputs.status != 'existing' &&
+          steps.current.outputs.channel == 'beta'
         run: |
           python scripts/release_plan.py record-current-authorization \
             current-release-plan.json \
@@ -87,6 +104,9 @@ jobs:
             --github-output "$GITHUB_OUTPUT"
 
       - name: Wait for protected authorization to become publicly observable
+        if: >-
+          steps.existing.outputs.status != 'existing' &&
+          steps.current.outputs.channel == 'beta'
         env:
           AUTHORIZATION_TAG: ${{ steps.authorization.outputs.tag }}
           GH_TOKEN: ${{ github.token }}
@@ -99,16 +119,18 @@ jobs:
           exit 1
 
       - name: Verify public branch, source, tag, note, and prior-plan authority
+        if: steps.existing.outputs.status != 'existing'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           python scripts/release_plan.py preflight \
             current-release-plan.json release-plan-preflight.json \
             --preparation release-preparation.json \
-            --release-date 2026-07-25
+            --release-date 2026-07-28
 
       - name: Create or verify the immutable release plan
         id: plan
+        if: steps.existing.outputs.status != 'existing'
         run: |
           python scripts/release_plan.py record \
             current-release-plan.json release-preparation.json \
@@ -117,6 +139,7 @@ jobs:
             --github-output "$GITHUB_OUTPUT"
 
       - name: Wait for the immutable plan tag to become publicly observable
+        if: steps.existing.outputs.status != 'existing'
         env:
           GH_TOKEN: ${{ github.token }}
           PLAN_TAG: ${{ steps.plan.outputs.tag }}
@@ -130,6 +153,7 @@ jobs:
 
       - name: Create or verify the durable completion record
         id: completion
+        if: steps.existing.outputs.status != 'existing'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -142,11 +166,12 @@ jobs:
       - name: Create or verify durable GitHub Release mirrors
         env:
           AUTHORIZATION_COMMIT: ${{ steps.authorization.outputs.commit }}
-          COMPLETION_COMMIT: ${{ steps.completion.outputs.commit }}
-          COMPLETION_TAG: ${{ steps.completion.outputs.tag }}
+          CHANNEL: ${{ steps.current.outputs.channel }}
+          COMPLETION_COMMIT: ${{ steps.existing.outputs.completion_commit || steps.completion.outputs.commit }}
+          COMPLETION_TAG: ${{ steps.existing.outputs.completion_tag || steps.completion.outputs.tag }}
           GH_TOKEN: ${{ github.token }}
-          PLAN_COMMIT: ${{ steps.plan.outputs.commit }}
-          PLAN_TAG: ${{ steps.plan.outputs.tag }}
+          PLAN_COMMIT: ${{ steps.existing.outputs.plan_commit || steps.plan.outputs.commit }}
+          PLAN_TAG: ${{ steps.existing.outputs.plan_tag || steps.plan.outputs.tag }}
         run: |
           set -euo pipefail
           mirror_dir="$(mktemp -d)"
@@ -171,27 +196,68 @@ jobs:
           }
 
           if ! gh release view "$PLAN_TAG" >/dev/null 2>&1; then
+            notes="Protected current-plan authority at Git record ${PLAN_COMMIT}."
+            if [ -n "$AUTHORIZATION_COMMIT" ]; then
+              notes="${notes} Beta authorization ${AUTHORIZATION_COMMIT}."
+            fi
             gh release create "$PLAN_TAG" --verify-tag --prerelease \
               --title "Release plan ${PLAN_TAG#release-plan/}" \
-              --notes "Protected current-plan authority at Git record ${PLAN_COMMIT}; beta authorization ${AUTHORIZATION_COMMIT}."
+              --notes "$notes"
           fi
           repair_asset "$PLAN_TAG" authoritative-release-plan.json release-plan.json
           repair_asset "$PLAN_TAG" authoritative-release-preparation.json release-preparation.json
 
           if ! gh release view "$COMPLETION_TAG" >/dev/null 2>&1; then
             gh release create "$COMPLETION_TAG" --verify-tag --prerelease \
-              --title "Completed beta release candidate ${COMPLETION_TAG##*/}" \
+              --title "Completed ${CHANNEL} release candidate ${COMPLETION_TAG##*/}" \
               --notes "All declared public artifacts were verified. The authoritative Git record is ${COMPLETION_COMMIT}."
           fi
           repair_asset "$COMPLETION_TAG" authoritative-release-candidate.json release-candidate.json
           repair_asset "$COMPLETION_TAG" authoritative-verification.json verification.json
+
+      - name: Read and validate the published aggregate authority
+        env:
+          COMPLETION_TAG: ${{ steps.existing.outputs.completion_tag || steps.completion.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+          PLAN_TAG: ${{ steps.existing.outputs.plan_tag || steps.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          published_dir="$(mktemp -d)"
+          trap 'rm -rf "$published_dir"' EXIT
+          mkdir -p "$published_dir/plan" "$published_dir/completion"
+          for source_path in \
+            product-train/current.json \
+            product-train/sdk-server-qualification.json \
+            release-plans/current.json; do
+            gh api \
+              -H "Accept: application/vnd.github.raw+json" \
+              "repos/$GITHUB_REPOSITORY/contents/$source_path?ref=main" \
+              > "$published_dir/$(basename "$source_path")"
+            cmp --silent "$source_path" "$published_dir/$(basename "$source_path")"
+          done
+          gh release download "$PLAN_TAG" \
+            --pattern release-plan.json --dir "$published_dir/plan"
+          gh release download "$COMPLETION_TAG" \
+            --pattern release-candidate.json --dir "$published_dir/completion"
+          cmp --silent \
+            authoritative-release-plan.json \
+            "$published_dir/plan/release-plan.json"
+          cmp --silent \
+            authoritative-release-candidate.json \
+            "$published_dir/completion/release-candidate.json"
+          python - <<'PYTHON'
+          from scripts.product_train import load_product_train
+
+          authority = load_product_train()
+          print(f"Published aggregate authority selects {authority['current']}")
+          PYTHON
 
       - name: Retain protected current-plan evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: current-release-plan-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            authoritative-beta-authorization.json
+            authoritative-*.json
             authoritative-release-candidate.json
             authoritative-release-plan.json
             authoritative-release-preparation.json

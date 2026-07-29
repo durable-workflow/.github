@@ -1,43 +1,40 @@
 {
-  "beta_authorization": {
-    "commit": "73985d0c906d96e6edce6915ebe8000bbc19896e",
-    "tag": "beta-authorization/coherent-2-0-beta-21"
-  },
-  "channel": "beta",
+  "beta_authorization": null,
+  "channel": "rc",
   "components": {
     "cli": {
-      "commit": "bbc090d935656823f96b0daaefc255e1c93047a4",
-      "version": "2.0.0-beta.21"
+      "commit": "91d11edf5c975c347d5b1069e57bd1a24aa20081",
+      "version": "2.0.0-rc.5"
     },
     "sdk-php": {
-      "commit": "a53acb5b3d0faeae30cbf43d3a6f3f8099f495d6",
-      "version": "2.0.0-beta.21"
+      "commit": "766f06ef175bb409aa9f37b2941191802be4b774",
+      "version": "2.0.0-rc.5"
     },
     "sdk-python": {
-      "commit": "cf64edae927b3fd139c5b60ec18ee5bfff826314",
-      "version": "2.0.0-beta.21"
+      "commit": "87f55a489835c512f4358e798ddaafb138bc2a9b",
+      "version": "2.0.0-rc.5"
     },
     "sdk-rust": {
-      "commit": "bb10d33ceff6e885414ff503f0a8f0171ccacd39",
-      "version": "2.0.0-beta.21"
+      "commit": "3582c313568b082105fc85e3523c59176e309ae3",
+      "version": "2.0.0-rc.5"
     },
     "server": {
-      "commit": "a6eb4bcf1b4758c43c55853354da557626c7d203",
-      "version": "2.0.0-beta.21"
+      "commit": "de79e57449bb0767853fbd7530f87ac1e88a13ee",
+      "version": "2.0.0-rc.5"
     },
     "waterline": {
-      "commit": "6ff907c74e36f29cad9596e5b11b07d7c5addc63",
-      "version": "2.0.0-beta.21"
+      "commit": "33c017697bb5f556209ede5236ec355a90ce8de3",
+      "version": "2.0.0-rc.5"
     },
     "workflow": {
-      "commit": "636ff3fc90c1a01c8ee74becaa148c9e193969ea",
-      "version": "2.0.0-beta.21"
+      "commit": "d8356318311cf594ba47e685ec8e7654c7258a28",
+      "version": "2.0.0-rc.5"
     }
   },
   "foundation": {
-    "commit": "4995052410bd4301c5796ffba54e0b6d2f490ed1",
-    "tag": "beta-candidate/beta-continuity-foundation"
+    "commit": "c65c941228f686e8ff2d5a54463010755c73ffa0",
+    "tag": "beta-candidate/rc-coherent-2-0-rc-5"
   },
-  "plan": "coherent-2-0-beta-21",
+  "plan": "coherent-2-0-rc-5",
   "schema": "durable-workflow.release-plan/v2"
 }

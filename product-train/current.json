@@ -1,7 +1,7 @@
 {
   "$schema": "./schema.json",
   "schema": "durable-workflow.product-train/v2",
-  "current": "2.0.0-beta.21",
+  "current": "2.0.0-rc.5",
   "components": [
     "workflow",
     "waterline",
@@ -12,52 +12,52 @@
     "sdk-rust"
   ],
   "trains": {
-    "2.0.0-beta.21": {
-      "channel": "beta",
+    "2.0.0-rc.5": {
+      "channel": "rc",
       "status": "supported",
       "versions": {
-        "workflow": "2.0.0-beta.21",
-        "sdk-php": "2.0.0-beta.21",
-        "waterline": "2.0.0-beta.21",
-        "server": "2.0.0-beta.21",
-        "cli": "2.0.0-beta.21",
-        "sdk-python": "2.0.0-beta.21",
-        "sdk-rust": "2.0.0-beta.21"
+        "workflow": "2.0.0-rc.5",
+        "sdk-php": "2.0.0-rc.5",
+        "waterline": "2.0.0-rc.5",
+        "server": "2.0.0-rc.5",
+        "cli": "2.0.0-rc.5",
+        "sdk-python": "2.0.0-rc.5",
+        "sdk-rust": "2.0.0-rc.5"
       },
       "registry_versions": {
-        "workflow": "2.0.0-beta.21",
-        "sdk-php": "2.0.0-beta.21",
-        "waterline": "2.0.0-beta.21",
-        "server": "2.0.0-beta.21",
-        "cli": "2.0.0-beta.21",
-        "sdk-python": "2.0.0b21",
-        "sdk-rust": "2.0.0-beta.21"
+        "workflow": "2.0.0-rc.5",
+        "sdk-php": "2.0.0-rc.5",
+        "waterline": "2.0.0-rc.5",
+        "server": "2.0.0-rc.5",
+        "cli": "2.0.0-rc.5",
+        "sdk-python": "2.0.0rc5",
+        "sdk-rust": "2.0.0-rc.5"
       },
       "install": {
-        "workflow": "composer require durable-workflow/workflow:2.0.0-beta.21@beta",
-        "sdk-php": "composer require durable-workflow/sdk:2.0.0-beta.21@beta",
+        "workflow": "composer require durable-workflow/workflow:2.0.0-rc.5@RC",
+        "sdk-php": "composer require durable-workflow/sdk:2.0.0-rc.5@RC",
         "waterline": {
-          "embedded": "composer require durable-workflow/waterline:2.0.0-beta.21@beta durable-workflow/workflow:2.0.0-beta.21@beta durable-workflow/sdk:2.0.0-beta.21@beta",
-          "service": "docker pull durableworkflow/waterline:2.0.0-beta.21"
+          "embedded": "composer require durable-workflow/waterline:2.0.0-rc.5@RC durable-workflow/workflow:2.0.0-rc.5@RC durable-workflow/sdk:2.0.0-rc.5@RC",
+          "service": "docker pull durableworkflow/waterline:2.0.0-rc.5"
         },
-        "server": "docker pull durableworkflow/server:2.0.0-beta.21",
-        "cli": "curl -fsSL https://durable-workflow.com/install.sh | VERSION=2.0.0-beta.21 sh",
-        "sdk-python": "pip install durable-workflow==2.0.0-beta.21",
-        "sdk-rust": "cargo add durable-workflow@=2.0.0-beta.21"
+        "server": "docker pull durableworkflow/server:2.0.0-rc.5",
+        "cli": "curl -fsSL https://durable-workflow.com/install.sh | VERSION=2.0.0-rc.5 sh",
+        "sdk-python": "pip install durable-workflow==2.0.0rc5",
+        "sdk-rust": "cargo add durable-workflow@=2.0.0-rc.5"
       },
       "release_plan": {
-        "tag": "release-plan/coherent-2-0-beta-21",
-        "sha256": "332b61c8f6921fe5c0f6a64bc5aca5621db6d562449fde05af885449410d4f76"
+        "tag": "release-plan/coherent-2-0-rc-5",
+        "sha256": "72789f9596243600258f2b29b380393798a552c99f7b04e63cd35fd5c18059f2"
       },
       "sdk_server_qualification": {
         "schema": "durable-workflow.sdk-server-qualification/v1",
         "source_url": "https://raw.githubusercontent.com/durable-workflow/.github/main/product-train/sdk-server-qualification.json",
-        "sha256": "ecf06bf5db837a97b5ff24b9f20fb6ea897be5304eadf29b2a83dd975c273897"
+        "sha256": "b870e17b8519aca299d9208b431e5411e1aef68332183f84d2518e37b6d1c6fd"
       }
     }
   },
   "progression": {
-    "prerelease": "synchronized_beta_increment",
+    "prerelease": "synchronized_prerelease_increment",
     "stable": "semantic_versioning",
     "compatibility_shims": "forbidden_between_2_0_prereleases"
   },

@@ -11,7 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from scripts.beta_candidate import COMPONENTS, CandidateError
+from scripts.beta_candidate import COMPONENTS, CandidateError, canonical_pypi_version
 
 CONTRACT_PATH = Path(__file__).resolve().parents[1] / "product-train" / "current.json"
 CURRENT_PLAN_PATH = Path(__file__).resolve().parents[1] / "release-plans" / "current.json"
@@ -208,7 +208,7 @@ def validate_sdk_server_qualification(
         }
         or evidence.get("schema") != CONFORMANCE_SUITE_SCHEMA
         or re.fullmatch(
-            r"beta-conformance/beta-[a-z0-9._-]+/[1-9][0-9]*\.[1-9][0-9]*",
+            r"beta-conformance/(?:beta|rc)-[a-z0-9._-]+/[1-9][0-9]*\.[1-9][0-9]*",
             str(evidence.get("tag", "")),
         )
         is None
@@ -326,8 +326,9 @@ def load_product_train(
         or set(current_train.get("versions", {})) != set(COMPONENTS)
     ):
         raise CandidateError("current product train does not define the supported seven-component tuple")
-    if re.fullmatch(r"2\.0\.0-beta\.[1-9][0-9]*", str(current)) is None:
-        raise CandidateError("current product train must use a 2.0.0-beta.N identifier")
+    channel = current_train.get("channel")
+    if channel not in {"beta", "rc"} or re.fullmatch(rf"2\.0\.0-{channel}\.[1-9][0-9]*", str(current)) is None:
+        raise CandidateError("current product train must use a channel-matched 2.0.0 prerelease identifier")
     if any(not isinstance(train, dict) for train in trains.values()):
         raise CandidateError("product-train authority contains an invalid train record")
     supported = [name for name, train in trains.items() if train.get("status") == "supported"]
@@ -336,7 +337,7 @@ def load_product_train(
     if any(version != current for version in current_train["versions"].values()):
         raise CandidateError("current component versions must match the synchronized train identifier")
     expected_registry_versions = dict.fromkeys(COMPONENTS, current)
-    expected_registry_versions["sdk-python"] = current.replace("-beta.", "b")
+    expected_registry_versions["sdk-python"] = canonical_pypi_version(current)
     if current_train.get("registry_versions") != expected_registry_versions:
         raise CandidateError("current registry versions must identify the synchronized train")
     install = current_train.get("install")
@@ -363,7 +364,7 @@ def load_product_train(
     plan_components = plan.get("components") if isinstance(plan, dict) else None
     if (
         plan_reference != expected_plan_reference
-        or plan.get("channel") != "beta"
+        or plan.get("channel") != channel
         or not isinstance(plan_components, dict)
         or {
             name: identity.get("version") if isinstance(identity, dict) else None
@@ -400,6 +401,6 @@ def require_current_product_train(components: Any) -> str:
     ]
     if mismatches:
         raise CandidateError(
-            f"new beta records must use supported product train {current}; mismatched " + ", ".join(mismatches)
+            f"new prerelease records must use supported product train {current}; mismatched " + ", ".join(mismatches)
         )
     return current

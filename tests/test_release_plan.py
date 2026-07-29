@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -48,8 +49,8 @@ from scripts.release_plan import (
     prepare_supersession,
     protected_environment_evidence,
     protected_run_approval_evidence,
+    read_current_completion_authority,
     record_completion,
-    record_current_plan_authorization,
     record_plan,
     record_supersession,
     require_prior_plans_completed,
@@ -501,15 +502,19 @@ class ReleasePlanEntryPointTest(unittest.TestCase):
         self.assertNotIn("actions/download-artifact", str(publish_current))
 
     def test_current_train_checks_derive_their_candidate_from_the_current_plan(self) -> None:
-        current_workflow = (
-            REPOSITORY_ROOT / ".github" / "workflows" / "current-release-plan.yml"
-        ).read_text(encoding="utf-8")
-        source_qualification = (
-            REPOSITORY_ROOT / ".github" / "workflows" / "source-qualification.yml"
-        ).read_text(encoding="utf-8")
+        current_workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "current-release-plan.yml").read_text(
+            encoding="utf-8"
+        )
+        source_qualification = (REPOSITORY_ROOT / ".github" / "workflows" / "source-qualification.yml").read_text(
+            encoding="utf-8"
+        )
 
         self.assertNotIn("- 'candidates/main.json'", current_workflow)
         self.assertIn("release_plan.py materialize-current", current_workflow)
+        self.assertIn("release_plan.py current-completion", current_workflow)
+        self.assertIn("steps.existing.outputs.status != 'existing'", current_workflow)
+        self.assertIn("load_product_train", current_workflow)
+        self.assertIn("application/vnd.github.raw+json", current_workflow)
         self.assertIn("release_plan.py materialize-current", source_qualification)
 
     def test_observer_uses_the_shared_immutable_discovery_contract(self) -> None:
@@ -592,6 +597,7 @@ class ReleasePlanEntryPointTest(unittest.TestCase):
             "validate",
             "validate-current",
             "materialize-current",
+            "current-completion",
             "check",
             "preflight",
             "record",
@@ -640,57 +646,57 @@ class ReleasePlanEntryPointTest(unittest.TestCase):
 
 
 class ReleasePlanValidationTest(unittest.TestCase):
-    def test_current_authority_materializes_independently_of_the_next_candidate(self) -> None:
+    def test_current_authority_materializes_from_the_verified_rc_candidate(self) -> None:
         plan, candidate = materialize_current_plan_authority()
-        next_candidate = json.loads(
-            (REPOSITORY_ROOT / "candidates" / "main.json").read_text(encoding="utf-8")
-        )
+        next_candidate = json.loads((REPOSITORY_ROOT / "candidates" / "main.json").read_text(encoding="utf-8"))
 
         self.assertEqual(candidate_manifest(plan), candidate)
-        self.assertEqual("2.0.0-beta.21", plan["components"]["server"]["version"])
+        self.assertEqual("2.0.0-rc.5", plan["components"]["server"]["version"])
         self.assertEqual("2.0.0-rc.5", next_candidate["components"]["server"]["version"])
+        self.assertEqual(candidate, next_candidate)
 
-    def test_current_beta_21_authority_binds_exact_published_sources(self) -> None:
+    def test_current_rc5_authority_binds_exact_published_sources(self) -> None:
         plan = load_plan(REPOSITORY_ROOT / "release-plans" / "current.json", require_current=True)
         expected_components = {
             "cli": {
-                "commit": "bbc090d935656823f96b0daaefc255e1c93047a4",
-                "version": "2.0.0-beta.21",
+                "commit": "91d11edf5c975c347d5b1069e57bd1a24aa20081",
+                "version": "2.0.0-rc.5",
             },
             "sdk-php": {
-                "commit": "a53acb5b3d0faeae30cbf43d3a6f3f8099f495d6",
-                "version": "2.0.0-beta.21",
+                "commit": "766f06ef175bb409aa9f37b2941191802be4b774",
+                "version": "2.0.0-rc.5",
             },
             "sdk-python": {
-                "commit": "cf64edae927b3fd139c5b60ec18ee5bfff826314",
-                "version": "2.0.0-beta.21",
+                "commit": "87f55a489835c512f4358e798ddaafb138bc2a9b",
+                "version": "2.0.0-rc.5",
             },
             "sdk-rust": {
-                "commit": "bb10d33ceff6e885414ff503f0a8f0171ccacd39",
-                "version": "2.0.0-beta.21",
+                "commit": "3582c313568b082105fc85e3523c59176e309ae3",
+                "version": "2.0.0-rc.5",
             },
             "server": {
-                "commit": "a6eb4bcf1b4758c43c55853354da557626c7d203",
-                "version": "2.0.0-beta.21",
+                "commit": "de79e57449bb0767853fbd7530f87ac1e88a13ee",
+                "version": "2.0.0-rc.5",
             },
             "waterline": {
-                "commit": "6ff907c74e36f29cad9596e5b11b07d7c5addc63",
-                "version": "2.0.0-beta.21",
+                "commit": "33c017697bb5f556209ede5236ec355a90ce8de3",
+                "version": "2.0.0-rc.5",
             },
             "workflow": {
-                "commit": "636ff3fc90c1a01c8ee74becaa148c9e193969ea",
-                "version": "2.0.0-beta.21",
+                "commit": "d8356318311cf594ba47e685ec8e7654c7258a28",
+                "version": "2.0.0-rc.5",
             },
         }
-        self.assertEqual("coherent-2-0-beta-21", plan["plan"])
+        self.assertEqual("coherent-2-0-rc-5", plan["plan"])
         self.assertEqual(expected_components, plan["components"])
         self.assertEqual(
             {
-                "commit": "73985d0c906d96e6edce6915ebe8000bbc19896e",
-                "tag": "beta-authorization/coherent-2-0-beta-21",
+                "commit": "c65c941228f686e8ff2d5a54463010755c73ffa0",
+                "tag": "beta-candidate/rc-coherent-2-0-rc-5",
             },
-            plan["beta_authorization"],
+            plan["foundation"],
         )
+        self.assertIsNone(plan["beta_authorization"])
 
         preparation = load_source_preparation()
         self.assertEqual(
@@ -702,32 +708,28 @@ class ReleasePlanValidationTest(unittest.TestCase):
         )
         self.assertEqual(
             {
-                "cli": "6e970bb326e2f314783a53b32946055e2505734c00b7a73722f36d9ca08f4407",
-                "sdk-php": "e173e098fddb27496f2da4325df0e848448b055f17875f51ccac0c6d8b5aabbc",
-                "sdk-python": "4ecf859384add7aa3c2fb92cdb013906ecfb8359145b602ecea6caf0d431cc26",
-                "sdk-rust": "6e970bb326e2f314783a53b32946055e2505734c00b7a73722f36d9ca08f4407",
-                "server": "6e970bb326e2f314783a53b32946055e2505734c00b7a73722f36d9ca08f4407",
-                "waterline": "043b38cde6a92726ac7a85462b21600694863a502b78898899a024c61dbba4ed",
-                "workflow": "9bd224b95a3eeebd6c0b785e5033252fa22ba2273a1ec41a8871d96bcfabbc26",
+                "cli": "f87d4ca902856570b624e89f52aa85223c98c6a5bcaaff5c4d619e59ef1802e7",
+                "sdk-php": "fc3612e867dbe78a1a8247a2eacd085e444173fb2614b18db80dcb5000b1963e",
+                "sdk-python": "f2893d501d84a0ca53d9926500f0bfc0a1375906e95b7225dbbb4e40b43c8a31",
+                "sdk-rust": "f87d4ca902856570b624e89f52aa85223c98c6a5bcaaff5c4d619e59ef1802e7",
+                "server": "f87d4ca902856570b624e89f52aa85223c98c6a5bcaaff5c4d619e59ef1802e7",
+                "waterline": "9eada636d4daba5ef537300a37f65242e857737f7c622fea6a2f493f690a2f51",
+                "workflow": "3866c1e28fe52ee310d671235e3b5166284666f978a06bfaae98a9f19d6bb9fd",
             },
             {name: identity["release_notes"]["sha256"] for name, identity in preparation["components"].items()},
         )
 
-    def test_new_beta_plan_requires_current_product_train(self) -> None:
-        plan = release_plan("beta")
-        plan["components"] = {
-            name: {"version": "2.0.0-beta.21", "commit": identity["commit"]}
-            for name, identity in plan["components"].items()
-        }
+    def test_current_plan_requires_current_product_train(self) -> None:
+        plan = load_plan(REPOSITORY_ROOT / "release-plans" / "current.json")
 
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "release-plan.json"
             path.write_bytes(canonical_json(plan))
             self.assertEqual(plan, load_plan(path, require_current=True))
 
-            plan["components"]["server"]["version"] = "0.2.701"
+            plan["components"]["server"]["version"] = "2.0.0-rc.6"
             path.write_bytes(canonical_json(plan))
-            with self.assertRaisesRegex(CandidateError, "supported product train 2.0.0-beta.21"):
+            with self.assertRaisesRegex(CandidateError, "supported product train 2.0.0-rc.5"):
                 load_plan(path, require_current=True)
 
     def test_supersession_handoff_binds_dispatch_identities(self) -> None:
@@ -1147,7 +1149,10 @@ class ReleasePlanValidationTest(unittest.TestCase):
             {name: identity["version"] for name, identity in plan["components"].items()},
         )
         self.assertEqual(
-            load_plan(REPOSITORY_ROOT / "release-plans" / "current.json")["beta_authorization"],
+            {
+                "commit": "73985d0c906d96e6edce6915ebe8000bbc19896e",
+                "tag": "beta-authorization/coherent-2-0-beta-21",
+            },
             plan["beta_authorization"],
         )
 
@@ -2904,32 +2909,117 @@ class ReleasePlanRecordTest(unittest.TestCase):
             self.authoritative_preparation_path.read_bytes(),
         )
 
-    def test_current_completed_train_authorization_is_deterministic_and_idempotent(self) -> None:
-        current_plan = REPOSITORY_ROOT / "release-plans" / "current.json"
-        created = record_current_plan_authorization(
+    def test_completed_plan_retry_reads_historical_semver_pypi_evidence(self) -> None:
+        plan = release_plan("beta")
+        plan["components"] = {
+            name: {"version": "2.0.0-beta.21", "commit": identity["commit"]}
+            for name, identity in plan["components"].items()
+        }
+        self.write_plan(plan)
+        recorded = record_plan(
             self.repository,
-            current_plan,
+            self.plan_path,
+            self.preparation_path,
             remote=str(self.remote),
-            authoritative_authorization=self.authoritative_authorization_path,
+            authoritative_plan=self.authoritative_path,
+            authoritative_preparation=self.authoritative_preparation_path,
         )
-        repeated = record_current_plan_authorization(
-            self.repository,
-            current_plan,
-            remote=str(self.remote),
-            authoritative_authorization=self.authoritative_authorization_path,
+        candidate = candidate_manifest(plan)
+        public_verification = candidate_verification(candidate)
+        self.assertEqual(
+            "https://pypi.org/pypi/durable-workflow/2.0.0-beta.21/json",
+            public_verification["components"]["sdk-python"]["distribution"]["registry"],
+        )
+        completion = completion_manifest(
+            plan,
+            recorded["commit"],
+            release_preparation(plan),
+        )
+        completion_verification = {
+            "schema": "durable-workflow.release-candidate-verification/v1",
+            "candidate": plan["plan"],
+            "channel": plan["channel"],
+            "release_plan_sha256": manifest_digest(plan),
+            "release_preparation_sha256": manifest_digest(release_preparation(plan)),
+            "public_verification": public_verification,
+        }
+
+        blobs = {}
+        for filename, value in (
+            ("release-candidate.json", canonical_json(completion)),
+            ("verification.json", canonical_json(completion_verification)),
+        ):
+            blobs[filename] = (
+                subprocess.run(
+                    ["git", "hash-object", "-w", "--stdin"],
+                    cwd=self.repository,
+                    input=value,
+                    check=True,
+                    capture_output=True,
+                )
+                .stdout.decode()
+                .strip()
+            )
+        tree_input = "".join(f"100644 blob {blob}\t{filename}\n" for filename, blob in sorted(blobs.items()))
+        tree = subprocess.run(
+            ["git", "mktree"],
+            cwd=self.repository,
+            input=tree_input,
+            text=True,
+            check=True,
+            capture_output=True,
+        ).stdout.strip()
+        identity = {
+            "GIT_AUTHOR_NAME": "Durable Workflow Test",
+            "GIT_AUTHOR_EMAIL": "support@durable-workflow.com",
+            "GIT_COMMITTER_NAME": "Durable Workflow Test",
+            "GIT_COMMITTER_EMAIL": "support@durable-workflow.com",
+        }
+        completion_commit = subprocess.run(
+            ["git", "commit-tree", tree],
+            cwd=self.repository,
+            input="Record historical completion\n",
+            text=True,
+            check=True,
+            capture_output=True,
+            env={**os.environ, **identity},
+        ).stdout.strip()
+        subprocess.run(
+            [
+                "git",
+                "push",
+                str(self.remote),
+                f"{completion_commit}:refs/tags/release-candidate/beta/{plan['plan']}",
+            ],
+            cwd=self.repository,
+            check=True,
+            capture_output=True,
         )
 
-        self.assertEqual("created", created["status"])
-        self.assertEqual("existing", repeated["status"])
-        self.assertEqual("73985d0c906d96e6edce6915ebe8000bbc19896e", created["commit"])
-        self.assertEqual(created["commit"], repeated["commit"])
-        files = subprocess.run(
-            ["git", "--git-dir", str(self.remote), "ls-tree", "-r", "--name-only", created["commit"]],
-            check=True,
-            text=True,
-            capture_output=True,
-        ).stdout.splitlines()
-        self.assertEqual(["beta-authorization.json"], files)
+        result = read_current_completion_authority(
+            self.repository,
+            self.plan_path,
+            remote=str(self.remote),
+            authoritative_plan=self.authoritative_path,
+            authoritative_preparation=self.authoritative_preparation_path,
+            authoritative_completion=Path(self.temporary.name) / "authoritative-completion.json",
+            authoritative_verification=Path(self.temporary.name) / "authoritative-verification.json",
+        )
+
+        self.assertEqual("existing", result["status"])
+        self.assertEqual(completion_commit, result["completion_commit"])
+
+    def test_current_rc_authority_uses_the_exact_candidate_foundation(self) -> None:
+        current = load_plan(REPOSITORY_ROOT / "release-plans" / "current.json")
+
+        self.assertIsNone(current["beta_authorization"])
+        self.assertEqual(
+            {
+                "commit": "c65c941228f686e8ff2d5a54463010755c73ffa0",
+                "tag": "beta-candidate/rc-coherent-2-0-rc-5",
+            },
+            current["foundation"],
+        )
 
     def test_existing_plan_rejects_tuple_mutation(self) -> None:
         plan = release_plan()

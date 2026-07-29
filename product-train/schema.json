@@ -22,7 +22,7 @@
     },
     "current": {
       "type": "string",
-      "pattern": "^2\\.0\\.0-beta\\.[1-9][0-9]*$"
+      "pattern": "^2\\.0\\.0-(?:beta|rc)\\.[1-9][0-9]*$"
     },
     "components": {
       "const": [
@@ -47,7 +47,9 @@
       "additionalProperties": false,
       "required": ["prerelease", "stable", "compatibility_shims"],
       "properties": {
-        "prerelease": {"const": "synchronized_beta_increment"},
+        "prerelease": {
+          "enum": ["synchronized_beta_increment", "synchronized_prerelease_increment"]
+        },
         "stable": {"const": "semantic_versioning"},
         "compatibility_shims": {"const": "forbidden_between_2_0_prereleases"}
       }
@@ -130,7 +132,7 @@
         "sdk_server_qualification"
       ],
       "properties": {
-        "channel": {"const": "beta"},
+        "channel": {"enum": ["beta", "rc"]},
         "status": {"enum": ["supported", "historical"]},
         "versions": {"$ref": "#/$defs/componentVersions"},
         "registry_versions": {"$ref": "#/$defs/componentVersions"},

@@ -2,58 +2,58 @@
   "$schema": "./sdk-server-qualification-schema.json",
   "schema": "durable-workflow.sdk-server-qualification/v1",
   "release_plan": {
-    "tag": "release-plan/coherent-2-0-beta-21",
-    "sha256": "332b61c8f6921fe5c0f6a64bc5aca5621db6d562449fde05af885449410d4f76"
+    "tag": "release-plan/coherent-2-0-rc-5",
+    "sha256": "72789f9596243600258f2b29b380393798a552c99f7b04e63cd35fd5c18059f2"
   },
   "outcome": "pass",
   "evidence": {
     "schema": "durable-workflow.beta-conformance.suite-result/v2",
-    "tag": "beta-conformance/beta-coherent-2-0-beta-21/30290165822.1",
-    "source_url": "https://github.com/durable-workflow/.github/releases/download/beta-conformance/beta-coherent-2-0-beta-21/30290165822.1/suite-result.json",
-    "sha256": "153de1d7d4f4a13a80761c1887b77232dccdfffb34fdf0b1c6ca0f0f00bd9e65",
+    "tag": "beta-conformance/rc-coherent-2-0-rc-5/30408148707.1",
+    "source_url": "https://github.com/durable-workflow/.github/releases/download/beta-conformance/rc-coherent-2-0-rc-5/30408148707.1/suite-result.json",
+    "sha256": "f0a21bb9f31dfbcc4a5031d68b6432e9b63f260e8bde965e2f158ac02ce977d0",
     "outcome": "pass",
     "github_run": {
       "repository": "durable-workflow/.github",
-      "run_id": 30290165822,
+      "run_id": 30408148707,
       "run_attempt": 1,
-      "evidence_tag": "beta-conformance/beta-coherent-2-0-beta-21/30290165822.1"
+      "evidence_tag": "beta-conformance/rc-coherent-2-0-rc-5/30408148707.1"
     }
   },
   "bindings": {
     "sdk-php": {
       "sdk": {
         "source": {
-          "version": "2.0.0-beta.21",
-          "commit": "a53acb5b3d0faeae30cbf43d3a6f3f8099f495d6"
+          "version": "2.0.0-rc.5",
+          "commit": "766f06ef175bb409aa9f37b2941191802be4b774"
         },
         "distribution": {
           "kind": "composer",
-          "locator": "composer:durable-workflow/sdk@2.0.0-beta.21",
+          "locator": "composer:durable-workflow/sdk@2.0.0-rc.5",
           "artifacts": [
             {
               "name": "durable-workflow/sdk",
-              "sha256": "f5bb4599d33164eba34fb4310af6ff9ebbb45848ebaad57ef9d93beeba6b74b9"
+              "sha256": "d68ce655c67891583eb7e6bf79c8e7227f4ddf072fe00311e15ce8c569d63a03"
             }
           ]
         }
       },
       "server": {
         "source": {
-          "version": "2.0.0-beta.21",
-          "commit": "a6eb4bcf1b4758c43c55853354da557626c7d203"
+          "version": "2.0.0-rc.5",
+          "commit": "de79e57449bb0767853fbd7530f87ac1e88a13ee"
         },
         "distribution": {
           "kind": "oci",
-          "locator": "oci:docker.io/durableworkflow/server@2.0.0-beta.21",
+          "locator": "oci:docker.io/durableworkflow/server@2.0.0-rc.5",
           "artifacts": [
             {
               "name": "manifest",
-              "sha256": "563a19d1f241225586b3d62b09d03566acbdf28def95e42a9366eac036f070ff"
+              "sha256": "1b662f23baf9bd17d76ce2bddc25d070761190c5eb456f017864f438e142ac07"
             }
           ]
         }
       },
-      "supported_server_versions": "2.0.0-beta.21",
+      "supported_server_versions": "2.0.0-rc.5",
       "outcome": "pass",
       "experiments": [
         "heartbeats",
@@ -64,37 +64,37 @@
     "sdk-python": {
       "sdk": {
         "source": {
-          "version": "2.0.0-beta.21",
-          "commit": "cf64edae927b3fd139c5b60ec18ee5bfff826314"
+          "version": "2.0.0-rc.5",
+          "commit": "87f55a489835c512f4358e798ddaafb138bc2a9b"
         },
         "distribution": {
           "kind": "pypi",
-          "locator": "pypi:durable-workflow@2.0.0b21",
+          "locator": "pypi:durable-workflow@2.0.0rc5",
           "artifacts": [
             {
-              "name": "durable_workflow-2.0.0b21-py3-none-any.whl",
-              "sha256": "c09c4b68a19782705fd46effd35767d033f15c480f7bbf054fe0c3636e09f53e"
+              "name": "durable_workflow-2.0.0rc5-py3-none-any.whl",
+              "sha256": "f6b197856c2f985b1ebe4fae2c309e8364e5ed03b911278fae0866061193b39d"
             }
           ]
         }
       },
       "server": {
         "source": {
-          "version": "2.0.0-beta.21",
-          "commit": "a6eb4bcf1b4758c43c55853354da557626c7d203"
+          "version": "2.0.0-rc.5",
+          "commit": "de79e57449bb0767853fbd7530f87ac1e88a13ee"
         },
         "distribution": {
           "kind": "oci",
-          "locator": "oci:docker.io/durableworkflow/server@2.0.0-beta.21",
+          "locator": "oci:docker.io/durableworkflow/server@2.0.0-rc.5",
           "artifacts": [
             {
               "name": "manifest",
-              "sha256": "563a19d1f241225586b3d62b09d03566acbdf28def95e42a9366eac036f070ff"
+              "sha256": "1b662f23baf9bd17d76ce2bddc25d070761190c5eb456f017864f438e142ac07"
             }
           ]
         }
       },
-      "supported_server_versions": "2.0.0-beta.21",
+      "supported_server_versions": "2.0.0-rc.5",
       "outcome": "pass",
       "experiments": [
         "heartbeats",
@@ -105,37 +105,37 @@
     "sdk-rust": {
       "sdk": {
         "source": {
-          "version": "2.0.0-beta.21",
-          "commit": "bb10d33ceff6e885414ff503f0a8f0171ccacd39"
+          "version": "2.0.0-rc.5",
+          "commit": "3582c313568b082105fc85e3523c59176e309ae3"
         },
         "distribution": {
           "kind": "crates.io",
-          "locator": "crates.io:durable-workflow@2.0.0-beta.21",
+          "locator": "crates.io:durable-workflow@2.0.0-rc.5",
           "artifacts": [
             {
-              "name": "durable-workflow-2.0.0-beta.21.crate",
-              "sha256": "aa156e2c6c09b62a06e3d609ea3c97b5afccb6f47b191ce8d9e9f448520eabd9"
+              "name": "durable-workflow-2.0.0-rc.5.crate",
+              "sha256": "eaff8d0f77b48368e73781d79767a89d4e5dbc624943823cb5521f60ce9d0752"
             }
           ]
         }
       },
       "server": {
         "source": {
-          "version": "2.0.0-beta.21",
-          "commit": "a6eb4bcf1b4758c43c55853354da557626c7d203"
+          "version": "2.0.0-rc.5",
+          "commit": "de79e57449bb0767853fbd7530f87ac1e88a13ee"
         },
         "distribution": {
           "kind": "oci",
-          "locator": "oci:docker.io/durableworkflow/server@2.0.0-beta.21",
+          "locator": "oci:docker.io/durableworkflow/server@2.0.0-rc.5",
           "artifacts": [
             {
               "name": "manifest",
-              "sha256": "563a19d1f241225586b3d62b09d03566acbdf28def95e42a9366eac036f070ff"
+              "sha256": "1b662f23baf9bd17d76ce2bddc25d070761190c5eb456f017864f438e142ac07"
             }
           ]
         }
       },
-      "supported_server_versions": "2.0.0-beta.21",
+      "supported_server_versions": "2.0.0-rc.5",
       "outcome": "pass",
       "experiments": [
         "heartbeats",
