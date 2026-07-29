@@ -1,0 +1,121 @@
+{
+  "components": {
+    "cli": {
+      "release_notes": {
+        "format": "text/markdown",
+        "heading": "## [2.0.0-rc.5] - 2026-07-28",
+        "markdown": "## [2.0.0-rc.5] - 2026-07-28\n\nDo not classify immutable closed-run contract gaps as active fleet health failures\n",
+        "release_date": "2026-07-28",
+        "sha256": "1beba27ab820f54fa24bfbb99f6fa2735378c38c5d04f2bd4bf5885353ca7926",
+        "source": {
+          "kind": "source-commit-message",
+          "sha256": "f87d4ca902856570b624e89f52aa85223c98c6a5bcaaff5c4d619e59ef1802e7",
+          "url": "https://github.com/durable-workflow/cli/commit/91d11edf5c975c347d5b1069e57bd1a24aa20081"
+        }
+      },
+      "source_commit": "91d11edf5c975c347d5b1069e57bd1a24aa20081",
+      "version": "2.0.0-rc.5"
+    },
+    "sdk-php": {
+      "release_notes": {
+        "format": "text/markdown",
+        "heading": "## [2.0.0-rc.5] - 2026-07-28",
+        "markdown": "## [2.0.0-rc.5] - 2026-07-28\n\n### Changed\n\n- Advanced to the synchronized Durable Workflow `2.0.0-rc.5` product train. This\n  is the supported 2.0 baseline; earlier prereleases retain historical release\n  records but receive no compatibility shim.\n- Replaced the prerelease JSON wrapper with the fixed recursive\n  `durable_workflow.protocol.Value` schema and Avro single-object framing.\n  `AvroBinaryValue` makes the bytes branch explicit while PHP strings remain\n  UTF-8 text. `AvroMapValue` preserves empty maps and numeric-looking string\n  keys that native PHP arrays cannot represent, and the reader resolves\n  recursive named branches without warning suppression.\n- Added golden cross-language fixtures and a repeatable production-path size\n  and latency benchmark over the shared checked-in corpus, with an enforced\n  regression budget calibrated with explicit headroom.\n\n- Release-plan recovery now consumes immutable, exact-version release-note\n  preparation authority before publishing a newly recorded plan.\n\n### Fixed\n\n- Explicit release recovery rejects terminally superseded plans before and\n  after publication preflight while keeping completed-plan verification\n  idempotent.\n\n- Managed workers retry the server's fenced registration lock-pressure\n  response with bounded backoff before entering the poll loop, while other\n  registration failures remain terminal.\n",
+        "release_date": "2026-07-28",
+        "sha256": "d49ca5fee139e159f4cf29bad0de0a45abb7311d78b9cf073237efdfc26aa748",
+        "source": {
+          "kind": "changelog-unreleased",
+          "sha256": "fc3612e867dbe78a1a8247a2eacd085e444173fb2614b18db80dcb5000b1963e",
+          "url": "https://github.com/durable-workflow/sdk-php/blob/766f06ef175bb409aa9f37b2941191802be4b774/CHANGELOG.md"
+        }
+      },
+      "source_commit": "766f06ef175bb409aa9f37b2941191802be4b774",
+      "version": "2.0.0-rc.5"
+    },
+    "sdk-python": {
+      "release_notes": {
+        "format": "text/markdown",
+        "heading": "## [2.0.0-rc.5] - 2026-07-28",
+        "markdown": "## [2.0.0-rc.5] - 2026-07-28\n\nThe Python SDK advances to the synchronized Durable Workflow `2.0.0-rc.5`\nproduct train. PyPI displays the normalized PEP 440 identity `2.0.0rc5`. Earlier SDK\nversions remain historical releases and are not alternate supported 2.0\nbaselines; no prerelease compatibility shim is provided.\n\n### Added\n- The optimized `fastavro` payload path now uses the fixed recursive\n  `durable_workflow.protocol.Value` schema with explicit named branches and\n  Avro single-object framing. Cross-language fixtures cover every branch,\n  schema evolution, nested values, and stable policy failures.\n- A repeatable benchmark reports JSON, legacy-wrapper, and fixed-schema raw and\n  HTTP-envelope sizes plus adapter/encode/decode latency over the shared\n  checked-in corpus, with an enforced production-path regression budget\n  calibrated with explicit headroom.\n- Schedule listing now exposes server-side status, workflow-type, visibility-\n  query, page-size, and continuation-token filters on async and sync clients.\n  `ScheduleListError` preserves typed filter and cursor refusal evidence.\n- `durable-workflow-python-conformance --compose` now accepts nested host\n  runner evidence tables, resolved artifact/source aliases, boolean `passed`\n  result cells, nested protocol trace planes, and no-PHP audit check aliases\n  when composing full published-artifact Python conformance results.\n- `durable-workflow-python-conformance --compose` now normalizes runbook-style\n  scenario and capability identifiers such as `server-up` and\n  `result-returned`, plus common status, trace-plane, and no-PHP audit aliases,\n  before evaluating host evidence.\n- `durable-workflow-python-conformance --compose` now accepts runner-native\n  host evidence aliases such as `scenarioEvidence`, `capabilityResults`,\n  `officialCli`, `firstUserFlow`, `traces`, and `languageNeutralityAudit`,\n  so full published-artifact runs are not marked uncovered just because the\n  runner records observations under natural collection names.\n- `durable-workflow-python-conformance` now exposes a host-evidence\n  composition contract and `--compose` mode so published-artifact runners can\n  turn raw observations into a complete Python parity result document before\n  evaluation.\n- `durable-workflow-python-conformance` now exposes the Python SDK\n  published-artifact parity contract and evaluates host result documents,\n  rejecting smoke-only evidence unless the official CLI path, cold first-user\n  setup, protocol traces, no-PHP-assumption audit, concrete artifact versions,\n  and complete capability table are all present.\n- `Client.delete_namespace()` now exercises the namespace lifecycle cleanup\n  control-plane surface and returns the server's per-table cleanup counts on\n  `NamespaceDescription.deleted`.\n\n### Fixed\n- Explicit release recovery rejects terminally superseded plans before and\n  after publication preflight while keeping completed-plan verification\n  idempotent.\n- Synchronous clients now keep their async HTTP connection pool, returned\n  handles, and cleanup on one client-owned event loop for the client's lifetime.\n- Worker-routed queries now replay signal-woken condition waits that reopen the\n  same logical wait until all recorded signals have been applied, so long-lived\n  queryable workflows report the latest signal-mutated state.\n- Python conformance CLI evidence now accepts terminal stdout/JSON captured on\n  nested CLI command records while still rejecting generic scenario outputs as\n  proof of the public CLI result path.\n- Python conformance source-policy evidence now accepts the explicit\n  `local_product_source_checkouts_used=false` published-artifact runner alias.\n- `durable-workflow-python-conformance --compose` now accepts actual CLI\n  terminal-result evidence from `workflow:start --wait`, `workflow:describe`,\n  and `workflow:show-run --follow` instead of only generic result aliases.\n- `durable-workflow-replay-conformance` now declares `outcome: pass` when\n  every required Python replay shard scenario passes, so full replay evidence\n  is no longer reported as non-passing.\n- Worker query tasks now treat null or empty compact history payload fields as\n  missing when a history export carries the durable activity result or signal\n  arguments, so cold replay after worker restart does not answer queries from\n  an unmodified workflow instance.\n- Worker query tasks now replay from the bundled history export when the\n  inline task history is empty or truncated, so cold query replay reconstructs\n  activity-derived state instead of answering from a fresh workflow instance.\n- Python parent workflows now decode successful child workflow completions from\n  the server's documented `ChildRunCompleted.output` history payload, while\n  still accepting the older `result` alias. This prevents completed child\n  workflow returns from replaying as `None`.\n- Condition-wait replay now binds signals that arrive during a leased\n  workflow task to the next recorded wait when the server history records\n  those signals before the task's `ConditionWaitOpened` row. This avoids\n  applying rapid signal batches to the previous wait and prevents replay from\n  completing with a later wait/timer history step left unconsumed.\n- Condition-wait replay now prefers the recorded event-order wait binding over\n  a signal's stored `workflow_sequence` when several signals arrive before a\n  reopened wait. This handles server histories where later signals are accepted\n  while the previous wait is still open but must replay against the next\n  physical wait.\n- Condition-wait replay now lets a true predicate finish the current wait\n  before any following same-key wait is considered stale terminal history.\n  This keeps query and signal replay aligned with histories that include\n  unresolved `ConditionWaitOpened` plus condition-timeout `TimerScheduled`\n  rows after a replayed false reopen, while preserving pending sequential\n  same-key waits and resolved reopens that must remain replay history.\n- Workflow workers now report unhandled workflow-task execution errors back to\n  the server instead of leaving the leased task pending until the lease or CLI\n  wait times out. This lets the server observe and retry or fail the task\n  promptly when command serialization or interceptor code raises after a task\n  has been claimed.\n- Workflow-task completion now retries transient transport failures and server\n  throttling/5xx rejections before preserving emitted commands or reporting a\n  definite task failure, reducing stuck waiting runs when a signal-satisfied\n  wait completes immediately after replay-driven query activity.\n- Ambiguous workflow-task completion failures no longer get reported back as\n  durable task failures after commands have been produced. Definite server\n  rejections are still treated as failed workflow tasks even when the\n  best-effort failure report cannot be sent, but transport/ownership ambiguity\n  preserves the emitted commands so replay-driven signal completion is not\n  converted into a stuck failed task.\n- Repeated condition-wait openings for the same logical wait now replay through\n  every matching signal before deciding whether the wait is still pending, so\n  long-running signal/query workflows do not get stuck on the first signal.\n- Signal and update receivers recorded while a condition wait is open now\n  replay at that specific wait, so later signal-driven waits are not satisfied\n  or consumed too early when no activity or timer result separates them.\n- Signal and update receivers recorded after an activity result now replay after\n  the workflow consumes that activity result, so receiver-mutated state is not\n  overwritten by deterministic post-activity setup before a `wait_condition`.\n- Python workflow replay now throws terminal `ActivityFailed` history events\n  into the generator as a typed `ActivityFailed` exception, including the\n  recorded activity and failure metadata. Activity-only saga workflows can\n  catch the exception and schedule compensation instead of replaying the\n  original activity command again.\n- Worker heartbeat `process_metrics` now report instantaneous values\n  instead of process-lifetime aggregates. `cpu_percent` is the share of\n  wall time the worker spent on CPU during the interval since the\n  previous heartbeat (previously the lifetime average, which converged\n  to a fixed value within minutes and stopped tracking live load), and\n  `memory_bytes` is the current resident set size sampled from\n  `/proc/self/statm` on Linux (previously `ru_maxrss`, which is the\n  process-lifetime high-water mark and never decreased after a startup\n  spike). Platforms without `/proc` no longer report `memory_bytes`\n  rather than reporting a misleading peak. The heartbeat protocol shape\n  is unchanged; the server records whatever the worker sends, so the\n  Worker Status surface starts showing accurate live numbers as soon as\n  workers upgrade.\n\n### Changed\n- Release-plan recovery now consumes immutable, exact-version release-note\n  preparation authority before publishing a newly recorded plan.\n- `tests/test_client.py` now closes the `schedule.history` polyglot\n  parity slice. `test_get_schedule_history_matches_polyglot_fixture`\n  asserts the full decoded payload envelope per event (`id`,\n  `recorded_at`, `payload`, plus the workflow attribution fields)\n  so the Python parity check covers the same wire content the CLI\n  parity check covers when it asserts the printed JSON envelope\n  matches the shared fixture's `response_body`. A companion\n  `test_iter_schedule_history_walks_polyglot_fixture` exercises\n  `Client.iter_schedule_history` against the shared fixture to lock\n  in the cursor-advance semantics across pages.\n\n### Notes\n- Production-readiness validation is in progress for the first\n  `1.0.0` release candidate. The 0.4.x line is feature-complete for\n  the documented Durable Workflow v2 surface and is being exercised\n  end-to-end by external-user walkthroughs against the published\n  Python SDK guide and the `examples/order_processing` Docker Compose\n  sample.\n- Remaining v2 follow-ups tracked for this line: server-routed Python\n  query execution and pre-accept update validator routing. These are\n  server-side capabilities; the SDK already records the receiver\n  metadata required to participate when the server advertises support.\n",
+        "release_date": "2026-07-28",
+        "sha256": "6bb1bd194ec0da6fcbdb399353b1ec354dc0a7002af29109636e4d59e83d20b0",
+        "source": {
+          "kind": "changelog-unreleased",
+          "sha256": "f2893d501d84a0ca53d9926500f0bfc0a1375906e95b7225dbbb4e40b43c8a31",
+          "url": "https://github.com/durable-workflow/sdk-python/blob/87f55a489835c512f4358e798ddaafb138bc2a9b/CHANGELOG.md"
+        }
+      },
+      "source_commit": "87f55a489835c512f4358e798ddaafb138bc2a9b",
+      "version": "2.0.0-rc.5"
+    },
+    "sdk-rust": {
+      "release_notes": {
+        "format": "text/markdown",
+        "heading": "## [2.0.0-rc.5] - 2026-07-28",
+        "markdown": "## [2.0.0-rc.5] - 2026-07-28\n\nDo not classify immutable closed-run contract gaps as active fleet health failures\n",
+        "release_date": "2026-07-28",
+        "sha256": "1beba27ab820f54fa24bfbb99f6fa2735378c38c5d04f2bd4bf5885353ca7926",
+        "source": {
+          "kind": "source-commit-message",
+          "sha256": "f87d4ca902856570b624e89f52aa85223c98c6a5bcaaff5c4d619e59ef1802e7",
+          "url": "https://github.com/durable-workflow/sdk-rust/commit/3582c313568b082105fc85e3523c59176e309ae3"
+        }
+      },
+      "source_commit": "3582c313568b082105fc85e3523c59176e309ae3",
+      "version": "2.0.0-rc.5"
+    },
+    "server": {
+      "release_notes": {
+        "format": "text/markdown",
+        "heading": "## [2.0.0-rc.5] - 2026-07-28",
+        "markdown": "## [2.0.0-rc.5] - 2026-07-28\n\nDo not classify immutable closed-run contract gaps as active fleet health failures\n",
+        "release_date": "2026-07-28",
+        "sha256": "1beba27ab820f54fa24bfbb99f6fa2735378c38c5d04f2bd4bf5885353ca7926",
+        "source": {
+          "kind": "source-commit-message",
+          "sha256": "f87d4ca902856570b624e89f52aa85223c98c6a5bcaaff5c4d619e59ef1802e7",
+          "url": "https://github.com/durable-workflow/server/commit/de79e57449bb0767853fbd7530f87ac1e88a13ee"
+        }
+      },
+      "source_commit": "de79e57449bb0767853fbd7530f87ac1e88a13ee",
+      "version": "2.0.0-rc.5"
+    },
+    "waterline": {
+      "release_notes": {
+        "format": "text/markdown",
+        "heading": "## [2.0.0-rc.5] - 2026-07-28",
+        "markdown": "## [2.0.0-rc.5] - 2026-07-28\n\nWaterline, Workflow, and the PHP SDK advance together to the synchronized\nDurable Workflow `2.0.0-rc.5` product train.\n\nWorker Health now labels the returned registration total accurately and shows\nactive and stale registration counts separately. Historical stale rows are no\nlonger described as active workers.\n\nSaved-view filter metadata and normalization are now owned by Waterline, so\nservice mode can render and use saved views without loading the optional\nembedded Workflow package. Embedded-mode query execution continues to use the\nWorkflow engine's visibility filters.\n\nAvro payload previews now understand the shared fixed typed Value schema and\nrender binary values explicitly, so byte sequences cannot be mistaken for\nequal-looking UTF-8 or base64 text.\n\nManaged Waterline now renders under strict Content Security Policy without\ninline scripts, inline styles, or third-party fonts. Its escaped page bootstrap\nand published frontend assets preserve dashboard scope, backend, maintenance,\nand environment-banner state on Cloud-managed routes.\n\nThe packaged service now rejects process-local SQLite memory databases before\nrunning migrations. Service mode supports file-backed SQLite, MySQL, and\nPostgreSQL persistence across its separate migration and HTTP server processes.\n\nPublished worker-status validation now accepts exact SemVer Server release\nidentities, including stable releases. Workflow and Waterline package identities\nremain restricted to exact numeric 2.0 alpha, beta, and release-candidate\nversions; ranges, branch aliases, and unpinned values are rejected.\n\nRelease-plan recovery now consumes immutable, exact-version release-note\npreparation authority before publishing a newly recorded plan.\nExplicit recovery also rejects terminally superseded plans before and after\npublication preflight while keeping completed-plan verification idempotent.\n\nWaterline keeps the Durable Workflow 2.0 conformance claim aligned to\nplatform conformance suite version 17. The focused\n`waterline:principal-attribution-conformance` shard now documents\noperator-visible command and timeline principal attribution alongside the\nnamespace and search-attribute Waterline shards. Migration runtime and\nskew refusal matrix evidence remain load-bearing Waterline release\ncategories.\n\nThe package now exports a focused published-artifact worker-status runner.\nIt compares live Waterline list and task-queue worker projections with the\nstandalone server API and CLI through two heartbeats, real workflow work, and\na bounded stale transition. Published-port readiness requests have per-attempt\ntimeouts and retries, and all outcomes remove the package host plus labeled\nCompose containers, volumes, networks, and scratch state. Published observer\nhosts can align Waterline's freshness classification with the server through\n`WATERLINE_WORKER_STALE_AFTER_SECONDS`. Standalone worker execution now uses\nthe exact published PHP SDK package while Workflow remains the embedded engine;\nnormal and early-failure evidence retain the canonical PHP SDK version and\nPackagist provenance. Worker-status projections now derive the advertised PHP\nSDK identity and worker protocol from the installed SDK runtime contract.\n",
+        "release_date": "2026-07-28",
+        "sha256": "b5a1b7b6d6ddf3c60cf553bd42cf2ed045f16102f9a906d05b89e033b28e68ea",
+        "source": {
+          "kind": "changelog-unreleased",
+          "sha256": "9eada636d4daba5ef537300a37f65242e857737f7c622fea6a2f493f690a2f51",
+          "url": "https://github.com/durable-workflow/waterline/blob/33c017697bb5f556209ede5236ec355a90ce8de3/CHANGELOG.md"
+        }
+      },
+      "source_commit": "33c017697bb5f556209ede5236ec355a90ce8de3",
+      "version": "2.0.0-rc.5"
+    },
+    "workflow": {
+      "release_notes": {
+        "format": "text/markdown",
+        "heading": "## [2.0.0-rc.5] - 2026-07-28",
+        "markdown": "## [2.0.0-rc.5] - 2026-07-28\n\n- Advanced Workflow to the synchronized Durable Workflow `2.0.0-rc.5`\n  product train. This is the only supported 2.0 prerelease baseline; earlier\n  alphas and beta tuples remain historical and receive no compatibility shim.\n- Historical command-contract gaps remain visible in operator metrics without\n  warning fleet correctness once their runs are closed. Open runs still warn\n  when operator command forms lack required safety data.\n- Projection repair can be limited to one namespace, and resolved wait\n  snapshots now compare absent optional values consistently with projected\n  nulls so repeated repair is idempotent.\n- Replaced the prerelease JSON-in-Avro wrapper with the fixed recursive\n  `durable_workflow.protocol.Value` schema and standard Avro single-object\n  framing. Native adapters now preserve booleans, signed 64-bit integers,\n  finite doubles, bytes, UTF-8 text, lists, and string-keyed maps.\n- Added a backup-first prerelease-history migration that recursively rewrites\n  inline and external wrapper copies in retained event snapshots. Replacement\n  external objects receive verified hashes and sizes while original objects\n  remain recoverable, and affected exported histories must replay before the\n  migration reports success.\n- Removed the package-owned hosted control-plane and runtime-target contract.\n  Embedded Laravel, independent self-hosted Server, and managed Cloud remain\n  separate deployment choices; Cloud placement stays behind the namespace\n  endpoint.\n- Platform conformance Rust signal/query scenarios install the exact\n  synchronized `durable-workflow =2.0.0-rc.5` crates.io artifact.\n- Embedded and standalone activity heartbeats now use the same\n  attempt-before-execution row-lock order as timeout enforcement. Accepted\n  heartbeats renew the current attempt deadline, while stale scanner snapshots\n  cannot time out live, replaced, or already-closed attempts.\n- Release recovery now accepts release-candidate plans only when they retain a\n  coherent immutable beta qualification. The versioned recovery-consumer\n  conformance contract and release-docs audit now cover the `rc` channel.\n\n- Release-plan recovery now consumes immutable, exact-version release-note\n  preparation authority before publishing a newly recorded plan.\n- Explicit release recovery rejects terminally superseded plans before and\n  after publication preflight while keeping completed-plan verification\n  idempotent.\n- Standalone workers now receive accepted declared signals even when the host\n  has no embedded workflow definition or local wait projection. Signal tasks\n  retain command order ahead of queued updates, and QueueFake update completion\n  uses the configured workflow-run model query. Accepted signal inputs are also\n  persisted on their history event so public-history consumers observe the same\n  values as workers and query replay.\n- Workflow-task claims and renewals now resolve\n  `workflows.v2.workflow_task_lease_seconds` at runtime across remote,\n  queued, timer, local-activity, and repair-driven execution paths. Embedded\n  Laravel hosts retain an explicit 300-second default and may set\n  `DW_V2_WORKFLOW_TASK_LEASE_SECONDS` before caching configuration.\n",
+        "release_date": "2026-07-28",
+        "sha256": "40d38f5f45e0dae1cf3891067e86c817247d2b3334c46d38285bf5aa71c88372",
+        "source": {
+          "kind": "changelog-unreleased",
+          "sha256": "3866c1e28fe52ee310d671235e3b5166284666f978a06bfaae98a9f19d6bb9fd",
+          "url": "https://github.com/durable-workflow/workflow/blob/d8356318311cf594ba47e685ec8e7654c7258a28/CHANGELOG.md"
+        }
+      },
+      "source_commit": "d8356318311cf594ba47e685ec8e7654c7258a28",
+      "version": "2.0.0-rc.5"
+    }
+  },
+  "release_plan": {
+    "sha256": "72789f9596243600258f2b29b380393798a552c99f7b04e63cd35fd5c18059f2",
+    "tag": "release-plan/coherent-2-0-rc-5"
+  },
+  "schema": "durable-workflow.release-preparation/v1"
+}
