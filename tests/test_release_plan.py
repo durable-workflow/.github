@@ -54,6 +54,7 @@ from scripts.release_plan import (
     record_plan,
     record_supersession,
     require_prior_plans_completed,
+    stage_current_plan_evidence,
     terminal_failure_state,
     validate_observation_handoff,
     validate_plan,
@@ -502,8 +503,17 @@ class ReleasePlanEntryPointTest(unittest.TestCase):
         self.assertNotIn("actions/download-artifact", str(publish_current))
 
     def test_current_train_checks_derive_their_candidate_from_the_current_plan(self) -> None:
-        current_workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "current-release-plan.yml").read_text(
-            encoding="utf-8"
+        current_workflow_path = REPOSITORY_ROOT / ".github" / "workflows" / "current-release-plan.yml"
+        current_workflow = current_workflow_path.read_text(encoding="utf-8")
+        parsed_current_workflow = yaml.safe_load(current_workflow)
+        current_steps = parsed_current_workflow["jobs"]["record"]["steps"]
+        evidence_staging = next(
+            step for step in current_steps if "release_plan.py stage-current-evidence" in step.get("run", "")
+        )
+        evidence_upload = next(
+            step
+            for step in current_steps
+            if step.get("uses") == "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
         )
         source_qualification = (REPOSITORY_ROOT / ".github" / "workflows" / "source-qualification.yml").read_text(
             encoding="utf-8"
@@ -515,6 +525,11 @@ class ReleasePlanEntryPointTest(unittest.TestCase):
         self.assertIn("steps.existing.outputs.status != 'existing'", current_workflow)
         self.assertIn("load_product_train", current_workflow)
         self.assertIn("application/vnd.github.raw+json", current_workflow)
+        self.assertIn('--completion-status "${{ steps.existing.outputs.status }}"', evidence_staging["run"])
+        self.assertEqual(
+            "${{ runner.temp }}/current-release-plan-evidence/",
+            evidence_upload["with"]["path"],
+        )
         self.assertIn("release_plan.py materialize-current", source_qualification)
 
     def test_observer_uses_the_shared_immutable_discovery_contract(self) -> None:
@@ -598,6 +613,7 @@ class ReleasePlanEntryPointTest(unittest.TestCase):
             "validate-current",
             "materialize-current",
             "current-completion",
+            "stage-current-evidence",
             "check",
             "preflight",
             "record",
@@ -2860,6 +2876,10 @@ class ReleasePlanRecordTest(unittest.TestCase):
         self.authoritative_path = root / "authoritative-release-plan.json"
         self.authoritative_authorization_path = root / "authoritative-beta-authorization.json"
         self.authoritative_preparation_path = root / "authoritative-release-preparation.json"
+        self.authoritative_completion_path = root / "authoritative-release-candidate.json"
+        self.authoritative_verification_path = root / "authoritative-verification.json"
+        self.preflight_path = root / "release-plan-preflight.json"
+        self.evidence_directory = root / "current-release-plan-evidence"
         self.failure_path = root / "release-plan-failure.json"
         self.successor_path = root / "successor-release-plan.json"
         self.authoritative_failure_path = root / "authoritative-release-plan-failure.json"
@@ -2871,6 +2891,23 @@ class ReleasePlanRecordTest(unittest.TestCase):
     def write_plan(self, plan: dict[str, object]) -> None:
         self.plan_path.write_bytes(canonical_json(plan))
         self.preparation_path.write_bytes(canonical_json(release_preparation(plan)))
+
+    def write_completion_authority(self, plan: dict[str, object]) -> None:
+        preparation = release_preparation(plan)
+        completion = completion_manifest(plan, "a" * 40, preparation)
+        verification = {
+            "schema": "durable-workflow.release-candidate-verification/v1",
+            "candidate": plan["plan"],
+            "channel": plan["channel"],
+            "release_plan_sha256": manifest_digest(plan),
+            "release_preparation_sha256": manifest_digest(preparation),
+            "public_verification": candidate_verification(candidate_manifest(plan)),
+        }
+        self.plan_path.write_bytes(canonical_json(plan))
+        self.authoritative_path.write_bytes(canonical_json(plan))
+        self.authoritative_preparation_path.write_bytes(canonical_json(preparation))
+        self.authoritative_completion_path.write_bytes(canonical_json(completion))
+        self.authoritative_verification_path.write_bytes(canonical_json(verification))
 
     def test_first_record_and_identical_recovery_keep_one_commit(self) -> None:
         plan = release_plan()
@@ -3008,6 +3045,91 @@ class ReleasePlanRecordTest(unittest.TestCase):
 
         self.assertEqual("existing", result["status"])
         self.assertEqual(completion_commit, result["completion_commit"])
+
+    def test_existing_completion_evidence_is_staged_atomically_and_idempotently(self) -> None:
+        plan = release_plan("beta")
+        self.write_completion_authority(plan)
+
+        first = stage_current_plan_evidence(
+            self.plan_path,
+            self.evidence_directory,
+            completion_status="existing",
+            authoritative_plan=self.authoritative_path,
+            authoritative_preparation=self.authoritative_preparation_path,
+            authoritative_completion=self.authoritative_completion_path,
+            authoritative_verification=self.authoritative_verification_path,
+            preflight=self.preflight_path,
+        )
+        repeated = stage_current_plan_evidence(
+            self.plan_path,
+            self.evidence_directory,
+            completion_status="existing",
+            authoritative_plan=self.authoritative_path,
+            authoritative_preparation=self.authoritative_preparation_path,
+            authoritative_completion=self.authoritative_completion_path,
+            authoritative_verification=self.authoritative_verification_path,
+            preflight=self.preflight_path,
+        )
+
+        self.assertEqual("created", first["status"])
+        self.assertEqual("existing", repeated["status"])
+        self.assertEqual(
+            {
+                "authoritative-release-candidate.json",
+                "authoritative-release-plan.json",
+                "authoritative-release-preparation.json",
+                "authoritative-verification.json",
+                "evidence-manifest.json",
+            },
+            {path.name for path in self.evidence_directory.iterdir()},
+        )
+        manifest = json.loads((self.evidence_directory / "evidence-manifest.json").read_bytes())
+        self.assertEqual("existing", manifest["completion_status"])
+        self.assertEqual("not-run-existing-authority", manifest["preflight"])
+
+    def test_new_completion_evidence_requires_preflight_evidence(self) -> None:
+        plan = release_plan("beta")
+        self.write_completion_authority(plan)
+
+        with self.assertRaisesRegex(CandidateError, "requires release-plan preflight"):
+            stage_current_plan_evidence(
+                self.plan_path,
+                self.evidence_directory,
+                completion_status="new",
+                authoritative_plan=self.authoritative_path,
+                authoritative_preparation=self.authoritative_preparation_path,
+                authoritative_completion=self.authoritative_completion_path,
+                authoritative_verification=self.authoritative_verification_path,
+                preflight=self.preflight_path,
+            )
+
+        self.assertFalse(self.evidence_directory.exists())
+        self.preflight_path.write_bytes(
+            canonical_json(
+                {
+                    "schema": "durable-workflow.release-plan-preflight/v1",
+                    "plan": plan["plan"],
+                    "channel": plan["channel"],
+                    "outcome": "verified",
+                    "release_preparation_sha256": manifest_digest(release_preparation(plan)),
+                }
+            )
+        )
+
+        result = stage_current_plan_evidence(
+            self.plan_path,
+            self.evidence_directory,
+            completion_status="new",
+            authoritative_plan=self.authoritative_path,
+            authoritative_preparation=self.authoritative_preparation_path,
+            authoritative_completion=self.authoritative_completion_path,
+            authoritative_verification=self.authoritative_verification_path,
+            preflight=self.preflight_path,
+        )
+
+        self.assertEqual("created", result["status"])
+        self.assertEqual("included", result["preflight"])
+        self.assertTrue((self.evidence_directory / "release-plan-preflight.json").is_file())
 
     def test_current_rc_authority_uses_the_exact_candidate_foundation(self) -> None:
         current = load_plan(REPOSITORY_ROOT / "release-plans" / "current.json")

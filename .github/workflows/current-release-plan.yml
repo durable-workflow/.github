@@ -252,15 +252,21 @@ jobs:
           print(f"Published aggregate authority selects {authority['current']}")
           PYTHON
 
+      - name: Stage validated protected current-plan evidence
+        run: |
+          python scripts/release_plan.py stage-current-evidence \
+            current-release-plan.json \
+            "${RUNNER_TEMP}/current-release-plan-evidence" \
+            --completion-status "${{ steps.existing.outputs.status }}" \
+            --authoritative-plan authoritative-release-plan.json \
+            --authoritative-preparation authoritative-release-preparation.json \
+            --authoritative-completion authoritative-release-candidate.json \
+            --authoritative-verification authoritative-verification.json \
+            --preflight release-plan-preflight.json
+
       - name: Retain protected current-plan evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: current-release-plan-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            authoritative-*.json
-            authoritative-release-candidate.json
-            authoritative-release-plan.json
-            authoritative-release-preparation.json
-            authoritative-verification.json
-            release-plan-preflight.json
+          path: ${{ runner.temp }}/current-release-plan-evidence/
           if-no-files-found: error

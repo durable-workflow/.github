@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -3171,6 +3172,157 @@ def read_current_completion_authority(
     }
 
 
+def _load_canonical_evidence_record(path: Path, description: str) -> tuple[Any, bytes]:
+    try:
+        raw = path.read_bytes()
+    except OSError as error:
+        raise CandidateError(f"cannot read {description} {path}: {error}") from error
+    if len(raw) > 2 * 1024 * 1024:
+        raise CandidateError(f"{description} exceeds the 2 MiB limit")
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise CandidateError(f"{description} is not valid JSON: {error}") from error
+    if canonical_json(value) != raw:
+        raise CandidateError(f"{description} is not canonical JSON")
+    return value, raw
+
+
+def stage_current_plan_evidence(
+    plan_path: Path,
+    destination: Path,
+    *,
+    completion_status: str,
+    authoritative_plan: Path,
+    authoritative_preparation: Path,
+    authoritative_completion: Path,
+    authoritative_verification: Path,
+    preflight: Path | None = None,
+) -> dict[str, str]:
+    if completion_status not in {"new", "existing"}:
+        raise CandidateError(f"invalid current completion status {completion_status!r}")
+
+    plan = load_plan(plan_path)
+    recorded_plan, recorded_plan_bytes = _load_canonical_evidence_record(
+        authoritative_plan,
+        "authoritative release plan",
+    )
+    if canonical_json(recorded_plan) != canonical_json(plan):
+        raise CandidateError("authoritative release plan differs from the selected current plan")
+
+    preparation, preparation_bytes = _load_canonical_evidence_record(
+        authoritative_preparation,
+        "authoritative release preparation",
+    )
+    validate_release_preparation(preparation, plan)
+
+    completion, completion_bytes = _load_canonical_evidence_record(
+        authoritative_completion,
+        "authoritative release candidate",
+    )
+    release_plan = completion.get("release_plan") if isinstance(completion, dict) else None
+    plan_commit = release_plan.get("commit") if isinstance(release_plan, dict) else None
+    if not isinstance(plan_commit, str) or COMMIT_PATTERN.fullmatch(plan_commit) is None:
+        raise CandidateError("authoritative release candidate lacks an immutable release-plan commit")
+    if canonical_json(completion) != canonical_json(completion_manifest(plan, plan_commit, preparation)):
+        raise CandidateError("authoritative release candidate differs from the selected current plan")
+
+    verification, verification_bytes = _load_canonical_evidence_record(
+        authoritative_verification,
+        "authoritative completion verification",
+    )
+    validate_completion_verification(
+        verification,
+        plan,
+        candidate_manifest(plan),
+        None,
+        preparation,
+    )
+
+    payloads = {
+        "authoritative-release-candidate.json": completion_bytes,
+        "authoritative-release-plan.json": recorded_plan_bytes,
+        "authoritative-release-preparation.json": preparation_bytes,
+        "authoritative-verification.json": verification_bytes,
+    }
+    preflight_status = "not-run-existing-authority"
+    if preflight is not None and preflight.exists():
+        preflight_value, preflight_bytes = _load_canonical_evidence_record(
+            preflight,
+            "release-plan preflight evidence",
+        )
+        if (
+            not isinstance(preflight_value, dict)
+            or preflight_value.get("schema") != "durable-workflow.release-plan-preflight/v1"
+            or preflight_value.get("plan") != plan["plan"]
+            or preflight_value.get("channel") != plan["channel"]
+            or preflight_value.get("outcome") != "verified"
+            or preflight_value.get("release_preparation_sha256") != manifest_digest(preparation)
+        ):
+            raise CandidateError("release-plan preflight evidence differs from the selected current plan")
+        payloads["release-plan-preflight.json"] = preflight_bytes
+        preflight_status = "included"
+    elif completion_status == "new":
+        raise CandidateError("new current authority evidence requires release-plan preflight evidence")
+
+    manifest = {
+        "schema": "durable-workflow.current-release-plan-evidence/v1",
+        "candidate": plan["plan"],
+        "channel": plan["channel"],
+        "completion_status": completion_status,
+        "preflight": preflight_status,
+        "records": {
+            filename: {"sha256": hashlib.sha256(payload).hexdigest()}
+            for filename, payload in sorted(payloads.items())
+        },
+    }
+    payloads["evidence-manifest.json"] = canonical_json(manifest)
+
+    def destination_matches() -> bool:
+        if destination.is_symlink() or not destination.is_dir():
+            return False
+        entries = list(destination.iterdir())
+        if any(not entry.is_file() for entry in entries) or {entry.name for entry in entries} != set(payloads):
+            return False
+        return all((destination / filename).read_bytes() == payload for filename, payload in payloads.items())
+
+    if destination.exists() or destination.is_symlink():
+        if destination_matches():
+            return {
+                "status": "existing",
+                "candidate": plan["plan"],
+                "destination": str(destination),
+                "preflight": preflight_status,
+            }
+        raise CandidateError(f"current-plan evidence destination {destination} already differs")
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix=f".{destination.name}-", dir=destination.parent))
+    try:
+        for filename, payload in payloads.items():
+            (temporary / filename).write_bytes(payload)
+        try:
+            temporary.rename(destination)
+        except FileExistsError:
+            if destination_matches():
+                return {
+                    "status": "existing",
+                    "candidate": plan["plan"],
+                    "destination": str(destination),
+                    "preflight": preflight_status,
+                }
+            raise CandidateError(f"current-plan evidence destination {destination} already differs") from None
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+    return {
+        "status": "created",
+        "candidate": plan["plan"],
+        "destination": str(destination),
+        "preflight": preflight_status,
+    }
+
+
 def record_completion(
     repository: Path,
     plan_path: Path,
@@ -3701,6 +3853,19 @@ def main() -> int:
     current_completion.add_argument("--authoritative-verification", required=True, type=Path)
     current_completion.add_argument("--github-output", type=Path)
 
+    stage_current_evidence = subparsers.add_parser(
+        "stage-current-evidence",
+        help="validate and atomically stage current-plan evidence for retention",
+    )
+    stage_current_evidence.add_argument("plan", type=Path)
+    stage_current_evidence.add_argument("destination", type=Path)
+    stage_current_evidence.add_argument("--completion-status", required=True, choices=("new", "existing"))
+    stage_current_evidence.add_argument("--authoritative-plan", required=True, type=Path)
+    stage_current_evidence.add_argument("--authoritative-preparation", required=True, type=Path)
+    stage_current_evidence.add_argument("--authoritative-completion", required=True, type=Path)
+    stage_current_evidence.add_argument("--authoritative-verification", required=True, type=Path)
+    stage_current_evidence.add_argument("--preflight", type=Path)
+
     verify_recovery_authority = subparsers.add_parser("verify-recovery-authority")
     verify_recovery_authority.add_argument("authority", type=Path)
     verify_recovery_authority.add_argument("evidence", type=Path)
@@ -3831,6 +3996,18 @@ def main() -> int:
                 authoritative_verification=args.authoritative_verification,
             )
             write_github_output(args.github_output, result)
+            print(json.dumps(result, sort_keys=True))
+        elif args.command == "stage-current-evidence":
+            result = stage_current_plan_evidence(
+                args.plan,
+                args.destination,
+                completion_status=args.completion_status,
+                authoritative_plan=args.authoritative_plan,
+                authoritative_preparation=args.authoritative_preparation,
+                authoritative_completion=args.authoritative_completion,
+                authoritative_verification=args.authoritative_verification,
+                preflight=args.preflight,
+            )
             print(json.dumps(result, sort_keys=True))
         elif args.command == "verify-recovery-authority":
             evidence = verify_local_recovery_workflow_authority(
