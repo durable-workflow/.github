@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/durable-workflow/.github/blob/main/stable-authorization/request-schema.json",
+  "title": "Durable Workflow stable authorization request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schema", "stable_version", "artifact_tuple", "evidence"],
+  "properties": {
+    "$schema": {
+      "const": "./request-schema.json"
+    },
+    "schema": {
+      "const": "durable-workflow.stable-authorization-request/v1"
+    },
+    "stable_version": {
+      "const": "2.0.0"
+    },
+    "artifact_tuple": {
+      "$ref": "#/$defs/artifactTuple"
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["experiments"],
+      "properties": {
+        "experiments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "activities": { "$ref": "#/$defs/experimentEvidence" },
+            "cloud": { "$ref": "#/$defs/experimentEvidence" },
+            "heartbeats": { "$ref": "#/$defs/experimentEvidence" },
+            "namespaces": { "$ref": "#/$defs/experimentEvidence" },
+            "polyglot": { "$ref": "#/$defs/experimentEvidence" },
+            "replay": { "$ref": "#/$defs/experimentEvidence" },
+            "signals-queries": { "$ref": "#/$defs/experimentEvidence" },
+            "timers": { "$ref": "#/$defs/experimentEvidence" },
+            "worker-versioning": { "$ref": "#/$defs/experimentEvidence" },
+            "workflow-lifecycle": { "$ref": "#/$defs/experimentEvidence" },
+            "workflow-updates": { "$ref": "#/$defs/experimentEvidence" },
+            "python": { "$ref": "#/$defs/experimentEvidence" }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "commit"],
+      "properties": {
+        "version": {
+          "type": "string",
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+        },
+        "commit": {
+          "$ref": "#/$defs/commit"
+        }
+      }
+    },
+    "components": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workflow", "waterline", "server", "cli", "sdk-php", "sdk-python", "sdk-rust"],
+      "properties": {
+        "workflow": { "$ref": "#/$defs/component" },
+        "waterline": { "$ref": "#/$defs/component" },
+        "server": { "$ref": "#/$defs/component" },
+        "cli": { "$ref": "#/$defs/component" },
+        "sdk-php": { "$ref": "#/$defs/component" },
+        "sdk-python": { "$ref": "#/$defs/component" },
+        "sdk-rust": { "$ref": "#/$defs/component" }
+      }
+    },
+    "artifactTuple": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tag", "commit", "components"],
+      "properties": {
+        "tag": {
+          "type": "string",
+          "pattern": "^release-candidate/rc/[a-z0-9][a-z0-9._-]{0,55}$"
+        },
+        "commit": {
+          "$ref": "#/$defs/commit"
+        },
+        "components": {
+          "$ref": "#/$defs/components"
+        }
+      }
+    },
+    "artifactTupleBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tag", "commit", "sha256"],
+      "properties": {
+        "tag": {
+          "type": "string",
+          "pattern": "^release-candidate/rc/[a-z0-9][a-z0-9._-]{0,55}$"
+        },
+        "commit": {
+          "$ref": "#/$defs/commit"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "sha256", "generated_at"],
+      "properties": {
+        "url": {
+          "type": "string",
+          "pattern": "^https://(?:github\\.com|raw\\.githubusercontent\\.com)/durable-workflow/"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "generated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "sdkCell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "runner_blocked", "artifact_tuple"],
+      "properties": {
+        "outcome": {
+          "enum": ["pass", "fail", "error"]
+        },
+        "runner_blocked": {
+          "type": "boolean"
+        },
+        "artifact_tuple": {
+          "$ref": "#/$defs/artifactTupleBinding"
+        }
+      }
+    },
+    "sdkCells": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "php": { "$ref": "#/$defs/sdkCell" },
+        "python": { "$ref": "#/$defs/sdkCell" },
+        "rust": { "$ref": "#/$defs/sdkCell" }
+      }
+    },
+    "experimentEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "experiment",
+        "outcome",
+        "runner_blocked",
+        "artifact_tuple",
+        "source"
+      ],
+      "properties": {
+        "schema": {
+          "const": "durable-workflow.release-critical-experiment-evidence/v1"
+        },
+        "experiment": {
+          "enum": [
+            "activities",
+            "cloud",
+            "heartbeats",
+            "namespaces",
+            "polyglot",
+            "replay",
+            "signals-queries",
+            "timers",
+            "worker-versioning",
+            "workflow-lifecycle",
+            "workflow-updates",
+            "python"
+          ]
+        },
+        "outcome": {
+          "enum": ["pass", "fail", "error"]
+        },
+        "runner_blocked": {
+          "type": "boolean"
+        },
+        "artifact_tuple": {
+          "$ref": "#/$defs/artifactTupleBinding"
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "cells": {
+          "$ref": "#/$defs/sdkCells"
+        }
+      }
+    }
+  }
+}

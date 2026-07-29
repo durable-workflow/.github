@@ -1,0 +1,306 @@
+name: Stable authorization
+
+run-name: Evaluate stable 2.0 authorization
+
+on:
+  workflow_dispatch:
+    inputs:
+      authorization_request:
+        description: Exact stable authorization request JSON
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: stable-authorization-registry
+  cancel-in-progress: false
+
+jobs:
+  evidence:
+    name: Evaluate fixed release-critical tier
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      github.server_url == 'https://github.com'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      artifact-digest: ${{ steps.privileged-handoff.outputs.artifact-digest }}
+      artifact-id: ${{ steps.privileged-handoff.outputs.artifact-id }}
+      source-run-attempt: ${{ github.run_attempt }}
+      source-run-id: ${{ github.run_id }}
+    steps:
+      - name: Check out the protected stable controller
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.13"
+
+      - name: Install release-authority validation tooling
+        run: python -m pip install jsonschema==4.23.0 PyYAML==6.0.2 ruff==0.12.3 yamllint==1.37.1
+
+      - name: Qualify stable authorization source
+        run: |
+          python -m ruff check scripts/stable_authorization.py tests/test_stable_authorization.py
+          python -m yamllint .github/workflows/stable-authorization.yml
+          python -m compileall -q scripts/stable_authorization.py tests/test_stable_authorization.py
+          python -m unittest -v tests.test_stable_authorization
+          python -m json.tool stable-authorization/contract.json >/dev/null
+          python -m json.tool stable-authorization/contract-schema.json >/dev/null
+          python -m json.tool stable-authorization/request-schema.json >/dev/null
+          python -m json.tool stable-authorization/readout-schema.json >/dev/null
+          python -m json.tool stable-authorization/authorization-schema.json >/dev/null
+
+      - name: Canonicalize the stable authorization request
+        env:
+          AUTHORIZATION_REQUEST: ${{ inputs.authorization_request }}
+        run: |
+          python - <<'PYTHON'
+          import json
+          import os
+          from pathlib import Path
+
+          request = json.loads(os.environ["AUTHORIZATION_REQUEST"])
+          Path("stable-authorization-request.json").write_text(
+              json.dumps(request, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PYTHON
+
+      - name: Verify public evidence and create the release readout
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/stable_authorization.py readout \
+            stable-authorization/contract.json \
+            stable-authorization-request.json \
+            release-critical-readout.json \
+            --verify-public-sources \
+            --github-summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Retain the readout before enforcing readiness
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: stable-authorization-readout-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            stable-authorization-request.json
+            release-critical-readout.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Package the privileged authorization handoff as one immutable file
+        run: |
+          tar -cf stable-authorization-handoff.tar \
+            stable-authorization-request.json release-critical-readout.json
+
+      - name: Bind the privileged authorization handoff identity and digest
+        id: privileged-handoff
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          archive: false
+          if-no-files-found: error
+          path: stable-authorization-handoff.tar
+
+      - name: Fail closed unless every release-critical cell is ready
+        run: |
+          python scripts/stable_authorization.py require-ready \
+            stable-authorization/contract.json \
+            stable-authorization-request.json \
+            release-critical-readout.json
+
+  authorize:
+    name: Record explicit human stable decision
+    needs: evidence
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      github.server_url == 'https://github.com'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: stable-authorization
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Check out the protected stable controller
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Download the pre-decision evidence readout
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          artifact-ids: ${{ needs.evidence.outputs.artifact-id }}
+          digest-mismatch: error
+          github-token: ${{ github.token }}
+          path: isolated-stable-authorization-handoff
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.evidence.outputs.source-run-id }}
+
+      - name: Validate the exact producer artifact before use
+        env:
+          ARTIFACT_DIRECTORY: isolated-stable-authorization-handoff
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.evidence.outputs.artifact-digest }}
+          EXPECTED_ARTIFACT_ID: ${{ needs.evidence.outputs.artifact-id }}
+          EXPECTED_SOURCE_RUN_ATTEMPT: ${{ needs.evidence.outputs.source-run-attempt }}
+          EXPECTED_SOURCE_RUN_ID: ${{ needs.evidence.outputs.source-run-id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$EXPECTED_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]; then
+            printf 'producer artifact digest is not an exact SHA-256 digest\n' >&2
+            exit 1
+          fi
+          for identity in "$EXPECTED_ARTIFACT_ID" "$EXPECTED_SOURCE_RUN_ID" "$EXPECTED_SOURCE_RUN_ATTEMPT"; do
+            if [[ ! "$identity" =~ ^[1-9][0-9]*$ ]]; then
+              printf 'producer artifact identity is invalid\n' >&2
+              exit 1
+            fi
+          done
+          if [[ ! "$ARTIFACT_DIRECTORY" =~ ^isolated-[a-z0-9][a-z0-9._-]*$ ]]; then
+            printf 'artifact validation directory is unsafe\n' >&2
+            exit 1
+          fi
+          mapfile -d '' entries < <(
+            /usr/bin/find "$ARTIFACT_DIRECTORY" -mindepth 1 -maxdepth 1 -print0
+          )
+          if [ "${#entries[@]}" -ne 1 ] || [ ! -f "${entries[0]}" ] || [ -L "${entries[0]}" ]; then
+            printf 'artifact handoff must contain exactly one regular file\n' >&2
+            exit 1
+          fi
+          observed_digest="$(/usr/bin/sha256sum "${entries[0]}")"
+          observed_digest="${observed_digest%% *}"
+          if [ "$observed_digest" != "$EXPECTED_ARTIFACT_DIGEST" ]; then
+            printf 'artifact digest mismatch: expected %s, got %s\n' \
+              "$EXPECTED_ARTIFACT_DIGEST" "$observed_digest" >&2
+            exit 1
+          fi
+          printf 'validated artifact %s from run %s attempt %s\n' \
+            "$EXPECTED_ARTIFACT_ID" "$EXPECTED_SOURCE_RUN_ID" "$EXPECTED_SOURCE_RUN_ATTEMPT"
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.13"
+
+      - name: Extract the validated authorization handoff
+        run: |
+          mkdir evaluated
+          tar -xf isolated-stable-authorization-handoff/stable-authorization-handoff.tar \
+            -C evaluated
+
+      - name: Recheck the exact public evidence after approval
+        env:
+          AUTHORIZATION_REQUEST: ${{ inputs.authorization_request }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PYTHON'
+          import json
+          import os
+          from pathlib import Path
+
+          request = json.loads(os.environ["AUTHORIZATION_REQUEST"])
+          Path("stable-authorization-request.json").write_text(
+              json.dumps(request, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PYTHON
+          cmp --silent stable-authorization-request.json evaluated/stable-authorization-request.json
+          python scripts/stable_authorization.py readout \
+            stable-authorization/contract.json \
+            stable-authorization-request.json \
+            release-critical-readout.json \
+            --verify-public-sources
+          cmp --silent release-critical-readout.json evaluated/release-critical-readout.json
+          python scripts/stable_authorization.py require-ready \
+            stable-authorization/contract.json \
+            stable-authorization-request.json \
+            release-critical-readout.json
+
+      - name: Compare an existing immutable decision
+        id: compatibility
+        run: |
+          python scripts/stable_authorization.py check \
+            stable-authorization/contract.json \
+            stable-authorization-request.json \
+            release-critical-readout.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Create or compare the immutable authorization
+        id: record
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git_authorization="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::$git_authorization"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $git_authorization" \
+            python scripts/stable_authorization.py record \
+              stable-authorization/contract.json \
+              stable-authorization-request.json \
+              release-critical-readout.json \
+              --authoritative-authorization authoritative-stable-authorization.json \
+              --authoritative-request authoritative-stable-authorization-request.json \
+              --authoritative-readout authoritative-release-critical-readout.json \
+              --authoritative-contract authoritative-release-critical-contract.json \
+              --actor "$GITHUB_ACTOR" \
+              --run-id "$GITHUB_RUN_ID" \
+              --run-attempt "$GITHUB_RUN_ATTEMPT" \
+              --workflow-ref "$GITHUB_WORKFLOW_REF" \
+              --workflow-commit "$GITHUB_SHA" \
+              --github-output "$GITHUB_OUTPUT"
+
+      - name: Create or repair the durable GitHub Release mirror
+        env:
+          AUTHORIZATION_TAG: ${{ steps.record.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+          RECORD_COMMIT: ${{ steps.record.outputs.commit }}
+        run: |
+          set -euo pipefail
+          mirror_dir="$(mktemp -d)"
+          trap 'rm -rf "$mirror_dir"' EXIT
+          if ! gh release view "$AUTHORIZATION_TAG" >/dev/null 2>&1; then
+            release_notes="Stable authorization at immutable Git commit ${RECORD_COMMIT}. "
+            release_notes+="This record authorizes, but does not publish, the product artifact tuple."
+            gh release create "$AUTHORIZATION_TAG" --verify-tag --prerelease \
+              --title "Protected stable 2.0 authorization" \
+              --notes "$release_notes"
+          fi
+          repair_asset() {
+            source_path="$1"
+            asset_name="$2"
+            rm -f "$mirror_dir/$asset_name"
+            if gh release download "$AUTHORIZATION_TAG" --pattern "$asset_name" --dir "$mirror_dir" >/dev/null 2>&1; then
+              cmp --silent "$source_path" "$mirror_dir/$asset_name" || {
+                printf 'release asset %s differs from immutable Git authority\n' "$asset_name" >&2
+                exit 1
+              }
+            else
+              upload_dir="$(mktemp -d)"
+              cp "$source_path" "$upload_dir/$asset_name"
+              gh release upload "$AUTHORIZATION_TAG" "$upload_dir/$asset_name"
+              rm -rf "$upload_dir"
+            fi
+          }
+          repair_asset authoritative-stable-authorization.json stable-authorization.json
+          repair_asset authoritative-stable-authorization-request.json stable-authorization-request.json
+          repair_asset authoritative-release-critical-readout.json release-critical-readout.json
+          repair_asset authoritative-release-critical-contract.json release-critical-contract.json
+
+      - name: Retain protected stable authorization evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: stable-authorization-${{ github.run_id }}-${{ github.run_attempt }}
+          path: authoritative-*.json
+          if-no-files-found: error
+          retention-days: 90

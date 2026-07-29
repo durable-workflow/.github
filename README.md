@@ -25,6 +25,12 @@ qualification, candidate, conformance, continuity, and backlog evidence. Its
 append-only Git and GitHub Release record authorizes beta only; stable 2.0 has
 a separate decision boundary.
 
+The [stable 2.0 authorization authority](stable-authorization/README.md)
+evaluates a fixed release-critical conformance tier against one tagged
+seven-component artifact tuple. It publishes per-experiment and per-SDK-cell
+readouts, rejects incomplete or stale evidence, and reaches its protected
+human decision only after the evidence gate passes.
+
 The scheduled [workspace-unavailable continuity controller](beta-continuity/README.md)
 assembles those public authorities into an interruption-and-resume drill. Its
 append-only phase records bind GitHub issue intake, exact qualification,
