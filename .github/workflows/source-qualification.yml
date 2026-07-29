@@ -44,6 +44,20 @@ jobs:
           python -m json.tool qualification/policy.json >/dev/null
           python -m json.tool qualification/schema.json >/dev/null
           python -m jsonschema -i qualification/policy.json qualification/schema.json
+          python -m json.tool regression-corpus/policy-schema.json >/dev/null
+          python -m json.tool regression-corpus/evidence-schema.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          from jsonschema import Draft202012Validator
+
+          for path in (
+              Path("regression-corpus/policy-schema.json"),
+              Path("regression-corpus/evidence-schema.json"),
+          ):
+              Draft202012Validator.check_schema(json.loads(path.read_text()))
+          PY
           python -m json.tool release-recovery/authority.json >/dev/null
           python -m json.tool release-recovery/schema.json >/dev/null
           python -m jsonschema -i release-recovery/authority.json release-recovery/schema.json

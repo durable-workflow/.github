@@ -48,6 +48,11 @@ use [GitHub issue authority](issue-authority/README.md). Organization issue
 forms capture durable intake context, while a one-way lifecycle audit prevents
 an external mirror from reopening completed GitHub work.
 
+Confirmed replay and payload-codec defects are also governed by an append-only
+[regression-corpus contract](regression-corpus/README.md). Its repository-local
+completion checks distinguish durable protocol evidence from tests that merely
+repeat implementation details.
+
 The [public target qualification policy](qualification/README.md) also enforces
 the organization-wide Actions trust boundary: immutable action and container
 references, job-scoped credentials, isolated pull requests and caches, and

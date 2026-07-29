@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/policy-schema.json",
+  "title": "Durable Workflow regression corpus policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schema",
+    "repository",
+    "categories"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri-reference"
+    },
+    "schema": {
+      "const": "durable-workflow.regression-corpus-policy/v1"
+    },
+    "repository": {
+      "type": "string",
+      "minLength": 1
+    },
+    "binding": {
+      "enum": [
+        "php",
+        "python",
+        "rust"
+      ]
+    },
+    "categories": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "codec": {
+          "$ref": "#/$defs/category"
+        },
+        "replay": {
+          "$ref": "#/$defs/category"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "category": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fixtures",
+        "guards"
+      ],
+      "properties": {
+        "fixtures": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "glob",
+              "format"
+            ],
+            "properties": {
+              "glob": {
+                "type": "string",
+                "minLength": 1
+              },
+              "format": {
+                "enum": [
+                  "avro-value-golden-v1",
+                  "codec-regression-v1",
+                  "golden-history-v1",
+                  "replay-regression-v1"
+                ]
+              }
+            }
+          }
+        },
+        "guards": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "glob"
+            ],
+            "properties": {
+              "glob": {
+                "type": "string",
+                "minLength": 1
+              },
+              "content_patterns": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
