@@ -30,7 +30,7 @@ def write_json(root: Path, path: str, value: object) -> None:
     target.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
 
-def codec_fixture(identity: str, wire: str, version: str = "1") -> dict[str, object]:
+def codec_fixture(identity: str, wire: object, version: str = "1") -> dict[str, object]:
     return {
         "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/"
         "regression-corpus/evidence-schema.json",
@@ -90,7 +90,10 @@ def golden_history_fixture() -> dict[str, object]:
     }
 
 
-def avro_golden_fixture(malformed_wire: str = "AQ==") -> dict[str, object]:
+def avro_golden_fixture(
+    malformed_wire: str = "AQ==",
+    malformed_name: str = "bad_frame",
+) -> dict[str, object]:
     return {
         "schema": "durable_workflow.protocol.Value",
         "fingerprint": "e2a33dff55802237",
@@ -104,7 +107,7 @@ def avro_golden_fixture(malformed_wire: str = "AQ==") -> dict[str, object]:
         ],
         "malformed_frames": [
             {
-                "name": "bad_frame",
+                "name": malformed_name,
                 "error": "invalid_payload_framing",
                 "wire_base64": malformed_wire,
             }
@@ -247,6 +250,84 @@ class RegressionCorpusTest(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(CorpusError, "is not canonical base64"):
+            validate(self.root, Path("regression-corpus-policy.json"), self.base)
+
+    def test_empty_base64_wire_is_accepted_by_schema_and_parser(self) -> None:
+        fixture = codec_fixture("empty-wire", "")
+        evidence_schema = json.loads((ROOT / "regression-corpus/evidence-schema.json").read_text())
+        Draft202012Validator(evidence_schema).validate(fixture)
+        write_json(
+            self.root,
+            "tests/fixtures/codec/empty-wire.json",
+            fixture,
+        )
+
+        result = validate(self.root, Path("regression-corpus-policy.json"), self.base)
+
+        self.assertEqual(2, result["counts"]["codec"]["current"])
+
+    def test_required_null_wire_remains_rejected(self) -> None:
+        write_json(
+            self.root,
+            "tests/fixtures/codec/null-wire.json",
+            codec_fixture("null-wire", None),
+        )
+
+        with self.assertRaisesRegex(CorpusError, "must include wire_base64 for round_trip"):
+            validate(self.root, Path("regression-corpus-policy.json"), self.base)
+
+    def test_optional_null_wire_remains_accepted(self) -> None:
+        fixture = codec_fixture("null-encode-rejection", None)
+        fixture["failure_policy"] = {
+            "operation": "encode_reject",
+            "error": "unsupported_value",
+        }
+        write_json(
+            self.root,
+            "tests/fixtures/codec/null-encode-rejection.json",
+            fixture,
+        )
+
+        result = validate(self.root, Path("regression-corpus-policy.json"), self.base)
+
+        self.assertEqual(2, result["counts"]["codec"]["current"])
+
+    def test_non_string_wire_remains_rejected(self) -> None:
+        write_json(
+            self.root,
+            "tests/fixtures/codec/non-string-wire.json",
+            codec_fixture("non-string-wire", []),
+        )
+
+        with self.assertRaisesRegex(CorpusError, "wire_base64 must be a string"):
+            validate(self.root, Path("regression-corpus-policy.json"), self.base)
+
+    def test_empty_avro_golden_rewrap_is_a_semantic_duplicate(self) -> None:
+        expanded = policy()
+        expanded["categories"]["codec"]["fixtures"].append(
+            {
+                "glob": "tests/fixtures/avro-golden.json",
+                "format": "avro-value-golden-v1",
+            }
+        )
+        write_json(self.root, "regression-corpus-policy.json", expanded)
+        write_json(
+            self.root,
+            "tests/fixtures/avro-golden.json",
+            avro_golden_fixture("", malformed_name="empty_blob"),
+        )
+        rewrapped = codec_fixture("empty-blob-rewrap", "")
+        rewrapped["failure_policy"] = {
+            "operation": "decode_reject",
+            "error": "invalid_payload_framing",
+        }
+        write_json(
+            self.root,
+            "tests/fixtures/codec/empty-blob-rewrap.json",
+            rewrapped,
+        )
+
+        with self.assertRaisesRegex(CorpusError, "duplicate semantic fixtures"):
             validate(self.root, Path("regression-corpus-policy.json"), self.base)
 
     def test_noncanonical_malformed_golden_wire_is_rejected(self) -> None:
