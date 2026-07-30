@@ -22,6 +22,7 @@ POLICY_SCHEMA = "durable-workflow.regression-corpus-policy/v1"
 CODEC_SCHEMA = "durable-workflow.codec-regression/v1"
 REPLAY_SCHEMA = "durable-workflow.replay-regression/v1"
 GOLDEN_HISTORY_SCHEMA = "durable-workflow.golden-history.v1"
+MALFORMED_SERVICE_RESPONSE_ENVELOPE = "malformed_service_response_envelope"
 SUPPORTED_FORMATS = {
     "avro-value-golden-v1",
     "codec-regression-v1",
@@ -30,6 +31,11 @@ SUPPORTED_FORMATS = {
 }
 SUPPORTED_CATEGORIES = {"codec", "replay"}
 SUPPORTED_BINDINGS = {"php", "python", "rust"}
+SUPPORTED_REPLAY_CONSUMERS = {
+    "query-state-replayer",
+    "workflow-executor",
+    "workflow-fiber-runner",
+}
 ZERO_COMMIT = re.compile(r"^0+$")
 LEGACY_MALFORMED_WIRE_REPAIRS = {
     "%%%": "JSUl",
@@ -297,18 +303,23 @@ def _replay_semantic(
     workflow_input: Any,
     history: Any,
     command_sequence: Any,
-    expected: Mapping[str, Any],
+    expected: Mapping[str, Any] | None,
+    expected_failure: Mapping[str, str] | None = None,
 ) -> Mapping[str, Any]:
     """Project every replay representation onto consumer-executed values."""
 
-    return {
+    semantic = {
         "workflow": {"type": workflow_type, "input": workflow_input},
         "history": history,
-        "executed_commands": _canonical_executed_commands(
-            command_sequence,
-            expected,
+        "executed_commands": (
+            _canonical_executed_commands(command_sequence, expected)
+            if expected is not None
+            else None
         ),
     }
+    if expected_failure is not None:
+        semantic["expected_failure"] = expected_failure
+    return semantic
 
 
 def _fixture_evidence(
@@ -440,6 +451,11 @@ def _replay_fixture(document: Mapping[str, Any], path: str, binding: str | None)
     )
     if binding is not None and binding not in bindings:
         raise CorpusError(f"{path} does not name this repository's {binding} binding")
+    _unique_strings(
+        document.get("consumers", ["workflow-fiber-runner"]),
+        f"{path}.consumers",
+        allowed=SUPPORTED_REPLAY_CONSUMERS,
+    )
     workflow = _object(document.get("workflow"), f"{path}.workflow")
     _string(workflow.get("type"), f"{path}.workflow.type")
     history = document.get("history")
@@ -450,9 +466,30 @@ def _replay_fixture(document: Mapping[str, Any], path: str, binding: str | None)
         _list(history, f"{path}.history", nonempty=True)
     if commands is not None:
         _list(commands, f"{path}.command_sequence", nonempty=True)
-    expected = _object(document.get("expected"), f"{path}.expected")
-    if not expected:
+    has_expected = "expected" in document
+    has_expected_failure = "expected_failure" in document
+    if has_expected == has_expected_failure:
+        raise CorpusError(f"{path} must include exactly one of expected or expected_failure")
+    expected = _object(document["expected"], f"{path}.expected") if has_expected else None
+    if expected is not None and not expected:
         raise CorpusError(f"{path}.expected must not be empty")
+    expected_failure = None
+    if has_expected_failure:
+        failure = _object(document["expected_failure"], f"{path}.expected_failure")
+        if set(failure) != {"type", "exception"}:
+            raise CorpusError(f"{path}.expected_failure must contain exactly type and exception")
+        failure_type = _string(failure["type"], f"{path}.expected_failure.type")
+        if failure_type != MALFORMED_SERVICE_RESPONSE_ENVELOPE:
+            raise CorpusError(f"{path}.expected_failure.type is unsupported")
+        expected_failure = {
+            "type": failure_type,
+            "exception": _string(
+                failure["exception"],
+                f"{path}.expected_failure.exception",
+            ),
+        }
+        if commands is not None:
+            raise CorpusError(f"{path}.expected_failure requires history replay input")
     supersedes = tuple(
         _string(item, f"{path}.supersedes[]")
         for item in _list(document.get("supersedes", []), f"{path}.supersedes")
@@ -465,6 +502,7 @@ def _replay_fixture(document: Mapping[str, Any], path: str, binding: str | None)
         history=history if history is not None else [],
         command_sequence=commands,
         expected=expected,
+        expected_failure=expected_failure,
     )
     return [
         _fixture_evidence(

@@ -488,6 +488,84 @@ class RegressionCorpusTest(unittest.TestCase):
         with self.assertRaisesRegex(CorpusError, "duplicate semantic fixtures"):
             validate(self.root, Path("regression-corpus-policy.json"), self.base)
 
+    def test_replay_consumer_metadata_cannot_manufacture_growth(self) -> None:
+        fixture = replay_fixture("consumer-metadata-copy")
+        fixture["consumers"] = [
+            "workflow-fiber-runner",
+            "query-state-replayer",
+        ]
+        write_json(
+            self.root,
+            "tests/fixtures/replay/consumer-metadata-copy.json",
+            fixture,
+        )
+
+        with self.assertRaisesRegex(CorpusError, "duplicate semantic fixtures"):
+            validate(self.root, Path("regression-corpus-policy.json"), self.base)
+
+    def test_replay_failure_outcome_is_validated(self) -> None:
+        fixture = replay_fixture("malformed-service-response")
+        fixture["workflow"]["type"] = "fixture.service-workflow"
+        fixture["history"] = [
+            {
+                "event_type": "ServiceCallCompleted",
+                "payload": {
+                    "response_payload": {
+                        "codec": "json",
+                        "blob": '{"truncated":',
+                    }
+                },
+            }
+        ]
+        del fixture["expected"]
+        fixture["expected_failure"] = {
+            "type": "malformed_service_response_envelope",
+            "exception": "Workflow\\Serializers\\CodecDecodeException",
+        }
+        write_json(
+            self.root,
+            "tests/fixtures/replay/malformed-service-response.json",
+            fixture,
+        )
+
+        result = validate(self.root, Path("regression-corpus-policy.json"), self.base)
+
+        self.assertEqual(2, result["counts"]["replay"]["current"])
+
+    def test_replay_rejects_both_outcomes_with_command_input_only(self) -> None:
+        fixture = replay_fixture("ambiguous-outcome")
+        fixture["command_sequence"] = [{"type": "complete_workflow"}]
+        del fixture["history"]
+        fixture["expected_failure"] = {
+            "type": "malformed_service_response_envelope",
+            "exception": "Workflow\\Serializers\\CodecDecodeException",
+        }
+        write_json(
+            self.root,
+            "tests/fixtures/replay/ambiguous-outcome.json",
+            fixture,
+        )
+
+        with self.assertRaisesRegex(CorpusError, "exactly one of expected or expected_failure"):
+            validate(self.root, Path("regression-corpus-policy.json"), self.base)
+
+    def test_replay_failure_rejects_history_and_command_inputs(self) -> None:
+        fixture = replay_fixture("ambiguous-failure-input")
+        fixture["command_sequence"] = [{"type": "complete_workflow"}]
+        del fixture["expected"]
+        fixture["expected_failure"] = {
+            "type": "malformed_service_response_envelope",
+            "exception": "Workflow\\Serializers\\CodecDecodeException",
+        }
+        write_json(
+            self.root,
+            "tests/fixtures/replay/ambiguous-failure-input.json",
+            fixture,
+        )
+
+        with self.assertRaisesRegex(CorpusError, "requires history replay input"):
+            validate(self.root, Path("regression-corpus-policy.json"), self.base)
+
     def test_replay_change_passes_after_genuinely_new_behavior_is_added(self) -> None:
         (self.root / "src/runtime.py").write_text(
             "def replay_events(history):\n    return list(history)\n",

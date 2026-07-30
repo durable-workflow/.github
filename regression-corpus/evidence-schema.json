@@ -23,6 +23,18 @@
         ]
       }
     },
+    "replay_consumers": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "workflow-fiber-runner",
+          "workflow-executor",
+          "query-state-replayer"
+        ]
+      }
+    },
     "supersedes": {
       "type": "array",
       "uniqueItems": true,
@@ -158,8 +170,7 @@
         "id",
         "protocol_version",
         "bindings",
-        "workflow",
-        "expected"
+        "workflow"
       ],
       "properties": {
         "$schema": {
@@ -179,6 +190,9 @@
         },
         "bindings": {
           "$ref": "#/$defs/bindings"
+        },
+        "consumers": {
+          "$ref": "#/$defs/replay_consumers"
         },
         "workflow": {
           "type": "object",
@@ -204,8 +218,62 @@
           "type": "object",
           "minProperties": 1
         },
+        "expected_failure": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "exception"
+          ],
+          "properties": {
+            "type": {
+              "const": "malformed_service_response_envelope"
+            },
+            "exception": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
         "supersedes": {
           "$ref": "#/$defs/supersedes"
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "expected"
+          ],
+          "not": {
+            "required": [
+              "expected_failure"
+            ]
+          }
+        },
+        {
+          "required": [
+            "expected_failure"
+          ],
+          "not": {
+            "required": [
+              "expected"
+            ]
+          }
+        }
+      ],
+      "if": {
+        "required": [
+          "expected_failure"
+        ]
+      },
+      "then": {
+        "required": [
+          "history"
+        ],
+        "not": {
+          "required": [
+            "command_sequence"
+          ]
         }
       },
       "anyOf": [
