@@ -69,6 +69,55 @@ def replay_fixture(identity: str) -> dict[str, object]:
     }
 
 
+def golden_history_fixture() -> dict[str, object]:
+    replay = replay_fixture("golden-source")
+    return {
+        "fixture_schema": "durable-workflow.golden-history.v1",
+        "source": {
+            "runtime": "fixture-runtime",
+            "version": "1.0.0",
+            "worker_protocol_version": "1.0",
+        },
+        "cases": [
+            {
+                "name": "activity",
+                "workflow_type": replay["workflow"]["type"],
+                "start_input": replay["workflow"]["input"],
+                "history": replay["history"],
+                "expected": replay["expected"],
+            }
+        ],
+    }
+
+
+def avro_golden_fixture(malformed_wire: str = "AQ==") -> dict[str, object]:
+    return {
+        "schema": "durable_workflow.protocol.Value",
+        "fingerprint": "e2a33dff55802237",
+        "cases": [
+            {
+                "name": "long_zero",
+                "kind": "long",
+                "value": "0",
+                "wire_base64": "AA==",
+            }
+        ],
+        "malformed_frames": [
+            {
+                "name": "bad_frame",
+                "error": "invalid_payload_framing",
+                "wire_base64": malformed_wire,
+            }
+        ],
+        "alternate_map_orders": [
+            {
+                "name": "map_order",
+                "wire_base64": ["Ag==", "Aw=="],
+            }
+        ],
+    }
+
+
 def policy() -> dict[str, object]:
     return {
         "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/"
@@ -189,6 +238,194 @@ class RegressionCorpusTest(unittest.TestCase):
 
         with self.assertRaisesRegex(CorpusError, "duplicate semantic fixtures"):
             validate(self.root, Path("regression-corpus-policy.json"), self.base)
+
+    def test_noncanonical_base64_wire_is_rejected(self) -> None:
+        write_json(
+            self.root,
+            "tests/fixtures/codec/noncanonical.json",
+            codec_fixture("noncanonical-wire", "AB=="),
+        )
+
+        with self.assertRaisesRegex(CorpusError, "is not canonical base64"):
+            validate(self.root, Path("regression-corpus-policy.json"), self.base)
+
+    def test_noncanonical_malformed_golden_wire_is_rejected(self) -> None:
+        expanded = policy()
+        expanded["categories"]["codec"]["fixtures"].append(
+            {
+                "glob": "tests/fixtures/avro-golden.json",
+                "format": "avro-value-golden-v1",
+            }
+        )
+        write_json(self.root, "regression-corpus-policy.json", expanded)
+        write_json(
+            self.root,
+            "tests/fixtures/avro-golden.json",
+            avro_golden_fixture("AR=="),
+        )
+
+        with self.assertRaisesRegex(CorpusError, "is not canonical base64"):
+            validate(self.root, Path("regression-corpus-policy.json"), self.base)
+
+    def test_malformed_wire_migration_rejects_different_decoded_bytes(self) -> None:
+        expanded = policy()
+        expanded["categories"]["codec"]["fixtures"].append(
+            {
+                "glob": "tests/fixtures/avro-golden.json",
+                "format": "avro-value-golden-v1",
+            }
+        )
+        write_json(self.root, "regression-corpus-policy.json", expanded)
+        write_json(
+            self.root,
+            "tests/fixtures/avro-golden.json",
+            avro_golden_fixture("AR=="),
+        )
+        run(self.root, "git", "add", ".")
+        run(self.root, "git", "commit", "-qm", "legacy malformed wire")
+        self.base = run(self.root, "git", "rev-parse", "HEAD")
+        write_json(
+            self.root,
+            "tests/fixtures/avro-golden.json",
+            avro_golden_fixture("Ag=="),
+        )
+
+        with self.assertRaisesRegex(CorpusError, "immutable fixture file"):
+            validate(self.root, Path("regression-corpus-policy.json"), self.base)
+
+    def test_malformed_wire_migration_accepts_same_decoded_bytes(self) -> None:
+        expanded = policy()
+        expanded["categories"]["codec"]["fixtures"].append(
+            {
+                "glob": "tests/fixtures/avro-golden.json",
+                "format": "avro-value-golden-v1",
+            }
+        )
+        write_json(self.root, "regression-corpus-policy.json", expanded)
+        write_json(
+            self.root,
+            "tests/fixtures/avro-golden.json",
+            avro_golden_fixture("AR=="),
+        )
+        run(self.root, "git", "add", ".")
+        run(self.root, "git", "commit", "-qm", "legacy malformed wire")
+        self.base = run(self.root, "git", "rev-parse", "HEAD")
+        write_json(
+            self.root,
+            "tests/fixtures/avro-golden.json",
+            avro_golden_fixture("AQ=="),
+        )
+
+        result = validate(self.root, Path("regression-corpus-policy.json"), self.base)
+
+        self.assertEqual(
+            result["counts"]["codec"]["base"],
+            result["counts"]["codec"]["current"],
+        )
+
+    def test_malformed_wire_migration_accepts_explicit_legacy_repair(self) -> None:
+        expanded = policy()
+        expanded["categories"]["codec"]["fixtures"].append(
+            {
+                "glob": "tests/fixtures/avro-golden.json",
+                "format": "avro-value-golden-v1",
+            }
+        )
+        write_json(self.root, "regression-corpus-policy.json", expanded)
+        write_json(
+            self.root,
+            "tests/fixtures/avro-golden.json",
+            avro_golden_fixture("%%%"),
+        )
+        run(self.root, "git", "add", ".")
+        run(self.root, "git", "commit", "-qm", "legacy malformed wire")
+        self.base = run(self.root, "git", "rev-parse", "HEAD")
+        write_json(
+            self.root,
+            "tests/fixtures/avro-golden.json",
+            avro_golden_fixture("JSUl"),
+        )
+
+        result = validate(self.root, Path("regression-corpus-policy.json"), self.base)
+
+        self.assertEqual(
+            result["counts"]["codec"]["base"],
+            result["counts"]["codec"]["current"],
+        )
+
+    def test_golden_history_rewrap_is_a_semantic_duplicate(self) -> None:
+        expanded = policy()
+        expanded["categories"]["replay"]["fixtures"].append(
+            {
+                "glob": "tests/fixtures/golden/*.json",
+                "format": "golden-history-v1",
+            }
+        )
+        write_json(self.root, "regression-corpus-policy.json", expanded)
+        write_json(
+            self.root,
+            "tests/fixtures/golden/activity.json",
+            golden_history_fixture(),
+        )
+
+        with self.assertRaisesRegex(CorpusError, "duplicate semantic fixtures"):
+            validate(self.root, Path("regression-corpus-policy.json"), self.base)
+
+    def test_golden_rewrap_cannot_repeat_nested_commands_as_new_evidence(self) -> None:
+        expanded = policy()
+        expanded["categories"]["replay"]["fixtures"].append(
+            {
+                "glob": "tests/fixtures/golden/*.json",
+                "format": "golden-history-v1",
+            }
+        )
+        write_json(self.root, "regression-corpus-policy.json", expanded)
+        other_replay = replay_fixture("different-replay")
+        other_replay["workflow"]["type"] = "fixture.other-workflow"
+        write_json(
+            self.root,
+            "tests/fixtures/replay/activity.json",
+            other_replay,
+        )
+        write_json(
+            self.root,
+            "tests/fixtures/golden/activity.json",
+            golden_history_fixture(),
+        )
+        run(self.root, "git", "add", ".")
+        run(self.root, "git", "commit", "-qm", "cross-format baseline")
+        self.base = run(self.root, "git", "rev-parse", "HEAD")
+
+        rewrapped = replay_fixture("redundant-command-rewrap")
+        rewrapped["command_sequence"] = rewrapped["expected"]["command_sequence"]
+        write_json(
+            self.root,
+            "tests/fixtures/replay/rewrapped.json",
+            rewrapped,
+        )
+
+        with self.assertRaisesRegex(CorpusError, "duplicate semantic fixtures"):
+            validate(self.root, Path("regression-corpus-policy.json"), self.base)
+
+    def test_replay_change_passes_after_genuinely_new_behavior_is_added(self) -> None:
+        (self.root / "src/runtime.py").write_text(
+            "def replay_events(history):\n    return list(history)\n",
+            encoding="utf-8",
+        )
+        fixture = replay_fixture("worker-v1-timer-completion")
+        fixture["workflow"]["type"] = "fixture.timer-workflow"
+        fixture["history"] = [{"event_type": "TimerFired", "payload": {"sequence": 1}}]
+        fixture["expected"] = {"command_sequence": [{"type": "complete_workflow", "result": "timer-fired"}]}
+        write_json(
+            self.root,
+            "tests/fixtures/replay/timer.json",
+            fixture,
+        )
+
+        result = validate(self.root, Path("regression-corpus-policy.json"), self.base)
+
+        self.assertTrue(result["counts"]["replay"]["related_change"])
+        self.assertEqual(2, result["counts"]["replay"]["current"])
 
     def test_codec_schema_label_cannot_disguise_duplicate_behavior(self) -> None:
         (self.root / "src/codec.py").write_text(

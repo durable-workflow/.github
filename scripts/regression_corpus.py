@@ -31,6 +31,9 @@ SUPPORTED_FORMATS = {
 SUPPORTED_CATEGORIES = {"codec", "replay"}
 SUPPORTED_BINDINGS = {"php", "python", "rust"}
 ZERO_COMMIT = re.compile(r"^0+$")
+LEGACY_MALFORMED_WIRE_REPAIRS = {
+    "%%%": "JSUl",
+}
 
 
 class CorpusError(RuntimeError):
@@ -96,11 +99,212 @@ def _json(content: bytes, path: str) -> Mapping[str, Any]:
     return _object(value, path)
 
 
-def _valid_base64(value: str, context: str) -> None:
+def _canonical_base64(value: str, context: str) -> str:
     try:
-        base64.b64decode(value, validate=True)
+        decoded = base64.b64decode(value, validate=True)
     except (binascii.Error, ValueError) as error:
         raise CorpusError(f"{context} is not canonical base64") from error
+    canonical = base64.b64encode(decoded).decode("ascii")
+    if value != canonical:
+        raise CorpusError(f"{context} is not canonical base64")
+    return canonical
+
+
+def _canonical_wire_replacement(value: str) -> str | None:
+    """Return the only permitted canonical replacement for a legacy wire."""
+
+    try:
+        decoded = base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError):
+        return LEGACY_MALFORMED_WIRE_REPAIRS.get(value)
+
+    canonical = base64.b64encode(decoded).decode("ascii")
+    return canonical if canonical != value else None
+
+
+def _canonical_wire_migration(base_content: bytes, current_content: bytes) -> bool:
+    """Allow the one-way repair of legacy malformed-frame wire spellings."""
+
+    try:
+        base_document = json.loads(base_content)
+        current_document = json.loads(current_content)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(base_document, dict) or not isinstance(current_document, dict):
+        return False
+    base_frames = base_document.get("malformed_frames")
+    current_frames = current_document.get("malformed_frames")
+    if not isinstance(base_frames, list) or not isinstance(current_frames, list):
+        return False
+    if len(base_frames) != len(current_frames):
+        return False
+
+    migrated = False
+    for index, (base_frame, current_frame) in enumerate(
+        zip(base_frames, current_frames, strict=True)
+    ):
+        if not isinstance(base_frame, dict) or not isinstance(current_frame, dict):
+            return False
+        base_wire = base_frame.get("wire_base64")
+        current_wire = current_frame.get("wire_base64")
+        if base_wire == current_wire:
+            continue
+        if not isinstance(base_wire, str) or not isinstance(current_wire, str):
+            return False
+        if current_wire != _canonical_wire_replacement(base_wire):
+            return False
+        try:
+            _canonical_base64(
+                current_wire,
+                f"current.malformed_frames[{index}].wire_base64",
+            )
+        except CorpusError:
+            return False
+        base_frame["wire_base64"] = current_wire
+        migrated = True
+
+    return migrated and base_document == current_document
+
+
+def _canonical_command_type(value: str) -> str:
+    """Normalize runtime command class names to their wire discriminator."""
+
+    words = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", value)
+    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", words).lower()
+
+
+def _canonical_replay_command(value: Any) -> Any:
+    """Normalize the command forms accepted by replay consumers."""
+
+    if not isinstance(value, Mapping):
+        return value
+
+    command = dict(value)
+    command_type = command.get("command_type")
+    if not isinstance(command_type, str) or not command_type:
+        return command
+
+    wire_type = _canonical_command_type(command_type)
+    declared_type = command.get("type")
+    if declared_type is None or declared_type == wire_type:
+        command.pop("command_type")
+        command["type"] = wire_type
+    return command
+
+
+def _canonical_replay_commands(value: Any) -> Any:
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
+        return value
+    return [_canonical_replay_command(command) for command in value]
+
+
+def _merge_replay_assertions(left: Any, right: Any, context: str) -> Any:
+    """Merge two compatible partial assertions over the same replay output."""
+
+    if isinstance(left, Mapping) and isinstance(right, Mapping):
+        merged = dict(left)
+        for key, value in right.items():
+            if key in merged:
+                merged[key] = _merge_replay_assertions(
+                    merged[key],
+                    value,
+                    f"{context}.{key}",
+                )
+            else:
+                merged[key] = value
+        return merged
+
+    if (
+        isinstance(left, Sequence)
+        and not isinstance(left, str | bytes)
+        and isinstance(right, Sequence)
+        and not isinstance(right, str | bytes)
+    ):
+        if len(left) != len(right):
+            raise CorpusError(f"replay command assertions conflict at {context}")
+        return [
+            _merge_replay_assertions(left_item, right_item, f"{context}[{index}]")
+            for index, (left_item, right_item) in enumerate(
+                zip(left, right, strict=True)
+            )
+        ]
+
+    if left != right:
+        raise CorpusError(f"replay command assertions conflict at {context}")
+    return left
+
+
+def _canonical_executed_commands(
+    command_sequence: Any,
+    expected: Mapping[str, Any],
+) -> Any:
+    """Collapse every consumer-supported command assertion onto one output."""
+
+    executed_commands = (
+        _canonical_replay_commands(command_sequence)
+        if command_sequence is not None
+        else None
+    )
+    expected_sequence = expected.get("command_sequence")
+    if expected_sequence is not None:
+        canonical_expected = _canonical_replay_commands(expected_sequence)
+        executed_commands = (
+            canonical_expected
+            if executed_commands is None
+            else _merge_replay_assertions(
+                executed_commands,
+                canonical_expected,
+                "command_sequence",
+            )
+        )
+
+    first_command = {
+        key: value
+        for key, value in expected.items()
+        if key != "command_sequence"
+    }
+    if first_command:
+        canonical_first = _canonical_replay_command(first_command)
+        if executed_commands is None:
+            executed_commands = [canonical_first]
+        elif (
+            not isinstance(executed_commands, Sequence)
+            or isinstance(executed_commands, str | bytes)
+            or len(executed_commands) != 1
+        ):
+            raise CorpusError(
+                "flattened expected command requires exactly one executed command"
+            )
+        else:
+            executed_commands = [
+                _merge_replay_assertions(
+                    executed_commands[0],
+                    canonical_first,
+                    "command_sequence[0]",
+                )
+            ]
+
+    return executed_commands
+
+
+def _replay_semantic(
+    *,
+    workflow_type: str,
+    workflow_input: Any,
+    history: Any,
+    command_sequence: Any,
+    expected: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Project every replay representation onto consumer-executed values."""
+
+    return {
+        "workflow": {"type": workflow_type, "input": workflow_input},
+        "history": history,
+        "executed_commands": _canonical_executed_commands(
+            command_sequence,
+            expected,
+        ),
+    }
 
 
 def _fixture_evidence(
@@ -135,14 +339,12 @@ def _normalized_codec_version(codec: str, version: str) -> str:
 
 def _codec_semantic(
     *,
-    fingerprint: str | None,
     wire: str | None,
     operation: str,
     error: str | None,
     rejected_value: Any = None,
 ) -> dict[str, Any]:
     semantic = {
-        "fingerprint": fingerprint,
         "wire_base64": wire,
         "failure_policy": {"operation": operation, "error": error},
     }
@@ -160,7 +362,7 @@ def _codec_fixture(document: Mapping[str, Any], path: str, binding: str | None) 
     codec = _string(protocol.get("codec"), f"{path}.protocol.codec")
     _string(protocol.get("schema"), f"{path}.protocol.schema")
     version = _string(protocol.get("version"), f"{path}.protocol.version")
-    fingerprint = _nullable_string(protocol.get("fingerprint"), f"{path}.protocol.fingerprint")
+    _nullable_string(protocol.get("fingerprint"), f"{path}.protocol.fingerprint")
     bindings = _unique_strings(
         document.get("bindings"),
         f"{path}.bindings",
@@ -185,8 +387,11 @@ def _codec_fixture(document: Mapping[str, Any], path: str, binding: str | None) 
         raise CorpusError(f"{path} round-trip evidence cannot declare an error")
     if operation != "round_trip" and error is None:
         raise CorpusError(f"{path} rejection evidence must declare its stable error policy")
-    if wire is not None:
-        _valid_base64(wire, f"{path}.framing.wire_base64")
+    canonical_wire = (
+        _canonical_base64(wire, f"{path}.framing.wire_base64")
+        if wire is not None
+        else None
+    )
 
     supersedes = tuple(
         _string(item, f"{path}.supersedes[]")
@@ -197,8 +402,7 @@ def _codec_fixture(document: Mapping[str, Any], path: str, binding: str | None) 
     # Structural declarations do not distinguish another execution of the
     # same wire, value, and failure-policy behavior in the official bindings.
     semantic = _codec_semantic(
-        fingerprint=fingerprint,
-        wire=wire,
+        wire=canonical_wire,
         operation=operation,
         error=error,
         rejected_value=value,
@@ -247,15 +451,13 @@ def _replay_fixture(document: Mapping[str, Any], path: str, binding: str | None)
     )
     if len(supersedes) != len(set(supersedes)) or identity in supersedes:
         raise CorpusError(f"{path}.supersedes is invalid")
-    semantic = {
-        "workflow": {
-            "type": workflow["type"],
-            "input": workflow.get("input", []),
-        },
-        "history": history,
-        "command_sequence": commands,
-        "expected": expected,
-    }
+    semantic = _replay_semantic(
+        workflow_type=workflow["type"],
+        workflow_input=workflow.get("input", workflow.get("arguments", [])),
+        history=history if history is not None else [],
+        command_sequence=commands,
+        expected=expected,
+    )
     return [
         _fixture_evidence(
             category="replay",
@@ -270,7 +472,7 @@ def _replay_fixture(document: Mapping[str, Any], path: str, binding: str | None)
 
 def _avro_golden_fixture(document: Mapping[str, Any], path: str) -> list[Evidence]:
     _string(document.get("schema"), f"{path}.schema")
-    fingerprint = _string(document.get("fingerprint"), f"{path}.fingerprint")
+    _string(document.get("fingerprint"), f"{path}.fingerprint")
     fixture_version = "avro-value-v1"
     protocol_version = "1"
     evidence: list[Evidence] = []
@@ -284,22 +486,35 @@ def _avro_golden_fixture(document: Mapping[str, Any], path: str) -> list[Evidenc
             entry = _object(raw_entry, f"{path}.{section}[{index}]")
             name = _string(entry.get("name"), f"{path}.{section}[{index}].name")
             wire = entry.get("wire_base64")
-            semantic_wire: Any = wire
             if section == "alternate":
-                semantic_wire = list(_unique_strings(wire, f"{path}.{section}[{index}].wire_base64"))
-                for wire_value in semantic_wire:
-                    _valid_base64(wire_value, f"{path}.{section}[{index}].wire_base64[]")
+                semantic_wire = [
+                    _canonical_base64(
+                        wire_value,
+                        f"{path}.{section}[{index}].wire_base64[]",
+                    )
+                    for wire_value in _unique_strings(
+                        wire,
+                        f"{path}.{section}[{index}].wire_base64",
+                    )
+                ]
             elif section == "case":
                 wire_value = _string(wire, f"{path}.{section}[{index}].wire_base64")
-                _valid_base64(wire_value, f"{path}.{section}[{index}].wire_base64")
+                semantic_wire = _canonical_base64(
+                    wire_value,
+                    f"{path}.{section}[{index}].wire_base64",
+                )
             elif not isinstance(wire, str):
                 raise CorpusError(f"{path}.{section}[{index}].wire_base64 must be a string")
+            else:
+                semantic_wire = _canonical_base64(
+                    wire,
+                    f"{path}.{section}[{index}].wire_base64",
+                )
             operation = "decode_reject" if section == "malformed" else "round_trip"
             error = entry.get("error") if section == "malformed" else None
             wires = semantic_wire if isinstance(semantic_wire, list) else [semantic_wire]
             duplicate_values = [
                 _codec_semantic(
-                    fingerprint=fingerprint,
                     wire=wire_value,
                     operation=operation,
                     error=error,
@@ -351,14 +566,13 @@ def _golden_history_fixture(
         _object(expected, f"{path}.cases[{index}].expected")
         workflow_type = case.get("workflow_type", case.get("scenario"))
         _string(workflow_type, f"{path}.cases[{index}].workflow identity")
-        semantic = {
-            "protocol_version": protocol_version,
-            "runtime": runtime,
-            "workflow": workflow_type,
-            "start_input": case.get("start_input"),
-            "history": history,
-            "expected": expected,
-        }
+        semantic = _replay_semantic(
+            workflow_type=workflow_type,
+            workflow_input=case.get("start_input", []),
+            history=history,
+            command_sequence=case.get("command_sequence"),
+            expected=expected,
+        )
         evidence.append(
             _fixture_evidence(
                 category="replay",
@@ -640,7 +854,15 @@ def validate(root: Path, policy_path: Path, base_ref: str | None) -> dict[str, A
         # Apply current coverage to both revisions so selector expansion cannot
         # manufacture growth from pre-existing fixture evidence.
         for path in _fixture_paths(policy, base_files):
-            if current_files.get(path) != base_files[path]:
+            current_content = current_files.get(path)
+            if (
+                current_content != base_files[path]
+                and current_content is not None
+                and _canonical_wire_migration(base_files[path], current_content)
+            ):
+                base_files[path] = current_content
+                continue
+            if current_content != base_files[path]:
                 raise CorpusError(f"immutable fixture file {path} was changed, moved, or removed")
         base_evidence = _inventory(policy, base_files)
     current_evidence = _inventory(policy, current_files, new_paths=added_paths)
