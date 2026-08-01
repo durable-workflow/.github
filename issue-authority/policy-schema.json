@@ -195,7 +195,7 @@
         },
         "train": {
           "type": "string",
-          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+-(?:alpha|beta)\\.[0-9]+$"
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+-(?:alpha|beta|rc)\\.[0-9]+$"
         },
         "release_plan": {
           "type": "object",

@@ -27,6 +27,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts import cross_repository_lifecycle
+from scripts.beta_candidate import COMPONENTS
 
 POLICY_SCHEMA = "durable-workflow.github-issue-authority/v1"
 BACKLOG_SCHEMA = "durable-workflow.github-beta-backlog/v1"
@@ -77,6 +78,9 @@ OWNER_LABELS = {
 }
 GITHUB_API_ATTEMPTS = 4
 GITHUB_API_RETRY_SECONDS = 2.0
+PRODUCT_TRAIN_IDENTIFIER_PATTERN = re.compile(
+    r"^(?P<base>[0-9]+\.[0-9]+\.[0-9]+)-(?P<channel>alpha|beta|rc)\.(?P<number>[0-9]+)$"
+)
 
 ISSUE_INTAKE_QUERY = """
 query IssueIntake($owner: String!, $repository: String!, $cursor: String) {
@@ -889,22 +893,48 @@ def _validate_immutable_product_train_successor(
         raise AuthorityError("immutable prerelease successor product train is not valid UTF-8 JSON") from error
 
     train = successor["train"]
+    train_match = PRODUCT_TRAIN_IDENTIFIER_PATTERN.fullmatch(train)
     trains = product_train.get("trains") if isinstance(product_train, Mapping) else None
     selected = trains.get(train) if isinstance(trains, Mapping) else None
     components = product_train.get("components") if isinstance(product_train, Mapping) else None
     versions = selected.get("versions") if isinstance(selected, Mapping) else None
+    progression = product_train.get("progression") if isinstance(product_train, Mapping) else None
+    prerelease_progression = progression.get("prerelease") if isinstance(progression, Mapping) else None
+    component_version_pattern = (
+        re.compile(rf"^{re.escape(train_match['base'])}-{train_match['channel']}\.[0-9]+$")
+        if train_match is not None
+        else None
+    )
+    synchronized = isinstance(versions, Mapping) and all(
+        isinstance(version, str) and version == train for version in versions.values()
+    )
     if (
         not isinstance(product_train, Mapping)
         or product_train.get("schema") != "durable-workflow.product-train/v2"
+        or train_match is None
         or product_train.get("current") != train
-        or not isinstance(components, list)
-        or not components
-        or len(components) != len(set(components))
+        or components != list(COMPONENTS)
         or not isinstance(versions, Mapping)
-        or set(versions) != set(components)
-        or set(versions.values()) != {train}
+        or set(versions) != set(COMPONENTS)
+        or component_version_pattern is None
+        or any(
+            not isinstance(version, str) or component_version_pattern.fullmatch(version) is None
+            for version in versions.values()
+        )
+        or selected.get("channel") != train_match["channel"]
         or selected.get("status") != "supported"
         or selected.get("release_plan") != successor["release_plan"]
+        or not isinstance(progression, Mapping)
+        or progression.get("stable") != "semantic_versioning"
+        or progression.get("compatibility_shims") != "forbidden_between_2_0_prereleases"
+        or prerelease_progression
+        not in {
+            "synchronized_beta_increment",
+            "synchronized_prerelease_increment",
+            "independent_prerelease_components",
+        }
+        or (prerelease_progression == "synchronized_beta_increment" and train_match["channel"] != "beta")
+        or (prerelease_progression != "independent_prerelease_components" and not synchronized)
     ):
         raise AuthorityError("immutable prerelease successor is not one coherent supported public product train")
 
@@ -1007,7 +1037,7 @@ def _bind_prerelease_supersessions(
     retired_identities = {
         (record["retired"]["repository"], record["retired"]["number"]) for record in policy["prerelease_supersessions"]
     }
-    validated_product_trains: set[tuple[str, str, str, str]] = set()
+    product_train_files: dict[tuple[str, str, str, str], bytes] = {}
     milestone_titles = {milestone["title"] for milestone in policy["milestones"]}
     blocker_labels = {
         "authority:github",
@@ -1120,15 +1150,16 @@ def _bind_prerelease_supersessions(
             successor["path"],
             successor["sha256"],
         )
-        if product_train_identity not in validated_product_trains:
+        raw = product_train_files.get(product_train_identity)
+        if raw is None:
             raw = client.read_file(
                 policy["organization"],
                 successor["repository"],
                 successor["commit"],
                 successor["path"],
             )
-            _validate_immutable_product_train_successor(successor, raw)
-            validated_product_trains.add(product_train_identity)
+            product_train_files[product_train_identity] = raw
+        _validate_immutable_product_train_successor(successor, raw)
         activation = _supersession_activation(
             supersession,
             retired_record,
@@ -1562,7 +1593,7 @@ def _valid_superseded_by(
         and re.fullmatch(r"[0-9a-f]{40}", str(value.get("commit", ""))) is not None
         and value.get("path") == "product-train/current.json"
         and re.fullmatch(r"[0-9a-f]{64}", str(value.get("sha256", ""))) is not None
-        and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+-(?:alpha|beta)\.[0-9]+", str(value.get("train", ""))) is not None
+        and PRODUCT_TRAIN_IDENTIFIER_PATTERN.fullmatch(str(value.get("train", ""))) is not None
         and isinstance(release_plan, Mapping)
         and set(release_plan) == {"sha256", "tag"}
         and re.fullmatch(r"[0-9a-f]{64}", str(release_plan.get("sha256", ""))) is not None

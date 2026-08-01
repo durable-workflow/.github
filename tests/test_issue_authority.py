@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import hashlib
 import io
 import json
 import re
@@ -107,6 +108,44 @@ def immutable_product_train_files(policy: dict[str, Any]) -> dict[tuple[str, str
         capture_output=True,
     ).stdout
     return {(successor["repository"], successor["commit"], successor["path"]): historical_product_train}
+
+
+def current_rc_retirement_contract() -> tuple[
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    bytes,
+]:
+    policy, backlog, policy_schema, backlog_schema = contract_fixture()
+    raw = (ROOT / "product-train/current.json").read_bytes()
+    product_train = json.loads(raw)
+    train = product_train["current"]
+    commit = "a" * 40
+    policy["prerelease_supersessions"] = [
+        {
+            "activation_commit": commit,
+            "reason": "A later immutable supported product train replaces this prerelease authority.",
+            "retired": {"number": 61, "repository": ".github"},
+            "successor": {
+                "commit": commit,
+                "path": "product-train/current.json",
+                "release_plan": copy.deepcopy(product_train["trains"][train]["release_plan"]),
+                "repository": ".github",
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "train": train,
+            },
+        }
+    ]
+    return policy, backlog, policy_schema, backlog_schema, raw
+
+
+def product_train_files(
+    policy: dict[str, Any],
+    raw: bytes,
+) -> dict[tuple[str, str, str], bytes]:
+    successor = policy["prerelease_supersessions"][0]["successor"]
+    return {(successor["repository"], successor["commit"], successor["path"]): raw}
 
 
 def qualification_fixture() -> dict[str, Any]:
@@ -740,6 +779,11 @@ class ContractValidationTest(unittest.TestCase):
             organization=policy["organization"],
         )
 
+    def test_policy_schema_accepts_an_rc_product_train_successor(self) -> None:
+        policy, backlog, policy_schema, backlog_schema, _raw = current_rc_retirement_contract()
+
+        validate_contract(policy, backlog, policy_schema, backlog_schema)
+
     def test_checked_in_legacy_target_migration_is_qualified(self) -> None:
         migration = load_legacy_cross_repository_targets(
             ROOT / "issue-authority" / "legacy-cross-repository-targets.json",
@@ -1290,6 +1334,125 @@ class IssueIntakeTest(unittest.TestCase):
                 ),
             ),
         )
+
+    def test_independently_versioned_rc_product_train_reconstructs_and_verifies(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema, raw = current_rc_retirement_contract()
+        retired = prerelease_authority_issue(61, status="status:triage")
+        issues = {".github": [(retired, [])]}
+        public_files = product_train_files(policy, raw)
+
+        manifest, inventory = reconstruct_intake(
+            policy,
+            FakeDiscovery(policy, issues, public_files=public_files),
+        )
+
+        successor = manifest["issues"][0]["superseded_by"]
+        self.assertEqual("2.0.0-rc.13", successor["train"])
+        self.assertEqual("release-plan/current-2-0-20260801", successor["release_plan"]["tag"])
+        self.assertEqual(
+            inventory,
+            verify_intake_manifest(
+                policy,
+                manifest,
+                FakeDiscovery(policy, issues, public_files=product_train_files(policy, raw)),
+            ),
+        )
+
+    def test_independently_versioned_rc_product_train_retirement_fails_closed(self) -> None:
+        mutations = (
+            "mismatched current record",
+            "missing component",
+            "extra component",
+            "record channel mismatch",
+            "component channel mismatch",
+            "progression mismatch",
+            "unsupported status",
+            "release-plan mismatch",
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                policy, _backlog, _policy_schema, _backlog_schema, raw = current_rc_retirement_contract()
+                product_train = json.loads(raw)
+                train = product_train["current"]
+                selected = product_train["trains"][train]
+                successor = policy["prerelease_supersessions"][0]["successor"]
+                if mutation == "mismatched current record":
+                    product_train["current"] = "2.0.0-rc.12"
+                elif mutation == "missing component":
+                    product_train["components"].remove("sdk-rust")
+                    selected["versions"].pop("sdk-rust")
+                elif mutation == "extra component":
+                    product_train["components"].append("sdk-js")
+                    selected["versions"]["sdk-js"] = "2.0.0-rc.1"
+                elif mutation == "record channel mismatch":
+                    selected["channel"] = "beta"
+                elif mutation == "component channel mismatch":
+                    selected["versions"]["workflow"] = "2.0.0-beta.12"
+                elif mutation == "progression mismatch":
+                    product_train["progression"]["prerelease"] = "synchronized_prerelease_increment"
+                elif mutation == "unsupported status":
+                    selected["status"] = "historical"
+                elif mutation == "release-plan mismatch":
+                    successor["release_plan"]["tag"] = "release-plan/different-successor"
+
+                changed_raw = (json.dumps(product_train, indent=2) + "\n").encode()
+                successor["sha256"] = hashlib.sha256(changed_raw).hexdigest()
+                retired = prerelease_authority_issue(61, status="status:triage")
+
+                with self.assertRaisesRegex(AuthorityError, "not one coherent supported public product train"):
+                    reconstruct_intake(
+                        policy,
+                        FakeDiscovery(
+                            policy,
+                            {".github": [(retired, [])]},
+                            public_files=product_train_files(policy, changed_raw),
+                        ),
+                    )
+
+    def test_shared_product_train_revalidates_each_release_plan_reference(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema, raw = current_rc_retirement_contract()
+        second_supersession = copy.deepcopy(policy["prerelease_supersessions"][0])
+        second_supersession["retired"]["number"] = 65
+        policy["prerelease_supersessions"].append(second_supersession)
+        issues = {
+            ".github": [
+                (prerelease_authority_issue(number, status="status:triage"), [])
+                for number in (61, 65)
+            ]
+        }
+        mismatched_policy = copy.deepcopy(policy)
+        mismatched_policy["prerelease_supersessions"][1]["successor"]["release_plan"]["tag"] = (
+            "release-plan/different-successor"
+        )
+        with patch("scripts.issue_authority._validate_immutable_product_train_successor"):
+            mismatched_manifest, _inventory = reconstruct_intake(
+                mismatched_policy,
+                FakeDiscovery(
+                    mismatched_policy,
+                    issues,
+                    public_files=product_train_files(mismatched_policy, raw),
+                ),
+            )
+
+        with self.assertRaisesRegex(AuthorityError, "not one coherent supported public product train"):
+            reconstruct_intake(
+                mismatched_policy,
+                FakeDiscovery(
+                    mismatched_policy,
+                    issues,
+                    public_files=product_train_files(mismatched_policy, raw),
+                ),
+            )
+        with self.assertRaisesRegex(AuthorityError, "not one coherent supported public product train"):
+            verify_intake_manifest(
+                mismatched_policy,
+                mismatched_manifest,
+                FakeDiscovery(
+                    mismatched_policy,
+                    issues,
+                    public_files=product_train_files(mismatched_policy, raw),
+                ),
+            )
 
     def test_immutable_product_train_retirement_fails_closed_on_changed_bytes(self) -> None:
         policy, _backlog, _policy_schema, _backlog_schema = immutable_retirement_contract()
