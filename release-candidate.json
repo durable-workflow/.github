@@ -1,0 +1,41 @@
+{
+  "candidate": "current-2-0-20260801",
+  "channel": "rc",
+  "components": {
+    "cli": {
+      "commit": "e4413464908e5d42ae13071e2c6e6c280da06a1a",
+      "version": "2.0.0-rc.12"
+    },
+    "sdk-php": {
+      "commit": "31698e4b97fd36e56f05517a0bd56ec7e16a8c05",
+      "version": "2.0.0-rc.6"
+    },
+    "sdk-python": {
+      "commit": "6c5ad457d98834f90799db093c8dff515bee710e",
+      "version": "2.0.0-rc.8"
+    },
+    "sdk-rust": {
+      "commit": "527dc8581131a40f127d1d8144a3b55d87829ac8",
+      "version": "2.0.0-rc.7"
+    },
+    "server": {
+      "commit": "0f0ce78e8d4eadb91a34a0d09f67e04f5335cdea",
+      "version": "2.0.0-rc.13"
+    },
+    "waterline": {
+      "commit": "747ba7712a5e1c6ebee196640d76fc11f77fa67d",
+      "version": "2.0.0-rc.9"
+    },
+    "workflow": {
+      "commit": "9416c2a4d3fe71d85f77c2465ed8337c833a79ee",
+      "version": "2.0.0-rc.12"
+    }
+  },
+  "release_plan": {
+    "commit": "b4615351381fb86d251683bfe6c903c8f939548f",
+    "sha256": "d4f976b427939b50cd3ac590df3664d76d2b9a0018a86ce2fc16dcd528945ea8",
+    "tag": "release-plan/current-2-0-20260801"
+  },
+  "release_preparation_sha256": "bc0ac69f349e24a166fe78bcaed295db3d9a54ea9f5a1507610746e65d1aa776",
+  "schema": "durable-workflow.release-candidate/v1"
+}
