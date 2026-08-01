@@ -11,7 +11,7 @@ from unittest import mock
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
-from scripts.beta_candidate import COMPONENTS, CandidateError
+from scripts.beta_candidate import CandidateError
 from scripts.product_train import (
     SDK_ARTIFACTS,
     SDK_SERVER_EXPERIMENTS,
@@ -32,11 +32,22 @@ class ProductTrainTest(unittest.TestCase):
         Draft202012Validator(schema).validate(contract)
 
         current = contract["current"]
-        self.assertEqual("2.0.0-rc.5", current)
+        self.assertEqual("2.0.0-rc.13", current)
         supported = [name for name, train in contract["trains"].items() if train["status"] == "supported"]
         self.assertEqual([current], supported)
-        self.assertEqual({name: current for name in COMPONENTS}, contract["trains"][current]["versions"])
-        self.assertEqual("2.0.0rc5", contract["trains"][current]["registry_versions"]["sdk-python"])
+        self.assertEqual(
+            {
+                "workflow": "2.0.0-rc.12",
+                "waterline": "2.0.0-rc.9",
+                "server": "2.0.0-rc.13",
+                "cli": "2.0.0-rc.12",
+                "sdk-php": "2.0.0-rc.6",
+                "sdk-python": "2.0.0-rc.8",
+                "sdk-rust": "2.0.0-rc.7",
+            },
+            contract["trains"][current]["versions"],
+        )
+        self.assertEqual("2.0.0rc8", contract["trains"][current]["registry_versions"]["sdk-python"])
 
         qualification, qualification_raw = load_sdk_server_qualification()
         qualification_schema = json.loads(
@@ -58,21 +69,21 @@ class ProductTrainTest(unittest.TestCase):
         install = contract["trains"][current]["install"]
         self.assertEqual(
             {
-                "workflow": "composer require durable-workflow/workflow:2.0.0-rc.5@RC",
-                "sdk-php": "composer require durable-workflow/sdk:2.0.0-rc.5@RC",
+                "workflow": "composer require durable-workflow/workflow:2.0.0-rc.12@RC",
+                "sdk-php": "composer require durable-workflow/sdk:2.0.0-rc.6@RC",
                 "waterline": {
                     "embedded": (
                         "composer require "
-                        "durable-workflow/waterline:2.0.0-rc.5@RC "
-                        "durable-workflow/workflow:2.0.0-rc.5@RC "
-                        "durable-workflow/sdk:2.0.0-rc.5@RC"
+                        "durable-workflow/waterline:2.0.0-rc.9@RC "
+                        "durable-workflow/workflow:2.0.0-rc.12@RC "
+                        "durable-workflow/sdk:2.0.0-rc.6@RC"
                     ),
-                    "service": "docker pull durableworkflow/waterline:2.0.0-rc.5",
+                    "service": "docker pull durableworkflow/waterline:2.0.0-rc.9",
                 },
-                "server": "docker pull durableworkflow/server:2.0.0-rc.5",
-                "cli": "curl -fsSL https://durable-workflow.com/install.sh | VERSION=2.0.0-rc.5 sh",
-                "sdk-python": "pip install durable-workflow==2.0.0rc5",
-                "sdk-rust": "cargo add durable-workflow@=2.0.0-rc.5",
+                "server": "docker pull durableworkflow/server:2.0.0-rc.13",
+                "cli": "curl -fsSL https://durable-workflow.com/install.sh | VERSION=2.0.0-rc.12 sh",
+                "sdk-python": "pip install durable-workflow==2.0.0rc8",
+                "sdk-rust": "cargo add durable-workflow@=2.0.0-rc.7",
             },
             install,
         )
@@ -284,9 +295,10 @@ class ProductTrainTest(unittest.TestCase):
             )
 
     def test_new_prerelease_tuple_must_match_current_train(self) -> None:
-        components = {name: {"version": "2.0.0-rc.5", "commit": "a" * 40} for name in COMPONENTS}
-        self.assertEqual("2.0.0-rc.5", require_current_product_train(components))
+        versions = load_product_train()["trains"]["2.0.0-rc.13"]["versions"]
+        components = {name: {"version": version, "commit": "a" * 40} for name, version in versions.items()}
+        self.assertEqual("2.0.0-rc.13", require_current_product_train(components))
 
         components["cli"]["version"] = "0.1.95"
-        with self.assertRaisesRegex(CandidateError, "supported product train 2.0.0-rc.5"):
+        with self.assertRaisesRegex(CandidateError, "supported product train 2.0.0-rc.13"):
             require_current_product_train(components)

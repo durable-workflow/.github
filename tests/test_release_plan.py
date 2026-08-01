@@ -662,86 +662,53 @@ class ReleasePlanEntryPointTest(unittest.TestCase):
 
 
 class ReleasePlanValidationTest(unittest.TestCase):
-    def test_next_candidate_is_staged_without_advancing_current_authority(self) -> None:
+    def test_current_authority_materializes_from_the_verified_candidate(self) -> None:
         plan, candidate = materialize_current_plan_authority()
-        next_candidate = json.loads((REPOSITORY_ROOT / "candidates" / "main.json").read_text(encoding="utf-8"))
+        verified_candidate = json.loads((REPOSITORY_ROOT / "candidates" / "main.json").read_text(encoding="utf-8"))
 
         self.assertEqual(candidate_manifest(plan), candidate)
-        self.assertEqual("2.0.0-rc.5", plan["components"]["server"]["version"])
-        self.assertEqual("rc-current-2-0-20260801", next_candidate["candidate"])
-        self.assertEqual(
-            {
-                "cli": {
-                    "commit": "e4413464908e5d42ae13071e2c6e6c280da06a1a",
-                    "version": "2.0.0-rc.12",
-                },
-                "sdk-php": {
-                    "commit": "31698e4b97fd36e56f05517a0bd56ec7e16a8c05",
-                    "version": "2.0.0-rc.6",
-                },
-                "sdk-python": {
-                    "commit": "6c5ad457d98834f90799db093c8dff515bee710e",
-                    "version": "2.0.0-rc.8",
-                },
-                "sdk-rust": {
-                    "commit": "527dc8581131a40f127d1d8144a3b55d87829ac8",
-                    "version": "2.0.0-rc.7",
-                },
-                "server": {
-                    "commit": "0f0ce78e8d4eadb91a34a0d09f67e04f5335cdea",
-                    "version": "2.0.0-rc.13",
-                },
-                "waterline": {
-                    "commit": "747ba7712a5e1c6ebee196640d76fc11f77fa67d",
-                    "version": "2.0.0-rc.9",
-                },
-                "workflow": {
-                    "commit": "9416c2a4d3fe71d85f77c2465ed8337c833a79ee",
-                    "version": "2.0.0-rc.12",
-                },
-            },
-            next_candidate["components"],
-        )
-        self.assertNotEqual(candidate, next_candidate)
+        self.assertEqual("current-2-0-20260801", plan["plan"])
+        self.assertEqual("2.0.0-rc.13", plan["components"]["server"]["version"])
+        self.assertEqual(verified_candidate, candidate)
 
-    def test_current_rc5_authority_binds_exact_published_sources(self) -> None:
+    def test_current_rc_authority_binds_exact_published_sources(self) -> None:
         plan = load_plan(REPOSITORY_ROOT / "release-plans" / "current.json", require_current=True)
         expected_components = {
             "cli": {
-                "commit": "91d11edf5c975c347d5b1069e57bd1a24aa20081",
-                "version": "2.0.0-rc.5",
+                "commit": "e4413464908e5d42ae13071e2c6e6c280da06a1a",
+                "version": "2.0.0-rc.12",
             },
             "sdk-php": {
-                "commit": "766f06ef175bb409aa9f37b2941191802be4b774",
-                "version": "2.0.0-rc.5",
+                "commit": "31698e4b97fd36e56f05517a0bd56ec7e16a8c05",
+                "version": "2.0.0-rc.6",
             },
             "sdk-python": {
-                "commit": "87f55a489835c512f4358e798ddaafb138bc2a9b",
-                "version": "2.0.0-rc.5",
+                "commit": "6c5ad457d98834f90799db093c8dff515bee710e",
+                "version": "2.0.0-rc.8",
             },
             "sdk-rust": {
-                "commit": "3582c313568b082105fc85e3523c59176e309ae3",
-                "version": "2.0.0-rc.5",
+                "commit": "527dc8581131a40f127d1d8144a3b55d87829ac8",
+                "version": "2.0.0-rc.7",
             },
             "server": {
-                "commit": "de79e57449bb0767853fbd7530f87ac1e88a13ee",
-                "version": "2.0.0-rc.5",
+                "commit": "0f0ce78e8d4eadb91a34a0d09f67e04f5335cdea",
+                "version": "2.0.0-rc.13",
             },
             "waterline": {
-                "commit": "33c017697bb5f556209ede5236ec355a90ce8de3",
-                "version": "2.0.0-rc.5",
+                "commit": "747ba7712a5e1c6ebee196640d76fc11f77fa67d",
+                "version": "2.0.0-rc.9",
             },
             "workflow": {
-                "commit": "d8356318311cf594ba47e685ec8e7654c7258a28",
-                "version": "2.0.0-rc.5",
+                "commit": "9416c2a4d3fe71d85f77c2465ed8337c833a79ee",
+                "version": "2.0.0-rc.12",
             },
         }
-        self.assertEqual("coherent-2-0-rc-5", plan["plan"])
+        self.assertEqual("current-2-0-20260801", plan["plan"])
         self.assertEqual(expected_components, plan["components"])
         self.assertEqual(
             {
-                "commit": "c65c941228f686e8ff2d5a54463010755c73ffa0",
-                "tag": "beta-candidate/rc-coherent-2-0-rc-5",
+                "commit": "40d39e180e914406dcca2d64892180a0483ee2a2",
+                "tag": "beta-candidate/rc-current-2-0-20260801",
             },
             plan["foundation"],
         )
@@ -757,13 +724,13 @@ class ReleasePlanValidationTest(unittest.TestCase):
         )
         self.assertEqual(
             {
-                "cli": "f87d4ca902856570b624e89f52aa85223c98c6a5bcaaff5c4d619e59ef1802e7",
-                "sdk-php": "fc3612e867dbe78a1a8247a2eacd085e444173fb2614b18db80dcb5000b1963e",
-                "sdk-python": "f2893d501d84a0ca53d9926500f0bfc0a1375906e95b7225dbbb4e40b43c8a31",
-                "sdk-rust": "f87d4ca902856570b624e89f52aa85223c98c6a5bcaaff5c4d619e59ef1802e7",
-                "server": "f87d4ca902856570b624e89f52aa85223c98c6a5bcaaff5c4d619e59ef1802e7",
-                "waterline": "9eada636d4daba5ef537300a37f65242e857737f7c622fea6a2f493f690a2f51",
-                "workflow": "3866c1e28fe52ee310d671235e3b5166284666f978a06bfaae98a9f19d6bb9fd",
+                "cli": "760b2b13ac40e2d80cf9f2054e1a5b26f05e47d42066046146d9ac496ec9364b",
+                "sdk-php": "6b8ce586eaa0129b135d4c836b5bbfec82a5177bebc8106d8d136c1064d27401",
+                "sdk-python": "4689b2f61c08ab9ac30ef7d2aed192bfd5f6ba998ca3aa86b4beb982ad15fb65",
+                "sdk-rust": "4c154824f6a01ded7867276cfadc7ba987f790f25e81cf9fcb11fc954476a3bf",
+                "server": "f5d066dfcd29a1cbea01efc403a426a9ec969b193d5ec3f07f1a3dcb731fdff7",
+                "waterline": "a977ca7a24386c66dec39377d0004f562573fc27f04801e609450f78c7d4117d",
+                "workflow": "41f156a13f9483a312179fc57422a25302227e44eaac22da7011f77be558d0c5",
             },
             {name: identity["release_notes"]["sha256"] for name, identity in preparation["components"].items()},
         )
@@ -778,7 +745,7 @@ class ReleasePlanValidationTest(unittest.TestCase):
 
             plan["components"]["server"]["version"] = "2.0.0-rc.6"
             path.write_bytes(canonical_json(plan))
-            with self.assertRaisesRegex(CandidateError, "supported product train 2.0.0-rc.5"):
+            with self.assertRaisesRegex(CandidateError, "supported product train 2.0.0-rc.13"):
                 load_plan(path, require_current=True)
 
     def test_supersession_handoff_binds_dispatch_identities(self) -> None:
@@ -3170,8 +3137,8 @@ class ReleasePlanRecordTest(unittest.TestCase):
         self.assertIsNone(current["beta_authorization"])
         self.assertEqual(
             {
-                "commit": "c65c941228f686e8ff2d5a54463010755c73ffa0",
-                "tag": "beta-candidate/rc-coherent-2-0-rc-5",
+                "commit": "40d39e180e914406dcca2d64892180a0483ee2a2",
+                "tag": "beta-candidate/rc-current-2-0-20260801",
             },
             current["foundation"],
         )

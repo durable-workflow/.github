@@ -1,69 +1,69 @@
 {
   "$schema": "./source-preparation-schema.json",
   "schema": "durable-workflow.release-source-preparation/v1",
-  "plan": "coherent-2-0-rc-5",
+  "plan": "current-2-0-20260801",
   "channel": "rc",
-  "train": "2.0.0-rc.5",
+  "train": "2.0.0-rc.13",
   "status": "source-prepared",
   "components": {
     "workflow": {
-      "version": "2.0.0-rc.5",
-      "commit": "d8356318311cf594ba47e685ec8e7654c7258a28",
+      "version": "2.0.0-rc.12",
+      "commit": "9416c2a4d3fe71d85f77c2465ed8337c833a79ee",
       "release_notes": {
         "kind": "changelog-unreleased",
         "path": "CHANGELOG.md",
-        "sha256": "3866c1e28fe52ee310d671235e3b5166284666f978a06bfaae98a9f19d6bb9fd"
+        "sha256": "41f156a13f9483a312179fc57422a25302227e44eaac22da7011f77be558d0c5"
       }
     },
     "waterline": {
-      "version": "2.0.0-rc.5",
-      "commit": "33c017697bb5f556209ede5236ec355a90ce8de3",
+      "version": "2.0.0-rc.9",
+      "commit": "747ba7712a5e1c6ebee196640d76fc11f77fa67d",
       "release_notes": {
         "kind": "changelog-unreleased",
         "path": "CHANGELOG.md",
-        "sha256": "9eada636d4daba5ef537300a37f65242e857737f7c622fea6a2f493f690a2f51"
+        "sha256": "a977ca7a24386c66dec39377d0004f562573fc27f04801e609450f78c7d4117d"
       }
     },
     "server": {
-      "version": "2.0.0-rc.5",
-      "commit": "de79e57449bb0767853fbd7530f87ac1e88a13ee",
+      "version": "2.0.0-rc.13",
+      "commit": "0f0ce78e8d4eadb91a34a0d09f67e04f5335cdea",
       "release_notes": {
         "kind": "source-commit-message",
-        "sha256": "f87d4ca902856570b624e89f52aa85223c98c6a5bcaaff5c4d619e59ef1802e7"
+        "sha256": "f5d066dfcd29a1cbea01efc403a426a9ec969b193d5ec3f07f1a3dcb731fdff7"
       }
     },
     "cli": {
-      "version": "2.0.0-rc.5",
-      "commit": "91d11edf5c975c347d5b1069e57bd1a24aa20081",
+      "version": "2.0.0-rc.12",
+      "commit": "e4413464908e5d42ae13071e2c6e6c280da06a1a",
       "release_notes": {
         "kind": "source-commit-message",
-        "sha256": "f87d4ca902856570b624e89f52aa85223c98c6a5bcaaff5c4d619e59ef1802e7"
+        "sha256": "760b2b13ac40e2d80cf9f2054e1a5b26f05e47d42066046146d9ac496ec9364b"
       }
     },
     "sdk-php": {
-      "version": "2.0.0-rc.5",
-      "commit": "766f06ef175bb409aa9f37b2941191802be4b774",
+      "version": "2.0.0-rc.6",
+      "commit": "31698e4b97fd36e56f05517a0bd56ec7e16a8c05",
       "release_notes": {
         "kind": "changelog-unreleased",
         "path": "CHANGELOG.md",
-        "sha256": "fc3612e867dbe78a1a8247a2eacd085e444173fb2614b18db80dcb5000b1963e"
+        "sha256": "6b8ce586eaa0129b135d4c836b5bbfec82a5177bebc8106d8d136c1064d27401"
       }
     },
     "sdk-python": {
-      "version": "2.0.0-rc.5",
-      "commit": "87f55a489835c512f4358e798ddaafb138bc2a9b",
+      "version": "2.0.0-rc.8",
+      "commit": "6c5ad457d98834f90799db093c8dff515bee710e",
       "release_notes": {
         "kind": "changelog-unreleased",
         "path": "CHANGELOG.md",
-        "sha256": "f2893d501d84a0ca53d9926500f0bfc0a1375906e95b7225dbbb4e40b43c8a31"
+        "sha256": "4689b2f61c08ab9ac30ef7d2aed192bfd5f6ba998ca3aa86b4beb982ad15fb65"
       }
     },
     "sdk-rust": {
-      "version": "2.0.0-rc.5",
-      "commit": "3582c313568b082105fc85e3523c59176e309ae3",
+      "version": "2.0.0-rc.7",
+      "commit": "527dc8581131a40f127d1d8144a3b55d87829ac8",
       "release_notes": {
         "kind": "source-commit-message",
-        "sha256": "f87d4ca902856570b624e89f52aa85223c98c6a5bcaaff5c4d619e59ef1802e7"
+        "sha256": "4c154824f6a01ded7867276cfadc7ba987f790f25e81cf9fcb11fc954476a3bf"
       }
     }
   },

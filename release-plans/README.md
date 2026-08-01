@@ -46,7 +46,7 @@ candidate verification and conformance for Waterline. New plans must use v2.
 The readers retain v1 support only for the exact canonical plan documents
 recorded before the Waterline service image became a required distribution.
 
-The current synchronized prerelease source selection is prepared in
+The current aggregate prerelease source selection is prepared in
 [`current-source-preparation.json`](current-source-preparation.json). It binds
 the exact seven source commits and the digests of their Unreleased changelogs
 or source commit messages before protected aggregate publication. A current
