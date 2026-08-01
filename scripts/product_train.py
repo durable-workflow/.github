@@ -334,20 +334,49 @@ def load_product_train(
     supported = [name for name, train in trains.items() if train.get("status") == "supported"]
     if supported != [current]:
         raise CandidateError("product-train authority must define exactly one supported train")
-    if any(version != current for version in current_train["versions"].values()):
-        raise CandidateError("current component versions must match the synchronized train identifier")
-    expected_registry_versions = dict.fromkeys(COMPONENTS, current)
-    expected_registry_versions["sdk-python"] = canonical_pypi_version(current)
+    versions = current_train["versions"]
+    version_pattern = re.compile(rf"^2\.0\.0-{channel}\.[1-9][0-9]*$")
+    if any(not isinstance(version, str) or version_pattern.fullmatch(version) is None for version in versions.values()):
+        raise CandidateError("current component versions must be valid 2.0.0 prereleases in the selected channel")
+    progression = contract.get("progression")
+    if (
+        not isinstance(progression, dict)
+        or progression.get("stable") != "semantic_versioning"
+        or progression.get("compatibility_shims") != "forbidden_between_2_0_prereleases"
+        or progression.get("prerelease")
+        not in {
+            "synchronized_beta_increment",
+            "synchronized_prerelease_increment",
+            "independent_prerelease_components",
+        }
+        or (len(set(versions.values())) > 1 and progression["prerelease"] != "independent_prerelease_components")
+    ):
+        raise CandidateError("product-train progression must authorize the selected component version model")
+    expected_registry_versions = dict(versions)
+    expected_registry_versions["sdk-python"] = canonical_pypi_version(versions["sdk-python"])
     if current_train.get("registry_versions") != expected_registry_versions:
-        raise CandidateError("current registry versions must identify the synchronized train")
+        raise CandidateError("current registry versions must identify the exact component tuple")
     install = current_train.get("install")
     waterline_install = install.get("waterline") if isinstance(install, dict) else None
-    if (
-        not isinstance(waterline_install, dict)
-        or set(waterline_install) != {"embedded", "service"}
-        or any(not isinstance(command, str) or not command for command in waterline_install.values())
-    ):
-        raise CandidateError("current product train must publish both Waterline install modes")
+    stability = "beta" if channel == "beta" else "RC"
+    expected_install = {
+        "workflow": f"composer require durable-workflow/workflow:{versions['workflow']}@{stability}",
+        "sdk-php": f"composer require durable-workflow/sdk:{versions['sdk-php']}@{stability}",
+        "waterline": {
+            "embedded": (
+                f"composer require durable-workflow/waterline:{versions['waterline']}@{stability} "
+                f"durable-workflow/workflow:{versions['workflow']}@{stability} "
+                f"durable-workflow/sdk:{versions['sdk-php']}@{stability}"
+            ),
+            "service": f"docker pull durableworkflow/waterline:{versions['waterline']}",
+        },
+        "server": f"docker pull durableworkflow/server:{versions['server']}",
+        "cli": f"curl -fsSL https://durable-workflow.com/install.sh | VERSION={versions['cli']} sh",
+        "sdk-python": f"pip install durable-workflow=={canonical_pypi_version(versions['sdk-python'])}",
+        "sdk-rust": f"cargo add durable-workflow@={versions['sdk-rust']}",
+    }
+    if not isinstance(waterline_install, dict) or install != expected_install:
+        raise CandidateError("current product train install commands must identify the exact component tuple")
     plan_reference = current_train.get("release_plan")
     try:
         plan_raw = current_plan_path.read_bytes()

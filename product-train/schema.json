@@ -48,7 +48,11 @@
       "required": ["prerelease", "stable", "compatibility_shims"],
       "properties": {
         "prerelease": {
-          "enum": ["synchronized_beta_increment", "synchronized_prerelease_increment"]
+          "enum": [
+            "synchronized_beta_increment",
+            "synchronized_prerelease_increment",
+            "independent_prerelease_components"
+          ]
         },
         "stable": {"const": "semantic_versioning"},
         "compatibility_shims": {"const": "forbidden_between_2_0_prereleases"}

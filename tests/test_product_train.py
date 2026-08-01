@@ -3,8 +3,10 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
@@ -84,6 +86,81 @@ class ProductTrainTest(unittest.TestCase):
         del missing_qualification["trains"][current]["sdk_server_qualification"]
         with self.assertRaises(ValidationError):
             Draft202012Validator(schema).validate(missing_qualification)
+
+    def test_mixed_component_sequences_form_one_exact_train(self) -> None:
+        contract = json.loads((ROOT / "product-train" / "current.json").read_text(encoding="utf-8"))
+        plan = json.loads((ROOT / "release-plans" / "current.json").read_text(encoding="utf-8"))
+        current = "2.0.0-rc.13"
+        plan_name = "current-2-0-20260801"
+        versions = {
+            "workflow": "2.0.0-rc.12",
+            "waterline": "2.0.0-rc.9",
+            "server": "2.0.0-rc.13",
+            "cli": "2.0.0-rc.12",
+            "sdk-php": "2.0.0-rc.6",
+            "sdk-python": "2.0.0-rc.8",
+            "sdk-rust": "2.0.0-rc.7",
+        }
+        plan["plan"] = plan_name
+        for name, version in versions.items():
+            plan["components"][name]["version"] = version
+        plan_raw = (json.dumps(plan, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode()
+        qualification_raw = b"{}\n"
+        train = copy.deepcopy(contract["trains"][contract["current"]])
+        train["versions"] = versions
+        train["registry_versions"] = {**versions, "sdk-python": "2.0.0rc8"}
+        train["install"] = {
+            "workflow": "composer require durable-workflow/workflow:2.0.0-rc.12@RC",
+            "sdk-php": "composer require durable-workflow/sdk:2.0.0-rc.6@RC",
+            "waterline": {
+                "embedded": (
+                    "composer require durable-workflow/waterline:2.0.0-rc.9@RC "
+                    "durable-workflow/workflow:2.0.0-rc.12@RC "
+                    "durable-workflow/sdk:2.0.0-rc.6@RC"
+                ),
+                "service": "docker pull durableworkflow/waterline:2.0.0-rc.9",
+            },
+            "server": "docker pull durableworkflow/server:2.0.0-rc.13",
+            "cli": "curl -fsSL https://durable-workflow.com/install.sh | VERSION=2.0.0-rc.12 sh",
+            "sdk-python": "pip install durable-workflow==2.0.0rc8",
+            "sdk-rust": "cargo add durable-workflow@=2.0.0-rc.7",
+        }
+        train["release_plan"] = {
+            "tag": f"release-plan/{plan_name}",
+            "sha256": hashlib.sha256(plan_raw).hexdigest(),
+        }
+        train["sdk_server_qualification"]["sha256"] = hashlib.sha256(qualification_raw).hexdigest()
+        contract["current"] = current
+        contract["trains"] = {current: train}
+        contract["progression"]["prerelease"] = "independent_prerelease_components"
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            contract_path = directory / "current.json"
+            plan_path = directory / "plan.json"
+            qualification_path = directory / "qualification.json"
+            contract_path.write_text(json.dumps(contract), encoding="utf-8")
+            plan_path.write_bytes(plan_raw)
+            qualification_path.write_bytes(qualification_raw)
+
+            with mock.patch("scripts.product_train.validate_sdk_server_qualification"):
+                self.assertEqual(
+                    contract,
+                    load_product_train(
+                        contract_path,
+                        current_plan_path=plan_path,
+                        qualification_path=qualification_path,
+                    ),
+                )
+
+                contract["trains"][current]["versions"]["sdk-rust"] = "2.0.0-beta.7"
+                contract_path.write_text(json.dumps(contract), encoding="utf-8")
+                with self.assertRaisesRegex(CandidateError, "selected channel"):
+                    load_product_train(
+                        contract_path,
+                        current_plan_path=plan_path,
+                        qualification_path=qualification_path,
+                    )
 
     def test_sdk_server_qualification_fails_closed(self) -> None:
         contract = load_product_train()

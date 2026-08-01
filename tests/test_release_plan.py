@@ -662,14 +662,47 @@ class ReleasePlanEntryPointTest(unittest.TestCase):
 
 
 class ReleasePlanValidationTest(unittest.TestCase):
-    def test_current_authority_materializes_from_the_verified_rc_candidate(self) -> None:
+    def test_next_candidate_is_staged_without_advancing_current_authority(self) -> None:
         plan, candidate = materialize_current_plan_authority()
         next_candidate = json.loads((REPOSITORY_ROOT / "candidates" / "main.json").read_text(encoding="utf-8"))
 
         self.assertEqual(candidate_manifest(plan), candidate)
         self.assertEqual("2.0.0-rc.5", plan["components"]["server"]["version"])
-        self.assertEqual("2.0.0-rc.5", next_candidate["components"]["server"]["version"])
-        self.assertEqual(candidate, next_candidate)
+        self.assertEqual("rc-current-2-0-20260801", next_candidate["candidate"])
+        self.assertEqual(
+            {
+                "cli": {
+                    "commit": "e4413464908e5d42ae13071e2c6e6c280da06a1a",
+                    "version": "2.0.0-rc.12",
+                },
+                "sdk-php": {
+                    "commit": "31698e4b97fd36e56f05517a0bd56ec7e16a8c05",
+                    "version": "2.0.0-rc.6",
+                },
+                "sdk-python": {
+                    "commit": "6c5ad457d98834f90799db093c8dff515bee710e",
+                    "version": "2.0.0-rc.8",
+                },
+                "sdk-rust": {
+                    "commit": "527dc8581131a40f127d1d8144a3b55d87829ac8",
+                    "version": "2.0.0-rc.7",
+                },
+                "server": {
+                    "commit": "0f0ce78e8d4eadb91a34a0d09f67e04f5335cdea",
+                    "version": "2.0.0-rc.13",
+                },
+                "waterline": {
+                    "commit": "747ba7712a5e1c6ebee196640d76fc11f77fa67d",
+                    "version": "2.0.0-rc.9",
+                },
+                "workflow": {
+                    "commit": "9416c2a4d3fe71d85f77c2465ed8337c833a79ee",
+                    "version": "2.0.0-rc.12",
+                },
+            },
+            next_candidate["components"],
+        )
+        self.assertNotEqual(candidate, next_candidate)
 
     def test_current_rc5_authority_binds_exact_published_sources(self) -> None:
         plan = load_plan(REPOSITORY_ROOT / "release-plans" / "current.json", require_current=True)

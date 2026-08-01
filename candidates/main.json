@@ -1,33 +1,33 @@
 {
-  "candidate": "rc-coherent-2-0-rc-5",
+  "candidate": "rc-current-2-0-20260801",
   "components": {
     "cli": {
-      "commit": "91d11edf5c975c347d5b1069e57bd1a24aa20081",
-      "version": "2.0.0-rc.5"
+      "commit": "e4413464908e5d42ae13071e2c6e6c280da06a1a",
+      "version": "2.0.0-rc.12"
     },
     "sdk-php": {
-      "commit": "766f06ef175bb409aa9f37b2941191802be4b774",
-      "version": "2.0.0-rc.5"
+      "commit": "31698e4b97fd36e56f05517a0bd56ec7e16a8c05",
+      "version": "2.0.0-rc.6"
     },
     "sdk-python": {
-      "commit": "87f55a489835c512f4358e798ddaafb138bc2a9b",
-      "version": "2.0.0-rc.5"
+      "commit": "6c5ad457d98834f90799db093c8dff515bee710e",
+      "version": "2.0.0-rc.8"
     },
     "sdk-rust": {
-      "commit": "3582c313568b082105fc85e3523c59176e309ae3",
-      "version": "2.0.0-rc.5"
+      "commit": "527dc8581131a40f127d1d8144a3b55d87829ac8",
+      "version": "2.0.0-rc.7"
     },
     "server": {
-      "commit": "de79e57449bb0767853fbd7530f87ac1e88a13ee",
-      "version": "2.0.0-rc.5"
+      "commit": "0f0ce78e8d4eadb91a34a0d09f67e04f5335cdea",
+      "version": "2.0.0-rc.13"
     },
     "waterline": {
-      "commit": "33c017697bb5f556209ede5236ec355a90ce8de3",
-      "version": "2.0.0-rc.5"
+      "commit": "747ba7712a5e1c6ebee196640d76fc11f77fa67d",
+      "version": "2.0.0-rc.9"
     },
     "workflow": {
-      "commit": "d8356318311cf594ba47e685ec8e7654c7258a28",
-      "version": "2.0.0-rc.5"
+      "commit": "9416c2a4d3fe71d85f77c2465ed8337c833a79ee",
+      "version": "2.0.0-rc.12"
     }
   },
   "schema": "durable-workflow.beta-candidate/v2"

@@ -1,10 +1,11 @@
 # Durable Workflow product train
 
 [`current.json`](current.json) is the machine-readable authority for the one
-supported Durable Workflow 2.0 product train. Selecting its `current` value
+supported Durable Workflow 2.0 product train. Selecting its `current` record
 selects exact server, CLI, Workflow, Waterline operator, PHP SDK, Python SDK,
-and Rust SDK artifacts together. The Python registry normalizes the SemVer tag
-`2.0.0-rc.5` to the PEP 440 spelling `2.0.0rc5`; both identify the same train.
+and Rust SDK artifacts together. The record identifier names the aggregate
+authority; each component keeps its own prerelease sequence. Python registry
+versions use the PEP 440 spelling of the selected Python SDK version.
 Waterline remains one component. Its `install.waterline` record publishes
 separate `embedded` Composer and `service` OCI commands at that component's
 single train version.
@@ -22,11 +23,12 @@ train and cannot become public compatibility guidance. Validation downloads the
 pinned conformance suite, verifies its bytes, and requires passing heartbeat,
 replay, and signal/query results that exercised all three SDK clients.
 
-New synchronized prerelease plans must use every version in the current train.
-A prerelease increment advances all seven component identities together. After
-stable 2.0, compatible capabilities follow ordinary semantic-version
-progression: fixes use patches, additive capabilities use minors, and breaking
-changes use a new major.
+New aggregate prerelease plans must use every exact version in the current
+train. Component prerelease sequences advance independently, while one
+immutable candidate, release plan, and retained conformance suite bind the
+installable tuple as a unit. After stable 2.0, compatible capabilities follow
+ordinary semantic-version progression: fixes use patches, additive
+capabilities use minors, and breaking changes use a new major.
 
 Earlier 2.0 alphas, betas, release candidates, and mixed-version tuples remain
 immutable historical artifacts, but they are unsupported and omitted from
