@@ -62,6 +62,9 @@ from tests.verification_fixture import candidate_verification as complete_candid
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATH = ROOT / "beta-conformance" / "contract.json"
+POLYGLOT_PHP_IDENTITY_FIXTURE = (
+    ROOT / "tests" / "fixtures" / "beta-conformance" / "activities-cross-language-php-sdk.json"
+)
 
 
 def beta_schema_validator(name: str) -> Draft202012Validator:
@@ -612,6 +615,15 @@ class ContractTest(unittest.TestCase):
         self.assertEqual(
             ["sdk-php", "server"],
             runner_required_artifact_versions(php_runner),
+        )
+        activities_runner = next(
+            runner
+            for runner in contract["experiments"]["polyglot"]["runners"]
+            if runner["id"] == "activities-cross-language"
+        )
+        self.assertEqual(
+            ["workflow", "waterline", "server", "cli", "sdk-php", "sdk-python"],
+            activities_runner["required_distributions"],
         )
         signals_runner = contract["experiments"]["signals-queries"]["runners"][0]
         self.assertIn("waterline-service", signals_runner["required_distributions"])
@@ -2610,6 +2622,133 @@ class MultiRunnerExperimentTest(unittest.TestCase):
         self.assertEqual("artifact-binding", result["diagnostics"][-1]["runner"])
         self.assertIn("does not match the candidate digest", result["diagnostics"][-1]["stderr_tail"])
         validate_experiment_result(result, self.plan, self.contract)
+
+
+class PolyglotShardAssignmentRegressionTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.retained = json.loads(POLYGLOT_PHP_IDENTITY_FIXTURE.read_bytes())
+        native = self.retained["native_result"]
+        self.fixture = CandidateRecordFixture(native["artifact_versions"])
+        self.contract = load_contract(CONTRACT_PATH)
+        self.plan = prepare_plan(
+            self.fixture.repository,
+            self.fixture.manifest,
+            self.contract,
+            self.fixture.commit,
+            runtime_dependencies(),
+        )
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.artifact_root = self.root / "published-server"
+        self.result_dir = self.root / "result"
+        self.specification = self.contract["experiments"]["polyglot"]
+        self.runners = {runner["id"]: runner for runner in self.specification["runners"]}
+        for runner in self.specification["runners"]:
+            runner_path = self.artifact_root / runner["path"]
+            runner_path.parent.mkdir(parents=True, exist_ok=True)
+            runner_path.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+        self.fixture.close()
+
+    def execute_polyglot(self) -> dict[str, Any]:
+        def execute(command: list[str], **arguments: object) -> tuple[int, bool]:
+            stdout_path = arguments["stdout_path"]
+            stderr_path = arguments["stderr_path"]
+            assert isinstance(stdout_path, Path)
+            assert isinstance(stderr_path, Path)
+            stdout_path.write_text("", encoding="utf-8")
+            stderr_path.write_text("", encoding="utf-8")
+            native_dir = Path(command[-1])
+            runner = self.runners[native_dir.name]
+            if runner["id"] == self.retained["runner"]:
+                native = self.retained["native_result"]
+            else:
+                native = successful_native_result(
+                    self.plan,
+                    runner["required_distributions"],
+                    required_artifact_versions=runner_required_artifact_versions(runner),
+                )
+            (native_dir / runner["result"]).write_bytes(canonical_json(native))
+            return 0, False
+
+        with (
+            mock.patch("scripts.beta_conformance.execute_command", side_effect=execute),
+            mock.patch(
+                "scripts.beta_conformance.runner_runtime_environment",
+                side_effect=lambda *_arguments: contextlib.nullcontext({}),
+            ),
+        ):
+            return run_experiment(
+                self.plan,
+                self.contract,
+                "polyglot",
+                self.artifact_root,
+                self.result_dir,
+            )
+
+    def test_retained_activities_result_reproduces_the_historical_php_assignment_rejection(self) -> None:
+        self.assertEqual("rc-current-2-0-20260801", self.retained["candidate"])
+        self.assertEqual(
+            "bdd94127104739178d2048007f8dcd93e84cfd915c81e49a585be0aacd4b82af",
+            self.retained["historical_rejection"]["failure_fingerprint"],
+        )
+        runner = self.runners[self.retained["runner"]]
+        historical_runner = json.loads(canonical_json(runner))
+        historical_runner["required_distributions"] = [
+            distribution for distribution in historical_runner["required_distributions"] if distribution != "sdk-php"
+        ]
+
+        self.assertEqual(
+            self.retained["historical_rejection"]["reason"],
+            native_result_completeness_error(
+                self.retained["native_result"],
+                historical_runner["required_distributions"],
+                historical_runner,
+            ),
+        )
+
+    def test_retained_activities_result_passes_with_all_six_exact_distribution_identities(self) -> None:
+        result = self.execute_polyglot()
+
+        self.assertEqual("pass", result["outcome"])
+        self.assertEqual("passed", result["classification"])
+        activities = next(
+            diagnostic["native_summary"]
+            for diagnostic in result["diagnostics"]
+            if diagnostic["runner"] == self.retained["runner"]
+        )
+        self.assertEqual(
+            {"workflow", "waterline", "server", "cli", "sdk-python", "sdk-php"},
+            set(activities["executed_distribution_identities"]),
+        )
+
+    def test_unassigned_distribution_claim_in_the_retained_shard_still_fails_closed(self) -> None:
+        native = json.loads(canonical_json(self.retained["native_result"]))
+        native["artifact_versions"]["sdk-rust"] = self.plan["artifact_tuple"]["sdk-rust"]["version"]
+        native["executed_distribution_identities"]["sdk-rust"] = json.loads(
+            canonical_json(self.plan["distribution_identities"]["sdk-rust"])
+        )
+        runner = self.runners[self.retained["runner"]]
+
+        self.assertIn(
+            "artifact versions outside its required distributions: sdk-rust",
+            native_result_completeness_error(native, runner["required_distributions"], runner),
+        )
+
+    def test_another_shards_php_identity_cannot_mask_a_missing_activities_identity(self) -> None:
+        result = self.execute_polyglot()
+        activities = next(
+            diagnostic["native_summary"]
+            for diagnostic in result["diagnostics"]
+            if diagnostic["runner"] == self.retained["runner"]
+        )
+        activities["artifact_versions"].pop("sdk-php")
+        activities["executed_distribution_identities"].pop("sdk-php")
+
+        with self.assertRaisesRegex(ConformanceError, "does not retain its exact distribution assignment"):
+            validate_experiment_result(result, self.plan, self.contract)
 
 
 class EvidenceTest(unittest.TestCase):
