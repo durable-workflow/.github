@@ -79,7 +79,10 @@ jobs:
       statuses: read
     outputs:
       intake_ready: ${{ steps.discover.outputs.intake_ready }}
-      manifest: ${{ steps.discover.outputs.manifest }}
+      manifest_artifact_digest: ${{ steps.intake_manifest.outputs.artifact-digest }}
+      manifest_artifact_id: ${{ steps.intake_manifest.outputs.artifact-id }}
+      source_run_attempt: ${{ github.run_attempt }}
+      source_run_id: ${{ github.run_id }}
       trigger_approved: ${{ steps.discover.outputs.trigger_approved }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
@@ -114,9 +117,17 @@ jobs:
           fi
           python scripts/issue_authority.py discover \
             issue-authority/policy.json issue-authority/backlog.json \
-            --output "$RUNNER_TEMP/issue-intake.json" \
+            --output issue-intake.json \
             --github-output "$GITHUB_OUTPUT" \
             "${arguments[@]}"
+
+      - name: Retain the exact vetted intake manifest
+        id: intake_manifest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          archive: false
+          if-no-files-found: error
+          path: issue-intake.json
 
   activate:
     name: Activate immutable prerelease supersession authority
@@ -173,6 +184,7 @@ jobs:
     timeout-minutes: 15
     environment: beta-product-work
     permissions:
+      actions: read
       checks: read
       contents: read
       issues: read
@@ -180,6 +192,60 @@ jobs:
       statuses: write
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Download the exact vetted intake manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          artifact-ids: ${{ needs.intake.outputs.manifest_artifact_id }}
+          digest-mismatch: error
+          github-token: ${{ github.token }}
+          path: isolated-issue-intake
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.intake.outputs.source_run_id }}
+
+      - name: Validate the exact producer artifact before use
+        env:
+          ARTIFACT_DIRECTORY: isolated-issue-intake
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.intake.outputs.manifest_artifact_digest }}
+          EXPECTED_ARTIFACT_ID: ${{ needs.intake.outputs.manifest_artifact_id }}
+          EXPECTED_SOURCE_RUN_ATTEMPT: ${{ needs.intake.outputs.source_run_attempt }}
+          EXPECTED_SOURCE_RUN_ID: ${{ needs.intake.outputs.source_run_id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$EXPECTED_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]; then
+            printf 'producer artifact digest is not an exact SHA-256 digest\n' >&2
+            exit 1
+          fi
+          for identity in "$EXPECTED_ARTIFACT_ID" "$EXPECTED_SOURCE_RUN_ID" "$EXPECTED_SOURCE_RUN_ATTEMPT"; do
+            if [[ ! "$identity" =~ ^[1-9][0-9]*$ ]]; then
+              printf 'producer artifact identity is invalid\n' >&2
+              exit 1
+            fi
+          done
+          if [[ ! "$ARTIFACT_DIRECTORY" =~ ^isolated-[a-z0-9][a-z0-9._-]*$ ]]; then
+            printf 'artifact validation directory is unsafe\n' >&2
+            exit 1
+          fi
+          mapfile -d '' entries < <(
+            /usr/bin/find "$ARTIFACT_DIRECTORY" -mindepth 1 -maxdepth 1 -print0
+          )
+          if [ "${#entries[@]}" -ne 1 ] || [ ! -f "${entries[0]}" ] || [ -L "${entries[0]}" ]; then
+            printf 'artifact handoff must contain exactly one regular file\n' >&2
+            exit 1
+          fi
+          observed_digest="$(/usr/bin/sha256sum "${entries[0]}")"
+          observed_digest="${observed_digest%% *}"
+          if [ "$observed_digest" != "$EXPECTED_ARTIFACT_DIGEST" ]; then
+            printf 'artifact digest mismatch: expected %s, got %s\n' \
+              "$EXPECTED_ARTIFACT_DIGEST" "$observed_digest" >&2
+            exit 1
+          fi
+          printf 'validated artifact %s from run %s attempt %s\n' \
+            "$EXPECTED_ARTIFACT_ID" "$EXPECTED_SOURCE_RUN_ID" "$EXPECTED_SOURCE_RUN_ATTEMPT"
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
@@ -192,13 +258,21 @@ jobs:
         env:
           BETA_PRODUCT_WORK_TOKEN: ${{ secrets.BETA_PRODUCT_WORK_TOKEN }}
           GITHUB_TOKEN: ${{ github.token }}
-          INTAKE_MANIFEST: ${{ needs.intake.outputs.manifest }}
         run: |
-          printf '%s' "$INTAKE_MANIFEST" | base64 --decode >"$RUNNER_TEMP/issue-intake.json"
           python scripts/issue_authority.py apply \
             issue-authority/policy.json issue-authority/backlog.json \
-            --intake-manifest "$RUNNER_TEMP/issue-intake.json" \
+            --intake-manifest isolated-issue-intake/issue-intake.json \
             --evidence issue-authority-evidence.json
+
+      - name: Preserve a failure record when authority evidence is unavailable
+        if: failure()
+        run: |
+          if [ ! -f issue-authority-evidence.json ]; then
+            printf '%s%s\n' \
+              '{"error":"workflow failed before authority evidence was written",' \
+              '"mode":"apply","outcome":"fail","schema":"durable-workflow.github-issue-authority-evidence/v1"}' \
+              >issue-authority-evidence.json
+          fi
 
       - name: Retain migration or failure evidence
         if: always()
@@ -206,7 +280,7 @@ jobs:
         with:
           name: github-issue-authority-apply-${{ github.run_id }}-${{ github.run_attempt }}
           path: issue-authority-evidence.json
-          if-no-files-found: error
+          if-no-files-found: ignore
           retention-days: 90
 
   audit:
@@ -223,6 +297,7 @@ jobs:
     timeout-minutes: 15
     environment: beta-product-work
     permissions:
+      actions: read
       checks: read
       contents: read
       issues: read
@@ -230,6 +305,60 @@ jobs:
       statuses: write
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Download the exact vetted intake manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          artifact-ids: ${{ needs.intake.outputs.manifest_artifact_id }}
+          digest-mismatch: error
+          github-token: ${{ github.token }}
+          path: isolated-issue-intake
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.intake.outputs.source_run_id }}
+
+      - name: Validate the exact producer artifact before use
+        env:
+          ARTIFACT_DIRECTORY: isolated-issue-intake
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.intake.outputs.manifest_artifact_digest }}
+          EXPECTED_ARTIFACT_ID: ${{ needs.intake.outputs.manifest_artifact_id }}
+          EXPECTED_SOURCE_RUN_ATTEMPT: ${{ needs.intake.outputs.source_run_attempt }}
+          EXPECTED_SOURCE_RUN_ID: ${{ needs.intake.outputs.source_run_id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$EXPECTED_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]; then
+            printf 'producer artifact digest is not an exact SHA-256 digest\n' >&2
+            exit 1
+          fi
+          for identity in "$EXPECTED_ARTIFACT_ID" "$EXPECTED_SOURCE_RUN_ID" "$EXPECTED_SOURCE_RUN_ATTEMPT"; do
+            if [[ ! "$identity" =~ ^[1-9][0-9]*$ ]]; then
+              printf 'producer artifact identity is invalid\n' >&2
+              exit 1
+            fi
+          done
+          if [[ ! "$ARTIFACT_DIRECTORY" =~ ^isolated-[a-z0-9][a-z0-9._-]*$ ]]; then
+            printf 'artifact validation directory is unsafe\n' >&2
+            exit 1
+          fi
+          mapfile -d '' entries < <(
+            /usr/bin/find "$ARTIFACT_DIRECTORY" -mindepth 1 -maxdepth 1 -print0
+          )
+          if [ "${#entries[@]}" -ne 1 ] || [ ! -f "${entries[0]}" ] || [ -L "${entries[0]}" ]; then
+            printf 'artifact handoff must contain exactly one regular file\n' >&2
+            exit 1
+          fi
+          observed_digest="$(/usr/bin/sha256sum "${entries[0]}")"
+          observed_digest="${observed_digest%% *}"
+          if [ "$observed_digest" != "$EXPECTED_ARTIFACT_DIGEST" ]; then
+            printf 'artifact digest mismatch: expected %s, got %s\n' \
+              "$EXPECTED_ARTIFACT_DIGEST" "$observed_digest" >&2
+            exit 1
+          fi
+          printf 'validated artifact %s from run %s attempt %s\n' \
+            "$EXPECTED_ARTIFACT_ID" "$EXPECTED_SOURCE_RUN_ID" "$EXPECTED_SOURCE_RUN_ATTEMPT"
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
@@ -242,13 +371,21 @@ jobs:
         env:
           BETA_PRODUCT_WORK_TOKEN: ${{ secrets.BETA_PRODUCT_WORK_TOKEN }}
           GITHUB_TOKEN: ${{ github.token }}
-          INTAKE_MANIFEST: ${{ needs.intake.outputs.manifest }}
         run: |
-          printf '%s' "$INTAKE_MANIFEST" | base64 --decode >"$RUNNER_TEMP/issue-intake.json"
           python scripts/issue_authority.py audit \
             issue-authority/policy.json issue-authority/backlog.json \
-            --intake-manifest "$RUNNER_TEMP/issue-intake.json" \
+            --intake-manifest isolated-issue-intake/issue-intake.json \
             --evidence issue-authority-evidence.json
+
+      - name: Preserve a failure record when authority evidence is unavailable
+        if: failure()
+        run: |
+          if [ ! -f issue-authority-evidence.json ]; then
+            printf '%s%s\n' \
+              '{"error":"workflow failed before authority evidence was written",' \
+              '"mode":"audit","outcome":"fail","schema":"durable-workflow.github-issue-authority-evidence/v1"}' \
+              >issue-authority-evidence.json
+          fi
 
       - name: Retain authority audit evidence
         if: always()
@@ -256,5 +393,5 @@ jobs:
         with:
           name: github-issue-authority-audit-${{ github.run_id }}-${{ github.run_attempt }}
           path: issue-authority-evidence.json
-          if-no-files-found: error
+          if-no-files-found: ignore
           retention-days: 90

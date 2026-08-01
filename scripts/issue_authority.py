@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import hashlib
 import json
 import os
@@ -3044,15 +3043,11 @@ def _write_evidence(path: Path | None, evidence: dict[str, Any]) -> None:
 def _write_discovery_outputs(path: Path | None, manifest: dict[str, Any]) -> None:
     if path is None:
         return
-    encoded = base64.b64encode(
-        json.dumps(manifest, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    ).decode("ascii")
     trigger = manifest.get("trigger")
     trigger_approved = not isinstance(trigger, Mapping) or trigger.get("approved") is True
     with path.open("a", encoding="utf-8") as output:
         output.write("intake_ready=true\n")
         output.write(f"trigger_approved={'true' if trigger_approved else 'false'}\n")
-        output.write(f"manifest={encoded}\n")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

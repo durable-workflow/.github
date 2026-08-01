@@ -5,8 +5,10 @@ import copy
 import hashlib
 import io
 import json
+import os
 import re
 import subprocess
+import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
@@ -35,6 +37,8 @@ from scripts.issue_authority import (
     AuthorityError,
     GitHubApi,
     GitHubDiscovery,
+    _write_discovery_outputs,
+    _write_evidence,
     activate_prerelease_supersessions,
     apply_backlog,
     assess_issue_intake,
@@ -1023,12 +1027,14 @@ class ContractValidationTest(unittest.TestCase):
         )
         self.assertNotIn("write", intake["permissions"].values())
         self.assertNotIn("BETA_PRODUCT_WORK_TOKEN", json.dumps(intake))
-        self.assertEqual("${{ github.token }}", intake["steps"][-1]["env"]["GITHUB_TOKEN"])
+        discover = next(step for step in intake["steps"] if step.get("id") == "discover")
+        self.assertEqual("${{ github.token }}", discover["env"]["GITHUB_TOKEN"])
         for name in ("apply", "audit"):
             job = workflow["jobs"][name]
             self.assertEqual("beta-product-work", job["environment"])
             self.assertEqual(
                 {
+                    "actions": "read",
                     "checks": "read",
                     "contents": "read",
                     "issues": "read",
@@ -1082,6 +1088,80 @@ class ContractValidationTest(unittest.TestCase):
                         value,
                     ]
                 )
+
+    def test_oversized_intake_manifest_is_file_backed_and_outputs_stay_bounded(self) -> None:
+        argument_limit = os.sysconf("SC_ARG_MAX")
+        manifest = {
+            "schema": INTAKE_SCHEMA,
+            "issues": [{"body": "x" * (argument_limit + 1)}],
+            "trigger": {"approved": True},
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path = root / "issue-intake.json"
+            github_output = root / "github-output"
+
+            _write_evidence(manifest_path, manifest)
+            _write_discovery_outputs(github_output, manifest)
+
+            self.assertGreater(manifest_path.stat().st_size, argument_limit)
+            self.assertEqual(
+                ["intake_ready=true", "trigger_approved=true"],
+                github_output.read_text(encoding="utf-8").splitlines(),
+            )
+
+        workflow_path = ROOT / ".github" / "workflows" / "issue-authority.yml"
+        workflow_source = workflow_path.read_text(encoding="utf-8")
+        workflow = yaml.safe_load(workflow_source)
+        intake = workflow["jobs"]["intake"]
+
+        self.assertEqual(
+            {
+                "intake_ready",
+                "manifest_artifact_digest",
+                "manifest_artifact_id",
+                "source_run_attempt",
+                "source_run_id",
+                "trigger_approved",
+            },
+            set(intake["outputs"]),
+        )
+        self.assertNotIn("INTAKE_MANIFEST", workflow_source)
+        self.assertNotIn("${{ needs.intake.outputs.manifest }}", workflow_source)
+        self.assertNotIn("base64 --decode", workflow_source)
+
+        for job_name in ("apply", "audit"):
+            with self.subTest(job=job_name):
+                job = workflow["jobs"][job_name]
+                download = job["steps"][1]
+                validator = job["steps"][2]
+                self.assertEqual(
+                    "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+                    download["uses"],
+                )
+                self.assertEqual(
+                    {
+                        "artifact-ids": "${{ needs.intake.outputs.manifest_artifact_id }}",
+                        "digest-mismatch": "error",
+                        "github-token": "${{ github.token }}",
+                        "path": "isolated-issue-intake",
+                        "repository": "${{ github.repository }}",
+                        "run-id": "${{ needs.intake.outputs.source_run_id }}",
+                    },
+                    download["with"],
+                )
+                self.assertEqual(
+                    "${{ needs.intake.outputs.manifest_artifact_digest }}",
+                    validator["env"]["EXPECTED_ARTIFACT_DIGEST"],
+                )
+                self.assertEqual(
+                    "${{ needs.intake.outputs.source_run_attempt }}",
+                    validator["env"]["EXPECTED_SOURCE_RUN_ATTEMPT"],
+                )
+                evidence_upload = job["steps"][-1]
+                self.assertEqual("always()", evidence_upload["if"])
+                self.assertEqual("ignore", evidence_upload["with"]["if-no-files-found"])
 
     def test_comments_and_pull_request_content_are_not_event_inputs(self) -> None:
         source = (ROOT / ".github" / "workflows" / "issue-authority.yml").read_text(encoding="utf-8")
