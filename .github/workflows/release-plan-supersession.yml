@@ -20,10 +20,6 @@ on:
 
 permissions: {}
 
-concurrency:
-  group: release-plan-registry
-  cancel-in-progress: false
-
 jobs:
   qualify:
     name: Prove protected terminal failure without write authority
@@ -36,6 +32,8 @@ jobs:
       attestations: read
       contents: read
     outputs:
+      approval-handoff: ${{ steps.approval.outputs.handoff }}
+      approval-producer-attempt: ${{ steps.approval.outputs.producer-attempt }}
       artifact-digest: ${{ steps.privileged-handoff.outputs.artifact-digest }}
       artifact-id: ${{ steps.privileged-handoff.outputs.artifact-id }}
       source-run-attempt: ${{ github.run_attempt }}
@@ -113,12 +111,30 @@ jobs:
           if-no-files-found: error
           path: supersession-handoff.tar
 
+      - name: Bind protected qualification to this workflow run
+        id: approval
+        run: |
+          python scripts/protected_release_plan_writer.py create \
+            --workflow release-plan-supersession.yml \
+            --repository "$GITHUB_REPOSITORY" \
+            --ref "$GITHUB_REF" \
+            --workflow-ref "$GITHUB_WORKFLOW_REF" \
+            --source-sha "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --github-output "$GITHUB_OUTPUT"
+
   record:
     name: Record protected terminal failure from a fresh checkout
     needs: qualify
-    if: github.ref == 'refs/heads/main'
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      needs.qualify.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    concurrency:
+      group: release-plan-registry
+      cancel-in-progress: false
     permissions:
       actions: read
       attestations: read
@@ -185,6 +201,22 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: "3.13"
+
+      - name: Validate the exact protected qualification handoff
+        env:
+          APPROVED_WRITER_HANDOFF: ${{ needs.qualify.outputs.approval-handoff }}
+          APPROVAL_PRODUCER_ATTEMPT: ${{ needs.qualify.outputs.approval-producer-attempt }}
+        run: |
+          python scripts/protected_release_plan_writer.py validate \
+            --workflow release-plan-supersession.yml \
+            --repository "$GITHUB_REPOSITORY" \
+            --ref "$GITHUB_REF" \
+            --workflow-ref "$GITHUB_WORKFLOW_REF" \
+            --source-sha "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --current-attempt "$GITHUB_RUN_ATTEMPT" \
+            --producer-attempt "$APPROVAL_PRODUCER_ATTEMPT" \
+            --handoff "$APPROVED_WRITER_HANDOFF"
 
       - name: Extract the validated supersession handoff
         run: |
