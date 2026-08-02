@@ -10,6 +10,8 @@ import { after, before, test } from 'node:test';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
+import { allowedRepositoryFactsRequest } from '../scripts/visual_capture_boundary.mjs';
+
 const execFileAsync = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const fixtureRoot = path.join(root, 'tests', 'fixtures', 'visual-evidence');
@@ -165,11 +167,12 @@ function sanitizedStderr(stderr) {
 async function capture(
   scenario,
   {
-    click = [], env = {}, height = 600, page = 'occlusion.html', query = {}, width = 800,
+    click = [], env = {}, height = 600, page = 'occlusion.html', query = {}, source, width = 800,
   } = {},
 ) {
   const directory = path.join(artifactRoot, scenario);
   const reportPath = path.join(directory, 'report.json');
+  const manifestPath = path.join(directory, 'manifest.json');
   const captureUrl = new URL(`/${page}`, baseUrl);
   captureUrl.searchParams.set('case', scenario);
   for (const [key, value] of Object.entries(query)) captureUrl.searchParams.set(key, value);
@@ -182,10 +185,13 @@ async function capture(
     '--height', String(height),
     '--screenshot', path.join(directory, 'capture.png'),
     '--report', reportPath,
-    '--manifest', path.join(directory, 'manifest.json'),
+    '--manifest', manifestPath,
     '--timeout-ms', '10000',
   ];
   for (const selector of click) args.push('--click', selector);
+  if (source) {
+    args.push('--source-repository', source.repository, '--source-revision', source.revision);
+  }
   let status = 0;
   let stderr = '';
   try {
@@ -207,7 +213,8 @@ async function capture(
       { cause: error },
     );
   }
-  return { status, stderr, report };
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  return { status, stderr, report, manifest };
 }
 
 async function boundaryRejectedCapture(
@@ -619,6 +626,51 @@ test('allows an asset from the exact capture origin', async () => {
   assert.deepEqual(result.report.geometry.unreachable_controls, []);
 });
 
+test('binds reports, manifest entries, and the manifest to one candidate source', async () => {
+  const source = {
+    repository: 'durable-workflow/sdk-rust',
+    revision: 'a'.repeat(40),
+  };
+  const result = await capture('source-bound', { source });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.report.source, source);
+  assert.deepEqual(result.manifest.source, source);
+  assert.deepEqual(result.manifest.captures[0].source, source);
+});
+
+test('allows only each documentation host exact read-only repository facts endpoint', () => {
+  const repositories = new Map([
+    ['durable-workflow.com', 'workflow'],
+    ['php.durable-workflow.com', 'sdk-php'],
+    ['python.durable-workflow.com', 'sdk-python'],
+    ['rust.durable-workflow.com', 'sdk-rust'],
+  ]);
+  for (const [hostname, repository] of repositories) {
+    const captureUrl = new URL(`https://${hostname}/reference/`);
+    const exactUrl = `https://api.github.com/repos/durable-workflow/${repository}`;
+    assert.equal(allowedRepositoryFactsRequest(captureUrl, new URL(exactUrl), 'GET', 'fetch'), true);
+    assert.equal(
+      allowedRepositoryFactsRequest(captureUrl, new URL(`${exactUrl}/contributors`), 'GET', 'fetch'),
+      false,
+    );
+    assert.equal(
+      allowedRepositoryFactsRequest(captureUrl, new URL(`${exactUrl}?ref=main`), 'GET', 'fetch'),
+      false,
+    );
+    assert.equal(allowedRepositoryFactsRequest(captureUrl, new URL(exactUrl), 'POST', 'fetch'), false);
+    assert.equal(allowedRepositoryFactsRequest(captureUrl, new URL(exactUrl), 'GET', 'script'), false);
+  }
+  assert.equal(
+    allowedRepositoryFactsRequest(
+      new URL('https://status.durable-workflow.com/'),
+      new URL('https://api.github.com/repos/durable-workflow/sdk-rust'),
+      'GET',
+      'fetch',
+    ),
+    false,
+  );
+});
+
 test('allows a persistent connection to the exact capture origin', async () => {
   const connectionsBeforeCapture = sameSurfaceSocketCount;
   const result = await capture('allowed-same-surface-socket', {
@@ -659,13 +711,16 @@ test('preserves clipping, overflow, console, and native control-size failures', 
     ['clipped-text', 'clipped_text', 1],
     ['clipped-control', 'clipped_control_text', 1],
     ['console-error', 'console_errors', 1],
+    ['sanitized-request', 'http_errors', 1],
     ['oversized-choice', 'oversized_choice_controls', 1],
   ];
   for (const [scenario, field, expected] of cases) {
     await testContext.test(scenario, async () => {
       const result = await capture(scenario);
       assert.notEqual(result.status, 0);
-      const findings = field === 'console_errors' ? result.report : result.report.geometry;
+      const findings = ['console_errors', 'http_errors', 'request_failures', 'page_errors'].includes(field)
+        ? result.report
+        : result.report.geometry;
       assert.equal(Array.isArray(findings[field]) ? findings[field].length : findings[field], expected);
     });
   }

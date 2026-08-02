@@ -70,6 +70,7 @@ def classify_changes(
     paths: list[str],
     policy: dict[str, Any],
     base_ref: str | None = None,
+    profile_name: str | None = None,
 ) -> dict[str, list[str]]:
     extensions = tuple(policy["customer_facing_extensions"])
     matches: dict[str, set[str]] = {}
@@ -78,9 +79,17 @@ def classify_changes(
         if not normalized.lower().endswith(extensions):
             continue
         searchable = f"{normalized}\n{file_content(root, normalized, base_ref)}"
-        for interaction, rule in policy["interactions"].items():
-            if any(re.search(pattern, searchable) for pattern in rule["content_patterns"]):
-                matches.setdefault(interaction, set()).add(normalized)
+        if profile_name is None:
+            for interaction, rule in policy["interactions"].items():
+                if any(re.search(pattern, searchable) for pattern in rule["content_patterns"]):
+                    matches.setdefault(interaction, set()).add(normalized)
+        else:
+            profile = policy["visual_profiles"].get(profile_name)
+            if profile is None:
+                raise VisualEvidenceError(f"unknown visual evidence profile: {profile_name}")
+            for rule in profile["change_rules"]:
+                if any(re.search(pattern, normalized) for pattern in rule["path_patterns"]):
+                    matches.setdefault(rule["classification"], set()).add(normalized)
     return {interaction: sorted(paths) for interaction, paths in sorted(matches.items())}
 
 
@@ -94,7 +103,12 @@ def viewport_class(width: int, policy: dict[str, Any]) -> str | None:
     return None
 
 
-def validate_report(manifest_path: Path, capture: dict[str, Any], policy: dict[str, Any]) -> list[str]:
+def validate_report(
+    manifest_path: Path,
+    capture: dict[str, Any],
+    policy: dict[str, Any],
+    expected_source: dict[str, str] | None = None,
+) -> list[str]:
     failures: list[str] = []
     evidence_root = manifest_path.parent.resolve()
     report_path = (evidence_root / str(capture.get("report", ""))).resolve()
@@ -109,9 +123,14 @@ def validate_report(manifest_path: Path, capture: dict[str, Any], policy: dict[s
         return failures + [str(exc)]
     if report.get("schema") != REPORT_SCHEMA:
         failures.append(f"capture report has an unsupported schema: {report_path}")
-    for field in ("surface", "state", "viewport", "interactions"):
+    compared_fields = ["surface", "state", "viewport", "interactions"]
+    if expected_source is not None:
+        compared_fields.append("source")
+    for field in compared_fields:
         if report.get(field) != capture.get(field):
             failures.append(f"capture report {field} does not match its manifest entry: {report_path}")
+    if expected_source is not None and capture.get("source") != expected_source:
+        failures.append(f"capture is not bound to the expected source: {report_path}")
     if report.get("page_status") != 200:
         failures.append(f"capture report did not render an HTTP 200 page: {report_path}")
     geometry = report.get("geometry")
@@ -141,6 +160,8 @@ def validate_manifest(
     manifest_path: Path,
     classification: dict[str, list[str]],
     policy: dict[str, Any],
+    profile_name: str | None = None,
+    expected_revision: str | None = None,
 ) -> list[str]:
     if not classification and not manifest_path.is_file():
         return []
@@ -149,10 +170,32 @@ def validate_manifest(
         raise VisualEvidenceError("visual evidence manifest has an unsupported schema")
 
     failures: list[str] = []
+    profile = None
+    expected_source = None
+    profile_classifications: dict[str, dict[str, Any]] = {}
+    if profile_name:
+        profile = policy["visual_profiles"].get(profile_name)
+        if profile is None:
+            raise VisualEvidenceError(f"unknown visual evidence profile: {profile_name}")
+        profile_classifications = {
+            rule["classification"]: rule for rule in profile["change_rules"]
+        }
+        if any(name in profile_classifications for name in classification):
+            if not expected_revision or re.fullmatch(r"[0-9a-f]{40}", expected_revision) is None:
+                failures.append("profile evidence requires the expected 40-character source revision")
+            else:
+                expected_source = {
+                    "repository": profile["repository"],
+                    "revision": expected_revision,
+                }
+                if manifest.get("source") != expected_source:
+                    failures.append("visual evidence manifest is missing, stale, or bound to the wrong source")
     captures = [capture for capture in manifest["captures"] if isinstance(capture, dict)]
     for capture in captures:
-        failures.extend(validate_report(manifest_path, capture, policy))
+        failures.extend(validate_report(manifest_path, capture, policy, expected_source))
     for interaction, paths in classification.items():
+        if interaction not in policy["interactions"]:
+            continue
         rule = policy["interactions"][interaction]
         required_state = rule["required_state"]
         state_captures = [capture for capture in captures if capture.get("state") == required_state]
@@ -184,6 +227,46 @@ def validate_manifest(
                     f"capture with a meaningful click at the {viewport_name} viewport"
                 )
                 continue
+    if profile is not None:
+        required_states: set[str] = set()
+        affected_paths: set[str] = set()
+        for name, paths in classification.items():
+            rule = profile_classifications.get(name)
+            if rule is None:
+                continue
+            required_states.update(rule["required_states"])
+            affected_paths.update(paths)
+        for state in sorted(required_states):
+            state_rule = profile["states"][state]
+            selector_patterns = state_rule["interaction_selector_patterns"]
+            for viewport_name, expected_viewport in profile["viewports"].items():
+                qualifying = []
+                for capture in captures:
+                    if capture.get("surface") != profile["surface"]:
+                        continue
+                    if capture.get("state") != state or capture.get("viewport") != expected_viewport:
+                        continue
+                    interactions = capture.get("interactions")
+                    if not isinstance(interactions, list):
+                        continue
+                    selectors = [
+                        item.get("selector", "")
+                        for item in interactions
+                        if isinstance(item, dict)
+                        and item.get("type") == "click"
+                        and isinstance(item.get("selector"), str)
+                    ]
+                    if selector_patterns and not all(
+                        any(re.search(pattern, selector) for selector in selectors)
+                        for pattern in selector_patterns
+                    ):
+                        continue
+                    qualifying.append(capture)
+                if not qualifying:
+                    failures.append(
+                        f"visual changes in {', '.join(sorted(affected_paths))} require a source-bound "
+                        f"{state} capture at the exact {viewport_name} viewport"
+                    )
     return failures
 
 
@@ -196,8 +279,10 @@ def parser() -> argparse.ArgumentParser:
         subparser.add_argument("--root", type=Path, default=Path.cwd())
         subparser.add_argument("--base-ref")
         subparser.add_argument("--changed-file", action="append", default=[])
+        subparser.add_argument("--profile")
         if name == "validate":
             subparser.add_argument("--manifest", type=Path, required=True)
+            subparser.add_argument("--expected-revision")
     return command_parser
 
 
@@ -210,11 +295,23 @@ def main() -> None:
         paths.extend(changed_paths(root, args.base_ref))
     if not paths:
         raise SystemExit("provide --base-ref or at least one --changed-file")
-    classification = classify_changes(root, sorted(set(paths)), policy, args.base_ref)
+    classification = classify_changes(
+        root,
+        sorted(set(paths)),
+        policy,
+        args.base_ref,
+        args.profile,
+    )
     if args.command == "classify":
         print(json.dumps({"classification": classification}, sort_keys=True))
         return
-    failures = validate_manifest(args.manifest.resolve(), classification, policy)
+    failures = validate_manifest(
+        args.manifest.resolve(),
+        classification,
+        policy,
+        args.profile,
+        args.expected_revision,
+    )
     if failures:
         raise SystemExit("\n".join(failures))
     print(json.dumps({"classification": classification, "valid": True}, sort_keys=True))

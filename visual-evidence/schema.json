@@ -91,6 +91,18 @@
     "schema": {
       "const": "durable-workflow.visual-evidence-policy/v1"
     },
+    "visual_profiles": {
+      "additionalProperties": false,
+      "properties": {
+        "rust-sdk-reference": {
+          "$ref": "#/$defs/visualProfile"
+        }
+      },
+      "required": [
+        "rust-sdk-reference"
+      ],
+      "type": "object"
+    },
     "viewport_classes": {
       "additionalProperties": false,
       "properties": {
@@ -118,6 +130,7 @@
     "interactions",
     "report_requirements",
     "review_contract",
+    "visual_profiles",
     "viewport_classes"
   ],
   "type": "object",
@@ -177,6 +190,134 @@
       "required": [
         "correlate_with_screenshot",
         "inspect_report_fields"
+      ],
+      "type": "object"
+    },
+    "visualChangeRule": {
+      "additionalProperties": false,
+      "properties": {
+        "classification": {
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "type": "string"
+        },
+        "path_patterns": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "required_states": {
+          "items": {
+            "pattern": "^[a-z][a-z0-9-]*$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "classification",
+        "path_patterns",
+        "required_states"
+      ],
+      "type": "object"
+    },
+    "visualProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "change_rules": {
+          "items": {
+            "$ref": "#/$defs/visualChangeRule"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "repository": {
+          "pattern": "^durable-workflow/[a-z0-9.-]+$",
+          "type": "string"
+        },
+        "states": {
+          "additionalProperties": {
+            "$ref": "#/$defs/visualState"
+          },
+          "minProperties": 1,
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9-]*$"
+          },
+          "type": "object"
+        },
+        "surface": {
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "type": "string"
+        },
+        "viewports": {
+          "additionalProperties": false,
+          "properties": {
+            "desktop": {
+              "$ref": "#/$defs/exactViewport"
+            },
+            "intermediate": {
+              "$ref": "#/$defs/exactViewport"
+            },
+            "mobile": {
+              "$ref": "#/$defs/exactViewport"
+            }
+          },
+          "required": [
+            "desktop",
+            "intermediate",
+            "mobile"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "change_rules",
+        "repository",
+        "states",
+        "surface",
+        "viewports"
+      ],
+      "type": "object"
+    },
+    "visualState": {
+      "additionalProperties": false,
+      "properties": {
+        "interaction_selector_patterns": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "interaction_selector_patterns"
+      ],
+      "type": "object"
+    },
+    "exactViewport": {
+      "additionalProperties": false,
+      "properties": {
+        "height": {
+          "maximum": 2400,
+          "minimum": 480,
+          "type": "integer"
+        },
+        "width": {
+          "maximum": 2560,
+          "minimum": 320,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "height",
+        "width"
       ],
       "type": "object"
     },

@@ -7,6 +7,7 @@
     ".html",
     ".jinja",
     ".jinja2",
+    ".js",
     ".jsx",
     ".less",
     ".sass",
@@ -45,6 +46,8 @@
     ],
     "empty_report_findings": [
       "console_errors",
+      "http_errors",
+      "request_failures",
       "page_errors"
     ],
     "false_geometry_flags": [
@@ -61,6 +64,8 @@
         "geometry.oversized_choice_controls",
         "geometry.unreachable_controls",
         "console_errors",
+        "http_errors",
+        "request_failures",
         "page_errors"
       ]
     },
@@ -73,11 +78,76 @@
         "geometry.oversized_choice_controls",
         "geometry.unreachable_controls",
         "console_errors",
+        "http_errors",
+        "request_failures",
         "page_errors"
       ]
     }
   },
   "schema": "durable-workflow.visual-evidence-policy/v1",
+  "visual_profiles": {
+    "rust-sdk-reference": {
+      "change_rules": [
+        {
+          "classification": "rust-sdk-reference",
+          "path_patterns": [
+            "^docs/(?:[^/]+\\.html|analytics/[^/]+\\.(?:css|js))$"
+          ],
+          "required_states": [
+            "initial"
+          ]
+        },
+        {
+          "classification": "rust-sdk-analytics",
+          "path_patterns": [
+            "^docs/(?:analytics-head\\.html|analytics/[^/]+\\.(?:css|js))$"
+          ],
+          "required_states": [
+            "initial",
+            "granted",
+            "denied",
+            "preferences-open"
+          ]
+        }
+      ],
+      "repository": "durable-workflow/sdk-rust",
+      "states": {
+        "denied": {
+          "interaction_selector_patterns": [
+            "data-consent[^]]*denied"
+          ]
+        },
+        "granted": {
+          "interaction_selector_patterns": [
+            "data-consent[^]]*granted"
+          ]
+        },
+        "initial": {
+          "interaction_selector_patterns": []
+        },
+        "preferences-open": {
+          "interaction_selector_patterns": [
+            "analytics-preferences"
+          ]
+        }
+      },
+      "surface": "rust-sdk-reference",
+      "viewports": {
+        "desktop": {
+          "height": 900,
+          "width": 1440
+        },
+        "intermediate": {
+          "height": 900,
+          "width": 800
+        },
+        "mobile": {
+          "height": 844,
+          "width": 390
+        }
+      }
+    }
+  },
   "viewport_classes": {
     "desktop": {
       "minimum_width": 960

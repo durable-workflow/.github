@@ -2,7 +2,7 @@
   "name": "durable-workflow-github-control-plane",
   "private": true,
   "scripts": {
-    "test:visual-capture": "node --check scripts/pipeline_visual_capture.mjs && node --test tests/test_visual_capture.mjs"
+    "test:visual-capture": "node --check scripts/visual_capture_boundary.mjs && node --check scripts/pipeline_visual_capture.mjs && node --test tests/test_visual_capture.mjs"
   },
   "dependencies": {
     "@sparticuz/chromium": "140.0.0",

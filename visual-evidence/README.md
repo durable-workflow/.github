@@ -25,7 +25,16 @@ Validation also requires a meaningful click selector, an HTTP 200 capture,
 the referenced screenshot and report, and a healthy capture report. The
 machine-owned report requirements in `policy.json` reject horizontal overflow,
 clipped text, clipped control text, oversized native choice controls, browser
-or page errors, and non-empty `geometry.unreachable_controls` findings.
+request, HTTP, console, or page errors, and non-empty
+`geometry.unreachable_controls` findings.
+
+The `rust-sdk-reference` profile treats the Rust reference's HTML templates,
+analytics stylesheet, and browser runtime as visual inputs while leaving Rust
+source, API prose, and Markdown on the lightweight documentation path. Visual
+changes require exact 1440x900, 800x900, and 390x844 captures. Analytics inputs
+expand that matrix across the initial, granted, denied, and preferences-open
+states. The manifest, every capture entry, and every report must bind to the
+same expected `durable-workflow/sdk-rust` commit.
 
 ## Shared capture runtime
 
@@ -64,11 +73,12 @@ to dedicated workers, shared workers, and recursively nested worker realms.
 Loopback previews may use only the exact origin passed to `--url`, including
 its scheme and port. Public
 captures follow the same exact-origin rule. The only cross-origin rendering
-dependencies are a `GET` fetch for the Workflow star count from its exact
-GitHub API repository path, the status page's exact Google Font stylesheet
-query and font files, and the Python reference's exact default Material font
-stylesheet query and font files. Those exceptions are limited by capture host,
-HTTPS origin, request type, method, and path. Other redirects, navigations,
+dependencies are a `GET` fetch for repository facts from the exact repository
+path associated with the main site or the PHP, Python, and Rust SDK hostname,
+the status page's exact Google Font stylesheet query and font files, and the
+Python reference's exact default Material font stylesheet query and font files.
+Those exceptions are limited by capture host, HTTPS origin, request type,
+method, and path. Other redirects, navigations,
 frames, resources, browser API requests, and persistent connections fail the
 capture before a screenshot, report, or manifest is written. URL credentials,
 authorization headers, non-HTTP(S) protocols, and unapproved loopback, private,

@@ -8,6 +8,11 @@ import path from 'node:path';
 import process from 'node:process';
 import { createRequire } from 'node:module';
 
+import {
+  allowedRepositoryFactsOrigin,
+  allowedRepositoryFactsRequest,
+} from './visual_capture_boundary.mjs';
+
 const require = createRequire(import.meta.url);
 const PUBLIC_SURFACE_HOSTS = new Set([
   'durable-workflow.com',
@@ -173,6 +178,22 @@ function parseArgs(argv) {
   if (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 1_000 || options.timeoutMs > 120_000) {
     fail('--timeout-ms must be between 1000 and 120000');
   }
+  const sourceValues = [options.sourceRepository, options.sourceRevision].filter(Boolean);
+  if (sourceValues.length === 1) {
+    fail('--source-repository and --source-revision must be supplied together');
+  }
+  if (sourceValues.length === 2) {
+    if (!/^durable-workflow\/[a-z0-9.-]+$/.test(options.sourceRepository)) {
+      fail('--source-repository must name a Durable Workflow repository');
+    }
+    if (!/^[0-9a-f]{40}$/.test(options.sourceRevision)) {
+      fail('--source-revision must be a 40-character lowercase commit SHA');
+    }
+    options.source = {
+      repository: options.sourceRepository,
+      revision: options.sourceRevision,
+    };
+  }
   return options;
 }
 
@@ -254,15 +275,8 @@ function allowedGoogleFontFile(captureUrl, requestUrl, method, resourceType) {
 }
 
 function allowedPublicAsset(captureUrl, requestUrl, method, resourceType) {
-  if (
-    captureUrl.hostname === 'durable-workflow.com'
-    && requestUrl.origin === 'https://api.github.com'
-    && requestUrl.pathname === '/repos/durable-workflow/workflow'
-    && requestUrl.search === ''
-    && method === 'GET'
-    && ['fetch', 'xhr'].includes(resourceType)
-  ) return true;
-  return allowedGoogleFontStyle(captureUrl, requestUrl, method, resourceType)
+  return allowedRepositoryFactsRequest(captureUrl, requestUrl, method, resourceType)
+    || allowedGoogleFontStyle(captureUrl, requestUrl, method, resourceType)
     || allowedGoogleFontFile(captureUrl, requestUrl, method, resourceType);
 }
 
@@ -328,10 +342,7 @@ function rejectedWebRtcDestination(rawUrl) {
 
 function allowedProxyOrigin(captureUrl, requestUrl) {
   if (requestUrl.origin === captureUrl.origin) return true;
-  if (
-    captureUrl.hostname === 'durable-workflow.com'
-    && requestUrl.origin === 'https://api.github.com'
-  ) return true;
+  if (allowedRepositoryFactsOrigin(captureUrl, requestUrl)) return true;
   return GOOGLE_FONT_STYLES.has(captureUrl.hostname)
     && ['https://fonts.googleapis.com', 'https://fonts.gstatic.com'].includes(requestUrl.origin);
 }
@@ -794,6 +805,10 @@ function updateManifest(options, screenshotPath, reportPath, report) {
   if (manifest.schema !== 'durable-workflow.pipeline.visual-review/v1' || !Array.isArray(manifest.captures)) {
     fail('existing visual manifest has an unsupported schema');
   }
+  if (options.source && manifest.source && JSON.stringify(manifest.source) !== JSON.stringify(options.source)) {
+    fail('existing visual manifest is bound to a different source');
+  }
+  if (options.source) manifest.source = options.source;
   const capture = {
     surface: String(options.surface).trim(),
     state: String(options.state || 'default').trim() || 'default',
@@ -804,6 +819,7 @@ function updateManifest(options, screenshotPath, reportPath, report) {
     page_status: report.page_status,
     interactions: report.interactions,
   };
+  if (options.source) capture.source = options.source;
   manifest.captures = manifest.captures.filter((candidate) => !(
     candidate.surface === capture.surface
       && candidate.state === capture.state
@@ -1159,6 +1175,8 @@ function reportFailures(report) {
   if (geometry.oversized_choice_controls.length) failures.push('oversized choice controls');
   if (geometry.unreachable_controls.length) failures.push('unreachable controls');
   if (report.console_errors.length) failures.push('console errors');
+  if (report.http_errors.length) failures.push('HTTP errors');
+  if (report.request_failures.length) failures.push('request failures');
   if (report.page_errors.length) failures.push('page errors');
   return failures;
 }
@@ -1383,6 +1401,7 @@ try {
     request_failures: requestFailures,
     http_errors: httpErrors,
   };
+  if (options.source) report.source = options.source;
   await context.close();
   context = undefined;
   boundary.throwIfRejected();
