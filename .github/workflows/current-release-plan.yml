@@ -19,17 +19,53 @@ on:
 
 permissions: {}
 
-concurrency:
-  group: release-plan-registry
-  cancel-in-progress: false
-
 jobs:
-  record:
-    name: Record protected current-plan and completion authority
+  authorize:
+    name: Await explicit current-plan publication approval
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 5
     environment: beta-authorization
+    permissions:
+      contents: read
+    outputs:
+      handoff: ${{ steps.approval.outputs.handoff }}
+      producer-attempt: ${{ steps.approval.outputs.producer-attempt }}
+    steps:
+      - name: Check out the protected current-plan controller
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.13"
+
+      - name: Bind protected approval to this workflow run
+        id: approval
+        run: |
+          python scripts/current_plan_publication.py create-approved-writer-handoff \
+            --repository "$GITHUB_REPOSITORY" \
+            --ref "$GITHUB_REF" \
+            --workflow-ref "$GITHUB_WORKFLOW_REF" \
+            --source-sha "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --github-output "$GITHUB_OUTPUT"
+
+  record:
+    name: Record protected current-plan and completion authority
+    needs: authorize
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      needs.authorize.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: release-plan-registry
+      cancel-in-progress: false
     permissions:
       actions: read
       attestations: read
@@ -46,11 +82,23 @@ jobs:
           python-version: "3.13"
 
       - name: Validate aggregate current-plan publication authority
+        env:
+          APPROVED_WRITER_HANDOFF: ${{ needs.authorize.outputs.handoff }}
+          APPROVAL_PRODUCER_ATTEMPT: ${{ needs.authorize.outputs.producer-attempt }}
         run: |
           python scripts/current_plan_publication.py validate-runtime \
             --repository "$GITHUB_REPOSITORY" \
             --ref "$GITHUB_REF" \
             --workflow-ref "$GITHUB_WORKFLOW_REF"
+          python scripts/current_plan_publication.py validate-approved-writer-handoff \
+            --repository "$GITHUB_REPOSITORY" \
+            --ref "$GITHUB_REF" \
+            --workflow-ref "$GITHUB_WORKFLOW_REF" \
+            --source-sha "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --current-attempt "$GITHUB_RUN_ATTEMPT" \
+            --producer-attempt "$APPROVAL_PRODUCER_ATTEMPT" \
+            --handoff "$APPROVED_WRITER_HANDOFF"
 
       - name: Install changed-file quality tooling
         run: python -m pip install jsonschema==4.23.0 PyYAML==6.0.2 ruff==0.12.3 yamllint==1.37.1

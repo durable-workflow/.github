@@ -15,12 +15,15 @@ from scripts.current_plan_publication import (
     CURRENT_PLAN_WORKFLOW,
     CURRENT_PLAN_WORKFLOW_REF,
     CurrentPlanPublicationError,
+    approved_writer_handoff,
+    validate_approved_writer_handoff,
     validate_runtime_identity,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
 OBSERVER_WORKFLOW = ROOT / ".github/workflows/release-plan-observer.yml"
 CURRENT_WORKFLOW = ROOT / ".github/workflows/current-release-plan.yml"
+PLAN_REGISTRY_GROUP = "release-plan-registry"
 
 
 def publication_step() -> dict[str, object]:
@@ -34,6 +37,99 @@ def publication_step() -> dict[str, object]:
 
 
 class CurrentPlanPublicationTest(unittest.TestCase):
+    def test_waiting_approval_does_not_hold_the_writer_registry(self) -> None:
+        current = yaml.safe_load(CURRENT_WORKFLOW.read_text(encoding="utf-8"))
+        observer = yaml.safe_load(OBSERVER_WORKFLOW.read_text(encoding="utf-8"))
+        approval = current["jobs"]["authorize"]
+        writer = current["jobs"]["record"]
+
+        self.assertNotIn("concurrency", current)
+        self.assertEqual("beta-authorization", approval["environment"])
+        self.assertNotIn("concurrency", approval)
+        self.assertEqual({"contents": "read"}, approval["permissions"])
+        approval_checkout = next(step for step in approval["steps"] if "actions/checkout" in step.get("uses", ""))
+        self.assertIs(approval_checkout["with"]["persist-credentials"], False)
+        self.assertEqual("${{ github.sha }}", approval_checkout["with"]["ref"])
+        self.assertEqual("authorize", writer["needs"])
+        self.assertIn("needs.authorize.result == 'success'", writer["if"])
+        self.assertEqual(
+            {"group": PLAN_REGISTRY_GROUP, "cancel-in-progress": False},
+            writer["concurrency"],
+        )
+        self.assertEqual(
+            {"group": PLAN_REGISTRY_GROUP, "cancel-in-progress": False},
+            observer["concurrency"],
+        )
+        self.assertNotIn("write", observer["jobs"]["observe"]["permissions"].values())
+        self.assertEqual("record", observer["jobs"]["publish-current"]["needs"])
+        self.assertIn(
+            "needs.record.outputs.current-plan == 'true'",
+            observer["jobs"]["publish-current"]["if"],
+        )
+
+        running: str | None = None
+        pending: str | None = None
+        superseded: list[str] = []
+
+        def schedule(name: str) -> None:
+            nonlocal running, pending
+            if running is None:
+                running = name
+                return
+            if pending is not None:
+                superseded.append(pending)
+            pending = name
+
+        # The protected approval is waiting but owns no concurrency group.
+        for observer_run in ("scheduled-observer-1", "scheduled-observer-2", "scheduled-observer-3"):
+            schedule(observer_run)
+
+        self.assertEqual("scheduled-observer-1", running)
+        self.assertEqual("scheduled-observer-3", pending)
+        self.assertEqual(["scheduled-observer-2"], superseded)
+        self.assertEqual(2, len({running, pending} - {None}))
+
+        running, pending = pending, None
+        self.assertEqual("scheduled-observer-3", running)
+        running = None
+        self.assertIsNone(running)
+        self.assertIsNone(pending)
+
+    def test_approved_writer_handoff_is_exact_and_retry_safe(self) -> None:
+        identity = {
+            "repository": CONTROL_REPOSITORY,
+            "ref": f"refs/heads/{AUTHORITY_REF}",
+            "workflow_ref": CURRENT_PLAN_WORKFLOW_REF,
+            "source_sha": "a" * 40,
+            "run_id": 123456789,
+            "producer_attempt": 1,
+        }
+        handoff = approved_writer_handoff(**identity)
+        self.assertRegex(handoff, r"^[0-9a-f]{64}$")
+        self.assertEqual(handoff, approved_writer_handoff(**identity))
+        validate_approved_writer_handoff(
+            handoff,
+            **identity,
+            current_attempt=2,
+        )
+
+        mismatches = (
+            ({"handoff": "0" * 64}, "does not match"),
+            ({"source_sha": "b" * 40}, "does not match"),
+            ({"run_id": identity["run_id"] + 1}, "does not match"),
+            ({"producer_attempt": 2, "current_attempt": 1}, "newer than"),
+        )
+        for changes, diagnostic in mismatches:
+            arguments = {**identity, "handoff": handoff, "current_attempt": 2, **changes}
+            with (
+                self.subTest(changes=changes),
+                self.assertRaisesRegex(
+                    CurrentPlanPublicationError,
+                    diagnostic,
+                ),
+            ):
+                validate_approved_writer_handoff(**arguments)
+
     def test_protected_runtime_identity_is_exact(self) -> None:
         validate_runtime_identity(
             CONTROL_REPOSITORY,
@@ -50,6 +146,14 @@ class CurrentPlanPublicationTest(unittest.TestCase):
         self.assertIn('--repository "$GITHUB_REPOSITORY"', validation["run"])
         self.assertIn('--ref "$GITHUB_REF"', validation["run"])
         self.assertIn('--workflow-ref "$GITHUB_WORKFLOW_REF"', validation["run"])
+        self.assertIn("validate-approved-writer-handoff", validation["run"])
+        self.assertEqual(
+            {
+                "APPROVED_WRITER_HANDOFF": "${{ needs.authorize.outputs.handoff }}",
+                "APPROVAL_PRODUCER_ATTEMPT": "${{ needs.authorize.outputs.producer-attempt }}",
+            },
+            validation["env"],
+        )
 
         mismatches = (
             (None, f"refs/heads/{AUTHORITY_REF}", CURRENT_PLAN_WORKFLOW_REF),

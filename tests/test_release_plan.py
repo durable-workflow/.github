@@ -638,14 +638,14 @@ class ReleasePlanEntryPointTest(unittest.TestCase):
                 self.assertEqual(0, process.returncode, process.stderr)
 
     def test_terminal_and_completion_writers_share_the_plan_registry_lock(self) -> None:
-        for workflow in (
-            "current-release-plan.yml",
-            "release-plan.yml",
-            "release-plan-observer.yml",
-            "release-plan-supersession.yml",
-        ):
+        for workflow in ("release-plan.yml", "release-plan-observer.yml", "release-plan-supersession.yml"):
             source = (REPOSITORY_ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
             self.assertIn("concurrency:\n  group: release-plan-registry\n", source)
+
+        current = yaml.safe_load(
+            (REPOSITORY_ROOT / ".github" / "workflows" / "current-release-plan.yml").read_text(encoding="utf-8")
+        )
+        self.assertEqual("release-plan-registry", current["jobs"]["record"]["concurrency"]["group"])
 
     def test_recorded_accepted_plan_dispatches_continuity_with_scoped_permission(self) -> None:
         source = (REPOSITORY_ROOT / ".github" / "workflows" / "release-plan.yml").read_text(encoding="utf-8")
