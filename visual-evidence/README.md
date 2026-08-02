@@ -53,6 +53,31 @@ font readiness, and a bounded one-second stable layout window before collecting
 geometry or taking the screenshot. This prevents a reloading or transitioning
 page from being recorded as its final interaction state.
 
+Every Chromium request is intercepted before it leaves the browser. Chromium
+disables non-proxied WebRTC UDP and is forced through a loopback policy proxy
+so transports outside the HTTP and WebSocket routing hooks cannot connect
+directly. Page and worker WebTransport constructors are guarded before native
+connection setup. WebRTC peer connections are rejected before ICE gathering
+because ICE, STUN, and TURN direct transports cannot satisfy the HTTP(S)
+capture-origin and scoped public-dependency allowlist. The worker guard applies
+to dedicated workers, shared workers, and recursively nested worker realms.
+Loopback previews may use only the exact origin passed to `--url`, including
+its scheme and port. Public
+captures follow the same exact-origin rule. The only cross-origin rendering
+dependencies are a `GET` fetch for the Workflow star count from its exact
+GitHub API repository path, the status page's exact Google Font stylesheet
+query and font files, and the Python reference's exact default Material font
+stylesheet query and font files. Those exceptions are limited by capture host,
+HTTPS origin, request type, method, and path. Other redirects, navigations,
+frames, resources, browser API requests, and persistent connections fail the
+capture before a screenshot, report, or manifest is written. URL credentials,
+authorization headers, non-HTTP(S) protocols, and unapproved loopback, private,
+link-local, or external destinations are rejected with a bounded diagnostic
+that does not include the destination URL. The sole protocol exception is an
+exact-origin `ws:` or `wss:` connection corresponding to an HTTP or HTTPS
+capture origin, which keeps loopback preview live-reload connections usable
+while blocking cross-origin handshakes.
+
 The merge-gate and audit prompt contracts are recorded in the policy's
 `review_contract`. Both must name and inspect
 `geometry.unreachable_controls`, and both must correlate report geometry with

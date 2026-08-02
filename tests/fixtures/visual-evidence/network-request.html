@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Browser-request boundary fixture</title>
+</head>
+<body>
+  <p>The requested destination must be checked before Chromium connects.</p>
+  <script>
+    const parameters = new URLSearchParams(window.location.search);
+    const target = parameters.get('target');
+    const kind = parameters.get('kind');
+    if (kind === 'fetch') {
+      fetch(target).catch(() => {});
+    } else if (kind === 'worker-fetch') {
+      const workerSource = `fetch(${JSON.stringify(target)}).catch(() => {});`;
+      new Worker(URL.createObjectURL(new Blob([workerSource], { type: 'text/javascript' })));
+    } else if (kind === 'worker-webtransport') {
+      const workerSource = `try { new WebTransport(${JSON.stringify(target)}); } catch {}`;
+      new Worker(URL.createObjectURL(new Blob([workerSource], { type: 'text/javascript' })));
+    } else if (kind === 'worker-webtransport-binding-replacement') {
+      const workerSource = `
+        globalThis.__pipelineVisualCaptureRejectPersistentConnection = () => Promise.resolve();
+        try { new WebTransport(${JSON.stringify(target)}); } catch {}
+      `;
+      new Worker(URL.createObjectURL(new Blob([workerSource], { type: 'text/javascript' })));
+    } else if (kind === 'worker-webtransport-relay-replacement') {
+      Worker.prototype.addEventListener = () => {};
+      const workerSource = `
+        globalThis.postMessage = () => {};
+        try { new WebTransport(${JSON.stringify(target)}); } catch {}
+      `;
+      new Worker(URL.createObjectURL(new Blob([workerSource], { type: 'text/javascript' })));
+    } else if (kind === 'shared-worker-webtransport') {
+      const workerUrl = new URL('/shared-worker-webtransport.js', window.location.href);
+      workerUrl.searchParams.set('target', target);
+      const worker = new SharedWorker(workerUrl);
+      worker.port.start();
+    } else if (kind === 'shared-worker-webtransport-relay-replacement') {
+      MessagePort.prototype.addEventListener = () => {};
+      MessagePort.prototype.start = () => {};
+      const workerUrl = new URL('/shared-worker-webtransport-relay-replacement.js', window.location.href);
+      workerUrl.searchParams.set('target', target);
+      new SharedWorker(workerUrl);
+    } else if (kind === 'nested-worker-webtransport') {
+      const nestedSource = `try { new WebTransport(${JSON.stringify(target)}); } catch {}`;
+      const workerSource = `new Worker(URL.createObjectURL(new Blob([${JSON.stringify(nestedSource)}], { type: 'text/javascript' })));`;
+      new Worker(URL.createObjectURL(new Blob([workerSource], { type: 'text/javascript' })));
+    } else if (kind === 'worker-message' || kind === 'module-worker-message') {
+      const workerSource = `postMessage('Allowed same-surface worker');`;
+      const workerUrl = URL.createObjectURL(new Blob([workerSource], { type: 'text/javascript' }));
+      const worker = new Worker(workerUrl, kind === 'module-worker-message' ? { type: 'module' } : {});
+      worker.addEventListener('message', (event) => {
+        document.title = event.data;
+      });
+    } else if (kind === 'shared-worker-message' || kind === 'module-shared-worker-message') {
+      const options = kind === 'module-shared-worker-message' ? { type: 'module' } : {};
+      const worker = new SharedWorker('/shared-worker-message.js', options);
+      worker.port.addEventListener('message', (event) => {
+        document.title = event.data;
+      });
+      worker.port.start();
+    } else if (kind === 'websocket') {
+      new WebSocket(target);
+    } else if (kind === 'webtransport') {
+      try {
+        new WebTransport(target);
+      } catch {
+        // The capture command reports policy failures outside the page.
+      }
+    } else if (kind === 'webtransport-constructor-alias') {
+      try {
+        new WebTransport.prototype.constructor(target);
+      } catch {
+        // The capture command reports policy failures outside the page.
+      }
+    } else if (
+      kind === 'webrtc'
+      || kind === 'webrtc-constructor-alias'
+      || kind === 'webrtc-frame-constructor'
+      || kind === 'webrtc-binding-replacement'
+    ) {
+      try {
+        if (kind === 'webrtc-binding-replacement') {
+          globalThis.__pipelineVisualCaptureRejectPersistentConnection = () => Promise.resolve();
+        }
+        let PeerConnection = RTCPeerConnection;
+        if (kind === 'webrtc-constructor-alias') {
+          PeerConnection = RTCPeerConnection.prototype.constructor;
+        } else if (kind === 'webrtc-frame-constructor') {
+          const frame = document.createElement('iframe');
+          document.body.appendChild(frame);
+          PeerConnection = frame.contentWindow.RTCPeerConnection;
+        }
+        const peer = new PeerConnection({ iceServers: [{ urls: target }] });
+        peer.createDataChannel('boundary-probe');
+        peer.createOffer()
+          .then((offer) => peer.setLocalDescription(offer))
+          .catch(() => {});
+      } catch {
+        // The capture command reports policy failures outside the page.
+      }
+    } else {
+      const image = new Image();
+      image.alt = 'Boundary fixture';
+      image.src = target;
+      document.body.appendChild(image);
+    }
+  </script>
+</body>
+</html>

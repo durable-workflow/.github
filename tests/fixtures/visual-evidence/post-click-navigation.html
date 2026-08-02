@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Post-click boundary fixture</title>
+</head>
+<body>
+  <button id="leave" type="button">Open the requested destination</button>
+  <button id="popup" type="button">Open the requested destination in a new window</button>
+  <form id="submit-navigation" method="post">
+    <button id="submit" type="submit">Submit to the requested destination</button>
+  </form>
+  <script>
+    const target = new URLSearchParams(window.location.search).get('target');
+    document.querySelector('#leave').addEventListener('click', () => {
+      window.location.assign(target);
+    });
+    document.querySelector('#popup').addEventListener('click', () => {
+      window.open(target, '_blank');
+    });
+    document.querySelector('#submit-navigation').action = target;
+  </script>
+</body>
+</html>

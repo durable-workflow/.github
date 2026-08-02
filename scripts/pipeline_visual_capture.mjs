@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
 import fs from 'node:fs';
+import http from 'node:http';
+import https from 'node:https';
+import net from 'node:net';
 import path from 'node:path';
 import process from 'node:process';
 import { createRequire } from 'node:module';
@@ -14,12 +17,24 @@ const PUBLIC_SURFACE_HOSTS = new Set([
   'python.durable-workflow.com',
   'rust.durable-workflow.com',
 ]);
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
+const GOOGLE_FONT_STYLES = new Map([
+  [
+    'status.durable-workflow.com',
+    ['Geist:wght@300;400;500;600;700', 'JetBrains Mono:wght@400;500;600'],
+  ],
+  [
+    'python.durable-workflow.com',
+    ['Roboto:300,300i,400,400i,700,700i|Roboto Mono:400,400i,700,700i'],
+  ],
+]);
 const CLICK_STABLE_WINDOW_MS = 1_000;
 const DEFAULT_STABLE_WINDOW_MS = 250;
 const EXPECTED_PLAYWRIGHT_CORE_VERSION = '1.55.0';
 const EXPECTED_CHROMIUM_REVISION = '1187';
 const EXPECTED_CHROMIUM_VERSION = '140.0.7339.16';
 const EXPECTED_CHROMIUM_PACKAGE_VERSION = '140.0.0';
+const ACTIVE_PROXY_SOCKETS = Symbol('activeProxySockets');
 
 function loadChromium() {
   const runtimes = [
@@ -168,14 +183,545 @@ function assertAllowedSurface(rawUrl) {
   } catch {
     fail('--url must be an absolute URL');
   }
-  const localHosts = new Set(['127.0.0.1', 'localhost', '[::1]']);
-  const localPreview = ['http:', 'https:'].includes(parsed.protocol) && localHosts.has(parsed.hostname);
+  const localPreview = ['http:', 'https:'].includes(parsed.protocol) && LOOPBACK_HOSTS.has(parsed.hostname);
   const publicSurface = parsed.protocol === 'https:' && PUBLIC_SURFACE_HOSTS.has(parsed.hostname);
   if (!localPreview && !publicSurface) {
     fail('visual capture accepts only loopback previews or allowlisted Durable Workflow HTTPS surfaces');
   }
   if (parsed.username || parsed.password) fail('visual capture URLs must not contain credentials');
   return parsed;
+}
+
+function normalizedIpHostname(hostname) {
+  const unwrapped = hostname.startsWith('[') && hostname.endsWith(']')
+    ? hostname.slice(1, -1)
+    : hostname;
+  const ipv4Mapped = unwrapped.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+  return ipv4Mapped ? ipv4Mapped[1] : unwrapped;
+}
+
+function destinationClass(hostname) {
+  const normalized = normalizedIpHostname(hostname);
+  if (LOOPBACK_HOSTS.has(hostname) || normalized === '::1') return 'cross-origin loopback destination';
+  if (net.isIP(normalized) === 4) {
+    const [first, second] = normalized.split('.').map(Number);
+    if (first === 169 && second === 254) return 'link-local destination';
+    if (
+      first === 0
+      || first === 10
+      || first === 127
+      || (first === 100 && second >= 64 && second <= 127)
+      || (first === 172 && second >= 16 && second <= 31)
+      || (first === 192 && second === 168)
+      || first >= 224
+    ) return 'private destination';
+  }
+  if (net.isIP(normalized) === 6) {
+    const firstGroup = Number.parseInt(normalized.split(':', 1)[0] || '0', 16);
+    if ((firstGroup & 0xffc0) === 0xfe80) return 'link-local destination';
+    if ((firstGroup & 0xfe00) === 0xfc00 || normalized === '::') return 'private destination';
+  }
+  return 'external destination';
+}
+
+function allowedGoogleFontStyle(captureUrl, requestUrl, method, resourceType) {
+  const expectedFamilies = GOOGLE_FONT_STYLES.get(captureUrl.hostname);
+  if (
+    !expectedFamilies
+    || requestUrl.origin !== 'https://fonts.googleapis.com'
+    || method !== 'GET'
+    || resourceType !== 'stylesheet'
+    || !['/css', '/css2'].includes(requestUrl.pathname)
+  ) return false;
+
+  const parameters = [...requestUrl.searchParams.keys()];
+  const displays = requestUrl.searchParams.getAll('display');
+  const families = requestUrl.searchParams.getAll('family');
+  return parameters.length === expectedFamilies.length + 1
+    && parameters.every((key) => ['display', 'family'].includes(key))
+    && displays.length === 1
+    && displays[0] === (requestUrl.pathname === '/css2' ? 'swap' : 'fallback')
+    && JSON.stringify(families) === JSON.stringify(expectedFamilies);
+}
+
+function allowedGoogleFontFile(captureUrl, requestUrl, method, resourceType) {
+  return GOOGLE_FONT_STYLES.has(captureUrl.hostname)
+    && requestUrl.origin === 'https://fonts.gstatic.com'
+    && method === 'GET'
+    && resourceType === 'font'
+    && requestUrl.search === ''
+    && /^\/s\/[a-z0-9_-]+\/v\d+\/[a-zA-Z0-9_-]+\.woff2$/.test(requestUrl.pathname);
+}
+
+function allowedPublicAsset(captureUrl, requestUrl, method, resourceType) {
+  if (
+    captureUrl.hostname === 'durable-workflow.com'
+    && requestUrl.origin === 'https://api.github.com'
+    && requestUrl.pathname === '/repos/durable-workflow/workflow'
+    && requestUrl.search === ''
+    && method === 'GET'
+    && ['fetch', 'xhr'].includes(resourceType)
+  ) return true;
+  return allowedGoogleFontStyle(captureUrl, requestUrl, method, resourceType)
+    || allowedGoogleFontFile(captureUrl, requestUrl, method, resourceType);
+}
+
+function protocolRequestClass(resourceType, frameId, mainFrameId) {
+  const normalized = String(resourceType || 'browser').toLowerCase();
+  if (normalized === 'document') {
+    return frameId === mainFrameId ? 'main-frame navigation' : 'frame navigation';
+  }
+  if (['fetch', 'xhr'].includes(normalized)) return 'fetch/xhr request';
+  if (normalized === 'eventsource') return 'persistent connection';
+  return `${normalized} resource`;
+}
+
+function routedRequestClass(request) {
+  const resourceType = request.resourceType();
+  if (resourceType === 'document') {
+    try {
+      return request.frame()?.parentFrame() ? 'frame navigation' : 'main-frame navigation';
+    } catch {
+      return 'main-frame navigation';
+    }
+  }
+  if (['fetch', 'xhr'].includes(resourceType)) return 'fetch/xhr request';
+  if (resourceType === 'eventsource') return 'persistent connection';
+  return `${resourceType || 'browser'} resource`;
+}
+
+function rejectedDestination(captureUrl, rawUrl, method, resourceType) {
+  let requestUrl;
+  try {
+    requestUrl = new URL(rawUrl);
+  } catch {
+    return 'invalid destination';
+  }
+  if (requestUrl.username || requestUrl.password) return 'credential-bearing destination';
+  if (!['http:', 'https:'].includes(requestUrl.protocol)) return 'non-http(s) destination';
+  if (requestUrl.origin === captureUrl.origin) return null;
+  if (allowedPublicAsset(captureUrl, requestUrl, method, resourceType)) return null;
+  return destinationClass(requestUrl.hostname);
+}
+
+function rejectedPersistentDestination(captureUrl, rawUrl) {
+  let requestUrl;
+  try {
+    requestUrl = new URL(rawUrl);
+  } catch {
+    return 'invalid destination';
+  }
+  if (requestUrl.username || requestUrl.password) return 'credential-bearing destination';
+  if (!['ws:', 'wss:'].includes(requestUrl.protocol)) return 'non-http(s) destination';
+  requestUrl.protocol = requestUrl.protocol === 'ws:' ? 'http:' : 'https:';
+  if (requestUrl.origin === captureUrl.origin) return null;
+  return destinationClass(requestUrl.hostname);
+}
+
+function rejectedWebRtcDestination(rawUrl) {
+  const match = String(rawUrl || '').match(
+    /^(?:stun|stuns|turn|turns):(?:\/\/)?(\[[^\]]+\]|[^:/?#]+)(?::\d+)?(?:\?[^#]*)?$/i,
+  );
+  if (!match) return 'unapproved direct transport destination';
+  return destinationClass(match[1]);
+}
+
+function allowedProxyOrigin(captureUrl, requestUrl) {
+  if (requestUrl.origin === captureUrl.origin) return true;
+  if (
+    captureUrl.hostname === 'durable-workflow.com'
+    && requestUrl.origin === 'https://api.github.com'
+  ) return true;
+  return GOOGLE_FONT_STYLES.has(captureUrl.hostname)
+    && ['https://fonts.googleapis.com', 'https://fonts.gstatic.com'].includes(requestUrl.origin);
+}
+
+function networkPort(url) {
+  if (url.port) return Number(url.port);
+  return url.protocol === 'https:' ? 443 : 80;
+}
+
+function sameNetworkAuthority(firstUrl, secondUrl) {
+  return normalizedIpHostname(firstUrl.hostname) === normalizedIpHostname(secondUrl.hostname)
+    && networkPort(firstUrl) === networkPort(secondUrl);
+}
+
+function rejectedProxyDestination(captureUrl, rawUrl, allowCaptureAuthority = false) {
+  let requestUrl;
+  try {
+    requestUrl = new URL(rawUrl);
+  } catch {
+    return 'invalid destination';
+  }
+  if (requestUrl.username || requestUrl.password) return 'credential-bearing destination';
+  if (!['http:', 'https:'].includes(requestUrl.protocol)) return 'non-http(s) destination';
+  if (allowedProxyOrigin(captureUrl, requestUrl)) return null;
+  if (allowCaptureAuthority && sameNetworkAuthority(captureUrl, requestUrl)) return null;
+  return destinationClass(requestUrl.hostname);
+}
+
+function proxyRequestUrl(request) {
+  try {
+    return new URL(request.url);
+  } catch {
+    return null;
+  }
+}
+
+async function startBoundaryProxy(captureUrl, boundary) {
+  const proxy = http.createServer((request, response) => {
+    const requestUrl = proxyRequestUrl(request);
+    const rejected = rejectedProxyDestination(captureUrl, requestUrl?.href || request.url);
+    if (rejected) {
+      boundary.reject(rejected, 'browser connection');
+      response.writeHead(403, { connection: 'close' }).end();
+      return;
+    }
+
+    const headers = { ...request.headers };
+    delete headers['proxy-connection'];
+    const transport = requestUrl.protocol === 'https:' ? https : http;
+    const outgoing = transport.request(requestUrl, {
+      method: request.method,
+      headers,
+    }, (incoming) => {
+      response.writeHead(incoming.statusCode || 502, incoming.headers);
+      incoming.pipe(response);
+    });
+    outgoing.on('error', () => {
+      if (!response.headersSent) response.writeHead(502, { connection: 'close' });
+      response.end();
+    });
+    request.pipe(outgoing);
+  });
+
+  proxy.on('connect', (request, browserSocket, head) => {
+    const authorityUrl = (() => {
+      try {
+        return new URL(`https://${request.url}`);
+      } catch {
+        return null;
+      }
+    })();
+    const rejected = rejectedProxyDestination(
+      captureUrl,
+      authorityUrl?.href || request.url,
+      true,
+    );
+    if (rejected) {
+      boundary.reject(rejected, 'browser connection');
+      browserSocket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+      return;
+    }
+
+    let tunnelEstablished = false;
+    const destinationSocket = net.connect({
+      host: normalizedIpHostname(authorityUrl.hostname),
+      port: Number(authorityUrl.port || 443),
+    });
+    destinationSocket.once('connect', () => {
+      tunnelEstablished = true;
+      browserSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      if (head.length) destinationSocket.write(head);
+      destinationSocket.pipe(browserSocket);
+      browserSocket.pipe(destinationSocket);
+    });
+    destinationSocket.once('error', () => {
+      if (!tunnelEstablished) {
+        browserSocket.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n');
+      } else {
+        browserSocket.destroy();
+      }
+    });
+    browserSocket.once('error', () => destinationSocket.destroy());
+    browserSocket.once('close', () => destinationSocket.destroy());
+  });
+  proxy.on('clientError', (_error, socket) => {
+    socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+  });
+  const activeSockets = new Set();
+  proxy[ACTIVE_PROXY_SOCKETS] = activeSockets;
+  proxy.on('connection', (socket) => {
+    activeSockets.add(socket);
+    socket.once('close', () => activeSockets.delete(socket));
+  });
+
+  await new Promise((resolve, reject) => {
+    proxy.once('error', reject);
+    proxy.listen(0, '127.0.0.1', resolve);
+  });
+  return proxy;
+}
+
+function closeServer(server) {
+  for (const socket of server[ACTIVE_PROXY_SOCKETS] || []) socket.destroy();
+  return new Promise((resolve) => server.close(() => resolve()));
+}
+
+function installPersistentConnectionBoundary({ bindingName, captureOrigin }) {
+  const trustedBoundarySignal = globalThis[bindingName];
+  const signalRejection = (transport, rawUrl) => {
+    try {
+      const signal = trustedBoundarySignal({ transport, url: rawUrl });
+      void signal?.catch?.(() => {});
+    } catch {
+      // Chromium's network policy remains fail-closed if the diagnostic channel is unavailable.
+    }
+  };
+  const replacePrototypeConstructor = (NativeConstructor, GuardedConstructor) => {
+    const constructorDescriptor = Object.getOwnPropertyDescriptor(
+      NativeConstructor.prototype,
+      'constructor',
+    );
+    Object.defineProperty(NativeConstructor.prototype, 'constructor', {
+      ...constructorDescriptor,
+      value: GuardedConstructor,
+    });
+  };
+
+  const NativeWebTransport = globalThis.WebTransport;
+  if (typeof NativeWebTransport === 'function') {
+    const GuardedWebTransport = new Proxy(NativeWebTransport, {
+      construct(target, argumentsList, newTarget) {
+        let rawUrl = '';
+        let allowed = false;
+        try {
+          rawUrl = String(argumentsList[0]);
+          const destination = new URL(rawUrl, globalThis.location?.href);
+          allowed = destination.protocol === 'https:'
+            && !destination.username
+            && !destination.password
+            && destination.origin === captureOrigin;
+        } catch {
+          // The browser-side guard reports malformed destinations to the trusted process below.
+        }
+        if (!allowed) {
+          signalRejection('webtransport', rawUrl);
+          throw new DOMException('Blocked by visual capture request policy', 'SecurityError');
+        }
+        return Reflect.construct(target, argumentsList, newTarget);
+      },
+    });
+    replacePrototypeConstructor(NativeWebTransport, GuardedWebTransport);
+    globalThis.WebTransport = GuardedWebTransport;
+  }
+
+  const guardedPeerConnectionConstructors = new Map();
+  for (const constructorName of ['RTCPeerConnection', 'webkitRTCPeerConnection']) {
+    const NativePeerConnection = globalThis[constructorName];
+    if (typeof NativePeerConnection !== 'function') continue;
+    let GuardedPeerConnection = guardedPeerConnectionConstructors.get(NativePeerConnection);
+    if (!GuardedPeerConnection) {
+      GuardedPeerConnection = new Proxy(NativePeerConnection, {
+        construct(_target, argumentsList) {
+          let iceServerUrl = '';
+          try {
+            const iceServers = argumentsList[0]?.iceServers || [];
+            for (const iceServer of iceServers) {
+              const urls = Array.isArray(iceServer?.urls) ? iceServer.urls : [iceServer?.urls];
+              const configuredUrl = urls.find((candidate) => candidate !== undefined);
+              if (configuredUrl !== undefined) {
+                iceServerUrl = String(configuredUrl);
+                break;
+              }
+            }
+          } catch {
+            // Reject malformed or accessor-backed configurations without invoking Chromium.
+          }
+          signalRejection('webrtc', iceServerUrl);
+          throw new DOMException('Blocked by visual capture request policy', 'SecurityError');
+        },
+      });
+      replacePrototypeConstructor(NativePeerConnection, GuardedPeerConnection);
+      guardedPeerConnectionConstructors.set(NativePeerConnection, GuardedPeerConnection);
+    }
+    globalThis[constructorName] = GuardedPeerConnection;
+  }
+}
+
+function installWorkerPersistentConnectionBoundary({ bindingName, captureOrigin, installerSource }) {
+  const trustedBoundarySignal = globalThis[bindingName];
+  const trustedApply = Reflect.apply;
+  const trustedAddEventListener = EventTarget.prototype.addEventListener;
+  const trustedStopImmediatePropagation = Event.prototype.stopImmediatePropagation;
+  const trustedMessageData = Object.getOwnPropertyDescriptor(
+    MessageEvent.prototype,
+    'data',
+  ).get;
+  const trustedMessagePortStart = MessagePort.prototype.start;
+  const marker = `pipeline-visual-capture-${crypto.randomUUID()}`;
+  const boundaryArguments = JSON.stringify({ bindingName, captureOrigin });
+  const workerBoundaryArguments = JSON.stringify({ bindingName, captureOrigin, installerSource });
+  const workerInstallerSource = installWorkerPersistentConnectionBoundary.toString();
+  const installChildBoundaries = [
+    `(${installerSource})(${boundaryArguments});`,
+    `(${workerInstallerSource})(${workerBoundaryArguments});`,
+  ];
+  const loadWorkerSource = (sourceUrl, options) => options.type === 'module'
+    ? `import ${JSON.stringify(sourceUrl)};`
+    : `importScripts(${JSON.stringify(sourceUrl)});`;
+  const relayViolation = (connection) => {
+    try {
+      const signal = trustedBoundarySignal(connection);
+      void signal?.catch?.(() => {});
+    } catch {
+      // The worker guard has already prevented the destination from receiving traffic.
+    }
+  };
+  const handleBoundaryMessage = (event) => {
+    const data = trustedApply(trustedMessageData, event, []);
+    if (!data || typeof data !== 'object' || !(marker in data)) return;
+    trustedApply(trustedStopImmediatePropagation, event, []);
+    relayViolation(data[marker]);
+  };
+  const addBoundaryMessageListener = (target) => {
+    trustedApply(
+      trustedAddEventListener,
+      target,
+      ['message', handleBoundaryMessage, { capture: true }],
+    );
+  };
+  const replacePrototypeConstructor = (NativeConstructor, GuardedConstructor) => {
+    const constructorDescriptor = Object.getOwnPropertyDescriptor(
+      NativeConstructor.prototype,
+      'constructor',
+    );
+    Object.defineProperty(NativeConstructor.prototype, 'constructor', {
+      ...constructorDescriptor,
+      value: GuardedConstructor,
+    });
+  };
+
+  const NativeWorker = globalThis.Worker;
+  if (typeof NativeWorker === 'function') {
+    const GuardedWorker = new Proxy(NativeWorker, {
+      construct(target, argumentsList, newTarget) {
+        const sourceUrl = new URL(String(argumentsList[0]), globalThis.location.href).href;
+        const options = argumentsList[1] || {};
+        const bootstrap = [
+          `globalThis[${JSON.stringify(bindingName)}] = ((apply, postMessage, receiver) => {`,
+          '  return (connection) => {',
+          `    apply(postMessage, receiver, [{ ${JSON.stringify(marker)}: connection }]);`,
+          '  };',
+          '})(Reflect.apply, globalThis.postMessage, globalThis);',
+          ...installChildBoundaries,
+          loadWorkerSource(sourceUrl, options),
+        ].join('\n');
+        const bootstrapUrl = URL.createObjectURL(new Blob([bootstrap], { type: 'text/javascript' }));
+        const worker = Reflect.construct(target, [bootstrapUrl, options], newTarget);
+        addBoundaryMessageListener(worker);
+        URL.revokeObjectURL(bootstrapUrl);
+        return worker;
+      },
+    });
+    replacePrototypeConstructor(NativeWorker, GuardedWorker);
+    globalThis.Worker = GuardedWorker;
+  }
+
+  const NativeSharedWorker = globalThis.SharedWorker;
+  if (typeof NativeSharedWorker === 'function') {
+    const sharedBootstrapUrls = new Map();
+    const trustedSharedWorkerPort = Object.getOwnPropertyDescriptor(
+      NativeSharedWorker.prototype,
+      'port',
+    ).get;
+    const GuardedSharedWorker = new Proxy(NativeSharedWorker, {
+      construct(target, argumentsList, newTarget) {
+        const sourceUrl = new URL(String(argumentsList[0]), globalThis.location.href).href;
+        const rawOptions = argumentsList[1];
+        const options = rawOptions && typeof rawOptions === 'object' ? rawOptions : {};
+        const cacheKey = JSON.stringify([sourceUrl, options.type || 'classic']);
+        let bootstrapUrl = sharedBootstrapUrls.get(cacheKey);
+        if (!bootstrapUrl) {
+          const bootstrap = [
+            '((apply, addEventListener, arrayPush, messagePorts, postMessage, start, receiver) => {',
+            '  const boundaryPorts = [];',
+            '  const pendingBoundaryViolations = [];',
+            `  globalThis[${JSON.stringify(bindingName)}] = (connection) => {`,
+            '    if (!boundaryPorts.length) apply(arrayPush, pendingBoundaryViolations, [connection]);',
+            '    for (let index = 0; index < boundaryPorts.length; index += 1) {',
+            `      apply(postMessage, boundaryPorts[index], [{ ${JSON.stringify(marker)}: connection }]);`,
+            '    }',
+            '  };',
+            "  apply(addEventListener, receiver, ['connect', (event) => {",
+            '    const ports = apply(messagePorts, event, []);',
+            '    for (let portIndex = 0; portIndex < ports.length; portIndex += 1) {',
+            '      const port = ports[portIndex];',
+            '      apply(arrayPush, boundaryPorts, [port]);',
+            '      apply(start, port, []);',
+            '      for (let index = 0; index < pendingBoundaryViolations.length; index += 1) {',
+            `        apply(postMessage, port, [{ ${JSON.stringify(marker)}: pendingBoundaryViolations[index] }]);`,
+            '      }',
+            '    }',
+            '    pendingBoundaryViolations.length = 0;',
+            '  }]);',
+            '})(',
+            '  Reflect.apply,',
+            '  globalThis.addEventListener,',
+            '  Array.prototype.push,',
+            "  Object.getOwnPropertyDescriptor(MessageEvent.prototype, 'ports').get,",
+            '  MessagePort.prototype.postMessage,',
+            '  MessagePort.prototype.start,',
+            '  globalThis,',
+            ');',
+            ...installChildBoundaries,
+            loadWorkerSource(sourceUrl, options),
+          ].join('\n');
+          bootstrapUrl = URL.createObjectURL(new Blob([bootstrap], { type: 'text/javascript' }));
+          sharedBootstrapUrls.set(cacheKey, bootstrapUrl);
+        }
+        const sharedWorker = Reflect.construct(
+          target,
+          [bootstrapUrl, ...argumentsList.slice(1)],
+          newTarget,
+        );
+        const port = trustedApply(trustedSharedWorkerPort, sharedWorker, []);
+        addBoundaryMessageListener(port);
+        trustedApply(trustedMessagePortStart, port, []);
+        return sharedWorker;
+      },
+    });
+    replacePrototypeConstructor(NativeSharedWorker, GuardedSharedWorker);
+    globalThis.SharedWorker = GuardedSharedWorker;
+  }
+}
+
+function requestBoundary(captureUrl) {
+  let violation;
+  let signalViolation;
+  const signal = new Promise((resolve) => {
+    signalViolation = resolve;
+  });
+  const reject = (destination, kind) => {
+    if (violation) return;
+    violation = { destination, kind };
+    signalViolation(violation);
+  };
+  const error = () => new Error(
+    `request boundary rejected a ${violation.destination} for ${violation.kind}`,
+  );
+  return {
+    inspect(rawUrl, method, resourceType, kind) {
+      const rejected = rejectedDestination(captureUrl, rawUrl, method, resourceType);
+      if (rejected) reject(rejected, kind);
+      return rejected;
+    },
+    reject,
+    throwIfRejected() {
+      if (violation) throw error();
+    },
+    async guard(operation) {
+      const result = await Promise.race([
+        operation,
+        signal.then(() => { throw error(); }),
+      ]);
+      if (violation) throw error();
+      return result;
+    },
+    violation() {
+      return violation;
+    },
+  };
 }
 
 function ensureOutputPath(filePath) {
@@ -575,13 +1121,19 @@ function reportFailures(report) {
   return failures;
 }
 
-async function launchChromium() {
+async function launchChromium(proxyPort) {
   const { chromium, chromiumRuntime, identity: runtimeIdentity } = loadChromium();
   const browser = await chromium.launch({
     executablePath: await chromiumExecutable(chromium, chromiumRuntime),
     headless: true,
     chromiumSandbox: false,
-    args: [...chromiumRuntime.args, '--disable-dev-shm-usage'],
+    args: [
+      ...chromiumRuntime.args,
+      '--disable-dev-shm-usage',
+      '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+      `--proxy-server=http://127.0.0.1:${proxyPort}`,
+      '--proxy-bypass-list=<-loopback>',
+    ],
   });
   return { browser, runtimeIdentity };
 }
@@ -596,19 +1148,126 @@ const pageErrors = [];
 const requestFailures = [];
 const httpErrors = [];
 const navigationState = { count: 0 };
+const boundary = requestBoundary(previewUrl);
 let mainResponse;
-
-const { browser, runtimeIdentity } = await launchChromium()
+let context;
+let page;
+const boundaryProxy = await startBoundaryProxy(previewUrl, boundary)
   .catch((error) => fail(`visual capture error: ${sanitizeFailure(error)}`));
 
+const { browser, runtimeIdentity } = await launchChromium(boundaryProxy.address().port)
+  .catch(async (error) => {
+    await closeServer(boundaryProxy);
+    fail(`visual capture error: ${sanitizeFailure(error)}`);
+  });
+
 try {
-  const context = await browser.newContext({
+  context = await browser.newContext({
     viewport: { width: options.width, height: options.height },
     deviceScaleFactor: 1,
     reducedMotion: 'reduce',
     serviceWorkers: 'block',
   });
-  const page = await context.newPage();
+  const persistentBoundaryBinding = '__pipelineVisualCaptureRejectPersistentConnection';
+  await context.exposeBinding(persistentBoundaryBinding, (_source, connection) => {
+    if (connection?.transport === 'webrtc') {
+      boundary.reject(rejectedWebRtcDestination(connection.url), 'WebRTC persistent connection');
+      return;
+    }
+    const rawUrl = connection?.transport === 'webtransport' ? connection.url : connection;
+    const rejected = rejectedDestination(previewUrl, rawUrl, 'CONNECT', 'webtransport');
+    if (rejected) boundary.reject(rejected, 'persistent connection');
+  });
+  await context.addInitScript(installPersistentConnectionBoundary, {
+    bindingName: persistentBoundaryBinding,
+    captureOrigin: previewUrl.origin,
+  });
+  await context.addInitScript(installWorkerPersistentConnectionBoundary, {
+    bindingName: persistentBoundaryBinding,
+    captureOrigin: previewUrl.origin,
+    installerSource: installPersistentConnectionBoundary.toString(),
+  });
+  await context.route('**/*', async (route, request) => {
+    const kind = routedRequestClass(request);
+    const headers = request.headers();
+    const credentialHeader = headers.authorization || headers['proxy-authorization'];
+    let requestPage;
+    try {
+      requestPage = request.frame().page();
+    } catch {
+      requestPage = page;
+    }
+    if (credentialHeader) boundary.reject('credential-bearing request', kind);
+    const rejected = credentialHeader
+      || boundary.inspect(request.url(), request.method(), request.resourceType(), kind);
+    if (!rejected && page && requestPage !== page) {
+      boundary.reject('out-of-surface page destination', kind);
+    }
+    if (rejected || (page && requestPage !== page)) {
+      await route.abort('blockedbyclient');
+      return;
+    }
+    await route.continue();
+  });
+  await context.routeWebSocket(/.*/, async (webSocket) => {
+    const rejected = rejectedPersistentDestination(previewUrl, webSocket.url());
+    if (rejected) {
+      boundary.reject(rejected, 'persistent connection');
+      await webSocket.close({ code: 1008, reason: 'blocked by visual capture policy' });
+      return;
+    }
+    webSocket.connectToServer();
+  });
+  context.on('page', (openedPage) => {
+    if (page && openedPage !== page) {
+      boundary.reject('out-of-surface page destination', 'main-frame navigation');
+    }
+    const initialUrl = openedPage.url();
+    if (!['about:blank', 'about:srcdoc'].includes(initialUrl)) {
+      boundary.inspect(initialUrl, 'GET', 'document', 'main-frame navigation');
+    }
+    openedPage.on('framenavigated', (frame) => {
+      const frameUrl = frame.url();
+      if (['about:blank', 'about:srcdoc'].includes(frameUrl)) return;
+      const kind = frame.parentFrame() ? 'frame navigation' : 'main-frame navigation';
+      boundary.inspect(frameUrl, 'GET', 'document', kind);
+    });
+  });
+  page = await context.newPage();
+  const protocol = await context.newCDPSession(page);
+  const frameTree = await protocol.send('Page.getFrameTree');
+  const mainFrameId = frameTree.frameTree.frame.id;
+  const inspectNavigation = (event) => {
+    const kind = event.frameId === mainFrameId ? 'main-frame navigation' : 'frame navigation';
+    boundary.inspect(event.url, 'GET', 'document', kind);
+  };
+  protocol.on('Page.frameRequestedNavigation', inspectNavigation);
+  protocol.on('Page.frameScheduledNavigation', inspectNavigation);
+  protocol.on('Page.frameStartedNavigating', inspectNavigation);
+  protocol.on('Fetch.requestPaused', (event) => {
+    const handleRequest = async () => {
+      const resourceType = String(event.resourceType || 'browser').toLowerCase();
+      const kind = protocolRequestClass(resourceType, event.frameId, mainFrameId);
+      const headers = event.request.headers || {};
+      const credentialHeader = headers.Authorization
+        || headers.authorization
+        || headers['Proxy-Authorization']
+        || headers['proxy-authorization'];
+      if (credentialHeader) boundary.reject('credential-bearing request', kind);
+      const rejected = credentialHeader
+        || boundary.inspect(event.request.url, event.request.method, resourceType, kind);
+      await protocol.send(
+        rejected ? 'Fetch.failRequest' : 'Fetch.continueRequest',
+        rejected
+          ? { requestId: event.requestId, errorReason: 'BlockedByClient' }
+          : { requestId: event.requestId },
+      );
+    };
+    handleRequest().catch(() => {});
+  });
+  await protocol.send('Fetch.enable', {
+    patterns: [{ urlPattern: '*', requestStage: 'Request' }],
+  });
   page.on('console', (message) => {
     const entry = { type: message.type(), text: message.text().slice(0, 1_000) };
     if (message.type() === 'error') consoleErrors.push(entry);
@@ -635,33 +1294,30 @@ try {
     if (frame === page.mainFrame()) navigationState.count += 1;
   });
 
-  mainResponse = await page.goto(previewUrl.href, {
+  mainResponse = await boundary.guard(page.goto(previewUrl.href, {
     waitUntil: 'networkidle',
     timeout: options.timeoutMs,
-  });
+  }));
   for (const selector of options.click) {
-    await page.locator(selector).click({ timeout: options.timeoutMs });
-    await settlePage(page, options.timeoutMs, CLICK_STABLE_WINDOW_MS, navigationState);
-    assertAllowedSurface(page.url());
+    await boundary.guard(page.locator(selector).click({ timeout: options.timeoutMs }));
+    await boundary.guard(settlePage(page, options.timeoutMs, CLICK_STABLE_WINDOW_MS, navigationState));
   }
-  await page.evaluate(() => window.scrollTo(0, 0));
-  const settling = await settlePage(
+  await boundary.guard(page.evaluate(() => window.scrollTo(0, 0)));
+  const settling = await boundary.guard(settlePage(
     page,
     options.timeoutMs,
     options.click.length ? CLICK_STABLE_WINDOW_MS : DEFAULT_STABLE_WINDOW_MS,
     navigationState,
-  );
-  assertAllowedSurface(page.url());
-  await waitForFontsAndFrames(page);
+  ));
+  await boundary.guard(waitForFontsAndFrames(page));
 
-  const geometry = await page.evaluate(collectGeometry);
+  const geometry = await boundary.guard(page.evaluate(collectGeometry));
 
-  await page.screenshot({
-    path: screenshotPath,
+  const screenshot = await boundary.guard(page.screenshot({
     fullPage: options.fullPage,
     animations: 'disabled',
     caret: 'hide',
-  });
+  }));
 
   const report = {
     schema: 'durable-workflow.pipeline.visual-capture/v1',
@@ -672,7 +1328,7 @@ try {
     full_page: options.fullPage,
     interactions: options.click.map((selector) => ({ type: 'click', selector })),
     page_status: mainResponse?.status() || 0,
-    title: await page.title(),
+    title: await boundary.guard(page.title()),
     runtime: {
       ...runtimeIdentity,
       actual_browser_version: browser.version(),
@@ -685,6 +1341,10 @@ try {
     request_failures: requestFailures,
     http_errors: httpErrors,
   };
+  await context.close();
+  context = undefined;
+  boundary.throwIfRejected();
+  fs.writeFileSync(screenshotPath, screenshot);
   fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
   updateManifest(options, screenshotPath, reportPath, report);
   process.stdout.write(`${JSON.stringify(report)}\n`);
@@ -694,8 +1354,13 @@ try {
     process.exitCode = 1;
   }
 } catch (error) {
-  process.stderr.write(`visual capture error: ${sanitizeFailure(error)}\n`);
+  const boundaryFailure = boundary.violation()
+    ? new Error(`request boundary rejected a ${boundary.violation().destination} for ${boundary.violation().kind}`)
+    : error;
+  process.stderr.write(`visual capture error: ${sanitizeFailure(boundaryFailure)}\n`);
   process.exitCode = 1;
 } finally {
+  if (context) await context.close().catch(() => {});
   await browser.close();
+  await closeServer(boundaryProxy);
 }

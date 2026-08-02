@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nested-frame boundary fixture</title>
+</head>
+<body>
+  <p>The nested frame must remain inside the capture origin.</p>
+  <iframe id="nested" title="Nested boundary fixture"></iframe>
+  <script>
+    document.querySelector('#nested').src = new URLSearchParams(window.location.search).get('target');
+  </script>
+</body>
+</html>
