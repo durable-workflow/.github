@@ -44,6 +44,9 @@ jobs:
           python -m json.tool qualification/policy.json >/dev/null
           python -m json.tool qualification/schema.json >/dev/null
           python -m jsonschema -i qualification/policy.json qualification/schema.json
+          python -m json.tool visual-evidence/policy.json >/dev/null
+          python -m json.tool visual-evidence/schema.json >/dev/null
+          python -m jsonschema -i visual-evidence/policy.json visual-evidence/schema.json
           python -m json.tool regression-corpus/policy-schema.json >/dev/null
           python -m json.tool regression-corpus/evidence-schema.json >/dev/null
           python - <<'PY'

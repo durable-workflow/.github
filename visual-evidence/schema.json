@@ -1,0 +1,119 @@
+{
+  "$id": "https://github.com/durable-workflow/.github/blob/main/visual-evidence/schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "customer_facing_extensions": {
+      "items": {
+        "pattern": "^\\.[a-z0-9.]+$",
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "interactions": {
+      "additionalProperties": false,
+      "properties": {
+        "navigation": {
+          "$ref": "#/$defs/interaction"
+        },
+        "search": {
+          "$ref": "#/$defs/interaction"
+        }
+      },
+      "required": [
+        "navigation",
+        "search"
+      ],
+      "type": "object"
+    },
+    "schema": {
+      "const": "durable-workflow.visual-evidence-policy/v1"
+    },
+    "viewport_classes": {
+      "additionalProperties": false,
+      "properties": {
+        "desktop": {
+          "$ref": "#/$defs/viewportClass"
+        },
+        "intermediate": {
+          "$ref": "#/$defs/viewportClass"
+        },
+        "mobile": {
+          "$ref": "#/$defs/viewportClass"
+        }
+      },
+      "required": [
+        "desktop",
+        "intermediate",
+        "mobile"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema",
+    "customer_facing_extensions",
+    "interactions",
+    "viewport_classes"
+  ],
+  "type": "object",
+  "$defs": {
+    "interaction": {
+      "additionalProperties": false,
+      "properties": {
+        "content_patterns": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "interaction_selector_patterns": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "required_state": {
+          "pattern": "^[a-z][a-z0-9-]*-open$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content_patterns",
+        "interaction_selector_patterns",
+        "required_state"
+      ],
+      "type": "object"
+    },
+    "viewportClass": {
+      "additionalProperties": false,
+      "properties": {
+        "maximum_width": {
+          "maximum": 2560,
+          "minimum": 320,
+          "type": "integer"
+        },
+        "minimum_width": {
+          "maximum": 2560,
+          "minimum": 320,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "minimum_width"
+      ],
+      "type": "object"
+    }
+  }
+}

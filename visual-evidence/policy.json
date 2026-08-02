@@ -1,0 +1,53 @@
+{
+  "$schema": "./schema.json",
+  "customer_facing_extensions": [
+    ".blade.php",
+    ".css",
+    ".htm",
+    ".html",
+    ".jinja",
+    ".jinja2",
+    ".jsx",
+    ".less",
+    ".sass",
+    ".scss",
+    ".svelte",
+    ".tsx",
+    ".twig",
+    ".vue"
+  ],
+  "interactions": {
+    "navigation": {
+      "content_patterns": [
+        "(?i)(?:md-nav|__drawer|navigation|nav-(?:drawer|menu|toggle)|data-md-(?:component|toggle)=[\\\"']?(?:navigation|drawer))"
+      ],
+      "interaction_selector_patterns": [
+        "(?i)(?:nav|navigation|drawer|menu)"
+      ],
+      "required_state": "navigation-open"
+    },
+    "search": {
+      "content_patterns": [
+        "(?i)(?:md-search|__search|search-(?:dialog|overlay|input|result)|data-md-(?:component|toggle)=[\\\"']?search)"
+      ],
+      "interaction_selector_patterns": [
+        "(?i)search"
+      ],
+      "required_state": "search-open"
+    }
+  },
+  "schema": "durable-workflow.visual-evidence-policy/v1",
+  "viewport_classes": {
+    "desktop": {
+      "minimum_width": 960
+    },
+    "intermediate": {
+      "maximum_width": 959,
+      "minimum_width": 641
+    },
+    "mobile": {
+      "maximum_width": 640,
+      "minimum_width": 320
+    }
+  }
+}
