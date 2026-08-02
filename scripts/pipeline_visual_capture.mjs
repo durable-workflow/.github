@@ -548,8 +548,20 @@ function installWorkerPersistentConnectionBoundary({ bindingName, captureOrigin,
     MessageEvent.prototype,
     'data',
   ).get;
+  const NativeMessageChannel = globalThis.MessageChannel;
+  const trustedMessageChannelPort1 = Object.getOwnPropertyDescriptor(
+    NativeMessageChannel.prototype,
+    'port1',
+  ).get;
+  const trustedMessageChannelPort2 = Object.getOwnPropertyDescriptor(
+    NativeMessageChannel.prototype,
+    'port2',
+  ).get;
+  const trustedMessagePortPostMessage = MessagePort.prototype.postMessage;
   const trustedMessagePortStart = MessagePort.prototype.start;
   const marker = `pipeline-visual-capture-${crypto.randomUUID()}`;
+  const relayMarker = `${marker}-relay`;
+  const sharedBoundaryRelayPorts = new Set();
   const boundaryArguments = JSON.stringify({ bindingName, captureOrigin });
   const workerBoundaryArguments = JSON.stringify({ bindingName, captureOrigin, installerSource });
   const workerInstallerSource = installWorkerPersistentConnectionBoundary.toString();
@@ -634,11 +646,17 @@ function installWorkerPersistentConnectionBoundary({ bindingName, captureOrigin,
         let bootstrapUrl = sharedBootstrapUrls.get(cacheKey);
         if (!bootstrapUrl) {
           const bootstrap = [
-            '((apply, addEventListener, arrayPush, messagePorts, postMessage, start, receiver) => {',
+            '((apply, addEventListener, arrayPush, messageData, messagePorts, postMessage, start, stopImmediatePropagation, receiver) => {',
             '  const boundaryPorts = [];',
             '  const pendingBoundaryViolations = [];',
+            '  let hasBoundaryRelay = false;',
+            '  const flushPendingBoundaryViolations = (port) => {',
+            '    for (let index = 0; index < pendingBoundaryViolations.length; index += 1) {',
+            `      apply(postMessage, port, [{ ${JSON.stringify(marker)}: pendingBoundaryViolations[index] }]);`,
+            '    }',
+            '  };',
             `  globalThis[${JSON.stringify(bindingName)}] = (connection) => {`,
-            '    if (!boundaryPorts.length) apply(arrayPush, pendingBoundaryViolations, [connection]);',
+            '    if (!hasBoundaryRelay) apply(arrayPush, pendingBoundaryViolations, [connection]);',
             '    for (let index = 0; index < boundaryPorts.length; index += 1) {',
             `      apply(postMessage, boundaryPorts[index], [{ ${JSON.stringify(marker)}: connection }]);`,
             '    }',
@@ -648,20 +666,33 @@ function installWorkerPersistentConnectionBoundary({ bindingName, captureOrigin,
             '    for (let portIndex = 0; portIndex < ports.length; portIndex += 1) {',
             '      const port = ports[portIndex];',
             '      apply(arrayPush, boundaryPorts, [port]);',
+            "      apply(addEventListener, port, ['message', (messageEvent) => {",
+            '        const data = apply(messageData, messageEvent, []);',
+            `        if (!data || typeof data !== 'object' || !(${JSON.stringify(relayMarker)} in data)) return;`,
+            '        apply(stopImmediatePropagation, messageEvent, []);',
+            '        const relayPorts = apply(messagePorts, messageEvent, []);',
+            '        for (let relayIndex = 0; relayIndex < relayPorts.length; relayIndex += 1) {',
+            '          const relayPort = relayPorts[relayIndex];',
+            '          apply(arrayPush, boundaryPorts, [relayPort]);',
+            '          apply(start, relayPort, []);',
+            '          flushPendingBoundaryViolations(relayPort);',
+            '        }',
+            '        hasBoundaryRelay = true;',
+            '        pendingBoundaryViolations.length = 0;',
+            '      }, { capture: true }]);',
             '      apply(start, port, []);',
-            '      for (let index = 0; index < pendingBoundaryViolations.length; index += 1) {',
-            `        apply(postMessage, port, [{ ${JSON.stringify(marker)}: pendingBoundaryViolations[index] }]);`,
-            '      }',
+            '      flushPendingBoundaryViolations(port);',
             '    }',
-            '    pendingBoundaryViolations.length = 0;',
             '  }]);',
             '})(',
             '  Reflect.apply,',
             '  globalThis.addEventListener,',
             '  Array.prototype.push,',
+            "  Object.getOwnPropertyDescriptor(MessageEvent.prototype, 'data').get,",
             "  Object.getOwnPropertyDescriptor(MessageEvent.prototype, 'ports').get,",
             '  MessagePort.prototype.postMessage,',
             '  MessagePort.prototype.start,',
+            '  Event.prototype.stopImmediatePropagation,',
             '  globalThis,',
             ');',
             ...installChildBoundaries,
@@ -678,6 +709,17 @@ function installWorkerPersistentConnectionBoundary({ bindingName, captureOrigin,
         const port = trustedApply(trustedSharedWorkerPort, sharedWorker, []);
         addBoundaryMessageListener(port);
         trustedApply(trustedMessagePortStart, port, []);
+        const relay = Reflect.construct(NativeMessageChannel, []);
+        const relayReceiver = trustedApply(trustedMessageChannelPort1, relay, []);
+        const relaySender = trustedApply(trustedMessageChannelPort2, relay, []);
+        addBoundaryMessageListener(relayReceiver);
+        trustedApply(trustedMessagePortStart, relayReceiver, []);
+        sharedBoundaryRelayPorts.add(relayReceiver);
+        trustedApply(
+          trustedMessagePortPostMessage,
+          port,
+          [{ [relayMarker]: true }, [relaySender]],
+        );
         return sharedWorker;
       },
     });

@@ -86,6 +86,17 @@ before(async () => {
         `);
         return;
       }
+      if (pathname === '/shared-worker-webtransport-closed-port.js') {
+        const target = requestedUrl.searchParams.get('target');
+        response.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' }).end(`
+          addEventListener('connect', () => {
+            setTimeout(() => {
+              try { new WebTransport(${JSON.stringify(target)}); } catch {}
+            }, 50);
+          });
+        `);
+        return;
+      }
       if (pathname === '/shared-worker-message.js') {
         response.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' }).end(
           "addEventListener('connect', (event) => event.ports[0].postMessage('Allowed same-surface worker'));",
@@ -527,6 +538,18 @@ test('blocks redirects, navigations, frames, resources, fetches, and persistent 
       name: 'shared worker webtransport relay replacement',
       page: 'network-request.html',
       query: { kind: 'shared-worker-webtransport-relay-replacement', target: rejectedWebTransportUrl },
+      diagnostic: /cross-origin loopback destination for persistent connection/,
+    },
+    {
+      name: 'shared worker webtransport closed port',
+      page: 'network-request.html',
+      query: { kind: 'shared-worker-webtransport-closed-port', target: rejectedWebTransportUrl },
+      diagnostic: /cross-origin loopback destination for persistent connection/,
+    },
+    {
+      name: 'shared worker webtransport after closed port',
+      page: 'network-request.html',
+      query: { kind: 'shared-worker-webtransport-after-closed-port', target: rejectedWebTransportUrl },
       diagnostic: /cross-origin loopback destination for persistent connection/,
     },
     {

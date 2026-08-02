@@ -43,6 +43,16 @@
       const workerUrl = new URL('/shared-worker-webtransport-relay-replacement.js', window.location.href);
       workerUrl.searchParams.set('target', target);
       new SharedWorker(workerUrl);
+    } else if (kind === 'shared-worker-webtransport-closed-port') {
+      const workerUrl = new URL('/shared-worker-webtransport.js', window.location.href);
+      workerUrl.searchParams.set('target', target);
+      const worker = new SharedWorker(workerUrl);
+      worker.port.close();
+    } else if (kind === 'shared-worker-webtransport-after-closed-port') {
+      const workerUrl = new URL('/shared-worker-webtransport-closed-port.js', window.location.href);
+      workerUrl.searchParams.set('target', target);
+      const worker = new SharedWorker(workerUrl);
+      worker.port.close();
     } else if (kind === 'nested-worker-webtransport') {
       const nestedSource = `try { new WebTransport(${JSON.stringify(target)}); } catch {}`;
       const workerSource = `new Worker(URL.createObjectURL(new Blob([${JSON.stringify(nestedSource)}], { type: 'text/javascript' })));`;
