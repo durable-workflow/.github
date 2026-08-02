@@ -32,8 +32,14 @@ jobs:
         with:
           python-version: "3.13"
 
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6
+        with:
+          node-version: "24"
+
       - name: Install quality tooling
-        run: python -m pip install jsonschema==4.23.0 PyYAML==6.0.2 ruff==0.12.3 yamllint==1.37.1
+        run: |
+          python -m pip install jsonschema==4.23.0 PyYAML==6.0.2 ruff==0.12.3 yamllint==1.37.1
+          npm ci
 
       - name: Validate source and policy
         run: |
@@ -123,6 +129,13 @@ jobs:
           python scripts/qualification_policy.py validate
         env:
           CONFORMANCE_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+
+      - name: Validate visual capture
+        run: |
+          mkdir -p "$TMPDIR"
+          npm run test:visual-capture
+        env:
+          TMPDIR: ${{ runner.temp }}/visual-chromium-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Verify live public recovery authority
         if: ${{ github.server_url == 'https://github.com' }}

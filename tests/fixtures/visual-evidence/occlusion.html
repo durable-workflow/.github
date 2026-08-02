@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>Visual occlusion fixture</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; overflow-x: hidden; font: 16px sans-serif; }
+    .control {
+      position: absolute;
+      left: 100px;
+      top: 100px;
+      width: 300px;
+      height: 48px;
+      border: 1px solid #667085;
+      background: white;
+    }
+    .overlay { position: absolute; z-index: 10; background: rgba(18, 24, 38, 0.92); }
+    .nested-icon { position: absolute; inset: 0; display: grid; place-items: center; }
+    .fixture-list { display: grid; gap: 12px; width: 320px; margin: 40px; }
+    .fixture-list > * { min-height: 36px; }
+    #choice { width: 18px; height: 18px; }
+  </style>
+</head>
+<body>
+  <main id="fixture"></main>
+  <script>
+    const fixture = document.querySelector('#fixture');
+    const scenario = new URLSearchParams(location.search).get('case') || 'edge';
+    const addTarget = (tag = 'button', attributes = '') => {
+      fixture.insertAdjacentHTML('beforeend', `<${tag} ${attributes} id="target" class="control">Target control</${tag}>`);
+      return document.querySelector('#target');
+    };
+    const addOverlay = (style, className = 'overlay') => {
+      fixture.insertAdjacentHTML('beforeend', `<div class="${className}" style="${style}"></div>`);
+    };
+
+    if (scenario === 'control-types') {
+      fixture.innerHTML = `
+        <div class="fixture-list">
+          <input name="text-input" aria-label="Text input">
+          <select name="select"><option>Option</option></select>
+          <textarea name="textarea" aria-label="Textarea"></textarea>
+          <button><span>Nested button text</span></button>
+          <a href="#safe"><span>Nested link text</span></a>
+          <details><summary><span>Nested summary text</span></summary><p>Details</p></details>
+          <div role="button" tabindex="0"><span>Explicit role</span></div>
+          <div role="gridcell" tabindex="0"><span>Interactive grid cell</span></div>
+          <button role="presentation"><span>Native button with overridden role</span></button>
+          <div role="dialog"><span>Non-interactive role</span></div>
+          <button disabled>Disabled control</button>
+        </div>`;
+    } else if (scenario === 'nested-child') {
+      const target = addTarget();
+      target.innerHTML = '<span class="nested-icon"><span>Legitimate child overlay</span></span>';
+    } else if (scenario === 'label') {
+      fixture.innerHTML = `
+        <input id="choice" name="choice" type="checkbox" style="position:absolute;left:100px;top:100px">
+        <label for="choice" style="position:absolute;z-index:2;left:100px;top:100px;width:18px;height:18px;font-size:0">Choice</label>`;
+    } else if (scenario === 'choice') {
+      fixture.innerHTML = '<input id="choice" name="choice" type="checkbox" style="position:absolute;left:100px;top:100px">';
+    } else if (scenario === 'partial') {
+      const target = addTarget();
+      target.style.left = '-240px';
+    } else if (scenario === 'cloud-banner') {
+      fixture.innerHTML = '<input id="target" class="control" name="organization_website" type="url" placeholder="Organization website (optional)" style="left:160px;top:760px;width:420px">';
+      fixture.insertAdjacentHTML('beforeend', `
+        <aside class="overlay" style="position:fixed;left:0;right:0;bottom:0;height:132px;padding:20px;color:white">
+          Optional site analytics
+          <button style="float:right;width:120px;height:40px">Continue</button>
+        </aside>`);
+    } else if (scenario === 'consent') {
+      addTarget('input', 'name="email" aria-label="Email"');
+      fixture.insertAdjacentHTML('beforeend', `
+        <aside class="overlay" style="position:fixed;left:0;right:0;top:88px;height:180px;padding:20px;color:white">
+          Consent choices
+          <button style="width:120px;height:40px">Deny</button>
+        </aside>`);
+    } else if (scenario === 'dialog') {
+      addTarget('textarea', 'name="notes" aria-label="Notes"');
+      fixture.insertAdjacentHTML('beforeend', `
+        <div class="overlay" role="presentation" style="position:fixed;inset:0;padding:60px;color:white">
+          <div role="dialog" aria-modal="true">
+            Dialog content
+            <button style="width:120px;height:40px">Close</button>
+          </div>
+        </div>`);
+    } else if (scenario === 'horizontal-overflow') {
+      document.documentElement.style.overflowX = 'visible';
+      document.body.style.overflowX = 'visible';
+      fixture.innerHTML = '<div style="width:1200px;height:20px"></div>';
+    } else if (scenario === 'clipped-text') {
+      fixture.innerHTML = '<div style="width:40px;height:20px;overflow:hidden;white-space:nowrap">Clipped fixture text</div>';
+    } else if (scenario === 'clipped-control') {
+      fixture.innerHTML = '<input name="secret" value="sensitive-control-value" style="width:50px">';
+    } else if (scenario === 'console-error') {
+      console.error('fixture console failure');
+    } else if (scenario === 'oversized-choice') {
+      fixture.innerHTML = '<input name="large-choice" type="checkbox" style="width:48px;height:48px">';
+    } else if (scenario === 'sanitized-request') {
+      fixture.innerHTML = '<img src="/missing.png?credential=must-not-appear" alt="Missing fixture image">';
+    } else {
+      addTarget();
+      const overlays = {
+        all: 'left:100px;top:100px;width:300px;height:48px',
+        most: 'left:100px;top:100px;width:270px;height:48px',
+        center: 'left:220px;top:100px;width:60px;height:48px',
+        edge: 'left:100px;top:100px;width:20px;height:48px',
+      };
+      addOverlay(overlays[scenario] || overlays.edge);
+    }
+  </script>
+</body>
+</html>

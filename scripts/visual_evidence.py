@@ -94,7 +94,7 @@ def viewport_class(width: int, policy: dict[str, Any]) -> str | None:
     return None
 
 
-def validate_report(manifest_path: Path, capture: dict[str, Any]) -> list[str]:
+def validate_report(manifest_path: Path, capture: dict[str, Any], policy: dict[str, Any]) -> list[str]:
     failures: list[str] = []
     evidence_root = manifest_path.parent.resolve()
     report_path = (evidence_root / str(capture.get("report", ""))).resolve()
@@ -115,8 +115,25 @@ def validate_report(manifest_path: Path, capture: dict[str, Any]) -> list[str]:
     if report.get("page_status") != 200:
         failures.append(f"capture report did not render an HTTP 200 page: {report_path}")
     geometry = report.get("geometry")
-    if not isinstance(geometry, dict) or geometry.get("horizontal_overflow") is not False:
+    if not isinstance(geometry, dict):
         failures.append(f"capture report has horizontal overflow or missing geometry: {report_path}")
+        return failures
+    requirements = policy["report_requirements"]
+    for field in requirements["false_geometry_flags"]:
+        if geometry.get(field) is not False:
+            failures.append(f"capture report has {field} or is missing the field: {report_path}")
+    for field in requirements["empty_geometry_findings"]:
+        findings = geometry.get(field)
+        if not isinstance(findings, list):
+            failures.append(f"capture report is missing the {field} findings list: {report_path}")
+        elif findings:
+            failures.append(f"capture report has non-empty {field} findings: {report_path}")
+    for field in requirements["empty_report_findings"]:
+        findings = report.get(field)
+        if not isinstance(findings, list):
+            failures.append(f"capture report is missing the {field} findings list: {report_path}")
+        elif findings:
+            failures.append(f"capture report has non-empty {field} findings: {report_path}")
     return failures
 
 
@@ -125,7 +142,7 @@ def validate_manifest(
     classification: dict[str, list[str]],
     policy: dict[str, Any],
 ) -> list[str]:
-    if not classification:
+    if not classification and not manifest_path.is_file():
         return []
     manifest = load_json(manifest_path, "visual evidence manifest")
     if manifest.get("schema") != MANIFEST_SCHEMA or not isinstance(manifest.get("captures"), list):
@@ -133,6 +150,8 @@ def validate_manifest(
 
     failures: list[str] = []
     captures = [capture for capture in manifest["captures"] if isinstance(capture, dict)]
+    for capture in captures:
+        failures.extend(validate_report(manifest_path, capture, policy))
     for interaction, paths in classification.items():
         rule = policy["interactions"][interaction]
         required_state = rule["required_state"]
@@ -165,8 +184,6 @@ def validate_manifest(
                     f"capture with a meaningful click at the {viewport_name} viewport"
                 )
                 continue
-            for capture in qualifying:
-                failures.extend(validate_report(manifest_path, capture))
     return failures
 
 

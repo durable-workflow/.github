@@ -36,6 +36,47 @@
       "required_state": "search-open"
     }
   },
+  "report_requirements": {
+    "empty_geometry_findings": [
+      "clipped_text",
+      "clipped_control_text",
+      "oversized_choice_controls",
+      "unreachable_controls"
+    ],
+    "empty_report_findings": [
+      "console_errors",
+      "page_errors"
+    ],
+    "false_geometry_flags": [
+      "horizontal_overflow"
+    ]
+  },
+  "review_contract": {
+    "audit": {
+      "correlate_with_screenshot": true,
+      "inspect_report_fields": [
+        "geometry.clipped_text",
+        "geometry.clipped_control_text",
+        "geometry.horizontal_overflow",
+        "geometry.oversized_choice_controls",
+        "geometry.unreachable_controls",
+        "console_errors",
+        "page_errors"
+      ]
+    },
+    "merge_gate": {
+      "correlate_with_screenshot": true,
+      "inspect_report_fields": [
+        "geometry.clipped_text",
+        "geometry.clipped_control_text",
+        "geometry.horizontal_overflow",
+        "geometry.oversized_choice_controls",
+        "geometry.unreachable_controls",
+        "console_errors",
+        "page_errors"
+      ]
+    }
+  },
   "schema": "durable-workflow.visual-evidence-policy/v1",
   "viewport_classes": {
     "desktop": {

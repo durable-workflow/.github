@@ -1,0 +1,11 @@
+{
+  "name": "durable-workflow-github-control-plane",
+  "private": true,
+  "scripts": {
+    "test:visual-capture": "node --check scripts/pipeline_visual_capture.mjs && node --test tests/test_visual_capture.mjs"
+  },
+  "dependencies": {
+    "@sparticuz/chromium": "140.0.0",
+    "playwright-core": "1.55.0"
+  }
+}

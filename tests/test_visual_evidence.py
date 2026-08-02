@@ -7,9 +7,10 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+import yaml
 from jsonschema import Draft202012Validator
 
-from scripts.visual_evidence import changed_paths, classify_changes, load_json, validate_manifest
+from scripts.visual_evidence import changed_paths, classify_changes, load_json, validate_manifest, validate_report
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICY_PATH = ROOT / "visual-evidence" / "policy.json"
@@ -24,6 +25,41 @@ class VisualEvidencePolicyTest(unittest.TestCase):
         schema = json.loads(SCHEMA_PATH.read_bytes())
         Draft202012Validator.check_schema(schema)
         Draft202012Validator(schema).validate(self.policy)
+
+    def test_source_qualification_pins_an_isolated_browser_runtime(self) -> None:
+        package = json.loads((ROOT / "package.json").read_bytes())
+        lock = json.loads((ROOT / "package-lock.json").read_bytes())
+        self.assertEqual("140.0.0", package["dependencies"]["@sparticuz/chromium"])
+        self.assertEqual("1.55.0", package["dependencies"]["playwright-core"])
+        for dependency, expected_version in (
+            ("@sparticuz/chromium", "140.0.0"),
+            ("playwright-core", "1.55.0"),
+        ):
+            locked = lock["packages"][f"node_modules/{dependency}"]
+            self.assertEqual(expected_version, locked["version"])
+            self.assertTrue(locked["integrity"].startswith("sha512-"))
+
+        workflow = yaml.safe_load((ROOT / ".github/workflows/source-qualification.yml").read_bytes())
+        self.assertEqual({"contents": "read"}, workflow["permissions"])
+        steps = workflow["jobs"]["source"]["steps"]
+        setup_node = next(step for step in steps if str(step.get("uses", "")).startswith("actions/setup-node@"))
+        self.assertNotIn("cache", setup_node.get("with", {}))
+        visual_capture = next(step for step in steps if step.get("name") == "Validate visual capture")
+        self.assertEqual(
+            "${{ runner.temp }}/visual-chromium-${{ github.run_id }}-${{ github.run_attempt }}",
+            visual_capture["env"]["TMPDIR"],
+        )
+        self.assertIn("npm run test:visual-capture", visual_capture["run"])
+        for step in steps:
+            if "actions/upload-artifact@" not in str(step.get("uses", "")):
+                continue
+            self.assertIn("github.event_name != 'pull_request'", step["if"])
+
+    def test_merge_gate_and_audit_review_screenshots_with_unreachable_control_geometry(self) -> None:
+        for reviewer in ("merge_gate", "audit"):
+            contract = self.policy["review_contract"][reviewer]
+            self.assertTrue(contract["correlate_with_screenshot"])
+            self.assertIn("geometry.unreachable_controls", contract["inspect_report_fields"])
 
     def test_search_and_navigation_selectors_require_open_states(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -136,7 +172,15 @@ class VisualEvidencePolicyTest(unittest.TestCase):
                     "viewport": viewport,
                     "interactions": interactions,
                     "page_status": 200,
-                    "geometry": {"horizontal_overflow": False},
+                    "geometry": {
+                        "horizontal_overflow": False,
+                        "clipped_text": [],
+                        "clipped_control_text": [],
+                        "oversized_choice_controls": [],
+                        "unreachable_controls": [],
+                    },
+                    "console_errors": [],
+                    "page_errors": [],
                 }
             ),
             encoding="utf-8",
@@ -150,6 +194,87 @@ class VisualEvidencePolicyTest(unittest.TestCase):
             "screenshot": screenshot.name,
             "report": report.name,
         }
+
+    def test_admission_rejects_unreachable_controls(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capture = self.capture(root, "search", "search-open", 390, ".search")
+            report_path = root / capture["report"]
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report["geometry"]["unreachable_controls"] = [
+                {
+                    "tag": "input",
+                    "name": "organization_website",
+                    "reachable_area_ratio": 0.2,
+                }
+            ]
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            failures = validate_report(root / "manifest.json", capture, self.policy)
+            self.assertEqual(1, len(failures))
+            self.assertIn("non-empty unreachable_controls", failures[0])
+
+    def test_admission_requires_all_capture_health_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capture = self.capture(root, "search", "search-open", 390, ".search")
+            report_path = root / capture["report"]
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            del report["geometry"]["unreachable_controls"]
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            failures = validate_report(root / "manifest.json", capture, self.policy)
+            self.assertEqual(1, len(failures))
+            self.assertIn("missing the unreachable_controls findings list", failures[0])
+
+    def test_admission_preserves_clipping_console_and_control_size_checks(self) -> None:
+        cases = (
+            ("geometry", "clipped_text"),
+            ("geometry", "clipped_control_text"),
+            ("geometry", "oversized_choice_controls"),
+            ("report", "console_errors"),
+            ("report", "page_errors"),
+        )
+        for location, field in cases:
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                capture = self.capture(root, "search", "search-open", 390, ".search")
+                report_path = root / capture["report"]
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                target = report["geometry"] if location == "geometry" else report
+                target[field] = [{"finding": field}]
+                report_path.write_text(json.dumps(report), encoding="utf-8")
+
+                failures = validate_report(root / "manifest.json", capture, self.policy)
+                self.assertEqual(1, len(failures))
+                self.assertIn(f"non-empty {field}", failures[0])
+
+    def test_admission_preserves_horizontal_overflow_check(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capture = self.capture(root, "search", "search-open", 390, ".search")
+            report_path = root / capture["report"]
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report["geometry"]["horizontal_overflow"] = True
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            failures = validate_report(root / "manifest.json", capture, self.policy)
+            self.assertEqual(1, len(failures))
+            self.assertIn("horizontal_overflow", failures[0])
+
+    def test_admission_checks_a_supplied_manifest_without_interaction_classification(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capture = self.capture(root, "default", "default", 1440, "#action")
+            report_path = root / capture["report"]
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report["geometry"]["unreachable_controls"] = [{"tag": "button"}]
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            manifest = self.write_manifest(root, [capture])
+
+            failures = validate_manifest(manifest, {}, self.policy)
+            self.assertEqual(1, len(failures))
+            self.assertIn("non-empty unreachable_controls", failures[0])
 
     def write_manifest(self, root: Path, captures: list[dict[str, Any]]) -> Path:
         manifest = root / "manifest.json"

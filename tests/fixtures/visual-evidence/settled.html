@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>Loading API reference</title>
+  <style>
+    body { margin: 0; font: 16px sans-serif; }
+    .sdk-title { width: 1ch; white-space: nowrap; overflow: hidden; }
+    .search, .menu { display: none; }
+    .ready .sdk-title { width: auto; overflow: visible; white-space: normal; }
+    .ready .search, .ready .menu { display: block; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 class="sdk-title"><span>Durable Workflow PHP SDK</span></h1>
+    <button class="menu">Menu</button>
+    <label class="search">Search <input name="query"></label>
+  </header>
+  <script>
+    window.setTimeout(() => {
+      document.body.classList.add('ready');
+      document.title = 'Settled API reference';
+    }, 600);
+  </script>
+</body>
+</html>

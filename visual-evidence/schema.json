@@ -31,6 +31,63 @@
       ],
       "type": "object"
     },
+    "report_requirements": {
+      "additionalProperties": false,
+      "properties": {
+        "empty_geometry_findings": {
+          "contains": {
+            "const": "unreachable_controls"
+          },
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "empty_report_findings": {
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "false_geometry_flags": {
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "empty_geometry_findings",
+        "empty_report_findings",
+        "false_geometry_flags"
+      ],
+      "type": "object"
+    },
+    "review_contract": {
+      "additionalProperties": false,
+      "properties": {
+        "audit": {
+          "$ref": "#/$defs/reviewer"
+        },
+        "merge_gate": {
+          "$ref": "#/$defs/reviewer"
+        }
+      },
+      "required": [
+        "audit",
+        "merge_gate"
+      ],
+      "type": "object"
+    },
     "schema": {
       "const": "durable-workflow.visual-evidence-policy/v1"
     },
@@ -59,6 +116,8 @@
     "schema",
     "customer_facing_extensions",
     "interactions",
+    "report_requirements",
+    "review_contract",
     "viewport_classes"
   ],
   "type": "object",
@@ -93,6 +152,31 @@
         "content_patterns",
         "interaction_selector_patterns",
         "required_state"
+      ],
+      "type": "object"
+    },
+    "reviewer": {
+      "additionalProperties": false,
+      "properties": {
+        "correlate_with_screenshot": {
+          "const": true
+        },
+        "inspect_report_fields": {
+          "contains": {
+            "const": "geometry.unreachable_controls"
+          },
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)?$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "correlate_with_screenshot",
+        "inspect_report_fields"
       ],
       "type": "object"
     },
