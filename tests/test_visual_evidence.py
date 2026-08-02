@@ -94,6 +94,14 @@ class VisualEvidencePolicyTest(unittest.TestCase):
 
         self.assertIn("cp docs/index.html target/doc/index.html", build["run"])
         self.assertEqual(
+            ["candidate/target/doc"],
+            re.findall(
+                r"(?m)^\s*python3 -m http\.server\b[^\n]*"
+                r"--directory\s+([^\s\\]+)",
+                capture["run"],
+            ),
+        )
+        self.assertEqual(
             ["http://127.0.0.1:4173/", "http://127.0.0.1:4173/"],
             re.findall(r'http://127\.0\.0\.1:4173/[^\s"\\]*', capture["run"]),
         )

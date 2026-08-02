@@ -22,7 +22,7 @@
       "ref": "refs/heads/v2",
       "path": ".github/workflows/release-plan-recovery.yml",
       "state": "active",
-      "sha256": "70709457d17c017a2368058f543c88863425f9c0805027e1926e7f2520840379"
+      "sha256": "c702d5dadce236ce96b39f0c086728a6882d3f54a5349f3871a0ea8899bccb6b"
     },
     "server": {
       "repository": "durable-workflow/server",
@@ -43,7 +43,7 @@
       "ref": "refs/heads/main",
       "path": ".github/workflows/release-plan-recovery.yml",
       "state": "active",
-      "sha256": "328938650ca4cf9fac2d5a305fec2c781428f03e6b581cf46e80b710ddada06a"
+      "sha256": "02874a395b9402dc5d7c3c8b521a26637cd6fe66c513dd69e3fd3e1e8d506565"
     },
     "sdk-python": {
       "repository": "durable-workflow/sdk-python",
