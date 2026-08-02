@@ -167,7 +167,8 @@ function sanitizedStderr(stderr) {
 async function capture(
   scenario,
   {
-    click = [], env = {}, height = 600, page = 'occlusion.html', query = {}, source, width = 800,
+    browserHostname, click = [], env = {}, height = 600, page = 'occlusion.html', query = {},
+    source, suppressRequest = [], width = 800,
   } = {},
 ) {
   const directory = path.join(artifactRoot, scenario);
@@ -189,6 +190,8 @@ async function capture(
     '--timeout-ms', '10000',
   ];
   for (const selector of click) args.push('--click', selector);
+  if (browserHostname) args.push('--browser-hostname', browserHostname);
+  for (const requestUrl of suppressRequest) args.push('--suppress-request', requestUrl);
   if (source) {
     args.push('--source-repository', source.repository, '--source-revision', source.revision);
   }
@@ -638,6 +641,55 @@ test('binds reports, manifest entries, and the manifest to one candidate source'
   assert.deepEqual(result.manifest.captures[0].source, source);
 });
 
+test('uses a production browser hostname with an inert analytics loader', async () => {
+  const analyticsLoader = 'https://www.googletagmanager.com/gtag/js?id=G-HD1YHT442Y';
+  const result = await capture('production-granted', {
+    browserHostname: 'rust.durable-workflow.com',
+    click: ['[data-consent="granted"]'],
+    page: 'production-granted.html',
+    suppressRequest: [analyticsLoader],
+  });
+  assert.equal(
+    result.status,
+    0,
+    `${result.stderr}\n${JSON.stringify(result.report.page_errors)}`,
+  );
+  assert.equal(new URL(result.report.page_url).hostname, 'rust.durable-workflow.com');
+  assert.deepEqual(result.report.suppressed_requests, [{
+    url: 'https://www.googletagmanager.com/gtag/js',
+    method: 'GET',
+    resource_type: 'script',
+  }]);
+  assert.deepEqual(result.report.console_errors, []);
+  assert.deepEqual(result.report.request_failures, []);
+});
+
+test('rejects a failure reached only after the production hostname guard', async () => {
+  const result = await capture('production-granted-regression', {
+    browserHostname: 'rust.durable-workflow.com',
+    click: ['[data-consent="granted"]'],
+    page: 'production-granted.html',
+    query: { 'fail-after-hostname-guard': '1' },
+    suppressRequest: ['https://www.googletagmanager.com/gtag/js?id=G-HD1YHT442Y'],
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /console errors/);
+  assert.equal(result.report.console_errors.length, 1);
+  assert.equal(new URL(result.report.page_url).hostname, 'rust.durable-workflow.com');
+  assert.equal(result.report.suppressed_requests.length, 1);
+});
+
+test('rejects a granted capture that never reaches the analytics loader', async () => {
+  const result = await capture('production-loader-skipped', {
+    browserHostname: 'rust.durable-workflow.com',
+    page: 'production-granted.html',
+    suppressRequest: ['https://www.googletagmanager.com/gtag/js?id=G-HD1YHT442Y'],
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /missing suppressed requests/);
+  assert.deepEqual(result.report.suppressed_requests, []);
+});
+
 test('allows only each documentation host exact read-only repository facts endpoint', () => {
   const repositories = new Map([
     ['durable-workflow.com', 'workflow'],
@@ -740,6 +792,10 @@ test('redacts control values and strips request query credentials from reports',
 test('rejects unsafe URLs and preserves sanitized pre-report runtime errors', async () => {
   await rejectedCapture('host-rejected', 'https://example.com/');
   await rejectedCapture('credentials-rejected', 'http://user:password@localhost/');
+  await assert.rejects(
+    capture('unsafe-suppression', { suppressRequest: [`${rejectedBaseUrl}/must-not-be-hidden`] }),
+    /accepts only one exact Google Analytics loader URL/,
+  );
   await assert.rejects(
     capture('missing-browser', {
       env: { PIPELINE_CHROMIUM_PATH: path.join(artifactRoot, 'missing-chromium') },

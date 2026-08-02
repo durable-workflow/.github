@@ -294,6 +294,37 @@
           },
           "type": "array",
           "uniqueItems": true
+        },
+        "required_page_hostname": {
+          "format": "hostname",
+          "type": "string"
+        },
+        "required_suppressed_requests": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "method": {
+                "const": "GET"
+              },
+              "resource_type": {
+                "const": "script"
+              },
+              "url": {
+                "format": "uri",
+                "pattern": "^https://",
+                "type": "string"
+              }
+            },
+            "required": [
+              "method",
+              "resource_type",
+              "url"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
         }
       },
       "required": [

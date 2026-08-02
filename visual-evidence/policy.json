@@ -120,6 +120,14 @@
         "granted": {
           "interaction_selector_patterns": [
             "data-consent[^]]*granted"
+          ],
+          "required_page_hostname": "rust.durable-workflow.com",
+          "required_suppressed_requests": [
+            {
+              "method": "GET",
+              "resource_type": "script",
+              "url": "https://www.googletagmanager.com/gtag/js"
+            }
           ]
         },
         "initial": {

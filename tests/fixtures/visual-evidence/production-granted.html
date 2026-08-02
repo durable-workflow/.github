@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Production granted path</title>
+</head>
+<body>
+  <main>
+    <button type="button" data-consent="granted">Allow analytics</button>
+    <button type="button" id="preferences" hidden>Analytics preferences</button>
+  </main>
+  <script>
+    document.querySelector('[data-consent="granted"]').addEventListener('click', () => {
+      if (window.location.hostname !== 'rust.durable-workflow.com') return;
+      window.dataLayer = window.dataLayer || [];
+      window.dataLayer.push({ event: 'configured' });
+      if (new URLSearchParams(window.location.search).has('fail-after-hostname-guard')) {
+        console.error('production-only granted path failed');
+      }
+      const loader = document.createElement('script');
+      loader.src = 'https://www.googletagmanager.com/gtag/js?id=G-HD1YHT442Y';
+      document.head.appendChild(loader);
+      document.querySelector('[data-consent="granted"]').hidden = true;
+      document.querySelector('#preferences').hidden = false;
+    });
+  </script>
+</body>
+</html>

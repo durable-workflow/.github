@@ -79,6 +79,11 @@ class VisualEvidencePolicyTest(unittest.TestCase):
             self.assertIn(viewport, capture["run"])
         for state in ("initial", "granted", "denied", "preferences-open"):
             self.assertIn(f"capture {state}", capture["run"])
+        self.assertIn("--browser-hostname rust.durable-workflow.com", capture["run"])
+        self.assertIn(
+            "--suppress-request 'https://www.googletagmanager.com/gtag/js?id=G-HD1YHT442Y'",
+            capture["run"],
+        )
         self.assertIn("--source-revision \"$SOURCE_REVISION\"", capture["run"])
 
         validate = next(step for step in steps if step.get("name") == "Validate source-bound candidate evidence")
@@ -395,6 +400,7 @@ class VisualEvidencePolicyTest(unittest.TestCase):
             "interactions": interactions,
             "source": source,
             "page_status": 200,
+            "page_url": "http://rust.durable-workflow.com:4173/" if state == "granted" else "http://127.0.0.1:4173/",
             "geometry": {
                 "horizontal_overflow": False,
                 "clipped_text": [],
@@ -406,6 +412,15 @@ class VisualEvidencePolicyTest(unittest.TestCase):
             "http_errors": [],
             "page_errors": [],
             "request_failures": [],
+            "suppressed_requests": [
+                {
+                    "method": "GET",
+                    "resource_type": "script",
+                    "url": "https://www.googletagmanager.com/gtag/js",
+                }
+            ]
+            if state == "granted"
+            else [],
         }
         report_path.write_text(json.dumps(report), encoding="utf-8")
         return {
@@ -506,6 +521,37 @@ class VisualEvidencePolicyTest(unittest.TestCase):
                     revision,
                 ),
             )
+
+            granted = next(capture for capture in captures if capture["state"] == "granted")
+            granted_report_path = root / granted["report"]
+            granted_report = json.loads(granted_report_path.read_text(encoding="utf-8"))
+            granted_report["suppressed_requests"] = []
+            granted_report_path.write_text(json.dumps(granted_report), encoding="utf-8")
+            failures = validate_manifest(
+                manifest,
+                classification,
+                self.policy,
+                "rust-sdk-reference",
+                revision,
+            )
+            self.assertTrue(any("network suppression evidence" in failure for failure in failures))
+
+            granted_report["suppressed_requests"] = self.policy["visual_profiles"]["rust-sdk-reference"]["states"][
+                "granted"
+            ]["required_suppressed_requests"]
+            granted_report["page_url"] = "http://127.0.0.1:4173/"
+            granted_report_path.write_text(json.dumps(granted_report), encoding="utf-8")
+            failures = validate_manifest(
+                manifest,
+                classification,
+                self.policy,
+                "rust-sdk-reference",
+                revision,
+            )
+            self.assertTrue(any("required page hostname" in failure for failure in failures))
+
+            granted_report["page_url"] = "http://rust.durable-workflow.com:4173/"
+            granted_report_path.write_text(json.dumps(granted_report), encoding="utf-8")
 
             incomplete = [
                 capture

@@ -139,6 +139,7 @@ function parseArgs(argv) {
     timeoutMs: 30_000,
     state: 'default',
     click: [],
+    suppressRequest: [],
   };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -151,6 +152,13 @@ function parseArgs(argv) {
       if (!selector || selector.startsWith('--')) fail('--click requires a CSS selector');
       if (selector.length > 500) fail('--click selectors must not exceed 500 characters');
       options.click.push(selector);
+      index += 1;
+      continue;
+    }
+    if (argument === '--suppress-request') {
+      const requestUrl = argv[index + 1];
+      if (!requestUrl || requestUrl.startsWith('--')) fail('--suppress-request requires a URL');
+      options.suppressRequest.push(requestUrl);
       index += 1;
       continue;
     }
@@ -194,6 +202,26 @@ function parseArgs(argv) {
       revision: options.sourceRevision,
     };
   }
+  options.suppressRequest = [...new Set(options.suppressRequest.map((rawUrl) => {
+    let requestUrl;
+    try {
+      requestUrl = new URL(rawUrl);
+    } catch {
+      fail('--suppress-request must be an absolute URL');
+    }
+    const parameterNames = [...requestUrl.searchParams.keys()];
+    if (
+      requestUrl.origin !== 'https://www.googletagmanager.com'
+      || requestUrl.pathname !== '/gtag/js'
+      || parameterNames.length !== 1
+      || parameterNames[0] !== 'id'
+      || !/^G-[A-Z0-9]+$/.test(requestUrl.searchParams.get('id') || '')
+      || requestUrl.hash
+    ) {
+      fail('--suppress-request accepts only one exact Google Analytics loader URL');
+    }
+    return requestUrl.href;
+  }))];
   return options;
 }
 
@@ -211,6 +239,39 @@ function assertAllowedSurface(rawUrl) {
   }
   if (parsed.username || parsed.password) fail('visual capture URLs must not contain credentials');
   return parsed;
+}
+
+function captureUrls(options) {
+  const upstreamUrl = assertAllowedSurface(options.url);
+  if (!options.browserHostname) return { captureUrl: upstreamUrl, upstreamUrl };
+  if (!LOOPBACK_HOSTS.has(upstreamUrl.hostname) || upstreamUrl.protocol !== 'http:') {
+    fail('--browser-hostname requires an HTTP loopback preview URL');
+  }
+  if (!PUBLIC_SURFACE_HOSTS.has(options.browserHostname)) {
+    fail('--browser-hostname must name an allowlisted Durable Workflow surface');
+  }
+  const captureUrl = new URL(upstreamUrl);
+  captureUrl.hostname = options.browserHostname;
+  return { captureUrl, upstreamUrl };
+}
+
+function suppressedRequest(options, rawUrl, method, resourceType) {
+  if (method !== 'GET' || String(resourceType).toLowerCase() !== 'script') return null;
+  let requestUrl;
+  try {
+    requestUrl = new URL(rawUrl);
+  } catch {
+    return null;
+  }
+  return options.suppressRequest.includes(requestUrl.href) ? requestUrl : null;
+}
+
+function suppressionEvidence(requestUrl) {
+  return {
+    url: `${requestUrl.origin}${requestUrl.pathname}`,
+    method: 'GET',
+    resource_type: 'script',
+  };
 }
 
 function normalizedIpHostname(hostname) {
@@ -379,7 +440,7 @@ function proxyRequestUrl(request) {
   }
 }
 
-async function startBoundaryProxy(captureUrl, boundary) {
+async function startBoundaryProxy(captureUrl, upstreamUrl, boundary) {
   const proxy = http.createServer((request, response) => {
     const requestUrl = proxyRequestUrl(request);
     const rejected = rejectedProxyDestination(captureUrl, requestUrl?.href || request.url);
@@ -391,8 +452,14 @@ async function startBoundaryProxy(captureUrl, boundary) {
 
     const headers = { ...request.headers };
     delete headers['proxy-connection'];
-    const transport = requestUrl.protocol === 'https:' ? https : http;
-    const outgoing = transport.request(requestUrl, {
+    const outgoingUrl = new URL(requestUrl);
+    if (requestUrl.origin === captureUrl.origin && upstreamUrl.origin !== captureUrl.origin) {
+      outgoingUrl.protocol = upstreamUrl.protocol;
+      outgoingUrl.hostname = upstreamUrl.hostname;
+      outgoingUrl.port = upstreamUrl.port;
+    }
+    const transport = outgoingUrl.protocol === 'https:' ? https : http;
+    const outgoing = transport.request(outgoingUrl, {
       method: request.method,
       headers,
     }, (incoming) => {
@@ -570,7 +637,9 @@ function installWorkerPersistentConnectionBoundary({ bindingName, captureOrigin,
   ).get;
   const trustedMessagePortPostMessage = MessagePort.prototype.postMessage;
   const trustedMessagePortStart = MessagePort.prototype.start;
-  const marker = `pipeline-visual-capture-${crypto.randomUUID()}`;
+  const markerEntropy = new Uint32Array(4);
+  crypto.getRandomValues(markerEntropy);
+  const marker = `pipeline-visual-capture-${[...markerEntropy].join('-')}`;
   const relayMarker = `${marker}-relay`;
   const sharedBoundaryRelayPorts = new Set();
   const boundaryArguments = JSON.stringify({ bindingName, captureOrigin });
@@ -1199,7 +1268,7 @@ async function launchChromium(proxyPort) {
 }
 
 const options = parseArgs(process.argv.slice(2));
-const previewUrl = assertAllowedSurface(options.url);
+const { captureUrl: previewUrl, upstreamUrl } = captureUrls(options);
 const screenshotPath = ensureOutputPath(options.screenshot);
 const reportPath = ensureOutputPath(options.report);
 const consoleErrors = [];
@@ -1207,12 +1276,13 @@ const consoleWarnings = [];
 const pageErrors = [];
 const requestFailures = [];
 const httpErrors = [];
+const suppressedRequests = new Map();
 const navigationState = { count: 0 };
 const boundary = requestBoundary(previewUrl);
 let mainResponse;
 let context;
 let page;
-const boundaryProxy = await startBoundaryProxy(previewUrl, boundary)
+const boundaryProxy = await startBoundaryProxy(previewUrl, upstreamUrl, boundary)
   .catch((error) => fail(`visual capture error: ${sanitizeFailure(error)}`));
 
 const { browser, runtimeIdentity } = await launchChromium(boundaryProxy.address().port)
@@ -1258,6 +1328,21 @@ try {
       requestPage = page;
     }
     if (credentialHeader) boundary.reject('credential-bearing request', kind);
+    const suppressed = suppressedRequest(
+      options,
+      request.url(),
+      request.method(),
+      request.resourceType(),
+    );
+    if (suppressed && (!page || requestPage === page)) {
+      suppressedRequests.set(suppressed.href, suppressionEvidence(suppressed));
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/javascript; charset=utf-8',
+        body: '',
+      });
+      return;
+    }
     const rejected = credentialHeader
       || boundary.inspect(request.url(), request.method(), request.resourceType(), kind);
     if (!rejected && page && requestPage !== page) {
@@ -1314,6 +1399,24 @@ try {
         || headers['Proxy-Authorization']
         || headers['proxy-authorization'];
       if (credentialHeader) boundary.reject('credential-bearing request', kind);
+      const suppressed = suppressedRequest(
+        options,
+        event.request.url,
+        event.request.method,
+        resourceType,
+      );
+      if (suppressed) {
+        suppressedRequests.set(suppressed.href, suppressionEvidence(suppressed));
+        await protocol.send('Fetch.fulfillRequest', {
+          requestId: event.requestId,
+          responseCode: 200,
+          responseHeaders: [
+            { name: 'Content-Type', value: 'application/javascript; charset=utf-8' },
+          ],
+          body: '',
+        });
+        return;
+      }
       const rejected = credentialHeader
         || boundary.inspect(event.request.url, event.request.method, resourceType, kind);
       await protocol.send(
@@ -1388,6 +1491,7 @@ try {
     full_page: options.fullPage,
     interactions: options.click.map((selector) => ({ type: 'click', selector })),
     page_status: mainResponse?.status() || 0,
+    page_url: `${previewUrl.origin}${previewUrl.pathname}`,
     title: await boundary.guard(page.title()),
     runtime: {
       ...runtimeIdentity,
@@ -1400,6 +1504,7 @@ try {
     page_errors: pageErrors,
     request_failures: requestFailures,
     http_errors: httpErrors,
+    suppressed_requests: [...suppressedRequests.values()],
   };
   if (options.source) report.source = options.source;
   await context.close();
@@ -1410,6 +1515,9 @@ try {
   updateManifest(options, screenshotPath, reportPath, report);
   process.stdout.write(`${JSON.stringify(report)}\n`);
   const failures = reportFailures(report);
+  if (suppressedRequests.size !== options.suppressRequest.length) {
+    failures.push('missing suppressed requests');
+  }
   if (failures.length) {
     process.stderr.write(`visual capture failed: ${failures.join(', ')}\n`);
     process.exitCode = 1;

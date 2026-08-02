@@ -9,6 +9,7 @@ import re
 import subprocess
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_POLICY = ROOT / "visual-evidence" / "policy.json"
@@ -108,6 +109,7 @@ def validate_report(
     capture: dict[str, Any],
     policy: dict[str, Any],
     expected_source: dict[str, str] | None = None,
+    state_rule: dict[str, Any] | None = None,
 ) -> list[str]:
     failures: list[str] = []
     evidence_root = manifest_path.parent.resolve()
@@ -153,6 +155,17 @@ def validate_report(
             failures.append(f"capture report is missing the {field} findings list: {report_path}")
         elif findings:
             failures.append(f"capture report has non-empty {field} findings: {report_path}")
+    if state_rule and "required_page_hostname" in state_rule:
+        page_url = report.get("page_url")
+        hostname = urlparse(page_url).hostname if isinstance(page_url, str) else None
+        if hostname != state_rule["required_page_hostname"]:
+            failures.append(f"capture report did not exercise the required page hostname: {report_path}")
+    if (
+        state_rule
+        and "required_suppressed_requests" in state_rule
+        and report.get("suppressed_requests") != state_rule["required_suppressed_requests"]
+    ):
+        failures.append(f"capture report is missing the required network suppression evidence: {report_path}")
     return failures
 
 
@@ -192,7 +205,18 @@ def validate_manifest(
                     failures.append("visual evidence manifest is missing, stale, or bound to the wrong source")
     captures = [capture for capture in manifest["captures"] if isinstance(capture, dict)]
     for capture in captures:
-        failures.extend(validate_report(manifest_path, capture, policy, expected_source))
+        state_rule = None
+        if profile is not None and isinstance(capture.get("state"), str):
+            state_rule = profile["states"].get(capture["state"])
+        failures.extend(
+            validate_report(
+                manifest_path,
+                capture,
+                policy,
+                expected_source,
+                state_rule,
+            )
+        )
     for interaction, paths in classification.items():
         if interaction not in policy["interactions"]:
             continue
