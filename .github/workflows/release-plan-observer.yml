@@ -381,4 +381,40 @@ jobs:
       - name: Publish the matching aggregate current authority
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run current-release-plan.yml --ref main
+          TARGET_REF: main
+          TARGET_REPOSITORY: durable-workflow/.github
+          TARGET_WORKFLOW: current-release-plan.yml
+        run: |
+          set -euo pipefail
+          expected_runtime_ref="refs/heads/$TARGET_REF"
+          if [ "${GITHUB_REPOSITORY:-}" != "$TARGET_REPOSITORY" ]; then
+            printf '::error::Aggregate publication authority mismatch: repository=%s; expected repository=%s workflow=%s ref=%s\n' \
+              "${GITHUB_REPOSITORY:-<absent>}" "$TARGET_REPOSITORY" "$TARGET_WORKFLOW" "$TARGET_REF" >&2
+            exit 1
+          fi
+          if [ "${GITHUB_REF:-}" != "$expected_runtime_ref" ]; then
+            printf '::error::Aggregate publication authority mismatch: ref=%s; expected repository=%s workflow=%s ref=%s\n' \
+              "${GITHUB_REF:-<absent>}" "$TARGET_REPOSITORY" "$TARGET_WORKFLOW" "$TARGET_REF" >&2
+            exit 1
+          fi
+
+          dispatch_error_file="$(mktemp)"
+          trap 'rm -f "$dispatch_error_file"' EXIT
+          if ! gh workflow run "$TARGET_WORKFLOW" \
+            --repo "$TARGET_REPOSITORY" --ref "$TARGET_REF" 2>"$dispatch_error_file"; then
+            diagnostic="$(head -c 2048 "$dispatch_error_file" | tr '\r\n' '  ')"
+            if [ -n "${GH_TOKEN:-}" ]; then
+              diagnostic="${diagnostic//"$GH_TOKEN"/<redacted>}"
+            fi
+            if [ -n "${GITHUB_TOKEN:-}" ]; then
+              diagnostic="${diagnostic//"$GITHUB_TOKEN"/<redacted>}"
+            fi
+            if [ -z "$diagnostic" ]; then
+              diagnostic="GitHub CLI returned no diagnostic"
+            fi
+            printf '::error::Failed to dispatch repository=%s workflow=%s ref=%s: %s\n' \
+              "$TARGET_REPOSITORY" "$TARGET_WORKFLOW" "$TARGET_REF" "$diagnostic" >&2
+            exit 1
+          fi
+          printf 'Queued repository=%s workflow=%s ref=%s\n' \
+            "$TARGET_REPOSITORY" "$TARGET_WORKFLOW" "$TARGET_REF"

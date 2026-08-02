@@ -496,7 +496,8 @@ class ReleasePlanEntryPointTest(unittest.TestCase):
             for step in publish_current["steps"]
             if step.get("name") == "Publish the matching aggregate current authority"
         )
-        self.assertIn("gh workflow run current-release-plan.yml --ref main", publish["run"])
+        self.assertIn('gh workflow run "$TARGET_WORKFLOW"', publish["run"])
+        self.assertIn('--repo "$TARGET_REPOSITORY" --ref "$TARGET_REF"', publish["run"])
         self.assertEqual("record", publish_current["needs"])
         self.assertIn("success()", publish_current["if"])
         self.assertIn("needs.record.outputs.current-plan == 'true'", publish_current["if"])
