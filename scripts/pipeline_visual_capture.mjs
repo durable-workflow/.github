@@ -337,11 +337,11 @@ function collectGeometry() {
     }
     return true;
   };
-  const visibleBox = (element) => {
-    let box = intersect(element.getBoundingClientRect(), viewport);
+  const visibleFragments = (element) => {
+    let clippingBox = viewport;
     for (
       let ancestor = element.parentElement;
-      ancestor && ancestor !== document.body && ancestor !== document.documentElement && hasArea(box);
+      ancestor && ancestor !== document.body && ancestor !== document.documentElement && hasArea(clippingBox);
       ancestor = ancestor.parentElement
     ) {
       const style = getComputedStyle(ancestor);
@@ -349,14 +349,16 @@ function collectGeometry() {
       const clipsY = ['auto', 'hidden', 'clip', 'scroll'].includes(style.overflowY);
       if (!clipsX && !clipsY) continue;
       const ancestorBox = ancestor.getBoundingClientRect();
-      box = {
-        left: clipsX ? Math.max(box.left, ancestorBox.left) : box.left,
-        right: clipsX ? Math.min(box.right, ancestorBox.right) : box.right,
-        top: clipsY ? Math.max(box.top, ancestorBox.top) : box.top,
-        bottom: clipsY ? Math.min(box.bottom, ancestorBox.bottom) : box.bottom,
+      clippingBox = {
+        left: clipsX ? Math.max(clippingBox.left, ancestorBox.left) : clippingBox.left,
+        right: clipsX ? Math.min(clippingBox.right, ancestorBox.right) : clippingBox.right,
+        top: clipsY ? Math.max(clippingBox.top, ancestorBox.top) : clippingBox.top,
+        bottom: clipsY ? Math.min(clippingBox.bottom, ancestorBox.bottom) : clippingBox.bottom,
       };
     }
-    return box;
+    return [...element.getClientRects()]
+      .map((fragment) => intersect(fragment, clippingBox))
+      .filter(hasArea);
   };
   const controls = [...document.querySelectorAll('input[type="radio"], input[type="checkbox"]')]
     .filter(visible)
@@ -467,22 +469,44 @@ function collectGeometry() {
   const sampleFractions = [0.08, 0.29, 0.5, 0.71, 0.92];
   const unreachableControls = interactiveElements.flatMap((control) => {
     const controlBox = control.getBoundingClientRect();
-    const box = visibleBox(control);
-    if (!hasArea(box)) return [];
+    const fragments = visibleFragments(control);
+    if (!fragments.length) return [];
+    const box = {
+      left: Math.min(...fragments.map((fragment) => fragment.left)),
+      top: Math.min(...fragments.map((fragment) => fragment.top)),
+      right: Math.max(...fragments.map((fragment) => fragment.right)),
+      bottom: Math.max(...fragments.map((fragment) => fragment.bottom)),
+    };
     const points = [];
     const seen = new Set();
-    for (const yFraction of sampleFractions) {
-      for (const xFraction of sampleFractions) {
-        const x = Math.min(box.right - 0.01, box.left + (box.right - box.left) * xFraction);
-        const y = Math.min(box.bottom - 0.01, box.top + (box.bottom - box.top) * yFraction);
-        const key = `${round(x)}:${round(y)}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        points.push({ x, y, center: xFraction === 0.5 && yFraction === 0.5 });
+    for (const fragment of fragments) {
+      const fragmentArea = (fragment.right - fragment.left) * (fragment.bottom - fragment.top);
+      const sampleArea = fragmentArea / (sampleFractions.length ** 2);
+      for (const yFraction of sampleFractions) {
+        for (const xFraction of sampleFractions) {
+          const x = Math.min(
+            fragment.right - 0.01,
+            fragment.left + (fragment.right - fragment.left) * xFraction,
+          );
+          const y = Math.min(
+            fragment.bottom - 0.01,
+            fragment.top + (fragment.bottom - fragment.top) * yFraction,
+          );
+          const key = `${round(x)}:${round(y)}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          points.push({
+            x,
+            y,
+            area: sampleArea,
+            center: xFraction === 0.5 && yFraction === 0.5,
+          });
+        }
       }
     }
     let reachablePoints = 0;
-    let centerReachable = false;
+    let reachableArea = 0;
+    let centerReachable = true;
     const blockerCounts = new Map();
     for (const point of points) {
       const primary = document.elementFromPoint(point.x, point.y);
@@ -490,13 +514,15 @@ function collectGeometry() {
       const reachable = isRelatedHit(primary, control);
       if (reachable) {
         reachablePoints += 1;
-        if (point.center) centerReachable = true;
+        reachableArea += point.area;
         continue;
       }
+      if (point.center) centerReachable = false;
       const blocker = stack.find((element) => !isRelatedHit(element, control));
       if (blocker) blockerCounts.set(blocker, (blockerCounts.get(blocker) || 0) + 1);
     }
-    const reachableAreaRatio = points.length ? reachablePoints / points.length : 0;
+    const sampledArea = points.reduce((total, point) => total + point.area, 0);
+    const reachableAreaRatio = sampledArea ? reachableArea / sampledArea : 0;
     if (centerReachable && reachableAreaRatio >= 0.5) return [];
     const blockers = [...blockerCounts.entries()]
       .sort((first, second) => second[1] - first[1])

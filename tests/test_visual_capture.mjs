@@ -152,6 +152,22 @@ test('treats nested icon and text descendants as part of their control', async (
   assert.deepEqual(result.report.geometry.unreachable_controls, []);
 });
 
+test('measures a wrapped inline link by its clickable line fragments', async () => {
+  const result = await capture('wrapped-inline-link', { width: 320 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.report.geometry.interactive_control_count, 1);
+  assert.deepEqual(result.report.geometry.unreachable_controls, []);
+});
+
+test('reports a wrapped inline link when an actual line fragment is blocked', async () => {
+  const result = await capture('wrapped-inline-link-blocked', { width: 320 });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /unreachable controls/);
+  assert.equal(result.report.geometry.unreachable_controls.length, 1);
+  assert.equal(result.report.geometry.unreachable_controls[0].tag, 'a');
+  assert.equal(result.report.geometry.unreachable_controls[0].center_reachable, false);
+});
+
 test('evaluates every supported native control and explicit interactive role', async () => {
   const result = await capture('control-types');
   assert.equal(result.status, 0, result.stderr);

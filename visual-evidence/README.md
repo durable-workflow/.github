@@ -39,14 +39,14 @@ browser remains available for the installed worker command, but a missing
 configured browser fails with a sanitized error before capture.
 
 The capture scans every visible, enabled input, select, textarea, button, link,
-summary, and explicit interactive ARIA role. It samples the control's visible,
-ancestor-clipped rectangle with both `elementFromPoint` and
-`elementsFromPoint`. A control is reported when less than half its sample area
-is reachable or its center is blocked. Associated labels and descendants count
-as legitimate hit targets, which covers native choices, nested icon/text
-content, and intentional child overlays. Sampling only the visible rectangle
-keeps partially visible controls valid when their remaining usable area is
-reachable.
+summary, and explicit interactive ARIA role. It samples the control's visible
+line fragments, clipped to the viewport and clipping ancestors, with both
+`elementFromPoint` and `elementsFromPoint`. A control is reported when less
+than half its sampled fragment area is reachable or a fragment center is
+blocked. Associated labels and descendants count as legitimate hit targets,
+which covers native choices, nested icon/text content, and intentional child
+overlays. Sampling only rendered fragments keeps wrapped inline controls and
+partially visible controls valid when their usable area is reachable.
 
 Click-driven captures wait for resulting document navigation, network idle,
 font readiness, and a bounded one-second stable layout window before collecting

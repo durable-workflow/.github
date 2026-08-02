@@ -55,6 +55,20 @@
     } else if (scenario === 'nested-child') {
       const target = addTarget();
       target.innerHTML = '<span class="nested-icon"><span>Legitimate child overlay</span></span>';
+    } else if (['wrapped-inline-link', 'wrapped-inline-link-blocked'].includes(scenario)) {
+      fixture.innerHTML = `
+        <p style="width:272px;margin:24px;line-height:24px">
+          Start here, then read the
+          <a id="wrapped-target" href="#wrapped-target">complete responsive workflow installation and configuration guide</a>
+        </p>`;
+      const fragments = document.querySelector('#wrapped-target').getClientRects();
+      if (fragments.length < 3 || fragments[0].left <= fragments[1].left + 1) {
+        console.error('wrapped inline fixture did not produce the required line fragments');
+      }
+      if (scenario === 'wrapped-inline-link-blocked') {
+        const blockedFragment = fragments[Math.floor(fragments.length / 2)];
+        addOverlay(`left:${blockedFragment.left}px;top:${blockedFragment.top}px;width:${blockedFragment.width}px;height:${blockedFragment.height}px`);
+      }
     } else if (scenario === 'label') {
       fixture.innerHTML = `
         <input id="choice" name="choice" type="checkbox" style="position:absolute;left:100px;top:100px">
