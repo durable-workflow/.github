@@ -100,6 +100,38 @@ class ReplayEvidenceSchemaTest(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertInvalid(fixture)
 
+    def test_replay_accepts_repeated_workflow_task_identities(self) -> None:
+        fixture = successful_replay_fixture()
+        del fixture["history"]
+        fixture["workflow_tasks"] = [
+            {"workflow_id": "workflow-a", "run_id": "run-a"},
+            {"workflow_id": "workflow-b", "run_id": "run-b"},
+            {"workflow_id": "workflow-a", "run_id": "run-a"},
+        ]
+        fixture["expected"] = {
+            "workflow_tasks": [
+                {"command_sequence": [{"type": "complete_workflow"}]},
+                {"command_sequence": [{"type": "complete_workflow"}]},
+                {"command_sequence": [{"type": "complete_workflow"}]},
+            ]
+        }
+
+        self.assertValid(fixture)
+
+        for field in ("workflow_id", "run_id"):
+            with self.subTest(field=field):
+                invalid = copy.deepcopy(fixture)
+                invalid["workflow_tasks"][0][field] = ""
+                self.assertInvalid(invalid)
+
+        command_driven = copy.deepcopy(fixture)
+        command_driven["command_sequence"] = [{"type": "complete_workflow"}]
+        self.assertInvalid(command_driven)
+
+        missing_task_expectations = copy.deepcopy(fixture)
+        missing_task_expectations["expected"] = {"type": "complete_workflow"}
+        self.assertInvalid(missing_task_expectations)
+
     def test_expected_failure_has_the_supported_machine_shape(self) -> None:
         fixture = checked_in_fixture("workflow-fiber-malformed-service-response.json")
         invalid_failures = {

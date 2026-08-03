@@ -460,12 +460,19 @@ def _replay_fixture(document: Mapping[str, Any], path: str, binding: str | None)
     _string(workflow.get("type"), f"{path}.workflow.type")
     history = document.get("history")
     commands = document.get("command_sequence")
-    if history is None and commands is None:
-        raise CorpusError(f"{path} must include history or command_sequence")
+    workflow_tasks = document.get("workflow_tasks")
+    if history is None and commands is None and workflow_tasks is None:
+        raise CorpusError(
+            f"{path} must include history, command_sequence, or workflow_tasks"
+        )
     if history is not None:
         _list(history, f"{path}.history", nonempty=True)
     if commands is not None:
         _list(commands, f"{path}.command_sequence", nonempty=True)
+    if workflow_tasks is not None and commands is not None:
+        raise CorpusError(
+            f"{path} cannot combine workflow_tasks with command_sequence"
+        )
     has_expected = "expected" in document
     has_expected_failure = "expected_failure" in document
     if has_expected == has_expected_failure:
@@ -496,14 +503,71 @@ def _replay_fixture(document: Mapping[str, Any], path: str, binding: str | None)
     )
     if len(supersedes) != len(set(supersedes)) or identity in supersedes:
         raise CorpusError(f"{path}.supersedes is invalid")
-    semantic = _replay_semantic(
-        workflow_type=workflow["type"],
-        workflow_input=workflow.get("input", workflow.get("arguments", [])),
-        history=history if history is not None else [],
-        command_sequence=commands,
-        expected=expected,
-        expected_failure=expected_failure,
-    )
+    workflow_input = workflow.get("input", workflow.get("arguments", []))
+    if workflow_tasks is None:
+        semantic = _replay_semantic(
+            workflow_type=workflow["type"],
+            workflow_input=workflow_input,
+            history=history if history is not None else [],
+            command_sequence=commands,
+            expected=expected,
+            expected_failure=expected_failure,
+        )
+    else:
+        if expected is None:
+            raise CorpusError(f"{path}.workflow_tasks requires expected workflow tasks")
+        task_definitions = _list(
+            workflow_tasks,
+            f"{path}.workflow_tasks",
+            nonempty=True,
+        )
+        task_expectations = _list(
+            expected.get("workflow_tasks"),
+            f"{path}.expected.workflow_tasks",
+            nonempty=True,
+        )
+        if len(task_definitions) != len(task_expectations):
+            raise CorpusError(
+                f"{path}.expected.workflow_tasks must match workflow_tasks length"
+            )
+        executed_tasks = []
+        for index, (raw_task, raw_expected) in enumerate(
+            zip(task_definitions, task_expectations, strict=True)
+        ):
+            task = _object(raw_task, f"{path}.workflow_tasks[{index}]")
+            if set(task) != {"workflow_id", "run_id"}:
+                raise CorpusError(
+                    f"{path}.workflow_tasks[{index}] must contain only workflow_id and run_id"
+                )
+            expected_task = _object(
+                raw_expected,
+                f"{path}.expected.workflow_tasks[{index}]",
+            )
+            if not expected_task:
+                raise CorpusError(
+                    f"{path}.expected.workflow_tasks[{index}] must not be empty"
+                )
+            executed_tasks.append(
+                {
+                    "workflow_id": _string(
+                        task.get("workflow_id"),
+                        f"{path}.workflow_tasks[{index}].workflow_id",
+                    ),
+                    "run_id": _string(
+                        task.get("run_id"),
+                        f"{path}.workflow_tasks[{index}].run_id",
+                    ),
+                    "executed_commands": _canonical_executed_commands(
+                        None,
+                        expected_task,
+                    ),
+                }
+            )
+        semantic = {
+            "workflow": {"type": workflow["type"], "input": workflow_input},
+            "history": history if history is not None else [],
+            "workflow_tasks": executed_tasks,
+        }
     return [
         _fixture_evidence(
             category="replay",

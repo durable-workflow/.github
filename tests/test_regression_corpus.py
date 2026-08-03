@@ -69,6 +69,37 @@ def replay_fixture(identity: str) -> dict[str, object]:
     }
 
 
+def attributed_replay_fixture(identity: str) -> dict[str, object]:
+    fixture = replay_fixture(identity)
+    del fixture["history"]
+    tasks = [
+        {"workflow_id": "workflow-a", "run_id": "run-a"},
+        {"workflow_id": "workflow-b", "run_id": "run-b"},
+        {"workflow_id": "workflow-a", "run_id": "run-a"},
+    ]
+    fixture["workflow"]["type"] = "fixture.attributed-stateful"
+    fixture["workflow_tasks"] = tasks
+    fixture["expected"] = {
+        "workflow_tasks": [
+            {
+                "command_sequence": [
+                    {
+                        "type": "complete_workflow",
+                        "result": {
+                            "workflow_id": task["workflow_id"],
+                            "run_id": task["run_id"],
+                            "invocation": 1,
+                        },
+                    }
+                ]
+            }
+            for task in tasks
+        ]
+    }
+
+    return fixture
+
+
 def golden_history_fixture() -> dict[str, object]:
     replay = replay_fixture("golden-source")
     return {
@@ -531,6 +562,23 @@ class RegressionCorpusTest(unittest.TestCase):
         result = validate(self.root, Path("regression-corpus-policy.json"), self.base)
 
         self.assertEqual(2, result["counts"]["replay"]["current"])
+
+    def test_repeated_workflow_tasks_are_canonical_replay_evidence(self) -> None:
+        fixture = attributed_replay_fixture("attributed-state-isolation")
+        path = "tests/fixtures/replay/attributed-state-isolation.json"
+        write_json(self.root, path, fixture)
+
+        result = validate(self.root, Path("regression-corpus-policy.json"), self.base)
+
+        self.assertEqual(2, result["counts"]["replay"]["current"])
+
+        fixture["expected"]["workflow_tasks"].pop()
+        write_json(self.root, path, fixture)
+        with self.assertRaisesRegex(
+            CorpusError,
+            "expected.workflow_tasks must match workflow_tasks length",
+        ):
+            validate(self.root, Path("regression-corpus-policy.json"), self.base)
 
     def test_replay_rejects_both_outcomes_with_command_input_only(self) -> None:
         fixture = replay_fixture("ambiguous-outcome")
