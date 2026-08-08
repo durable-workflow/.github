@@ -1,0 +1,60 @@
+name: Waterline release train
+
+on:
+  workflow_dispatch:
+    inputs:
+      plan_tag:
+        description: Immutable release-plan tag containing the exact Waterline successor
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    name: Qualify exact-current Waterline successor
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.13'
+
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+        with:
+          php-version: '8.4'
+          tools: composer:v2
+
+      - name: Install contract validators
+        run: python -m pip install jsonschema==4.23.0
+
+      - name: Verify immutable plan and fresh public evidence
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PLAN_TAG: ${{ inputs.plan_tag }}
+        run: |
+          python scripts/waterline_train.py qualify-public \
+            --plan-tag "$PLAN_TAG" \
+            --evidence waterline-release-completion.json
+
+      - name: Validate the generated completion record
+        run: |
+          python scripts/waterline_train.py validate-contract
+          python -m jsonschema \
+            -i waterline-train/contract.json \
+            waterline-train/schema.json
+          python -m jsonschema \
+            -i waterline-release-completion.json \
+            waterline-train/completion-evidence-schema.json
+
+      - name: Retain exact public successor evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: waterline-release-completion-${{ github.run_id }}-${{ github.run_attempt }}
+          path: waterline-release-completion.json
+          if-no-files-found: error

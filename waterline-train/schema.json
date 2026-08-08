@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/durable-workflow/.github/blob/main/waterline-train/schema.json",
+  "title": "Waterline and PHP SDK sequential release train",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schema",
+    "composer_tuple",
+    "dependency_policy",
+    "completion_requires",
+    "quickstart_scenarios"
+  ],
+  "properties": {
+    "$schema": {"const": "./schema.json"},
+    "schema": {"const": "durable-workflow.waterline-release-train/v1"},
+    "composer_tuple": {
+      "const": {
+        "waterline": "durable-workflow/waterline",
+        "workflow": "durable-workflow/workflow",
+        "sdk-php": "durable-workflow/sdk"
+      }
+    },
+    "dependency_policy": {
+      "const": {
+        "waterline_to_sdk": "exact",
+        "conflicting_sdk_prerelease": "sequential_waterline_successor_required",
+        "historical_prereleases": "immutable",
+        "cross_prerelease_compatibility_shim": "forbidden"
+      }
+    },
+    "completion_requires": {
+      "const": [
+        "immutable_successor_plan_identity",
+        "source_bound_github_release",
+        "packagist_package",
+        "container_image",
+        "deployed_docs_artifact_tuple",
+        "exact_current_composer_resolution",
+        "retained_five_scenario_quickstart"
+      ]
+    },
+    "quickstart_scenarios": {
+      "const": [
+        "php_user_local_server_completion",
+        "python_user_local_server_completion",
+        "rust_user_local_server_completion",
+        "operator_local_server_observation",
+        "laravel_user_embedded_completion"
+      ]
+    }
+  }
+}

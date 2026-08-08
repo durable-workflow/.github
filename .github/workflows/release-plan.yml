@@ -121,7 +121,11 @@ jobs:
           python -m json.tool product-train/schema.json >/dev/null
           python -m json.tool product-train/current.json >/dev/null
           python -m json.tool product-train/sdk-server-qualification.json >/dev/null
+          python -m json.tool waterline-train/contract.json >/dev/null
+          python -m json.tool waterline-train/schema.json >/dev/null
+          python -m json.tool waterline-train/completion-evidence-schema.json >/dev/null
           python -m jsonschema -i product-train/current.json product-train/schema.json
+          python -m jsonschema -i waterline-train/contract.json waterline-train/schema.json
           python -m jsonschema \
             -i product-train/sdk-server-qualification.json \
             product-train/sdk-server-qualification-schema.json

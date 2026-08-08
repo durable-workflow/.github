@@ -1,0 +1,213 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/durable-workflow/.github/blob/main/waterline-train/completion-evidence-schema.json",
+  "title": "Waterline release-train completion evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "outcome",
+    "plan_authority",
+    "artifact_tuple",
+    "transition",
+    "composer_resolution",
+    "public_artifacts",
+    "deployed_docs",
+    "quickstart"
+  ],
+  "properties": {
+    "schema": {"const": "durable-workflow.waterline-release-completion/v2"},
+    "outcome": {"const": "pass"},
+    "plan_authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcome",
+        "tag",
+        "record_commit",
+        "sha256",
+        "release_id",
+        "release_asset_id",
+        "release_asset_url"
+      ],
+      "properties": {
+        "outcome": {"const": "verified"},
+        "tag": {"pattern": "^release-plan/[a-z0-9][a-z0-9._-]{0,55}$"},
+        "record_commit": {"$ref": "#/$defs/commit"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "release_id": {"type": "integer", "minimum": 1},
+        "release_asset_id": {"type": "integer", "minimum": 1},
+        "release_asset_url": {"type": "string", "format": "uri", "pattern": "^https://"}
+      }
+    },
+    "artifact_tuple": {"$ref": "#/$defs/artifactTuple"},
+    "transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcome",
+        "kind",
+        "predecessor_waterline",
+        "predecessor_sdk_requirement",
+        "successor_waterline",
+        "successor_sdk_requirement",
+        "successor_composer_sha256",
+        "predecessor_source_commit",
+        "predecessor_composer_sha256"
+      ],
+      "properties": {
+        "outcome": {"const": "verified"},
+        "kind": {"const": "sdk-advance-with-sequential-waterline-successor"},
+        "predecessor_waterline": {"$ref": "#/$defs/version"},
+        "predecessor_sdk_requirement": {"$ref": "#/$defs/version"},
+        "successor_waterline": {"$ref": "#/$defs/version"},
+        "successor_sdk_requirement": {"$ref": "#/$defs/version"},
+        "successor_composer_sha256": {"$ref": "#/$defs/sha256"},
+        "predecessor_source_commit": {"$ref": "#/$defs/commit"},
+        "predecessor_composer_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "composer_resolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "artifact_tuple", "manifest_sha256", "solver_output_sha256"],
+      "properties": {
+        "outcome": {"const": "pass"},
+        "artifact_tuple": {"$ref": "#/$defs/composerTuple"},
+        "manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "solver_output_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "public_artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["waterline", "workflow", "sdk-php"],
+      "properties": {
+        "waterline": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["github_release", "packagist", "container_image"],
+          "properties": {
+            "github_release": {"$ref": "#/$defs/verifiedObject"},
+            "packagist": {"$ref": "#/$defs/nonemptyObject"},
+            "container_image": {"$ref": "#/$defs/nonemptyObject"}
+          }
+        },
+        "workflow": {"$ref": "#/$defs/composerArtifact"},
+        "sdk-php": {"$ref": "#/$defs/composerArtifact"}
+      }
+    },
+    "deployed_docs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcome",
+        "docs_revision",
+        "audit_url",
+        "audit_sha256",
+        "artifact_tuple_source_url",
+        "artifact_tuple_source_sha256",
+        "quickstart_contract_url",
+        "quickstart_contract_sha256",
+        "quickstart_evidence_url",
+        "quickstart_evidence_sha256",
+        "quickstart_evidence_id",
+        "artifact_tuple"
+      ],
+      "properties": {
+        "outcome": {"const": "pass"},
+        "docs_revision": {"$ref": "#/$defs/commit"},
+        "audit_url": {"const": "https://durable-workflow.com/docs-page-release-audit.json"},
+        "audit_sha256": {"$ref": "#/$defs/sha256"},
+        "artifact_tuple_source_url": {"type": "string", "format": "uri", "pattern": "^https://"},
+        "artifact_tuple_source_sha256": {"$ref": "#/$defs/sha256"},
+        "quickstart_contract_url": {"const": "https://durable-workflow.com/quickstart-execution-contract.json"},
+        "quickstart_contract_sha256": {"$ref": "#/$defs/sha256"},
+        "quickstart_evidence_url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://durable-workflow\\.com/platform-conformance/evidence/[a-z0-9][a-z0-9._-]+\\.json$"
+        },
+        "quickstart_evidence_sha256": {"$ref": "#/$defs/sha256"},
+        "quickstart_evidence_id": {"pattern": "^[a-z0-9][a-z0-9._-]+$"},
+        "artifact_tuple": {"$ref": "#/$defs/artifactTuple"}
+      }
+    },
+    "quickstart": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "evidence_id", "evidence_url", "evidence_sha256", "artifact_tuple", "scenarios"],
+      "properties": {
+        "outcome": {"const": "pass"},
+        "evidence_id": {"pattern": "^[a-z0-9][a-z0-9._-]+$"},
+        "evidence_url": {"type": "string", "format": "uri", "pattern": "^https://"},
+        "evidence_sha256": {"$ref": "#/$defs/sha256"},
+        "artifact_tuple": {"$ref": "#/$defs/artifactTuple"},
+        "scenarios": {
+          "type": "array",
+          "prefixItems": [
+            {"const": "php_user_local_server_completion"},
+            {"const": "python_user_local_server_completion"},
+            {"const": "rust_user_local_server_completion"},
+            {"const": "operator_local_server_observation"},
+            {"const": "laravel_user_embedded_completion"}
+          ],
+          "items": false,
+          "minItems": 5,
+          "maxItems": 5
+        }
+      }
+    }
+  },
+  "$defs": {
+    "version": {
+      "type": "string",
+      "pattern": "^2\\.0\\.0-(?:beta|rc)\\.[1-9][0-9]*$"
+    },
+    "anyVersion": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$"
+    },
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "artifactTuple": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cli", "sdk-php", "sdk-python", "sdk-rust", "server", "waterline", "workflow"],
+      "properties": {
+        "cli": {"$ref": "#/$defs/anyVersion"},
+        "sdk-php": {"$ref": "#/$defs/version"},
+        "sdk-python": {"$ref": "#/$defs/anyVersion"},
+        "sdk-rust": {"$ref": "#/$defs/anyVersion"},
+        "server": {"$ref": "#/$defs/anyVersion"},
+        "waterline": {"$ref": "#/$defs/version"},
+        "workflow": {"$ref": "#/$defs/version"}
+      }
+    },
+    "composerTuple": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["waterline", "workflow", "sdk-php"],
+      "properties": {
+        "waterline": {"$ref": "#/$defs/version"},
+        "workflow": {"$ref": "#/$defs/version"},
+        "sdk-php": {"$ref": "#/$defs/version"}
+      }
+    },
+    "nonemptyObject": {"type": "object", "minProperties": 1},
+    "verifiedObject": {
+      "type": "object",
+      "required": ["outcome"],
+      "properties": {"outcome": {"const": "verified"}}
+    },
+    "composerArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["github_release", "packagist"],
+      "properties": {
+        "github_release": {"$ref": "#/$defs/verifiedObject"},
+        "packagist": {"$ref": "#/$defs/nonemptyObject"}
+      }
+    }
+  }
+}
