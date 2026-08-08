@@ -180,8 +180,8 @@ function parseArgs(argv) {
   if (!Number.isInteger(options.width) || options.width < 320 || options.width > 2560) {
     fail('--width must be between 320 and 2560');
   }
-  if (!Number.isInteger(options.height) || options.height < 480 || options.height > 2400) {
-    fail('--height must be between 480 and 2400');
+  if (!Number.isInteger(options.height) || options.height < 320 || options.height > 2400) {
+    fail('--height must be between 320 and 2400');
   }
   if (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 1_000 || options.timeoutMs > 120_000) {
     fail('--timeout-ms must be between 1000 and 120000');

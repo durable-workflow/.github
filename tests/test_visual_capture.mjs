@@ -167,8 +167,8 @@ function sanitizedStderr(stderr) {
 async function capture(
   scenario,
   {
-    browserHostname, click = [], env = {}, height = 600, page = 'occlusion.html', query = {},
-    source, suppressRequest = [], width = 800,
+    browserHostname, click = [], env = {}, fullPage = false, height = 600,
+    page = 'occlusion.html', query = {}, source, suppressRequest = [], width = 800,
   } = {},
 ) {
   const directory = path.join(artifactRoot, scenario);
@@ -189,6 +189,7 @@ async function capture(
     '--manifest', manifestPath,
     '--timeout-ms', '10000',
   ];
+  if (fullPage) args.push('--full-page');
   for (const selector of click) args.push('--click', selector);
   if (browserHostname) args.push('--browser-hostname', browserHostname);
   for (const requestUrl of suppressRequest) args.push('--suppress-request', requestUrl);
@@ -381,6 +382,22 @@ test('catches the banner/input geometry that clipping and overflow metrics miss'
   assert.deepEqual(result.report.geometry.clipped_control_text, []);
   assert.equal(result.report.geometry.unreachable_controls.length, 1);
   assert.equal(result.report.geometry.unreachable_controls[0].name, 'organization_website');
+});
+
+test('executes a full-page capture at the required 640x360 compact viewport', async () => {
+  const result = await capture('compact-height', {
+    fullPage: true,
+    height: 360,
+    source: {
+      repository: 'durable-workflow/sdk-rust',
+      revision: 'a'.repeat(40),
+    },
+    width: 640,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.report.viewport, { width: 640, height: 360 });
+  assert.equal(result.report.full_page, true);
+  await access(path.join(artifactRoot, 'compact-height', 'capture.png'));
 });
 
 test('waits for click navigation, fonts, and layout settling before capture', async () => {
