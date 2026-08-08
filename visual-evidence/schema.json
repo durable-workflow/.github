@@ -265,6 +265,9 @@
             },
             "mobile": {
               "$ref": "#/$defs/exactViewport"
+            },
+            "compact-height": {
+              "$ref": "#/$defs/exactViewport"
             }
           },
           "required": [
@@ -337,7 +340,7 @@
       "properties": {
         "height": {
           "maximum": 2400,
-          "minimum": 480,
+          "minimum": 320,
           "type": "integer"
         },
         "width": {

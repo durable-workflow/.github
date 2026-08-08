@@ -94,8 +94,9 @@ jobs:
           printf '%s\n' 'rust.durable-workflow.com' > target/doc/CNAME
           touch target/doc/.nojekyll
           cp docs/index.html target/doc/index.html
+          cp docs/layout.css target/doc/layout.css
           mkdir -p target/doc/analytics
-          cp docs/analytics/analytics.css docs/analytics/analytics.js target/doc/analytics/
+          cp docs/analytics/analytics.js target/doc/analytics/
           python3 scripts/check-docs-analytics.py target/doc
 
       - name: Capture candidate state matrix
@@ -129,6 +130,10 @@ jobs:
           capture() {
             local state=$1 width=$2 height=$3
             shift 3
+            local capture_args=()
+            if [ "$width" = 640 ] && [ "$height" = 360 ]; then
+              capture_args+=(--full-page)
+            fi
             node visual-controller/scripts/pipeline_visual_capture.mjs \
               --url http://127.0.0.1:4173/ \
               --surface rust-sdk-reference --state "$state" \
@@ -137,20 +142,12 @@ jobs:
               --source-revision "$SOURCE_REVISION" \
               --screenshot "visual-review/${state}-${width}x${height}.png" \
               --report "visual-review/${state}-${width}x${height}.json" \
-              --manifest visual-review/manifest.json "$@"
+              --manifest visual-review/manifest.json "${capture_args[@]}" "$@"
           }
-          for viewport in 1440x900 800x900 390x844; do
+          for viewport in 1440x900 800x900 390x844 640x360; do
             width=${viewport%x*}
             height=${viewport#*x}
-            capture initial "$width" "$height"
-            capture granted "$width" "$height" \
-              --browser-hostname rust.durable-workflow.com \
-              --suppress-request 'https://www.googletagmanager.com/gtag/js?id=G-HD1YHT442Y' \
-              --click '[data-consent="granted"]'
-            capture denied "$width" "$height" --click '[data-consent="denied"]'
-            capture preferences-open "$width" "$height" \
-              --click '[data-consent="denied"]' \
-              --click '#durable-workflow-analytics-preferences'
+            capture analytics-ui-removed "$width" "$height"
           done
 
       - name: Validate source-bound candidate evidence

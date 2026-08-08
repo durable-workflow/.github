@@ -91,52 +91,26 @@
         {
           "classification": "rust-sdk-reference",
           "path_patterns": [
-            "^docs/(?:[^/]+\\.html|analytics/[^/]+\\.(?:css|js))$"
+            "^docs/(?:[^/]+\\.(?:css|html)|analytics/[^/]+\\.js)$"
           ],
           "required_states": [
-            "initial"
+            "analytics-ui-removed"
           ]
         },
         {
           "classification": "rust-sdk-analytics",
           "path_patterns": [
-            "^docs/(?:analytics-head\\.html|analytics/[^/]+\\.(?:css|js))$"
+            "^docs/(?:analytics-head\\.html|analytics/[^/]+\\.js)$"
           ],
           "required_states": [
-            "initial",
-            "granted",
-            "denied",
-            "preferences-open"
+            "analytics-ui-removed"
           ]
         }
       ],
       "repository": "durable-workflow/sdk-rust",
       "states": {
-        "denied": {
-          "interaction_selector_patterns": [
-            "data-consent[^]]*denied"
-          ]
-        },
-        "granted": {
-          "interaction_selector_patterns": [
-            "data-consent[^]]*granted"
-          ],
-          "required_page_hostname": "rust.durable-workflow.com",
-          "required_suppressed_requests": [
-            {
-              "method": "GET",
-              "resource_type": "script",
-              "url": "https://www.googletagmanager.com/gtag/js"
-            }
-          ]
-        },
-        "initial": {
+        "analytics-ui-removed": {
           "interaction_selector_patterns": []
-        },
-        "preferences-open": {
-          "interaction_selector_patterns": [
-            "analytics-preferences"
-          ]
         }
       },
       "surface": "rust-sdk-reference",
@@ -152,6 +126,10 @@
         "mobile": {
           "height": 844,
           "width": 390
+        },
+        "compact-height": {
+          "height": 360,
+          "width": 640
         }
       }
     }

@@ -75,19 +75,18 @@ class VisualEvidencePolicyTest(unittest.TestCase):
         classify = next(step for step in steps if step.get("name") == "Classify candidate changes")
         self.assertIn("--profile rust-sdk-reference", classify["run"])
         capture = next(step for step in steps if step.get("name") == "Capture candidate state matrix")
-        for viewport in ("1440x900", "800x900", "390x844"):
+        for viewport in ("1440x900", "800x900", "390x844", "640x360"):
             self.assertIn(viewport, capture["run"])
-        for state in ("initial", "granted", "denied", "preferences-open"):
-            self.assertIn(f"capture {state}", capture["run"])
-        self.assertIn("--browser-hostname rust.durable-workflow.com", capture["run"])
-        self.assertIn(
-            "--suppress-request 'https://www.googletagmanager.com/gtag/js?id=G-HD1YHT442Y'",
+        self.assertIn("capture analytics-ui-removed", capture["run"])
+        self.assertIn("capture_args+=(--full-page)", capture["run"])
+        self.assertNotRegex(
             capture["run"],
+            r"data-consent|analytics-preferences|googletagmanager",
         )
-        self.assertIn("--source-revision \"$SOURCE_REVISION\"", capture["run"])
+        self.assertIn('--source-revision "$SOURCE_REVISION"', capture["run"])
 
         validate = next(step for step in steps if step.get("name") == "Validate source-bound candidate evidence")
-        self.assertIn("--expected-revision \"$SOURCE_REVISION\"", validate["run"])
+        self.assertIn('--expected-revision "$SOURCE_REVISION"', validate["run"])
         retention = next(step for step in steps if step.get("name") == "Retain candidate visual evidence")
         self.assertIn("steps.classify.outputs.required == 'true'", retention["if"])
 
@@ -166,12 +165,10 @@ class VisualEvidencePolicyTest(unittest.TestCase):
                 {
                     "rust-sdk-analytics": [
                         "docs/analytics-head.html",
-                        "docs/analytics/analytics.css",
                         "docs/analytics/analytics.js",
                     ],
                     "rust-sdk-reference": [
                         "docs/analytics-head.html",
-                        "docs/analytics/analytics.css",
                         "docs/analytics/analytics.js",
                         "docs/index.html",
                     ],
@@ -400,7 +397,7 @@ class VisualEvidencePolicyTest(unittest.TestCase):
             "interactions": interactions,
             "source": source,
             "page_status": 200,
-            "page_url": "http://rust.durable-workflow.com:4173/" if state == "granted" else "http://127.0.0.1:4173/",
+            "page_url": "http://127.0.0.1:4173/",
             "geometry": {
                 "horizontal_overflow": False,
                 "clipped_text": [],
@@ -412,15 +409,7 @@ class VisualEvidencePolicyTest(unittest.TestCase):
             "http_errors": [],
             "page_errors": [],
             "request_failures": [],
-            "suppressed_requests": [
-                {
-                    "method": "GET",
-                    "resource_type": "script",
-                    "url": "https://www.googletagmanager.com/gtag/js",
-                }
-            ]
-            if state == "granted"
-            else [],
+            "suppressed_requests": [],
         }
         report_path.write_text(json.dumps(report), encoding="utf-8")
         return {
@@ -436,16 +425,8 @@ class VisualEvidencePolicyTest(unittest.TestCase):
 
     def rust_matrix(self, root: Path, source: dict[str, str]) -> list[dict[str, Any]]:
         captures = []
-        selectors = {
-            "initial": [],
-            "granted": ['[data-consent="granted"]'],
-            "denied": ['[data-consent="denied"]'],
-            "preferences-open": [
-                '[data-consent="denied"]',
-                "#durable-workflow-analytics-preferences",
-            ],
-        }
-        for width, height in ((1440, 900), (800, 900), (390, 844)):
+        selectors = {"analytics-ui-removed": []}
+        for width, height in ((1440, 900), (800, 900), (390, 844), (640, 360)):
             for state, clicks in selectors.items():
                 captures.append(self.rust_capture(root, state, width, height, source, clicks))
         return captures
@@ -473,8 +454,8 @@ class VisualEvidencePolicyTest(unittest.TestCase):
         revision = "a" * 40
         source = {"repository": "durable-workflow/sdk-rust", "revision": revision}
         classification = {
-            "rust-sdk-analytics": ["docs/analytics/analytics.css"],
-            "rust-sdk-reference": ["docs/analytics/analytics.css"],
+            "rust-sdk-analytics": ["docs/analytics/analytics.js"],
+            "rust-sdk-reference": ["docs/analytics/analytics.js"],
         }
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -522,43 +503,11 @@ class VisualEvidencePolicyTest(unittest.TestCase):
                 ),
             )
 
-            granted = next(capture for capture in captures if capture["state"] == "granted")
-            granted_report_path = root / granted["report"]
-            granted_report = json.loads(granted_report_path.read_text(encoding="utf-8"))
-            granted_report["suppressed_requests"] = []
-            granted_report_path.write_text(json.dumps(granted_report), encoding="utf-8")
-            failures = validate_manifest(
-                manifest,
-                classification,
-                self.policy,
-                "rust-sdk-reference",
-                revision,
-            )
-            self.assertTrue(any("network suppression evidence" in failure for failure in failures))
-
-            granted_report["suppressed_requests"] = self.policy["visual_profiles"]["rust-sdk-reference"]["states"][
-                "granted"
-            ]["required_suppressed_requests"]
-            granted_report["page_url"] = "http://127.0.0.1:4173/"
-            granted_report_path.write_text(json.dumps(granted_report), encoding="utf-8")
-            failures = validate_manifest(
-                manifest,
-                classification,
-                self.policy,
-                "rust-sdk-reference",
-                revision,
-            )
-            self.assertTrue(any("required page hostname" in failure for failure in failures))
-
-            granted_report["page_url"] = "http://rust.durable-workflow.com:4173/"
-            granted_report_path.write_text(json.dumps(granted_report), encoding="utf-8")
-
             incomplete = [
                 capture
                 for capture in captures
                 if not (
-                    capture["state"] == "preferences-open"
-                    and capture["viewport"] == {"width": 800, "height": 900}
+                    capture["state"] == "analytics-ui-removed" and capture["viewport"] == {"width": 640, "height": 360}
                 )
             ]
             manifest = self.rust_manifest(root, incomplete, source)
@@ -571,7 +520,7 @@ class VisualEvidencePolicyTest(unittest.TestCase):
             )
             self.assertTrue(
                 any(
-                    "preferences-open" in failure and "exact intermediate viewport" in failure
+                    "analytics-ui-removed" in failure and "exact compact-height viewport" in failure
                     for failure in failures
                 )
             )

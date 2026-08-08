@@ -28,13 +28,13 @@ clipped text, clipped control text, oversized native choice controls, browser
 request, HTTP, console, or page errors, and non-empty
 `geometry.unreachable_controls` findings.
 
-The `rust-sdk-reference` profile treats the Rust reference's HTML templates,
-analytics stylesheet, and browser runtime as visual inputs while leaving Rust
-source, API prose, and Markdown on the lightweight documentation path. Visual
-changes require exact 1440x900, 800x900, and 390x844 captures. Analytics inputs
-expand that matrix across the initial, granted, denied, and preferences-open
-states. The manifest, every capture entry, and every report must bind to the
-same expected `durable-workflow/sdk-rust` commit.
+The `rust-sdk-reference` profile treats the Rust reference's HTML templates
+and browser runtime as visual inputs while leaving Rust source, API prose, and
+Markdown on the lightweight documentation path. Visual changes require exact
+1440x900, 800x900, 390x844, and compact-height 640x360 captures proving the
+analytics interface is absent and page controls remain reachable. The
+manifest, every capture entry, and every report must bind to the same expected
+`durable-workflow/sdk-rust` commit.
 
 ## Shared capture runtime
 
