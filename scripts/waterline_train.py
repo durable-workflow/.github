@@ -35,11 +35,11 @@ from scripts.release_plan import validate_recorded_plan
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATH = ROOT / "waterline-train" / "contract.json"
 CONTRACT_SCHEMA = "durable-workflow.waterline-release-train/v1"
-COMPLETION_SCHEMA = "durable-workflow.waterline-release-completion/v2"
+COMPLETION_SCHEMA = "durable-workflow.waterline-release-completion/v3"
 CONTROL_REPOSITORY = "durable-workflow/.github"
 DOCS_REPOSITORY = "durable-workflow/durable-workflow.github.io"
 DOCS_AUDIT_URL = "https://durable-workflow.com/docs-page-release-audit.json"
-SUPPORTED_DOCS_AUDIT_SCHEMA_VERSIONS = frozenset((6, 7))
+SUPPORTED_DOCS_AUDIT_SCHEMA_VERSIONS = frozenset((6, 7, 8))
 QUICKSTART_CONTRACT_URL = "https://durable-workflow.com/quickstart-execution-contract.json"
 QUICKSTART_EVIDENCE_URL = re.compile(
     r"^https://durable-workflow\.com/platform-conformance/evidence/"
@@ -48,6 +48,7 @@ QUICKSTART_EVIDENCE_URL = re.compile(
 PLAN_TAG = re.compile(r"^release-plan/[a-z0-9][a-z0-9._-]{0,55}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 PRERELEASE = re.compile(r"^2\.0\.0-(?P<channel>beta|rc)\.(?P<number>[1-9][0-9]*)$")
+VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$")
 QUICKSTART_SCENARIOS = (
     "php_user_local_server_completion",
     "python_user_local_server_completion",
@@ -61,7 +62,7 @@ COMPLETION_REQUIRES = (
     "packagist_package",
     "container_image",
     "deployed_docs_artifact_tuple",
-    "exact_current_composer_resolution",
+    "exact_current_composer_laravel_boot",
     "retained_five_scenario_quickstart",
 )
 
@@ -229,6 +230,21 @@ def plan_artifact_tuple(plan: Mapping[str, Any]) -> dict[str, str]:
     return result
 
 
+def quickstart_contract_tuple(contract: Mapping[str, Any]) -> dict[str, str]:
+    artifacts = contract.get("artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != set(COMPONENTS):
+        raise TrainError("deployed quickstart contract does not bind the complete artifact tuple")
+
+    result: dict[str, str] = {}
+    for name in COMPONENTS:
+        artifact = artifacts[name]
+        version = artifact.get("version") if isinstance(artifact, dict) else None
+        if not isinstance(version, str) or VERSION.fullmatch(version) is None:
+            raise TrainError(f"deployed quickstart contract has an invalid {name} version")
+        result[name] = version
+    return result
+
+
 def validate_successor_source(
     plan: Mapping[str, Any],
     manifest: Mapping[str, Any],
@@ -384,10 +400,68 @@ def verify_public_artifacts(
     return releases, distributions, waterline_image
 
 
+def install_laravel_boot_probe(root: Path) -> None:
+    provider = root / "app" / "Providers" / "ExactCurrentQualificationServiceProvider.php"
+    provider.write_text(
+        """<?php
+
+namespace App\\Providers;
+
+use DurableWorkflow\\WorkflowClientInterface;
+use Illuminate\\Support\\ServiceProvider;
+use RuntimeException;
+
+final class ExactCurrentQualificationServiceProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        if (! interface_exists(WorkflowClientInterface::class)
+            || ! $this->app->bound(WorkflowClientInterface::class)) {
+            throw new RuntimeException(
+                'The exact-current PHP SDK Laravel client contract is unavailable.'
+            );
+        }
+    }
+}
+""",
+        encoding="utf-8",
+    )
+
+    providers = root / "bootstrap" / "providers.php"
+    try:
+        source = providers.read_text(encoding="utf-8")
+    except OSError as error:
+        raise TrainError("clean Laravel application has no provider manifest") from error
+    short_marker = "    AppServiceProvider::class,\n"
+    qualified_marker = "    App\\Providers\\AppServiceProvider::class,\n"
+    if short_marker in source:
+        source = source.replace(
+            "use App\\Providers\\AppServiceProvider;\n",
+            "use App\\Providers\\AppServiceProvider;\n"
+            "use App\\Providers\\ExactCurrentQualificationServiceProvider;\n",
+            1,
+        ).replace(
+            short_marker,
+            short_marker + "    ExactCurrentQualificationServiceProvider::class,\n",
+            1,
+        )
+    elif qualified_marker in source:
+        source = source.replace(
+            qualified_marker,
+            qualified_marker
+            + "    App\\Providers\\ExactCurrentQualificationServiceProvider::class,\n",
+            1,
+        )
+    else:
+        raise TrainError("clean Laravel provider manifest has an unsupported shape")
+    providers.write_text(source, encoding="utf-8")
+
+
 def solve_composer_tuple(
     versions: Mapping[str, str],
     *,
     runner: Any = subprocess.run,
+    probe_installer: Any = install_laravel_boot_probe,
 ) -> dict[str, Any]:
     composer_tuple = {name: versions[name] for name in ("waterline", "workflow", "sdk-php")}
     manifest = {
@@ -401,19 +475,20 @@ def solve_composer_tuple(
         },
     }
     with tempfile.TemporaryDirectory(prefix="waterline-train-composer-") as temporary:
-        root = Path(temporary)
-        (root / "composer.json").write_bytes(canonical_json(manifest))
+        root = Path(temporary) / "laravel"
         try:
-            process = runner(
+            create = runner(
                 [
                     "composer",
-                    "update",
-                    "--working-dir",
+                    "create-project",
+                    "laravel/laravel",
                     str(root),
-                    "--dry-run",
+                    "^13.0",
                     "--no-install",
+                    "--no-scripts",
                     "--no-interaction",
                     "--no-progress",
+                    "--prefer-dist",
                 ],
                 check=False,
                 capture_output=True,
@@ -421,15 +496,61 @@ def solve_composer_tuple(
                 timeout=300,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired) as error:
-            raise TrainError("Composer is unavailable for exact-current tuple qualification") from error
-    output = f"{process.stdout}\n{process.stderr}"[-64 * 1024 :]
-    if process.returncode != 0:
-        raise TrainError("exact-current Waterline, Workflow, and PHP SDK packages are not Composer-satisfiable")
+            raise TrainError("Composer is unavailable for clean Laravel qualification") from error
+        if create.returncode != 0:
+            raise TrainError("clean Laravel application could not be created for exact-current qualification")
+
+        try:
+            install = runner(
+                [
+                    "composer",
+                    "require",
+                    "--working-dir",
+                    str(root),
+                    "--with-all-dependencies",
+                    "--no-interaction",
+                    "--no-progress",
+                    "--prefer-dist",
+                    f"durable-workflow/waterline:{composer_tuple['waterline']}@RC",
+                    f"durable-workflow/workflow:{composer_tuple['workflow']}@RC",
+                    f"durable-workflow/sdk:{composer_tuple['sdk-php']}@RC",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as error:
+            raise TrainError("Composer is unavailable for exact-current Laravel installation") from error
+        install_output = f"{install.stdout}\n{install.stderr}"[-64 * 1024 :]
+        if install.returncode != 0:
+            raise TrainError(
+                "exact-current Waterline, Workflow, and PHP SDK packages are not installable in Laravel"
+            )
+
+        probe_installer(root)
+        try:
+            discovery = runner(
+                ["php", "artisan", "package:discover", "--ansi", "--no-interaction"],
+                cwd=root,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as error:
+            raise TrainError("Laravel is unavailable for exact-current package discovery") from error
+        discovery_output = f"{discovery.stdout}\n{discovery.stderr}"[-64 * 1024 :]
+        if discovery.returncode != 0:
+            raise TrainError("exact-current Composer graph does not boot through Laravel package discovery")
+
     return {
         "outcome": "pass",
         "artifact_tuple": composer_tuple,
         "manifest_sha256": hashlib.sha256(canonical_json(manifest)).hexdigest(),
-        "solver_output_sha256": hashlib.sha256(output.encode()).hexdigest(),
+        "install_output_sha256": hashlib.sha256(install_output.encode()).hexdigest(),
+        "package_discovery_output_sha256": hashlib.sha256(discovery_output.encode()).hexdigest(),
+        "laravel_boot": "pass",
     }
 
 
@@ -439,7 +560,7 @@ def verify_docs_documents(
     contract: Mapping[str, Any],
     quickstart_evidence: Mapping[str, Any],
     expected_versions: Mapping[str, str],
-) -> None:
+) -> dict[str, str]:
     if (
         audit.get("schema") != "durable-workflow.docs.page-release-audit"
         or audit.get("schema_version") not in SUPPORTED_DOCS_AUDIT_SCHEMA_VERSIONS
@@ -451,6 +572,9 @@ def verify_docs_documents(
         raise TrainError("deployed docs revision does not bind the exact published artifact tuple")
     if contract.get("schema") != "durable-workflow.docs.v2.quickstart-execution-contract":
         raise TrainError("deployed quickstart contract has an unsupported schema")
+    contract_tuple = quickstart_contract_tuple(contract)
+    if contract_tuple != expected_versions:
+        raise TrainError("deployed quickstart contract does not name the exact execution tuple")
     scenarios = contract.get("scenarios")
     observed_scenarios = (
         tuple(item.get("id") for item in scenarios if isinstance(item, dict))
@@ -469,6 +593,11 @@ def verify_docs_documents(
         or tuple(qualification.get("required_scenarios", ())) != QUICKSTART_SCENARIOS
     ):
         raise TrainError("deployed quickstart qualification is stale or incomplete")
+    if audit.get("schema_version") >= 8 and (
+        qualification.get("contract_artifact_versions") != contract_tuple
+        or qualification.get("execution_artifact_versions") != contract_tuple
+    ):
+        raise TrainError("deployed quickstart qualification does not bind contract and execution tuples")
     evidence_identity = qualification.get("evidence")
     if not isinstance(evidence_identity, dict):
         raise TrainError("deployed quickstart qualification lacks retained evidence identity")
@@ -478,11 +607,12 @@ def verify_docs_documents(
         or quickstart_evidence.get("id") != evidence_identity.get("id")
         or quickstart_evidence.get("experiment") != "quickstart"
         or quickstart_evidence.get("evidence_kind") != "executed_run"
-        or quickstart_evidence.get("artifact_tuple") != expected_versions
+        or quickstart_evidence.get("artifact_tuple") != contract_tuple
         or quickstart_evidence.get("outcome") != "pass"
         or quickstart_evidence.get("runner_blocked") is not False
     ):
         raise TrainError("retained quickstart evidence does not prove the exact current five-scenario run")
+    return contract_tuple
 
 
 def verify_deployed_docs(client: PublicClient, expected_versions: Mapping[str, str]) -> dict[str, Any]:
@@ -507,7 +637,13 @@ def verify_deployed_docs(client: PublicClient, expected_versions: Mapping[str, s
         raise TrainError("deployed quickstart qualification has no retained public evidence URL")
     evidence_raw = client.bytes(evidence_url)
     evidence = decode_json(evidence_raw, "retained quickstart evidence")
-    verify_docs_documents(audit, published_versions, contract, evidence, expected_versions)
+    contract_tuple = verify_docs_documents(
+        audit,
+        published_versions,
+        contract,
+        evidence,
+        expected_versions,
+    )
     return {
         "outcome": "pass",
         "docs_revision": revision,
@@ -520,6 +656,8 @@ def verify_deployed_docs(client: PublicClient, expected_versions: Mapping[str, s
         "quickstart_evidence_url": evidence_url,
         "quickstart_evidence_sha256": hashlib.sha256(evidence_raw).hexdigest(),
         "quickstart_evidence_id": evidence["id"],
+        "quickstart_contract_artifact_tuple": contract_tuple,
+        "quickstart_execution_artifact_tuple": evidence["artifact_tuple"],
         "artifact_tuple": dict(expected_versions),
     }
 
@@ -588,6 +726,8 @@ def qualify_public_completion(client: PublicClient, plan_tag: str) -> dict[str, 
             "evidence_url": docs["quickstart_evidence_url"],
             "evidence_sha256": docs["quickstart_evidence_sha256"],
             "artifact_tuple": versions,
+            "contract_artifact_tuple": docs["quickstart_contract_artifact_tuple"],
+            "execution_artifact_tuple": docs["quickstart_execution_artifact_tuple"],
             "scenarios": list(QUICKSTART_SCENARIOS),
         },
     }

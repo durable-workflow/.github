@@ -16,7 +16,7 @@
     "quickstart"
   ],
   "properties": {
-    "schema": {"const": "durable-workflow.waterline-release-completion/v2"},
+    "schema": {"const": "durable-workflow.waterline-release-completion/v3"},
     "outcome": {"const": "pass"},
     "plan_authority": {
       "type": "object",
@@ -70,12 +70,21 @@
     "composer_resolution": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["outcome", "artifact_tuple", "manifest_sha256", "solver_output_sha256"],
+      "required": [
+        "outcome",
+        "artifact_tuple",
+        "manifest_sha256",
+        "install_output_sha256",
+        "package_discovery_output_sha256",
+        "laravel_boot"
+      ],
       "properties": {
         "outcome": {"const": "pass"},
         "artifact_tuple": {"$ref": "#/$defs/composerTuple"},
         "manifest_sha256": {"$ref": "#/$defs/sha256"},
-        "solver_output_sha256": {"$ref": "#/$defs/sha256"}
+        "install_output_sha256": {"$ref": "#/$defs/sha256"},
+        "package_discovery_output_sha256": {"$ref": "#/$defs/sha256"},
+        "laravel_boot": {"const": "pass"}
       }
     },
     "public_artifacts": {
@@ -112,6 +121,8 @@
         "quickstart_evidence_url",
         "quickstart_evidence_sha256",
         "quickstart_evidence_id",
+        "quickstart_contract_artifact_tuple",
+        "quickstart_execution_artifact_tuple",
         "artifact_tuple"
       ],
       "properties": {
@@ -130,19 +141,32 @@
         },
         "quickstart_evidence_sha256": {"$ref": "#/$defs/sha256"},
         "quickstart_evidence_id": {"pattern": "^[a-z0-9][a-z0-9._-]+$"},
+        "quickstart_contract_artifact_tuple": {"$ref": "#/$defs/artifactTuple"},
+        "quickstart_execution_artifact_tuple": {"$ref": "#/$defs/artifactTuple"},
         "artifact_tuple": {"$ref": "#/$defs/artifactTuple"}
       }
     },
     "quickstart": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["outcome", "evidence_id", "evidence_url", "evidence_sha256", "artifact_tuple", "scenarios"],
+      "required": [
+        "outcome",
+        "evidence_id",
+        "evidence_url",
+        "evidence_sha256",
+        "artifact_tuple",
+        "contract_artifact_tuple",
+        "execution_artifact_tuple",
+        "scenarios"
+      ],
       "properties": {
         "outcome": {"const": "pass"},
         "evidence_id": {"pattern": "^[a-z0-9][a-z0-9._-]+$"},
         "evidence_url": {"type": "string", "format": "uri", "pattern": "^https://"},
         "evidence_sha256": {"$ref": "#/$defs/sha256"},
         "artifact_tuple": {"$ref": "#/$defs/artifactTuple"},
+        "contract_artifact_tuple": {"$ref": "#/$defs/artifactTuple"},
+        "execution_artifact_tuple": {"$ref": "#/$defs/artifactTuple"},
         "scenarios": {
           "type": "array",
           "prefixItems": [

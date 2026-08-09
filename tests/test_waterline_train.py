@@ -57,7 +57,7 @@ def waterline_manifest(*, version: str, sdk: str, workflow: str) -> dict:
     }
 
 
-def docs_documents(*, schema_version: int = 7) -> tuple[dict, dict, dict, dict]:
+def docs_documents(*, schema_version: int = 8) -> tuple[dict, dict, dict, dict]:
     evidence_id = "quickstart-20260809t120000z"
     evidence_url = f"https://durable-workflow.com/platform-conformance/evidence/{evidence_id}.json"
     audit = {
@@ -68,6 +68,8 @@ def docs_documents(*, schema_version: int = 7) -> tuple[dict, dict, dict, dict]:
             "role": "five_scenario_exact_current",
             "outcome": "pass",
             "artifact_versions": VERSIONS,
+            "contract_artifact_versions": VERSIONS,
+            "execution_artifact_versions": VERSIONS,
             "required_scenarios": list(QUICKSTART_SCENARIOS),
             "evidence": {"id": evidence_id, "url": evidence_url},
         },
@@ -75,6 +77,7 @@ def docs_documents(*, schema_version: int = 7) -> tuple[dict, dict, dict, dict]:
     published = {"artifacts": VERSIONS}
     contract = {
         "schema": "durable-workflow.docs.v2.quickstart-execution-contract",
+        "artifacts": {name: {"version": version} for name, version in VERSIONS.items()},
         "scenarios": [{"id": scenario} for scenario in QUICKSTART_SCENARIOS],
     }
     evidence = {
@@ -102,6 +105,9 @@ class WaterlineTrainTest(unittest.TestCase):
         self.assertIn("record_commit", plan_authority["required"])
         self.assertIn("release_asset_id", plan_authority["required"])
         self.assertIn("quickstart_evidence_sha256", schema["properties"]["deployed_docs"]["required"])
+        self.assertIn("laravel_boot", schema["properties"]["composer_resolution"]["required"])
+        self.assertIn("contract_artifact_tuple", schema["properties"]["quickstart"]["required"])
+        self.assertIn("execution_artifact_tuple", schema["properties"]["quickstart"]["required"])
 
     def test_github_release_identity_must_be_public_and_immutable(self) -> None:
         with self.assertRaisesRegex(TrainError, "immutable release id"):
@@ -157,14 +163,25 @@ class WaterlineTrainTest(unittest.TestCase):
         with self.assertRaisesRegex(TrainError, "exact PHP SDK"):
             validate_successor_source(successor_plan(), manifest, manifest)
 
-    def test_current_v7_docs_audit_can_complete_exact_public_qualification(self) -> None:
-        verify_docs_documents(*docs_documents(), VERSIONS)
+    def test_current_v8_docs_audit_can_complete_exact_public_qualification(self) -> None:
+        self.assertEqual(VERSIONS, verify_docs_documents(*docs_documents(), VERSIONS))
+
+    def test_previous_v7_docs_audit_remains_supported(self) -> None:
+        audit, published, contract, evidence = docs_documents(schema_version=7)
+        audit["quickstart_qualification"].pop("contract_artifact_versions")
+        audit["quickstart_qualification"].pop("execution_artifact_versions")
+
+        verify_docs_documents(audit, published, contract, evidence, VERSIONS)
 
     def test_previous_v6_docs_audit_remains_supported(self) -> None:
-        verify_docs_documents(*docs_documents(schema_version=6), VERSIONS)
+        audit, published, contract, evidence = docs_documents(schema_version=6)
+        audit["quickstart_qualification"].pop("contract_artifact_versions")
+        audit["quickstart_qualification"].pop("execution_artifact_versions")
+
+        verify_docs_documents(audit, published, contract, evidence, VERSIONS)
 
     def test_unknown_docs_audit_schema_remains_fail_closed(self) -> None:
-        audit, published, contract, evidence = docs_documents(schema_version=8)
+        audit, published, contract, evidence = docs_documents(schema_version=9)
 
         with self.assertRaisesRegex(TrainError, "unsupported schema"):
             verify_docs_documents(audit, published, contract, evidence, VERSIONS)
@@ -194,24 +211,56 @@ class WaterlineTrainTest(unittest.TestCase):
         with self.assertRaisesRegex(TrainError, "does not prove the exact current"):
             verify_docs_documents(audit, published, contract, evidence, VERSIONS)
 
+    def test_contract_tuple_must_equal_the_executed_tuple(self) -> None:
+        audit, published, contract, evidence = docs_documents()
+        contract["artifacts"]["sdk-php"]["version"] = "2.0.0-rc.6"
+
+        with self.assertRaisesRegex(TrainError, "contract does not name the exact execution tuple"):
+            verify_docs_documents(audit, published, contract, evidence, VERSIONS)
+
     def test_unresolvable_composer_tuple_cannot_complete(self) -> None:
-        def fail_solver(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-            return subprocess.CompletedProcess([], 2, "", "dependency conflict")
+        def fail_solver(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            returncode = 0 if args[1] == "create-project" else 2
+            return subprocess.CompletedProcess(args, returncode, "", "dependency conflict")
 
-        with self.assertRaisesRegex(TrainError, "not Composer-satisfiable"):
-            solve_composer_tuple(VERSIONS, runner=fail_solver)
+        with self.assertRaisesRegex(TrainError, "not installable in Laravel"):
+            solve_composer_tuple(VERSIONS, runner=fail_solver, probe_installer=lambda _root: None)
 
-    def test_solver_evidence_is_generated_from_the_exact_tuple(self) -> None:
-        def pass_solver(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-            return subprocess.CompletedProcess([], 0, "lock operations", "")
+    def test_laravel_boot_evidence_is_generated_from_the_exact_tuple(self) -> None:
+        commands: list[list[str]] = []
 
-        evidence = solve_composer_tuple(VERSIONS, runner=pass_solver)
+        def pass_solver(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            commands.append(args)
+            return subprocess.CompletedProcess(args, 0, "lock operations", "")
+
+        evidence = solve_composer_tuple(
+            VERSIONS,
+            runner=pass_solver,
+            probe_installer=lambda _root: None,
+        )
 
         self.assertEqual("pass", evidence["outcome"])
+        self.assertEqual("pass", evidence["laravel_boot"])
         self.assertEqual(
             {name: VERSIONS[name] for name in ("waterline", "workflow", "sdk-php")},
             evidence["artifact_tuple"],
         )
+        self.assertEqual("create-project", commands[0][1])
+        self.assertEqual("require", commands[1][1])
+        self.assertEqual(["php", "artisan", "package:discover"], commands[2][:3])
+        self.assertNotIn("--dry-run", commands[1])
+
+    def test_laravel_package_discovery_failure_cannot_complete(self) -> None:
+        def discover_fail(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            returncode = 1 if args[0] == "php" else 0
+            return subprocess.CompletedProcess(args, returncode, "", "missing interface")
+
+        with self.assertRaisesRegex(TrainError, "does not boot through Laravel package discovery"):
+            solve_composer_tuple(
+                VERSIONS,
+                runner=discover_fail,
+                probe_installer=lambda _root: None,
+            )
 
     def test_workflow_accepts_only_an_immutable_plan_identity(self) -> None:
         source = WORKFLOW.read_text(encoding="utf-8")

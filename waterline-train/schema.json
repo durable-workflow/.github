@@ -37,7 +37,7 @@
         "packagist_package",
         "container_image",
         "deployed_docs_artifact_tuple",
-        "exact_current_composer_resolution",
+        "exact_current_composer_laravel_boot",
         "retained_five_scenario_quickstart"
       ]
     },

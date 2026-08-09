@@ -10,9 +10,9 @@ advance routes a Waterline successor; it never mutates an old package or adds a
 compatibility shim. The completion workflow accepts only an immutable release
 plan tag. It re-reads the tag, Git record, and release mirror; verifies the
 source-bound GitHub releases, Packagist packages, and Waterline service image;
-runs a fresh exact Composer solve; and binds the deployed docs revision to its
-linked retained quickstart run. Caller-authored pass fields are not completion
-evidence.
+runs a clean exact Composer install and Laravel package-discovery boot; and
+binds the deployed docs revision, quickstart contract tuple, and retained run's
+execution tuple. Caller-authored pass fields are not completion evidence.
 
 `completion-evidence-schema.json` defines the record generated from those
 public checks. Completion remains unavailable while the current docs tuple or
