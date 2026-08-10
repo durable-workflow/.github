@@ -47,6 +47,7 @@ QUICKSTART_EVIDENCE_URL = re.compile(
 )
 PLAN_TAG = re.compile(r"^release-plan/[a-z0-9][a-z0-9._-]{0,55}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
 PRERELEASE = re.compile(r"^2\.0\.0-(?P<channel>beta|rc)\.(?P<number>[1-9][0-9]*)$")
 VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$")
 QUICKSTART_SCENARIOS = (
@@ -568,6 +569,13 @@ def verify_docs_documents(
         raise TrainError("deployed docs release audit has an unsupported schema")
     if audit.get("artifact_versions") != expected_versions:
         raise TrainError("deployed docs do not name the exact immutable successor tuple")
+    compatibility = audit.get("artifact_compatibility_evidence")
+    if (
+        not isinstance(compatibility, dict)
+        or compatibility.get("outcome") != "pass"
+        or compatibility.get("qualified_artifact_versions") != expected_versions
+    ):
+        raise TrainError("deployed docs install pins do not name the exact qualified successor tuple")
     if published_versions.get("artifacts") != expected_versions:
         raise TrainError("deployed docs revision does not bind the exact published artifact tuple")
     if contract.get("schema") != "durable-workflow.docs.v2.quickstart-execution-contract":
@@ -612,6 +620,53 @@ def verify_docs_documents(
         or quickstart_evidence.get("runner_blocked") is not False
     ):
         raise TrainError("retained quickstart evidence does not prove the exact current five-scenario run")
+
+    evidence_qualification = quickstart_evidence.get("qualification")
+    scenario_results = (
+        evidence_qualification.get("scenario_results")
+        if isinstance(evidence_qualification, dict)
+        else None
+    )
+    expected_scenario_results = [
+        {"id": scenario, "outcome": "pass"} for scenario in QUICKSTART_SCENARIOS
+    ]
+    if scenario_results != expected_scenario_results:
+        raise TrainError("retained quickstart evidence does not prove all five scenarios passed")
+
+    exact_composer_graph = evidence_qualification.get("exact_composer_graph")
+    expected_composer_tuple = {
+        name: contract_tuple[name] for name in ("sdk-php", "waterline", "workflow")
+    }
+    expected_composer_fields = {
+        "outcome",
+        "artifact_tuple",
+        "manifest_sha256",
+        "install_output_sha256",
+        "package_discovery",
+        "package_discovery_output_sha256",
+        "laravel_boot",
+    }
+    if (
+        not isinstance(exact_composer_graph, dict)
+        or set(exact_composer_graph) != expected_composer_fields
+        or exact_composer_graph.get("outcome") != "pass"
+        or exact_composer_graph.get("artifact_tuple") != expected_composer_tuple
+        or exact_composer_graph.get("package_discovery") != "pass"
+        or exact_composer_graph.get("laravel_boot") != "pass"
+        or any(
+            not isinstance(exact_composer_graph.get(field), str)
+            or SHA256.fullmatch(exact_composer_graph[field]) is None
+            for field in (
+                "manifest_sha256",
+                "install_output_sha256",
+                "package_discovery_output_sha256",
+            )
+        )
+    ):
+        raise TrainError(
+            "retained quickstart evidence does not prove the exact Composer install, "
+            "package discovery, and Laravel boot"
+        )
     return contract_tuple
 
 

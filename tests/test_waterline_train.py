@@ -64,6 +64,11 @@ def docs_documents(*, schema_version: int = 8) -> tuple[dict, dict, dict, dict]:
         "schema": "durable-workflow.docs.page-release-audit",
         "schema_version": schema_version,
         "artifact_versions": VERSIONS,
+        "artifact_compatibility_evidence": {
+            "role": "qualified_aggregate_recommendation",
+            "outcome": "pass",
+            "qualified_artifact_versions": VERSIONS,
+        },
         "quickstart_qualification": {
             "role": "five_scenario_exact_current",
             "outcome": "pass",
@@ -89,6 +94,22 @@ def docs_documents(*, schema_version: int = 8) -> tuple[dict, dict, dict, dict]:
         "artifact_tuple": VERSIONS,
         "outcome": "pass",
         "runner_blocked": False,
+        "qualification": {
+            "scenario_results": [
+                {"id": scenario, "outcome": "pass"} for scenario in QUICKSTART_SCENARIOS
+            ],
+            "exact_composer_graph": {
+                "outcome": "pass",
+                "artifact_tuple": {
+                    name: VERSIONS[name] for name in ("sdk-php", "waterline", "workflow")
+                },
+                "manifest_sha256": "a" * 64,
+                "install_output_sha256": "b" * 64,
+                "package_discovery": "pass",
+                "package_discovery_output_sha256": "c" * 64,
+                "laravel_boot": "pass",
+            },
+        },
     }
     return audit, published, contract, evidence
 
@@ -204,6 +225,16 @@ class WaterlineTrainTest(unittest.TestCase):
         with self.assertRaisesRegex(TrainError, "exact immutable successor tuple"):
             verify_docs_documents(audit, published, contract, evidence, VERSIONS)
 
+    def test_stale_rendered_install_pin_cannot_complete(self) -> None:
+        audit, published, contract, evidence = docs_documents()
+        audit["artifact_compatibility_evidence"]["qualified_artifact_versions"] = {
+            **VERSIONS,
+            "sdk-php": "2.0.0-rc.6",
+        }
+
+        with self.assertRaisesRegex(TrainError, "install pins do not name the exact qualified"):
+            verify_docs_documents(audit, published, contract, evidence, VERSIONS)
+
     def test_tuple_mismatched_retained_run_cannot_complete(self) -> None:
         audit, published, contract, evidence = docs_documents()
         evidence["artifact_tuple"] = {**VERSIONS, "sdk-php": "2.0.0-rc.10"}
@@ -216,6 +247,29 @@ class WaterlineTrainTest(unittest.TestCase):
         contract["artifacts"]["sdk-php"]["version"] = "2.0.0-rc.6"
 
         with self.assertRaisesRegex(TrainError, "contract does not name the exact execution tuple"):
+            verify_docs_documents(audit, published, contract, evidence, VERSIONS)
+
+    def test_retained_run_must_prove_each_quickstart_scenario_passed(self) -> None:
+        audit, published, contract, evidence = docs_documents()
+        evidence["qualification"]["scenario_results"][-1]["outcome"] = "fail"
+
+        with self.assertRaisesRegex(TrainError, "does not prove all five scenarios passed"):
+            verify_docs_documents(audit, published, contract, evidence, VERSIONS)
+
+    def test_retained_run_composer_graph_must_use_the_execution_tuple(self) -> None:
+        audit, published, contract, evidence = docs_documents()
+        evidence["qualification"]["exact_composer_graph"]["artifact_tuple"]["sdk-php"] = (
+            "2.0.0-rc.6"
+        )
+
+        with self.assertRaisesRegex(TrainError, "does not prove the exact Composer install"):
+            verify_docs_documents(audit, published, contract, evidence, VERSIONS)
+
+    def test_retained_run_must_prove_laravel_package_discovery(self) -> None:
+        audit, published, contract, evidence = docs_documents()
+        evidence["qualification"]["exact_composer_graph"]["package_discovery"] = "fail"
+
+        with self.assertRaisesRegex(TrainError, "does not prove the exact Composer install"):
             verify_docs_documents(audit, published, contract, evidence, VERSIONS)
 
     def test_unresolvable_composer_tuple_cannot_complete(self) -> None:

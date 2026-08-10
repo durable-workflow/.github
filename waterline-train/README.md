@@ -12,8 +12,11 @@ plan tag. It re-reads the tag, Git record, and release mirror; verifies the
 source-bound GitHub releases, Packagist packages, and Waterline service image;
 runs a clean exact Composer install and Laravel package-discovery boot; and
 binds the deployed docs revision, quickstart contract tuple, and retained run's
-execution tuple. Caller-authored pass fields are not completion evidence.
+execution tuple. The retained run must itself contain passing results for all
+five scenarios and exact-graph install, package-discovery, and Laravel-boot
+proof. Caller-authored pass fields are not completion evidence.
 
 `completion-evidence-schema.json` defines the record generated from those
 public checks. Completion remains unavailable while the current docs tuple or
-five-scenario quickstart evidence is absent, stale, or bound to another tuple.
+rendered install pins, or five-scenario quickstart evidence, are absent, stale,
+or bound to another tuple.
