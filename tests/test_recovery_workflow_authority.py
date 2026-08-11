@@ -16,17 +16,22 @@ from scripts.recovery_workflow_authority import (
     AUTHORITY_PATH,
     QUALIFICATION_EVENT,
     QUALIFICATION_WORKFLOW,
+    SOURCE_IDENTITIES_PATH,
     RecoveryWorkflowAuthorityError,
     authority_ref_url,
     authority_url,
     normalized_source_sha256,
+    qualification_requirements,
     qualification_runs_url,
     validate_authority,
+    validate_source_identities,
     verify_authority_workflow_sources,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
 AUTHORITY = json.loads((ROOT / AUTHORITY_PATH).read_bytes())
+SOURCE_IDENTITIES = json.loads((ROOT / SOURCE_IDENTITIES_PATH).read_bytes())
+QUALIFICATION_POLICY = json.loads((ROOT / "qualification" / "policy.json").read_bytes())
 IDENTITIES = {
     name: (component.repository, component.default_branch)
     for name, component in COMPONENTS.items()
@@ -127,6 +132,32 @@ class RecoveryWorkflowAuthorityTest(unittest.TestCase):
             {"workflow": QUALIFICATION_WORKFLOW, "event": QUALIFICATION_EVENT},
             AUTHORITY["source"]["qualification"],
         )
+
+    def test_public_source_history_binds_the_current_waterline_reconciliation(self) -> None:
+        workflows = validate_authority(AUTHORITY, IDENTITIES)
+        requirements = qualification_requirements(QUALIFICATION_POLICY, IDENTITIES)
+        histories = validate_source_identities(
+            SOURCE_IDENTITIES,
+            workflows,
+            IDENTITIES,
+            requirements,
+        )
+
+        waterline = histories["waterline"]["identities"]
+        self.assertEqual(2, len(waterline))
+        self.assertEqual(
+            "bcd3f627d3f2af5c2b2cd5663653b3049f490fc2",
+            waterline[-1]["source_commit"],
+        )
+        self.assertEqual(AUTHORITY["workflows"]["waterline"]["sha256"], waterline[-1]["sha256"])
+        self.assertEqual(
+            {
+                "source_commit": waterline[-2]["source_commit"],
+                "sha256": waterline[-2]["sha256"],
+            },
+            waterline[-1]["supersedes"],
+        )
+        self.assertEqual("success", waterline[-1]["qualification"]["conclusion"])
 
     def test_component_loader_reads_only_the_successfully_qualified_exact_revision(self) -> None:
         client = FixtureClient(AUTHORITY)

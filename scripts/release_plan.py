@@ -55,10 +55,13 @@ from scripts.beta_candidate import (
 )
 from scripts.product_train import require_current_product_train
 from scripts.recovery_workflow_authority import (
+    SOURCE_IDENTITIES_PATH,
     RecoveryWorkflowAuthorityError,
     decode_authority,
+    decode_source_identities,
     load_qualified_authority,
-    verify_authority_workflow_sources,
+    qualification_requirements,
+    verify_authority_source_identities,
     verify_workflow_source,
 )
 
@@ -164,6 +167,9 @@ def load_recovery_workflow_authority(
 def verify_local_recovery_workflow_authority(
     path: Path,
     client: PublicClient,
+    *,
+    source_identities_path: Path = Path(SOURCE_IDENTITIES_PATH),
+    qualification_policy_path: Path = Path("qualification/policy.json"),
 ) -> dict[str, Any]:
     try:
         raw = path.read_bytes()
@@ -177,14 +183,36 @@ def verify_local_recovery_workflow_authority(
     }
     try:
         workflows = decode_authority(raw, identities)
-        verified = verify_authority_workflow_sources(client, workflows)
-    except RecoveryWorkflowAuthorityError as error:
+        source_identities_raw = source_identities_path.read_bytes()
+        qualification_policy = json.loads(qualification_policy_path.read_bytes())
+        requirements = qualification_requirements(qualification_policy, identities)
+        source_identities = decode_source_identities(
+            source_identities_raw,
+            workflows,
+            identities,
+            requirements,
+        )
+        protected_sources = verify_authority_source_identities(
+            client,
+            workflows,
+            source_identities,
+            requirements,
+        )
+    except (OSError, json.JSONDecodeError, RecoveryWorkflowAuthorityError) as error:
         raise CandidateError(f"invalid component release recovery authority: {error}") from error
     return {
         "schema": "durable-workflow.component-release-recovery-authority-verification/v1",
         "authority_sha256": hashlib.sha256(raw).hexdigest(),
+        "protected_source_identities_sha256": hashlib.sha256(source_identities_raw).hexdigest(),
         "outcome": "verified",
-        "workflows": verified,
+        "protected_sources": protected_sources,
+        "workflows": {
+            name: {
+                field: evidence[field]
+                for field in ("repository", "ref", "path", "state", "sha256", "workflow_id", "url")
+            }
+            for name, evidence in protected_sources.items()
+        },
     }
 
 

@@ -22,7 +22,7 @@
       "ref": "refs/heads/v2",
       "path": ".github/workflows/release-plan-recovery.yml",
       "state": "active",
-      "sha256": "c702d5dadce236ce96b39f0c086728a6882d3f54a5349f3871a0ea8899bccb6b"
+      "sha256": "90f68dad2ec05d48aadbd1bb144e809ffce67f974020ec7685add81495424ed2"
     },
     "server": {
       "repository": "durable-workflow/server",

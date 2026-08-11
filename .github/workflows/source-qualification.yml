@@ -70,6 +70,11 @@ jobs:
           python -m json.tool release-recovery/authority.json >/dev/null
           python -m json.tool release-recovery/schema.json >/dev/null
           python -m jsonschema -i release-recovery/authority.json release-recovery/schema.json
+          python -m json.tool release-recovery/protected-source-identities.json >/dev/null
+          python -m json.tool release-recovery/protected-source-identities-schema.json >/dev/null
+          python -m jsonschema \
+            -i release-recovery/protected-source-identities.json \
+            release-recovery/protected-source-identities-schema.json
           python -m json.tool product-train/current.json >/dev/null
           python -m json.tool product-train/schema.json >/dev/null
           python -m json.tool product-train/sdk-server-qualification.json >/dev/null
