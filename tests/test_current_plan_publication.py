@@ -1,21 +1,30 @@
 from __future__ import annotations
 
-import os
-import stat
-import subprocess
-import tempfile
+import base64
+import contextlib
+import copy
+import hashlib
+import io
+import json
 import unittest
+import urllib.parse
 from pathlib import Path
+from typing import Any
 
 import yaml
 
 from scripts.current_plan_publication import (
     AUTHORITY_REF,
+    BETA_AUTHORIZATION_ENVIRONMENT,
     CONTROL_REPOSITORY,
+    CURRENT_PLAN_RUN_EVENTS,
     CURRENT_PLAN_WORKFLOW,
+    CURRENT_PLAN_WORKFLOW_PATH,
     CURRENT_PLAN_WORKFLOW_REF,
+    OBSERVER_WORKFLOW_REF,
     CurrentPlanPublicationError,
     approved_writer_handoff,
+    reconcile_current_plan_dispatch,
     validate_approved_writer_handoff,
     validate_runtime_identity,
 )
@@ -23,7 +32,154 @@ from scripts.current_plan_publication import (
 ROOT = Path(__file__).resolve().parents[1]
 OBSERVER_WORKFLOW = ROOT / ".github/workflows/release-plan-observer.yml"
 CURRENT_WORKFLOW = ROOT / ".github/workflows/current-release-plan.yml"
+CONTINUITY_WORKFLOW = ROOT / ".github/workflows/beta-continuity.yml"
+CURRENT_PLAN = ROOT / "release-plans/current.json"
 PLAN_REGISTRY_GROUP = "release-plan-registry"
+WORKFLOW_ID = 7321
+CURRENT_SHA = "b" * 40
+OLDER_SHA = "a" * 40
+
+
+def canonical_json(value: Any) -> bytes:
+    return (json.dumps(value, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode()
+
+
+def current_plan() -> dict[str, Any]:
+    return json.loads(CURRENT_PLAN.read_bytes())
+
+
+def plan_identity(plan: dict[str, Any]) -> tuple[str, str]:
+    return f"release-plan/{plan['plan']}", hashlib.sha256(canonical_json(plan)).hexdigest()
+
+
+def workflow_run(
+    run_id: int,
+    *,
+    source_sha: str = CURRENT_SHA,
+    status: str = "waiting",
+    created_at: str = "2026-08-11T01:00:00Z",
+    event: str = "workflow_dispatch",
+) -> dict[str, Any]:
+    return {
+        "conclusion": None,
+        "created_at": created_at,
+        "event": event,
+        "head_branch": AUTHORITY_REF,
+        "head_repository": {"full_name": CONTROL_REPOSITORY},
+        "head_sha": source_sha,
+        "html_url": f"https://github.com/{CONTROL_REPOSITORY}/actions/runs/{run_id}",
+        "id": run_id,
+        "path": f"{CURRENT_PLAN_WORKFLOW_PATH}@{AUTHORITY_REF}",
+        "repository": {"full_name": CONTROL_REPOSITORY},
+        "run_attempt": 1,
+        "status": status,
+        "url": f"https://api.github.com/repos/{CONTROL_REPOSITORY}/actions/runs/{run_id}",
+        "workflow_id": WORKFLOW_ID,
+    }
+
+
+def pending_authorization() -> list[dict[str, Any]]:
+    return [
+        {
+            "current_user_can_approve": False,
+            "environment": {
+                "id": 19,
+                "name": BETA_AUTHORIZATION_ENVIRONMENT,
+                "url": (
+                    f"https://api.github.com/repos/{CONTROL_REPOSITORY}/environments/"
+                    f"{BETA_AUTHORIZATION_ENVIRONMENT}"
+                ),
+            },
+            "reviewers": [{"type": "Team", "reviewer": {"id": 71}}],
+        }
+    ]
+
+
+class FakeActionsClient:
+    def __init__(
+        self,
+        runs: list[dict[str, Any]],
+        *,
+        current_sha: str = CURRENT_SHA,
+        pending: dict[int, Any] | None = None,
+        historical_plans: dict[str, dict[str, Any]] | None = None,
+        comparisons: dict[str, Any] | None = None,
+    ) -> None:
+        self.runs = runs
+        self.current_sha = current_sha
+        self.pending = pending or {}
+        self.historical_plans = historical_plans or {}
+        self.comparisons = comparisons or {}
+        self.posts: list[tuple[str, Any | None]] = []
+        self.gets: list[str] = []
+
+    def get(self, path: str) -> Any:
+        self.gets.append(path)
+        if path == f"/repos/{CONTROL_REPOSITORY}/actions/workflows/{CURRENT_PLAN_WORKFLOW}":
+            return {
+                "html_url": (
+                    f"https://github.com/{CONTROL_REPOSITORY}/actions/workflows/"
+                    f"{CURRENT_PLAN_WORKFLOW}"
+                ),
+                "id": WORKFLOW_ID,
+                "name": "Current release plan",
+                "path": CURRENT_PLAN_WORKFLOW_PATH,
+                "state": "active",
+            }
+        if path == f"/repos/{CONTROL_REPOSITORY}/git/ref/heads/{AUTHORITY_REF}":
+            return {
+                "object": {"sha": self.current_sha, "type": "commit"},
+                "ref": f"refs/heads/{AUTHORITY_REF}",
+            }
+        if path.startswith(f"/repos/{CONTROL_REPOSITORY}/actions/workflows/{WORKFLOW_ID}/runs?"):
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)
+            status = query["status"][0]
+            event = query.get("event", [None])[0]
+            page = int(query["page"][0])
+            matching = [
+                run
+                for run in self.runs
+                if run.get("status") == status and (event is None or run.get("event") == event)
+            ]
+            start = (page - 1) * 100
+            return {"total_count": len(matching), "workflow_runs": matching[start : start + 100]}
+        suffix = "/pending_deployments"
+        if path.endswith(suffix) and "/actions/runs/" in path:
+            run_id = int(path.removesuffix(suffix).rsplit("/", 1)[-1])
+            return self.pending.get(run_id, [])
+        contents_prefix = f"/repos/{CONTROL_REPOSITORY}/contents/release-plans/current.json?ref="
+        if path.startswith(contents_prefix):
+            revision = path.removeprefix(contents_prefix)
+            plan = self.historical_plans[revision]
+            return {
+                "content": base64.encodebytes(canonical_json(plan)).decode(),
+                "encoding": "base64",
+                "path": "release-plans/current.json",
+                "type": "file",
+            }
+        compare_prefix = f"/repos/{CONTROL_REPOSITORY}/compare/"
+        if path.startswith(compare_prefix):
+            comparison = path.removeprefix(compare_prefix)
+            return self.comparisons[comparison]
+        raise AssertionError(f"unexpected GET {path}")
+
+    def post(self, path: str, payload: Any | None = None) -> None:
+        self.posts.append((path, payload))
+
+
+def reconcile(client: FakeActionsClient, source_sha: str = CURRENT_SHA):
+    tag, digest = plan_identity(current_plan())
+    return reconcile_current_plan_dispatch(
+        client,
+        plan_path=CURRENT_PLAN,
+        repository=CONTROL_REPOSITORY,
+        ref=AUTHORITY_REF,
+        workflow=CURRENT_PLAN_WORKFLOW,
+        source_sha=source_sha,
+        plan_tag=tag,
+        plan_sha256=digest,
+        observer_workflow_ref=OBSERVER_WORKFLOW_REF,
+    )
 
 
 def publication_step() -> dict[str, object]:
@@ -37,19 +193,289 @@ def publication_step() -> dict[str, object]:
 
 
 class CurrentPlanPublicationTest(unittest.TestCase):
-    def test_waiting_approval_does_not_hold_the_writer_registry(self) -> None:
+    def test_deduper_classifies_every_current_plan_trigger_mode(self) -> None:
+        workflow = yaml.load(CURRENT_WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+
+        self.assertEqual(set(workflow["on"]), set(CURRENT_PLAN_RUN_EVENTS))
+
+    def test_active_push_wait_for_exact_candidate_is_retained(self) -> None:
+        push_wait = workflow_run(100, event="push")
+        client = FakeActionsClient(
+            [push_wait],
+            pending={100: pending_authorization()},
+        )
+
+        result = reconcile(client)
+
+        self.assertEqual("retained", result.outcome)
+        self.assertEqual(push_wait["html_url"], result.retained_run_url)
+        self.assertEqual((), result.cancelled_run_urls)
+        self.assertEqual([], client.posts)
+        run_queries = [path for path in client.gets if "/actions/workflows/7321/runs?" in path]
+        self.assertTrue(run_queries)
+        self.assertTrue(all("event=" not in path for path in run_queries))
+
+    def test_active_run_from_unconfigured_trigger_fails_closed(self) -> None:
+        unexpected = workflow_run(99, event="pull_request")
+        client = FakeActionsClient([unexpected])
+
+        with self.assertRaisesRegex(CurrentPlanPublicationError, "malformed or mismatched"):
+            reconcile(client)
+
+        self.assertEqual([], client.posts)
+
+    def test_duplicate_same_candidate_waits_are_coalesced_and_later_observations_are_noops(self) -> None:
+        first = workflow_run(101, created_at="2026-08-11T01:00:00Z", event="push")
+        duplicate = workflow_run(102, created_at="2026-08-11T02:00:00Z")
+        client = FakeActionsClient(
+            [first, duplicate],
+            pending={101: pending_authorization(), 102: pending_authorization()},
+        )
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            initial = reconcile(client)
+        self.assertEqual("retained", initial.outcome)
+        self.assertEqual(first["html_url"], initial.retained_run_url)
+        self.assertEqual((duplicate["html_url"],), initial.cancelled_run_urls)
+        self.assertEqual(
+            [(f"/repos/{CONTROL_REPOSITORY}/actions/runs/102/cancel", None)],
+            client.posts,
+        )
+
+        client.runs = [first]
+        with contextlib.redirect_stdout(output):
+            repeated = reconcile(client)
+        self.assertEqual("retained", repeated.outcome)
+        self.assertEqual(first["html_url"], repeated.retained_run_url)
+        self.assertEqual((), repeated.cancelled_run_urls)
+        self.assertEqual(1, len(client.posts))
+        self.assertEqual(2, output.getvalue().count("idempotent no-op"))
+        self.assertIn(str(first["html_url"]), output.getvalue())
+
+    def test_newer_candidate_supersedes_only_verified_unapproved_ancestor(self) -> None:
+        prior_plan = copy.deepcopy(current_plan())
+        prior_plan["plan"] = "prior-current-plan"
+        old = workflow_run(201, source_sha=OLDER_SHA)
+        comparison = {
+            "ahead_by": 3,
+            "base_commit": {"sha": OLDER_SHA},
+            "behind_by": 0,
+            "merge_base_commit": {"sha": OLDER_SHA},
+            "status": "ahead",
+        }
+        client = FakeActionsClient(
+            [old],
+            pending={201: pending_authorization()},
+            historical_plans={OLDER_SHA: prior_plan},
+            comparisons={f"{OLDER_SHA}...{CURRENT_SHA}": comparison},
+        )
+
+        result = reconcile(client)
+
+        self.assertEqual("dispatched", result.outcome)
+        self.assertIsNone(result.retained_run_url)
+        self.assertEqual((old["html_url"],), result.cancelled_run_urls)
+        self.assertEqual(
+            [
+                (f"/repos/{CONTROL_REPOSITORY}/actions/runs/201/cancel", None),
+                (
+                    f"/repos/{CONTROL_REPOSITORY}/actions/workflows/{WORKFLOW_ID}/dispatches",
+                    {"ref": AUTHORITY_REF},
+                ),
+            ],
+            client.posts,
+        )
+
+    def test_ambiguous_or_malformed_api_state_fails_before_mutation(self) -> None:
+        cases: list[tuple[str, FakeActionsClient, str]] = []
+
+        mismatched_run = workflow_run(301)
+        mismatched_run["head_repository"] = {"full_name": "outside/fork"}
+        cases.append(
+            (
+                "mismatched repository",
+                FakeActionsClient([mismatched_run], pending={301: pending_authorization()}),
+                "malformed or mismatched",
+            )
+        )
+
+        malformed_timestamp = workflow_run(304, created_at="2026-99-11T01:00:00Z")
+        cases.append(
+            (
+                "malformed timestamp",
+                FakeActionsClient([malformed_timestamp], pending={304: pending_authorization()}),
+                "invalid timestamp",
+            )
+        )
+
+        malformed_pending = pending_authorization()
+        malformed_pending[0]["environment"]["name"] = "stable-authorization"
+        cases.append(
+            (
+                "mismatched pending environment",
+                FakeActionsClient([workflow_run(302)], pending={302: malformed_pending}),
+                "pending authorization is mismatched",
+            )
+        )
+
+        prior_plan = copy.deepcopy(current_plan())
+        prior_plan["plan"] = "diverged-plan"
+        diverged = {
+            "ahead_by": 1,
+            "base_commit": {"sha": OLDER_SHA},
+            "behind_by": 1,
+            "merge_base_commit": {"sha": "c" * 40},
+            "status": "diverged",
+        }
+        cases.append(
+            (
+                "diverged source",
+                FakeActionsClient(
+                    [workflow_run(303, source_sha=OLDER_SHA)],
+                    pending={303: pending_authorization()},
+                    historical_plans={OLDER_SHA: prior_plan},
+                    comparisons={f"{OLDER_SHA}...{CURRENT_SHA}": diverged},
+                ),
+                "not a verified ancestor",
+            )
+        )
+
+        for label, client, diagnostic in cases:
+            with (
+                self.subTest(label=label),
+                self.assertRaisesRegex(CurrentPlanPublicationError, diagnostic),
+            ):
+                reconcile(client)
+            self.assertEqual([], client.posts)
+
+    def test_already_approved_writer_is_retained_and_never_cancelled(self) -> None:
+        writer = workflow_run(401, status="in_progress")
+        duplicate_wait = workflow_run(402, created_at="2026-08-11T02:00:00Z")
+        client = FakeActionsClient(
+            [writer, duplicate_wait],
+            pending={402: pending_authorization()},
+        )
+
+        result = reconcile(client)
+
+        self.assertEqual("retained", result.outcome)
+        self.assertEqual(writer["html_url"], result.retained_run_url)
+        self.assertEqual((duplicate_wait["html_url"],), result.cancelled_run_urls)
+        self.assertEqual(
+            [(f"/repos/{CONTROL_REPOSITORY}/actions/runs/402/cancel", None)],
+            client.posts,
+        )
+        self.assertNotIn(
+            f"/repos/{CONTROL_REPOSITORY}/actions/runs/401/pending_deployments",
+            client.gets,
+        )
+
+    def test_older_writer_that_may_be_approved_fails_closed(self) -> None:
+        prior_plan = copy.deepcopy(current_plan())
+        prior_plan["plan"] = "older-approved-plan"
+        comparison = {
+            "ahead_by": 2,
+            "base_commit": {"sha": OLDER_SHA},
+            "behind_by": 0,
+            "merge_base_commit": {"sha": OLDER_SHA},
+            "status": "ahead",
+        }
+        writer = workflow_run(451, source_sha=OLDER_SHA, status="queued")
+        client = FakeActionsClient(
+            [writer],
+            historical_plans={OLDER_SHA: prior_plan},
+            comparisons={f"{OLDER_SHA}...{CURRENT_SHA}": comparison},
+        )
+
+        with self.assertRaisesRegex(CurrentPlanPublicationError, "may have passed protected authorization"):
+            reconcile(client)
+        self.assertEqual([], client.posts)
+
+    def test_exact_repository_workflow_ref_source_and_plan_are_required(self) -> None:
+        tag, digest = plan_identity(current_plan())
+        valid = {
+            "plan_path": CURRENT_PLAN,
+            "repository": CONTROL_REPOSITORY,
+            "ref": AUTHORITY_REF,
+            "workflow": CURRENT_PLAN_WORKFLOW,
+            "source_sha": CURRENT_SHA,
+            "plan_tag": tag,
+            "plan_sha256": digest,
+            "observer_workflow_ref": OBSERVER_WORKFLOW_REF,
+        }
+        cases = (
+            ("repository", "outside/fork"),
+            ("ref", "feature"),
+            ("workflow", "other.yml"),
+            ("source_sha", "short"),
+            ("plan_tag", "release-plan/other"),
+            ("plan_sha256", "0" * 64),
+            ("observer_workflow_ref", OBSERVER_WORKFLOW_REF.replace("observer", "other")),
+        )
+        for field, value in cases:
+            client = FakeActionsClient([])
+            with (
+                self.subTest(field=field),
+                self.assertRaises(CurrentPlanPublicationError),
+            ):
+                reconcile_current_plan_dispatch(client, **{**valid, field: value})
+            self.assertEqual([], client.gets)
+            self.assertEqual([], client.posts)
+
+    def test_authority_ref_is_rechecked_before_any_mutation(self) -> None:
+        class MovingRefClient(FakeActionsClient):
+            def __init__(self) -> None:
+                super().__init__([workflow_run(501)], pending={501: pending_authorization()})
+                self.ref_reads = 0
+
+            def get(self, path: str) -> Any:
+                value = super().get(path)
+                if path.endswith(f"/git/ref/heads/{AUTHORITY_REF}"):
+                    self.ref_reads += 1
+                    if self.ref_reads == 2:
+                        value["object"]["sha"] = "c" * 40
+                return value
+
+        client = MovingRefClient()
+        with self.assertRaisesRegex(CurrentPlanPublicationError, "no longer resolves"):
+            reconcile(client)
+        self.assertEqual([], client.posts)
+
+    def test_authorization_is_rechecked_immediately_before_cancellation(self) -> None:
+        class ApprovalRaceClient(FakeActionsClient):
+            def __init__(self) -> None:
+                super().__init__([workflow_run(551)], pending={551: pending_authorization()})
+                self.pending_reads = 0
+
+            def get(self, path: str) -> Any:
+                if path.endswith("/actions/runs/551/pending_deployments"):
+                    self.pending_reads += 1
+                    if self.pending_reads == 2:
+                        self.gets.append(path)
+                        return []
+                return super().get(path)
+
+        current = workflow_run(550, created_at="2026-08-11T00:30:00Z")
+        client = ApprovalRaceClient()
+        client.runs.insert(0, current)
+        client.pending[550] = pending_authorization()
+
+        with self.assertRaisesRegex(CurrentPlanPublicationError, "no longer awaiting"):
+            reconcile(client)
+        self.assertEqual([], client.posts)
+
+    def test_observer_and_continuity_schedules_do_not_wait_on_protected_approval(self) -> None:
         current = yaml.safe_load(CURRENT_WORKFLOW.read_text(encoding="utf-8"))
         observer = yaml.safe_load(OBSERVER_WORKFLOW.read_text(encoding="utf-8"))
+        continuity = yaml.safe_load(CONTINUITY_WORKFLOW.read_text(encoding="utf-8"))
         approval = current["jobs"]["authorize"]
         writer = current["jobs"]["record"]
 
         self.assertNotIn("concurrency", current)
-        self.assertEqual("beta-authorization", approval["environment"])
+        self.assertEqual(BETA_AUTHORIZATION_ENVIRONMENT, approval["environment"])
         self.assertNotIn("concurrency", approval)
         self.assertEqual({"contents": "read"}, approval["permissions"])
-        approval_checkout = next(step for step in approval["steps"] if "actions/checkout" in step.get("uses", ""))
-        self.assertIs(approval_checkout["with"]["persist-credentials"], False)
-        self.assertEqual("${{ github.sha }}", approval_checkout["with"]["ref"])
         self.assertEqual("authorize", writer["needs"])
         self.assertIn("needs.authorize.result == 'success'", writer["if"])
         self.assertEqual(
@@ -60,62 +486,62 @@ class CurrentPlanPublicationTest(unittest.TestCase):
             {"group": PLAN_REGISTRY_GROUP, "cancel-in-progress": False},
             observer["concurrency"],
         )
+        self.assertNotEqual(PLAN_REGISTRY_GROUP, continuity["concurrency"]["group"])
         self.assertNotIn("write", observer["jobs"]["observe"]["permissions"].values())
-        self.assertEqual("record", observer["jobs"]["publish-current"]["needs"])
-        self.assertIn(
-            "needs.record.outputs.current-plan == 'true'",
-            observer["jobs"]["publish-current"]["if"],
+
+    def test_observer_wires_exact_candidate_outputs_to_bounded_reconciliation(self) -> None:
+        workflow = yaml.safe_load(OBSERVER_WORKFLOW.read_text(encoding="utf-8"))
+        record = workflow["jobs"]["record"]
+        publish = workflow["jobs"]["publish-current"]
+        step = publication_step()
+        checkout = next(item for item in publish["steps"] if "actions/checkout" in item.get("uses", ""))
+
+        self.assertEqual("${{ steps.aggregate.outputs.current-plan-tag }}", record["outputs"]["current-plan-tag"])
+        self.assertEqual(
+            "${{ steps.aggregate.outputs.current-plan-sha256 }}",
+            record["outputs"]["current-plan-sha256"],
         )
-
-        running: str | None = None
-        pending: str | None = None
-        superseded: list[str] = []
-
-        def schedule(name: str) -> None:
-            nonlocal running, pending
-            if running is None:
-                running = name
-                return
-            if pending is not None:
-                superseded.append(pending)
-            pending = name
-
-        # The protected approval is waiting but owns no concurrency group.
-        for observer_run in ("scheduled-observer-1", "scheduled-observer-2", "scheduled-observer-3"):
-            schedule(observer_run)
-
-        self.assertEqual("scheduled-observer-1", running)
-        self.assertEqual("scheduled-observer-3", pending)
-        self.assertEqual(["scheduled-observer-2"], superseded)
-        self.assertEqual(2, len({running, pending} - {None}))
-
-        running, pending = pending, None
-        self.assertEqual("scheduled-observer-3", running)
-        running = None
-        self.assertIsNone(running)
-        self.assertIsNone(pending)
+        self.assertEqual({"actions": "write", "contents": "read"}, publish["permissions"])
+        self.assertIs(checkout["with"]["persist-credentials"], False)
+        self.assertEqual("${{ github.sha }}", checkout["with"]["ref"])
+        self.assertEqual(
+            "release-plans/current.json\nscripts/current_plan_publication.py\n",
+            checkout["with"]["sparse-checkout"],
+        )
+        self.assertEqual(
+            {
+                "GH_TOKEN": "${{ github.token }}",
+                "CURRENT_PLAN_SHA256": "${{ needs.record.outputs.current-plan-sha256 }}",
+                "CURRENT_PLAN_TAG": "${{ needs.record.outputs.current-plan-tag }}",
+                "TARGET_REF": AUTHORITY_REF,
+                "TARGET_REPOSITORY": CONTROL_REPOSITORY,
+                "TARGET_WORKFLOW": CURRENT_PLAN_WORKFLOW,
+            },
+            step["env"],
+        )
+        self.assertIn("current_plan_publication.py reconcile-dispatch", step["run"])
+        self.assertIn('--observer-workflow-ref "$GITHUB_WORKFLOW_REF"', step["run"])
+        self.assertIn('--source-sha "$GITHUB_SHA"', step["run"])
+        self.assertIn('--plan-tag "$CURRENT_PLAN_TAG"', step["run"])
+        self.assertIn('--plan-sha256 "$CURRENT_PLAN_SHA256"', step["run"])
+        self.assertNotIn("gh workflow run", step["run"])
 
     def test_approved_writer_handoff_is_exact_and_retry_safe(self) -> None:
         identity = {
             "repository": CONTROL_REPOSITORY,
             "ref": f"refs/heads/{AUTHORITY_REF}",
             "workflow_ref": CURRENT_PLAN_WORKFLOW_REF,
-            "source_sha": "a" * 40,
+            "source_sha": "d" * 40,
             "run_id": 123456789,
             "producer_attempt": 1,
         }
         handoff = approved_writer_handoff(**identity)
         self.assertRegex(handoff, r"^[0-9a-f]{64}$")
-        self.assertEqual(handoff, approved_writer_handoff(**identity))
-        validate_approved_writer_handoff(
-            handoff,
-            **identity,
-            current_attempt=2,
-        )
+        validate_approved_writer_handoff(handoff, **identity, current_attempt=2)
 
         mismatches = (
             ({"handoff": "0" * 64}, "does not match"),
-            ({"source_sha": "b" * 40}, "does not match"),
+            ({"source_sha": "e" * 40}, "does not match"),
             ({"run_id": identity["run_id"] + 1}, "does not match"),
             ({"producer_attempt": 2, "current_attempt": 1}, "newer than"),
         )
@@ -123,38 +549,16 @@ class CurrentPlanPublicationTest(unittest.TestCase):
             arguments = {**identity, "handoff": handoff, "current_attempt": 2, **changes}
             with (
                 self.subTest(changes=changes),
-                self.assertRaisesRegex(
-                    CurrentPlanPublicationError,
-                    diagnostic,
-                ),
+                self.assertRaisesRegex(CurrentPlanPublicationError, diagnostic),
             ):
                 validate_approved_writer_handoff(**arguments)
 
-    def test_protected_runtime_identity_is_exact(self) -> None:
+    def test_protected_writer_runtime_identity_remains_exact(self) -> None:
         validate_runtime_identity(
             CONTROL_REPOSITORY,
             f"refs/heads/{AUTHORITY_REF}",
             CURRENT_PLAN_WORKFLOW_REF,
         )
-        current = yaml.safe_load(CURRENT_WORKFLOW.read_text(encoding="utf-8"))
-        validation = next(
-            step
-            for step in current["jobs"]["record"]["steps"]
-            if step.get("name") == "Validate aggregate current-plan publication authority"
-        )
-        self.assertIn("scripts/current_plan_publication.py validate-runtime", validation["run"])
-        self.assertIn('--repository "$GITHUB_REPOSITORY"', validation["run"])
-        self.assertIn('--ref "$GITHUB_REF"', validation["run"])
-        self.assertIn('--workflow-ref "$GITHUB_WORKFLOW_REF"', validation["run"])
-        self.assertIn("validate-approved-writer-handoff", validation["run"])
-        self.assertEqual(
-            {
-                "APPROVED_WRITER_HANDOFF": "${{ needs.authorize.outputs.handoff }}",
-                "APPROVAL_PRODUCER_ATTEMPT": "${{ needs.authorize.outputs.producer-attempt }}",
-            },
-            validation["env"],
-        )
-
         mismatches = (
             (None, f"refs/heads/{AUTHORITY_REF}", CURRENT_PLAN_WORKFLOW_REF),
             ("outside/fork", f"refs/heads/{AUTHORITY_REF}", CURRENT_PLAN_WORKFLOW_REF),
@@ -171,145 +575,6 @@ class CurrentPlanPublicationTest(unittest.TestCase):
                 self.assertRaises(CurrentPlanPublicationError),
             ):
                 validate_runtime_identity(repository, ref, workflow_ref)
-
-    def test_checkout_free_dispatch_targets_one_explicit_workflow(self) -> None:
-        step = publication_step()
-        self.assertEqual(
-            {
-                "GH_TOKEN": "${{ github.token }}",
-                "TARGET_REF": AUTHORITY_REF,
-                "TARGET_REPOSITORY": CONTROL_REPOSITORY,
-                "TARGET_WORKFLOW": CURRENT_PLAN_WORKFLOW,
-            },
-            step["env"],
-        )
-        workflow = yaml.safe_load(OBSERVER_WORKFLOW.read_text(encoding="utf-8"))
-        publish_job = workflow["jobs"]["publish-current"]
-        self.assertFalse(any("actions/checkout" in str(item.get("uses", "")) for item in publish_job["steps"]))
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            command_log = root / "gh-commands"
-            fake_bin = root / "bin"
-            fake_bin.mkdir()
-            gh = fake_bin / "gh"
-            gh.write_text(
-                '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$COMMAND_LOG"\n',
-                encoding="utf-8",
-            )
-            gh.chmod(gh.stat().st_mode | stat.S_IXUSR)
-            environment = {
-                **os.environ,
-                **step["env"],
-                "COMMAND_LOG": str(command_log),
-                "GITHUB_REF": f"refs/heads/{AUTHORITY_REF}",
-                "GITHUB_REPOSITORY": CONTROL_REPOSITORY,
-                "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
-            }
-
-            for _observation in range(2):
-                process = subprocess.run(
-                    ["bash", "-c", str(step["run"])],
-                    cwd=root,
-                    env=environment,
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                )
-                self.assertEqual(0, process.returncode, process.stderr)
-                self.assertFalse((root / ".git").exists())
-
-            self.assertEqual(
-                [
-                    (
-                        f"workflow run {CURRENT_PLAN_WORKFLOW} --repo "
-                        f"{CONTROL_REPOSITORY} --ref {AUTHORITY_REF}"
-                    ),
-                    (
-                        f"workflow run {CURRENT_PLAN_WORKFLOW} --repo "
-                        f"{CONTROL_REPOSITORY} --ref {AUTHORITY_REF}"
-                    ),
-                ],
-                command_log.read_text(encoding="utf-8").splitlines(),
-            )
-
-        current = CURRENT_WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("current-completion", current)
-        self.assertIn("steps.existing.outputs.status != 'existing'", current)
-
-    def test_missing_or_mismatched_runner_identity_never_invokes_gh(self) -> None:
-        step = publication_step()
-        cases = (
-            ({"GITHUB_REF": f"refs/heads/{AUTHORITY_REF}"}, "repository=<absent>"),
-            (
-                {
-                    "GITHUB_REPOSITORY": "outside/fork",
-                    "GITHUB_REF": f"refs/heads/{AUTHORITY_REF}",
-                },
-                "repository=outside/fork",
-            ),
-            (
-                {"GITHUB_REPOSITORY": CONTROL_REPOSITORY, "GITHUB_REF": "refs/heads/feature"},
-                "ref=refs/heads/feature",
-            ),
-        )
-        for identity, diagnostic in cases:
-            with self.subTest(identity=identity), tempfile.TemporaryDirectory() as directory:
-                environment = {**os.environ, **step["env"], **identity, "PATH": directory}
-                if "GITHUB_REPOSITORY" not in identity:
-                    environment.pop("GITHUB_REPOSITORY", None)
-                process = subprocess.run(
-                    ["/bin/bash", "-c", str(step["run"])],
-                    cwd=directory,
-                    env=environment,
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                )
-                self.assertEqual(1, process.returncode)
-                self.assertIn(diagnostic, process.stderr)
-                self.assertIn(f"expected repository={CONTROL_REPOSITORY}", process.stderr)
-                self.assertIn(f"workflow={CURRENT_PLAN_WORKFLOW}", process.stderr)
-                self.assertIn(f"ref={AUTHORITY_REF}", process.stderr)
-
-    def test_dispatch_failure_is_bounded_actionable_and_redacts_tokens(self) -> None:
-        step = publication_step()
-        secret = "github_pat_sensitive_value"
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            fake_bin = root / "bin"
-            fake_bin.mkdir()
-            gh = fake_bin / "gh"
-            gh.write_text(
-                '#!/usr/bin/env bash\nprintf \'dispatch rejected for token %s\n\' "$GH_TOKEN" >&2\nexit 7\n',
-                encoding="utf-8",
-            )
-            gh.chmod(gh.stat().st_mode | stat.S_IXUSR)
-            environment = {
-                **os.environ,
-                **step["env"],
-                "GH_TOKEN": secret,
-                "GITHUB_REF": f"refs/heads/{AUTHORITY_REF}",
-                "GITHUB_REPOSITORY": CONTROL_REPOSITORY,
-                "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
-            }
-            process = subprocess.run(
-                ["bash", "-c", str(step["run"])],
-                cwd=root,
-                env=environment,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-
-        self.assertEqual(1, process.returncode)
-        self.assertIn(f"repository={CONTROL_REPOSITORY}", process.stderr)
-        self.assertIn(f"workflow={CURRENT_PLAN_WORKFLOW}", process.stderr)
-        self.assertIn(f"ref={AUTHORITY_REF}", process.stderr)
-        self.assertIn("dispatch rejected", process.stderr)
-        self.assertIn("<redacted>", process.stderr)
-        self.assertNotIn(secret, process.stderr)
-        self.assertLess(len(process.stderr), 2300)
 
 
 if __name__ == "__main__":

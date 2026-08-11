@@ -157,6 +157,8 @@ jobs:
       contents: write
     outputs:
       current-plan: ${{ steps.aggregate.outputs.current }}
+      current-plan-sha256: ${{ steps.aggregate.outputs.current-plan-sha256 }}
+      current-plan-tag: ${{ steps.aggregate.outputs.current-plan-tag }}
     steps:
       - name: Check out a fresh qualified control plane
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
@@ -353,19 +355,24 @@ jobs:
 
       - name: Classify whether the completed plan is current
         id: aggregate
+        env:
+          OBSERVED_PLAN_SHA256: ${{ needs.observe.outputs.plan-sha256 }}
+          OBSERVED_PLAN_TAG: ${{ needs.observe.outputs.plan-tag }}
         run: |
           set -euo pipefail
           if cmp --silent \
             validated-observation/release-plan.json \
             release-plans/current.json; then
             echo "current=true" >> "$GITHUB_OUTPUT"
+            echo "current-plan-sha256=$OBSERVED_PLAN_SHA256" >> "$GITHUB_OUTPUT"
+            echo "current-plan-tag=$OBSERVED_PLAN_TAG" >> "$GITHUB_OUTPUT"
           else
             echo "current=false" >> "$GITHUB_OUTPUT"
             echo "Completed plan is not the declared current product train."
           fi
 
   publish-current:
-    name: Queue aggregate publication after current-plan completion
+    name: Reconcile aggregate publication after current-plan completion
     needs: record
     if: >-
       success() &&
@@ -378,43 +385,33 @@ jobs:
       actions: write
       contents: read
     steps:
+      - name: Check out the exact protected coalescing controller
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          sparse-checkout: |
+            release-plans/current.json
+            scripts/current_plan_publication.py
+
       - name: Publish the matching aggregate current authority
+        id: publication
         env:
           GH_TOKEN: ${{ github.token }}
+          CURRENT_PLAN_SHA256: ${{ needs.record.outputs.current-plan-sha256 }}
+          CURRENT_PLAN_TAG: ${{ needs.record.outputs.current-plan-tag }}
           TARGET_REF: main
           TARGET_REPOSITORY: durable-workflow/.github
           TARGET_WORKFLOW: current-release-plan.yml
         run: |
           set -euo pipefail
-          expected_runtime_ref="refs/heads/$TARGET_REF"
-          if [ "${GITHUB_REPOSITORY:-}" != "$TARGET_REPOSITORY" ]; then
-            printf '::error::Aggregate publication authority mismatch: repository=%s; expected repository=%s workflow=%s ref=%s\n' \
-              "${GITHUB_REPOSITORY:-<absent>}" "$TARGET_REPOSITORY" "$TARGET_WORKFLOW" "$TARGET_REF" >&2
-            exit 1
-          fi
-          if [ "${GITHUB_REF:-}" != "$expected_runtime_ref" ]; then
-            printf '::error::Aggregate publication authority mismatch: ref=%s; expected repository=%s workflow=%s ref=%s\n' \
-              "${GITHUB_REF:-<absent>}" "$TARGET_REPOSITORY" "$TARGET_WORKFLOW" "$TARGET_REF" >&2
-            exit 1
-          fi
-
-          dispatch_error_file="$(mktemp)"
-          trap 'rm -f "$dispatch_error_file"' EXIT
-          if ! gh workflow run "$TARGET_WORKFLOW" \
-            --repo "$TARGET_REPOSITORY" --ref "$TARGET_REF" 2>"$dispatch_error_file"; then
-            diagnostic="$(head -c 2048 "$dispatch_error_file" | tr '\r\n' '  ')"
-            if [ -n "${GH_TOKEN:-}" ]; then
-              diagnostic="${diagnostic//"$GH_TOKEN"/<redacted>}"
-            fi
-            if [ -n "${GITHUB_TOKEN:-}" ]; then
-              diagnostic="${diagnostic//"$GITHUB_TOKEN"/<redacted>}"
-            fi
-            if [ -z "$diagnostic" ]; then
-              diagnostic="GitHub CLI returned no diagnostic"
-            fi
-            printf '::error::Failed to dispatch repository=%s workflow=%s ref=%s: %s\n' \
-              "$TARGET_REPOSITORY" "$TARGET_WORKFLOW" "$TARGET_REF" "$diagnostic" >&2
-            exit 1
-          fi
-          printf 'Queued repository=%s workflow=%s ref=%s\n' \
-            "$TARGET_REPOSITORY" "$TARGET_WORKFLOW" "$TARGET_REF"
+          python scripts/current_plan_publication.py reconcile-dispatch \
+            --plan release-plans/current.json \
+            --repository "$TARGET_REPOSITORY" \
+            --workflow "$TARGET_WORKFLOW" \
+            --ref "$TARGET_REF" \
+            --observer-workflow-ref "$GITHUB_WORKFLOW_REF" \
+            --source-sha "$GITHUB_SHA" \
+            --plan-tag "$CURRENT_PLAN_TAG" \
+            --plan-sha256 "$CURRENT_PLAN_SHA256" \
+            --github-output "$GITHUB_OUTPUT"

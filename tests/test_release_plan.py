@@ -496,8 +496,10 @@ class ReleasePlanEntryPointTest(unittest.TestCase):
             for step in publish_current["steps"]
             if step.get("name") == "Publish the matching aggregate current authority"
         )
-        self.assertIn('gh workflow run "$TARGET_WORKFLOW"', publish["run"])
-        self.assertIn('--repo "$TARGET_REPOSITORY" --ref "$TARGET_REF"', publish["run"])
+        self.assertIn("current_plan_publication.py reconcile-dispatch", publish["run"])
+        self.assertIn('--repository "$TARGET_REPOSITORY"', publish["run"])
+        self.assertIn('--workflow "$TARGET_WORKFLOW"', publish["run"])
+        self.assertIn('--ref "$TARGET_REF"', publish["run"])
         self.assertEqual("record", publish_current["needs"])
         self.assertIn("success()", publish_current["if"])
         self.assertIn("needs.record.outputs.current-plan == 'true'", publish_current["if"])
