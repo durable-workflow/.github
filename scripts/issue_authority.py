@@ -30,8 +30,8 @@ from scripts.beta_candidate import COMPONENTS
 
 POLICY_SCHEMA = "durable-workflow.github-issue-authority/v1"
 BACKLOG_SCHEMA = "durable-workflow.github-beta-backlog/v1"
-INTAKE_SCHEMA = "durable-workflow.github-issue-intake/v8"
-LEGACY_TARGET_SCHEMA = "durable-workflow.legacy-cross-repository-targets/v3"
+INTAKE_SCHEMA = "durable-workflow.github-issue-intake/v9"
+LEGACY_TARGET_SCHEMA = "durable-workflow.legacy-cross-repository-targets/v4"
 MARKER_PATTERN = re.compile(r"<!-- beta-work-id: ([a-z0-9][a-z0-9-]{2,79}) -->")
 WORK_MARKER_PATTERN = re.compile(r"<!-- durable-workflow-work-id: ([a-z0-9][a-z0-9-]{2,79}) -->")
 LEGACY_TARGET_HEADING = "### Affected public repositories"
@@ -449,6 +449,33 @@ def load_legacy_cross_repository_targets(
         except cross_repository_lifecycle.LifecycleError as error:
             raise AuthorityError(str(error)) from error
 
+    immutable_identities: set[tuple[str, int]] = set()
+    for binding in migration["immutable_issue_targets"]:
+        repository = binding["repository"]
+        identity = (repository, binding["number"])
+        if repository not in target_map:
+            raise AuthorityError(
+                f"immutable issue target binding names unqualified source repository {repository}"
+            )
+        if identity in immutable_identities:
+            raise AuthorityError(
+                f"immutable issue target binding repeats {repository}#{binding['number']}"
+            )
+        immutable_identities.add(identity)
+        try:
+            bound_targets = cross_repository_lifecycle.declared_targets(
+                f"{cross_repository_lifecycle.TARGET_HEADING}\n\n" + "\n".join(binding["targets"]),
+                target_map,
+                organization="durable-workflow",
+                required=True,
+            )
+        except cross_repository_lifecycle.LifecycleError as error:
+            raise AuthorityError(str(error)) from error
+        if repository not in {target["repository"] for target in bound_targets}:
+            raise AuthorityError(
+                f"immutable issue target binding for {repository}#{binding['number']} omits its source repository"
+            )
+
     completed_identities: set[tuple[str, int]] = set()
     for completion in migration["historical_completions"]:
         if completion["repository"] not in target_map:
@@ -834,6 +861,7 @@ def _manifest_core(manifest: Mapping[str, Any]) -> dict[str, Any]:
             "policy_digest",
             "legacy_target_migration_digest",
             "issues",
+            "rejected_issues",
         )
     }
 
@@ -1241,6 +1269,36 @@ def _legacy_migrated_targets(
     return _legacy_form_targets(body, targets, organization=organization)
 
 
+def _immutable_issue_targets(
+    source_repository: str,
+    issue: Mapping[str, Any],
+    migration: Mapping[str, Any] | None,
+    targets: Mapping[str, Mapping[str, Any]],
+    *,
+    organization: str,
+) -> list[dict[str, Any]]:
+    if migration is None:
+        return []
+    matches = [
+        binding
+        for binding in migration["immutable_issue_targets"]
+        if binding["repository"] == source_repository and binding["number"] == issue.get("number")
+    ]
+    if not matches:
+        return []
+    if len(matches) != 1:
+        raise AuthorityError("cross-repository issue matches multiple immutable target bindings")
+    try:
+        return cross_repository_lifecycle.declared_targets(
+            f"{cross_repository_lifecycle.TARGET_HEADING}\n\n" + "\n".join(matches[0]["targets"]),
+            targets,
+            organization=organization,
+            required=True,
+        )
+    except cross_repository_lifecycle.LifecycleError as error:
+        raise AuthorityError(str(error)) from error
+
+
 def _legacy_revision_is_eligible(
     issue: Mapping[str, Any],
     timeline: Sequence[Mapping[str, Any]],
@@ -1296,6 +1354,7 @@ def _legacy_historical_completion(
 
 
 def _issue_cross_repository_targets(
+    source_repository: str,
     issue: Mapping[str, Any],
     timeline: Sequence[Mapping[str, Any]],
     assessment: Mapping[str, Any],
@@ -1306,6 +1365,13 @@ def _issue_cross_repository_targets(
 ) -> list[dict[str, Any]]:
     labels = _intake_label_names(issue)
     is_cross_repository = "kind:cross-repository" in labels
+    immutable_targets = _immutable_issue_targets(
+        source_repository,
+        issue,
+        migration,
+        targets,
+        organization=organization,
+    )
     try:
         declared = cross_repository_lifecycle.declared_targets(
             str(issue["body"]),
@@ -1315,11 +1381,19 @@ def _issue_cross_repository_targets(
     except cross_repository_lifecycle.LifecycleError as error:
         raise AuthorityError(f"GitHub issue {issue['number']}: {error}") from error
     if declared:
+        if immutable_targets:
+            if declared != immutable_targets:
+                raise AuthorityError(
+                    f"GitHub issue {issue['number']}: declared source targets differ from its immutable target binding"
+                )
+            return declared
         if not is_cross_repository:
             raise AuthorityError(
                 f"GitHub issue {issue['number']} declares multiple source targets without cross-repository authority"
             )
         return declared
+    if immutable_targets:
+        return immutable_targets
     if not is_cross_repository:
         return []
     migrated = _legacy_migrated_targets(
@@ -1335,6 +1409,23 @@ def _issue_cross_repository_targets(
     raise AuthorityError(
         f"GitHub issue {issue['number']}: cross-repository authority must declare its required source targets"
     )
+
+
+def _target_rejection(
+    repository: str,
+    number: int,
+    assessment: Mapping[str, Any],
+    error: AuthorityError,
+) -> dict[str, Any]:
+    return {
+        "approval_actor": assessment["approval_actor"],
+        "approval_at": assessment["approval_at"],
+        "approval_mode": assessment["approval_mode"],
+        "number": number,
+        "reason": str(error),
+        "repository": repository,
+        "revision": assessment["revision"],
+    }
 
 
 def reconstruct_intake(
@@ -1359,6 +1450,7 @@ def reconstruct_intake(
         else {}
     )
     records: list[dict[str, Any]] = []
+    rejected_records: list[dict[str, Any]] = []
     inventory: dict[str, list[dict[str, Any]]] = {repository: [] for repository in policy["repositories"]}
     trigger_assessment: dict[str, Any] | None = None
     for repository in policy["repositories"]:
@@ -1409,23 +1501,30 @@ def reconstruct_intake(
                 trigger_assessment = dict(assessment)
             if not assessment["approved"]:
                 continue
+            try:
+                cross_repository_targets = _issue_cross_repository_targets(
+                    repository,
+                    issue,
+                    timeline,
+                    assessment,
+                    lifecycle_targets,
+                    legacy_cross_repository_targets,
+                    organization=policy["organization"],
+                )
+                historical_completion = _legacy_historical_completion(
+                    repository,
+                    issue,
+                    timeline,
+                    assessment,
+                    cross_repository_targets,
+                    legacy_cross_repository_targets,
+                )
+            except AuthorityError as error:
+                rejected_records.append(_target_rejection(repository, number, assessment, error))
+                if is_trigger:
+                    trigger_assessment = {"approved": False, "reason": "source-targets-invalid"}
+                continue
             inventory[repository].append(issue)
-            cross_repository_targets = _issue_cross_repository_targets(
-                issue,
-                timeline,
-                assessment,
-                lifecycle_targets,
-                legacy_cross_repository_targets,
-                organization=policy["organization"],
-            )
-            historical_completion = _legacy_historical_completion(
-                repository,
-                issue,
-                timeline,
-                assessment,
-                cross_repository_targets,
-                legacy_cross_repository_targets,
-            )
             records.append(
                 {
                     "approval_actor": assessment["approval_actor"],
@@ -1454,6 +1553,7 @@ def reconstruct_intake(
         "policy_digest": _object_digest(policy),
         "legacy_target_migration_digest": _object_digest(legacy_cross_repository_targets or {}),
         "issues": records,
+        "rejected_issues": rejected_records,
     }
     if trigger_repository is not None or trigger_number is not None:
         approved = bool(trigger_assessment and trigger_assessment["approved"])
@@ -1618,8 +1718,9 @@ def verify_intake_manifest(
         raise AuthorityError("vetted issue revisions changed after read-only discovery")
 
     records = manifest.get("issues")
-    if not isinstance(records, list):
-        raise AuthorityError("issue-intake manifest has no issue record list")
+    rejected_records = manifest.get("rejected_issues")
+    if not isinstance(records, list) or not isinstance(rejected_records, list):
+        raise AuthorityError("issue-intake manifest has no complete issue record lists")
 
     record_keys = {
         "approval_actor",
@@ -1636,6 +1737,11 @@ def verify_intake_manifest(
     inventory: dict[str, list[dict[str, Any]]] = {repository: [] for repository in policy["repositories"]}
     identities: set[tuple[str, int]] = set()
     intake_policy = policy["intake"]
+    lifecycle_targets = (
+        cross_repository_lifecycle.qualification_targets(target_qualification)
+        if target_qualification is not None
+        else {}
+    )
     current_records: list[dict[str, Any]] = []
     for record in records:
         if not isinstance(record, Mapping) or set(record) != record_keys:
@@ -1670,14 +1776,11 @@ def verify_intake_manifest(
         if not assessment["approved"]:
             raise AuthorityError("vetted issue revisions changed after read-only discovery")
         expected_targets = _issue_cross_repository_targets(
+            repository,
             issue,
             timeline,
             assessment,
-            (
-                cross_repository_lifecycle.qualification_targets(target_qualification)
-                if target_qualification is not None
-                else {}
-            ),
+            lifecycle_targets,
             legacy_cross_repository_targets,
             organization=policy["organization"],
         )
@@ -1703,6 +1806,70 @@ def verify_intake_manifest(
         }
         current_records.append(current)
         inventory[repository].append(issue)
+
+    rejection_keys = {
+        "approval_actor",
+        "approval_at",
+        "approval_mode",
+        "number",
+        "reason",
+        "repository",
+        "revision",
+    }
+    current_rejections: list[dict[str, Any]] = []
+    for rejection in rejected_records:
+        if not isinstance(rejection, Mapping) or set(rejection) != rejection_keys:
+            raise AuthorityError("issue-intake manifest contains a malformed rejected issue record")
+        repository = rejection.get("repository")
+        number = rejection.get("number")
+        if (
+            not isinstance(repository, str)
+            or repository not in inventory
+            or type(number) is not int
+            or number < 1
+            or not isinstance(rejection.get("reason"), str)
+            or not rejection["reason"]
+        ):
+            raise AuthorityError("issue-intake manifest contains invalid rejected issue authority")
+        identity = (repository, number)
+        if identity in identities:
+            raise AuthorityError("issue-intake manifest contains a duplicate issue identity")
+        identities.add(identity)
+
+        issue, timeline = client.get_issue(policy["organization"], repository, number)
+        assessment = assess_issue_intake(
+            issue,
+            timeline,
+            approval_label=intake_policy["approval_label"],
+            trusted_actors=intake_policy["trusted_actors"],
+        )
+        if not assessment["approved"]:
+            raise AuthorityError("vetted issue revisions changed after read-only discovery")
+        try:
+            expected_targets = _issue_cross_repository_targets(
+                repository,
+                issue,
+                timeline,
+                assessment,
+                lifecycle_targets,
+                legacy_cross_repository_targets,
+                organization=policy["organization"],
+            )
+            _legacy_historical_completion(
+                repository,
+                issue,
+                timeline,
+                assessment,
+                expected_targets,
+                legacy_cross_repository_targets,
+            )
+        except AuthorityError as error:
+            current_rejections.append(_target_rejection(repository, number, assessment, error))
+        else:
+            raise AuthorityError("vetted issue revisions changed after read-only discovery")
+
+    if [dict(rejection) for rejection in rejected_records] != current_rejections:
+        raise AuthorityError("vetted issue revisions changed after read-only discovery")
 
     _bind_prerelease_supersessions(policy, current_records, inventory, client)
     if [dict(record) for record in records] != current_records:
@@ -3133,6 +3300,12 @@ def main(argv: list[str] | None = None) -> int:
                 trigger_actor=arguments.trigger_actor,
                 trigger_label=arguments.trigger_label,
             )
+            for rejection in manifest["rejected_issues"]:
+                print(
+                    f"issue authority isolated {rejection['repository']}#{rejection['number']}: "
+                    f"{rejection['reason']}",
+                    file=sys.stderr,
+                )
             _write_evidence(arguments.output, manifest)
             _write_discovery_outputs(arguments.github_output, manifest)
             return 0

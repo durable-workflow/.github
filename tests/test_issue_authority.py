@@ -794,8 +794,21 @@ class ContractValidationTest(unittest.TestCase):
             qualification_fixture(),
         )
 
-        self.assertEqual("durable-workflow.legacy-cross-repository-targets/v3", migration["schema"])
+        self.assertEqual("durable-workflow.legacy-cross-repository-targets/v4", migration["schema"])
         self.assertTrue(migration["authorities"])
+        self.assertEqual(
+            [
+                {
+                    "number": 32,
+                    "repository": "sdk-python",
+                    "targets": [
+                        "durable-workflow/durable-workflow.github.io@main",
+                        "durable-workflow/sdk-python@main",
+                    ],
+                }
+            ],
+            migration["immutable_issue_targets"],
+        )
         self.assertEqual(
             {2, 26, 32, 33, 35, 36, 37, 38, 39, 41, 46, 48},
             {completion["number"] for completion in migration["historical_completions"]},
@@ -1926,26 +1939,178 @@ class IssueIntakeTest(unittest.TestCase):
                 )
                 discovery = FakeDiscovery(policy, {".github": [(issue, [])]})
 
-                with self.assertRaisesRegex(AuthorityError, message):
-                    reconstruct_intake(
-                        policy,
-                        discovery,
-                        target_qualification=qualification,
-                    )
+                manifest, inventory = reconstruct_intake(
+                    policy,
+                    discovery,
+                    target_qualification=qualification,
+                )
+
+                self.assertEqual([], manifest["issues"])
+                self.assertRegex(manifest["rejected_issues"][0]["reason"], message)
+                self.assertEqual([], inventory[".github"])
+
+    def test_malformed_target_record_is_reported_without_suppressing_valid_intake(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
+        malformed = intake_issue(
+            author="rmcdaniel",
+            labels=["kind:cross-repository"],
+        )
+        valid = intake_issue(
+            author="durable-workflow-ops",
+            body="Independent valid authority.",
+            number=2,
+        )
+        issues = {".github": [(malformed, []), (valid, [])]}
+
+        manifest, inventory = reconstruct_intake(
+            policy,
+            FakeDiscovery(policy, issues),
+            target_qualification=qualification_fixture(),
+            trigger_repository=".github",
+            trigger_number=2,
+            trigger_action="closed",
+        )
+
+        self.assertTrue(manifest["trigger"]["approved"])
+        self.assertEqual([2], [record["number"] for record in manifest["issues"]])
+        self.assertEqual([1], [record["number"] for record in manifest["rejected_issues"]])
+        self.assertIn("must declare its required source targets", manifest["rejected_issues"][0]["reason"])
+        self.assertEqual([valid], inventory[".github"])
+        self.assertEqual(
+            inventory,
+            verify_intake_manifest(
+                policy,
+                manifest,
+                FakeDiscovery(policy, issues),
+                target_qualification=qualification_fixture(),
+            ),
+        )
+
+        affected, _inventory = reconstruct_intake(
+            policy,
+            FakeDiscovery(policy, issues),
+            target_qualification=qualification_fixture(),
+            trigger_repository=".github",
+            trigger_number=1,
+            trigger_action="labeled",
+            trigger_actor="rmcdaniel",
+            trigger_label="kind:cross-repository",
+        )
+
+        self.assertFalse(affected["trigger"]["approved"])
+        self.assertEqual("source-targets-invalid", affected["trigger"]["reason"])
+        self.assertEqual([2], [record["number"] for record in affected["issues"]])
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "github-output"
+            _write_discovery_outputs(output, affected)
+            self.assertEqual(
+                ["intake_ready=true", "trigger_approved=false"],
+                output.read_text(encoding="utf-8").splitlines(),
+            )
+
+    def test_exact_python_and_documentation_targets_are_immutably_bound(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
+        issue = intake_issue(
+            author="rmcdaniel",
+            body="Approved package and quickstart authority.",
+            labels=["kind:release-blocker"],
+            number=32,
+        )
+        issues = {"sdk-python": [(issue, [])]}
+
+        manifest, inventory = reconstruct_intake(
+            policy,
+            FakeDiscovery(policy, issues),
+            target_qualification=qualification_fixture(),
+            legacy_cross_repository_targets=legacy_target_fixture(),
+        )
+
+        self.assertEqual([], manifest["rejected_issues"])
+        self.assertEqual(
+            ["durable-workflow.github.io", "sdk-python"],
+            [target["repository"] for target in manifest["issues"][0]["cross_repository_targets"]],
+        )
+        self.assertEqual(
+            inventory,
+            verify_intake_manifest(
+                policy,
+                manifest,
+                FakeDiscovery(policy, issues),
+                target_qualification=qualification_fixture(),
+                legacy_cross_repository_targets=legacy_target_fixture(),
+            ),
+        )
+
+    def test_immutable_issue_binding_rejects_forged_and_changed_target_declarations(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
+        issue = intake_issue(
+            author="rmcdaniel",
+            body="Approved package and quickstart authority.",
+            labels=["kind:release-blocker"],
+            number=32,
+        )
+        manifest, _inventory = reconstruct_intake(
+            policy,
+            FakeDiscovery(policy, {"sdk-python": [(issue, [])]}),
+            target_qualification=qualification_fixture(),
+            legacy_cross_repository_targets=legacy_target_fixture(),
+        )
+        changed = copy.deepcopy(issue)
+        changed["body"] = (
+            "### Required source targets\n\n"
+            "durable-workflow/durable-workflow.github.io@main\n"
+            "durable-workflow/sdk-python@main\n"
+            "durable-workflow/workflow@v2"
+        )
+        changed["last_edited_at"] = "2026-07-21T10:02:00Z"
+        changed["labels"].append({"name": "intake:approved"})
+        timeline = [label_event("rmcdaniel", "2026-07-21T10:03:00Z")]
+
+        forged, _inventory = reconstruct_intake(
+            policy,
+            FakeDiscovery(policy, {"sdk-python": [(changed, timeline)]}),
+            target_qualification=qualification_fixture(),
+            legacy_cross_repository_targets=legacy_target_fixture(),
+        )
+
+        self.assertEqual([], forged["issues"])
+        self.assertIn("differ from its immutable target binding", forged["rejected_issues"][0]["reason"])
+        with self.assertRaisesRegex(AuthorityError, "differ from its immutable target binding"):
+            verify_intake_manifest(
+                policy,
+                manifest,
+                FakeDiscovery(policy, {"sdk-python": [(changed, timeline)]}),
+                target_qualification=qualification_fixture(),
+                legacy_cross_repository_targets=legacy_target_fixture(),
+            )
+
+        changed_binding = legacy_target_fixture()
+        changed_binding["immutable_issue_targets"][0]["targets"].append("durable-workflow/workflow@v2")
+        with self.assertRaisesRegex(AuthorityError, "changed after read-only discovery"):
+            verify_intake_manifest(
+                policy,
+                manifest,
+                FakeDiscovery(policy, {"sdk-python": [(issue, [])]}),
+                target_qualification=qualification_fixture(),
+                legacy_cross_repository_targets=changed_binding,
+            )
 
     def test_non_cross_repository_intake_rejects_multiple_targets(self) -> None:
         policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
         issue = intake_issue(
             author="rmcdaniel",
             body=("### Required source targets\n\ndurable-workflow/.github@main\ndurable-workflow/workflow@v2"),
+            labels=["kind:release-blocker"],
         )
 
-        with self.assertRaisesRegex(AuthorityError, "without cross-repository authority"):
-            reconstruct_intake(
-                policy,
-                FakeDiscovery(policy, {".github": [(issue, [])]}),
-                target_qualification=qualification_fixture(),
-            )
+        manifest, _inventory = reconstruct_intake(
+            policy,
+            FakeDiscovery(policy, {".github": [(issue, [])]}),
+            target_qualification=qualification_fixture(),
+        )
+
+        self.assertEqual([], manifest["issues"])
+        self.assertIn("without cross-repository authority", manifest["rejected_issues"][0]["reason"])
 
     def test_legacy_cross_repository_authority_requires_edit_and_reapproval(self) -> None:
         policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
@@ -1954,12 +2119,14 @@ class IssueIntakeTest(unittest.TestCase):
             labels=["kind:cross-repository"],
         )
 
-        with self.assertRaisesRegex(AuthorityError, "must declare its required source targets"):
-            reconstruct_intake(
-                policy,
-                FakeDiscovery(policy, {".github": [(legacy, [])]}),
-                target_qualification=qualification_fixture(),
-            )
+        rejected, _inventory = reconstruct_intake(
+            policy,
+            FakeDiscovery(policy, {".github": [(legacy, [])]}),
+            target_qualification=qualification_fixture(),
+        )
+
+        self.assertEqual([], rejected["issues"])
+        self.assertIn("must declare its required source targets", rejected["rejected_issues"][0]["reason"])
 
         migrated = intake_issue(
             author="rmcdaniel",
@@ -2216,15 +2383,18 @@ class IssueIntakeTest(unittest.TestCase):
         )
 
         for name, (issue, timeline) in cases.items():
-            with (
-                self.subTest(name=name),
-                self.assertRaisesRegex(AuthorityError, "must declare its required source targets"),
-            ):
-                reconstruct_intake(
+            with self.subTest(name=name):
+                manifest, _inventory = reconstruct_intake(
                     policy,
                     FakeDiscovery(policy, {".github": [(issue, timeline)]}),
                     target_qualification=qualification_fixture(),
                     legacy_cross_repository_targets=legacy_target_fixture(),
+                )
+
+                self.assertEqual([], manifest["issues"])
+                self.assertIn(
+                    "must declare its required source targets",
+                    manifest["rejected_issues"][0]["reason"],
                 )
 
     def test_manifest_revalidation_rejects_cross_repository_label_without_targets(self) -> None:

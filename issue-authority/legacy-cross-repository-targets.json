@@ -387,6 +387,16 @@
       ]
     }
   ],
+  "immutable_issue_targets": [
+    {
+      "number": 32,
+      "repository": "sdk-python",
+      "targets": [
+        "durable-workflow/durable-workflow.github.io@main",
+        "durable-workflow/sdk-python@main"
+      ]
+    }
+  ],
   "protected_branch_landings": [
     {
       "branch": "main",
@@ -472,5 +482,5 @@
     }
   ],
   "created_before": "2026-07-25T00:01:08Z",
-  "schema": "durable-workflow.legacy-cross-repository-targets/v3"
+  "schema": "durable-workflow.legacy-cross-repository-targets/v4"
 }

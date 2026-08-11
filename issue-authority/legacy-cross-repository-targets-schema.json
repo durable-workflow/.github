@@ -81,6 +81,39 @@
       "minItems": 1,
       "type": "array"
     },
+    "immutable_issue_targets": {
+      "description": "Reviewed source-target bindings keyed by exact public issue identity. Issue text may explain but cannot override these targets.",
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "number": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "repository": {
+            "pattern": "^[a-z0-9_.-]+$",
+            "type": "string"
+          },
+          "targets": {
+            "items": {
+              "pattern": "^durable-workflow/[a-z0-9_.-]+@(main|v2)$",
+              "type": "string"
+            },
+            "minItems": 2,
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "repository",
+          "number",
+          "targets"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
     "protected_branch_landings": {
       "items": {
         "additionalProperties": false,
@@ -121,13 +154,14 @@
       "type": "array"
     },
     "schema": {
-      "const": "durable-workflow.legacy-cross-repository-targets/v3"
+      "const": "durable-workflow.legacy-cross-repository-targets/v4"
     }
   },
   "required": [
     "schema",
     "created_before",
     "authorities",
+    "immutable_issue_targets",
     "historical_completions",
     "protected_branch_landings"
   ],
