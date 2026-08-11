@@ -104,28 +104,38 @@ class FakeActionsClient:
         pending: dict[int, Any] | None = None,
         historical_plans: dict[str, dict[str, Any]] | None = None,
         comparisons: dict[str, Any] | None = None,
+        workflow_metadata: dict[str, Any] | None = None,
     ) -> None:
         self.runs = runs
         self.current_sha = current_sha
         self.pending = pending or {}
         self.historical_plans = historical_plans or {}
         self.comparisons = comparisons or {}
+        self.workflow_metadata = (
+            workflow_metadata
+            if workflow_metadata is not None
+            else {
+                "html_url": (
+                    f"https://github.com/{CONTROL_REPOSITORY}/blob/{AUTHORITY_REF}/"
+                    f"{CURRENT_PLAN_WORKFLOW_PATH}"
+                ),
+                "id": WORKFLOW_ID,
+                "name": "Current release plan",
+                "path": CURRENT_PLAN_WORKFLOW_PATH,
+                "state": "active",
+                "url": (
+                    f"https://api.github.com/repos/{CONTROL_REPOSITORY}/actions/workflows/"
+                    f"{WORKFLOW_ID}"
+                ),
+            }
+        )
         self.posts: list[tuple[str, Any | None]] = []
         self.gets: list[str] = []
 
     def get(self, path: str) -> Any:
         self.gets.append(path)
         if path == f"/repos/{CONTROL_REPOSITORY}/actions/workflows/{CURRENT_PLAN_WORKFLOW}":
-            return {
-                "html_url": (
-                    f"https://github.com/{CONTROL_REPOSITORY}/actions/workflows/"
-                    f"{CURRENT_PLAN_WORKFLOW}"
-                ),
-                "id": WORKFLOW_ID,
-                "name": "Current release plan",
-                "path": CURRENT_PLAN_WORKFLOW_PATH,
-                "state": "active",
-            }
+            return self.workflow_metadata
         if path == f"/repos/{CONTROL_REPOSITORY}/git/ref/heads/{AUTHORITY_REF}":
             return {
                 "object": {"sha": self.current_sha, "type": "commit"},
@@ -223,6 +233,34 @@ class CurrentPlanPublicationTest(unittest.TestCase):
             reconcile(client)
 
         self.assertEqual([], client.posts)
+
+    def test_workflow_metadata_requires_exact_api_and_ref_identity(self) -> None:
+        metadata = FakeActionsClient([]).workflow_metadata
+        cases = (
+            (
+                "mismatched workflow ref",
+                {
+                    **metadata,
+                    "html_url": metadata["html_url"].replace("/blob/main/", "/blob/feature/"),
+                },
+            ),
+            (
+                "mismatched API workflow",
+                {
+                    **metadata,
+                    "url": metadata["url"].replace(str(WORKFLOW_ID), str(WORKFLOW_ID + 1)),
+                },
+            ),
+        )
+
+        for label, mismatched in cases:
+            client = FakeActionsClient([], workflow_metadata=mismatched)
+            with (
+                self.subTest(label=label),
+                self.assertRaisesRegex(CurrentPlanPublicationError, "workflow API authority"),
+            ):
+                reconcile(client)
+            self.assertEqual([], client.posts)
 
     def test_duplicate_same_candidate_waits_are_coalesced_and_later_observations_are_noops(self) -> None:
         first = workflow_run(101, created_at="2026-08-11T01:00:00Z", event="push")

@@ -344,6 +344,12 @@ def _workflow_metadata(client: ActionsClient, candidate: CandidateIdentity) -> i
     encoded = urllib.parse.quote(candidate.workflow, safe="")
     value = client.get(f"/repos/{candidate.repository}/actions/workflows/{encoded}")
     workflow_id = value.get("id") if isinstance(value, dict) else None
+    expected_html_url = (
+        f"https://github.com/{candidate.repository}/blob/{candidate.ref}/{CURRENT_PLAN_WORKFLOW_PATH}"
+    )
+    expected_api_url = (
+        f"https://api.github.com/repos/{candidate.repository}/actions/workflows/{workflow_id}"
+    )
     if (
         not isinstance(value, dict)
         or isinstance(workflow_id, bool)
@@ -352,8 +358,8 @@ def _workflow_metadata(client: ActionsClient, candidate: CandidateIdentity) -> i
         or value.get("path") != CURRENT_PLAN_WORKFLOW_PATH
         or value.get("state") != "active"
         or value.get("name") != "Current release plan"
-        or value.get("html_url")
-        != f"https://github.com/{candidate.repository}/actions/workflows/{candidate.workflow}"
+        or value.get("html_url") != expected_html_url
+        or value.get("url") != expected_api_url
     ):
         raise CurrentPlanPublicationError("current-plan workflow API authority is malformed or mismatched")
     return workflow_id
