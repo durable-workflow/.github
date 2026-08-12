@@ -1,63 +1,63 @@
 {
   "schema": "durable-workflow.component-release-recovery-authority/v2",
   "source": {
-    "repository": "durable-workflow/.github",
-    "ref": "refs/heads/main",
     "path": "release-recovery/authority.json",
     "qualification": {
-      "workflow": ".github/workflows/beta-candidate.yml",
-      "event": "push"
-    }
+      "event": "push",
+      "workflow": ".github/workflows/beta-candidate.yml"
+    },
+    "ref": "refs/heads/main",
+    "repository": "durable-workflow/.github"
   },
   "workflows": {
-    "workflow": {
-      "repository": "durable-workflow/workflow",
-      "ref": "refs/heads/v2",
-      "path": ".github/workflows/release-plan-recovery.yml",
-      "state": "active",
-      "sha256": "133b519f71aee37b00fe3e96cf8177190ea50ca98211d9a69e9c7dc632ae281d"
-    },
-    "waterline": {
-      "repository": "durable-workflow/waterline",
-      "ref": "refs/heads/v2",
-      "path": ".github/workflows/release-plan-recovery.yml",
-      "state": "active",
-      "sha256": "90f68dad2ec05d48aadbd1bb144e809ffce67f974020ec7685add81495424ed2"
-    },
-    "server": {
-      "repository": "durable-workflow/server",
-      "ref": "refs/heads/main",
-      "path": ".github/workflows/release-plan-recovery.yml",
-      "state": "active",
-      "sha256": "37ef78fd199d9354d5faa6c157414cdce1695a2225e3209e7041c2517876379e"
-    },
     "cli": {
-      "repository": "durable-workflow/cli",
-      "ref": "refs/heads/main",
       "path": ".github/workflows/release-plan-recovery.yml",
-      "state": "active",
-      "sha256": "c19453ac7807422fb58d4f6f8f2b8da41f705b0203abef39ae6e0b396f5c07b2"
+      "ref": "refs/heads/main",
+      "repository": "durable-workflow/cli",
+      "sha256": "c19453ac7807422fb58d4f6f8f2b8da41f705b0203abef39ae6e0b396f5c07b2",
+      "state": "active"
     },
     "sdk-php": {
-      "repository": "durable-workflow/sdk-php",
-      "ref": "refs/heads/main",
       "path": ".github/workflows/release-plan-recovery.yml",
-      "state": "active",
-      "sha256": "02874a395b9402dc5d7c3c8b521a26637cd6fe66c513dd69e3fd3e1e8d506565"
+      "ref": "refs/heads/main",
+      "repository": "durable-workflow/sdk-php",
+      "sha256": "02874a395b9402dc5d7c3c8b521a26637cd6fe66c513dd69e3fd3e1e8d506565",
+      "state": "active"
     },
     "sdk-python": {
-      "repository": "durable-workflow/sdk-python",
-      "ref": "refs/heads/main",
       "path": ".github/workflows/release-plan-recovery.yml",
-      "state": "active",
-      "sha256": "6045b3131dae466f17308e50f65067b8664aedba46a5694ee6a2e82810020fa5"
+      "ref": "refs/heads/main",
+      "repository": "durable-workflow/sdk-python",
+      "sha256": "6045b3131dae466f17308e50f65067b8664aedba46a5694ee6a2e82810020fa5",
+      "state": "active"
     },
     "sdk-rust": {
-      "repository": "durable-workflow/sdk-rust",
-      "ref": "refs/heads/main",
       "path": ".github/workflows/release-plan-recovery.yml",
-      "state": "active",
-      "sha256": "c43b0e100c388301af12b9f5e9354955ff6c31b3156b4a0b66a8c3379516645c"
+      "ref": "refs/heads/main",
+      "repository": "durable-workflow/sdk-rust",
+      "sha256": "c43b0e100c388301af12b9f5e9354955ff6c31b3156b4a0b66a8c3379516645c",
+      "state": "active"
+    },
+    "server": {
+      "path": ".github/workflows/release-plan-recovery.yml",
+      "ref": "refs/heads/main",
+      "repository": "durable-workflow/server",
+      "sha256": "37ef78fd199d9354d5faa6c157414cdce1695a2225e3209e7041c2517876379e",
+      "state": "active"
+    },
+    "waterline": {
+      "path": ".github/workflows/release-plan-recovery.yml",
+      "ref": "refs/heads/v2",
+      "repository": "durable-workflow/waterline",
+      "sha256": "b46b5139c6ed94c108a9096c32d67401460269e990020169456c1ca21e6bf8ac",
+      "state": "active"
+    },
+    "workflow": {
+      "path": ".github/workflows/release-plan-recovery.yml",
+      "ref": "refs/heads/v2",
+      "repository": "durable-workflow/workflow",
+      "sha256": "133b519f71aee37b00fe3e96cf8177190ea50ca98211d9a69e9c7dc632ae281d",
+      "state": "active"
     }
   }
 }

@@ -178,6 +178,28 @@
             "sha256": "c702d5dadce236ce96b39f0c086728a6882d3f54a5349f3871a0ea8899bccb6b",
             "source_commit": "fa28853fe0e12743d0159eb29497d95b4e7d2d57"
           }
+        },
+        {
+          "qualification": {
+            "check_run_id": 93969762744,
+            "check_url": "https://github.com/durable-workflow/waterline/actions/runs/31549301611/job/93969762744",
+            "conclusion": "success",
+            "event": "push",
+            "head_branch": "v2",
+            "head_sha": "d3c7b1bdfe4514dab92d05347ab3a134861574dd",
+            "required_check": "Target branch qualification",
+            "run_attempt": 1,
+            "run_id": 31549301611,
+            "status": "completed",
+            "url": "https://github.com/durable-workflow/waterline/actions/runs/31549301611",
+            "workflow": ".github/workflows/php.yml"
+          },
+          "sha256": "b46b5139c6ed94c108a9096c32d67401460269e990020169456c1ca21e6bf8ac",
+          "source_commit": "d3c7b1bdfe4514dab92d05347ab3a134861574dd",
+          "supersedes": {
+            "sha256": "90f68dad2ec05d48aadbd1bb144e809ffce67f974020ec7685add81495424ed2",
+            "source_commit": "bcd3f627d3f2af5c2b2cd5663653b3049f490fc2"
+          }
         }
       ],
       "path": ".github/workflows/release-plan-recovery.yml",
