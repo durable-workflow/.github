@@ -41,3 +41,11 @@ python scripts/ci/validate-regression-corpus.py \
 
 The policy and evidence schemas are machine-owned. Contributor prose is not
 tested for exact wording.
+
+Server codec regressions use a single counterfactual proof for one defect. Its
+`boundaries` list names each changed pre-existing public boundary, and the
+Server validator executes and attributes that proof independently for every
+listed source path. Newly added guarded abstractions have candidate-focused
+coverage instead because they do not have a real base implementation to
+revert. The proof document is defined by
+`server-codec-counterfactual-schema.json`.

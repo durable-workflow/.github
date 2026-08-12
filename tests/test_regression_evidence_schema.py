@@ -22,7 +22,7 @@ def successful_replay_fixture() -> dict[str, object]:
         "workflow": {
             "type": "Tests\\Fixtures\\V2\\TestGoldenReplayWorkflow",
             "arguments": ["single-activity"],
-            "payload_codec": "json",
+            "payload_codec": "avro",
         },
         "history": [
             {
@@ -67,6 +67,12 @@ class ReplayEvidenceSchemaTest(unittest.TestCase):
             ),
             "embedded consumer replay": checked_in_fixture(
                 "embedded-malformed-service-response.json"
+            ),
+            "json-tagged payload rejection": checked_in_fixture(
+                "json-tagged-payload-codec-rejected.json"
+            ),
+            "json-tagged replay rejection": checked_in_fixture(
+                "json-tagged-replay-payload-codec-rejected.json"
             ),
         }
 

@@ -10,6 +10,12 @@ Waterline remains one component. Its `install.waterline` record publishes
 separate `embedded` Composer and `service` OCI commands at that component's
 single train version.
 
+[`payload-codec-contract.json`](payload-codec-contract.json) is the synchronized
+prerelease release gate for durable values. It distinguishes JSON HTTP
+transport from the sole public payload codec, Avro, and requires a blocking,
+non-destructive persisted-history preflight plus exact published-artifact
+qualification before a train can be declared complete.
+
 The supported train also binds its exact immutable `release-plan/*` tag and
 canonical plan digest. A train is not complete authority until that plan and
 its matching terminal completion record are public.

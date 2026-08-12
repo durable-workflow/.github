@@ -1,0 +1,30 @@
+{
+  "$schema": "./payload-codec-contract-schema.json",
+  "schema": "durable-workflow.payload-codec-contract/v1",
+  "version": 1,
+  "product_train": "2.0.0-rc.30",
+  "http_transport": "json",
+  "public_payload_codecs": ["avro"],
+  "avro_value": {
+    "schema": "durable_workflow.protocol.Value",
+    "fingerprint": "crc64-avro:e2a33dff55802237",
+    "framing": "avro-single-object",
+    "blob_encoding": "base64"
+  },
+  "rejection": {
+    "reason": "unsupported_payload_codec",
+    "rejects": ["json", "unknown", "untagged"]
+  },
+  "deployment_preflight": {
+    "required": true,
+    "inventory": "all-active-and-replay-relevant-payload-codec-fields-and-nested-history-envelopes",
+    "frame_validation": "single-object-magic-and-fixed-schema-fingerprint",
+    "on_failure": "block-with-drain-export-and-verified-avro-re-encode-remediation",
+    "delete_history": false
+  },
+  "release_qualification": {
+    "channel": "prerelease",
+    "published_artifacts": ["server-image", "composer-sdk", "pypi-sdk", "crates-sdk"],
+    "evidence": ["cluster-advertises-only-avro", "json-request-rejected", "three-sdk-avro-corpus-roundtrip", "three-sdk-json-envelope-rejection", "managed-history-readable", "no-source-tree-substitutions"]
+  }
+}

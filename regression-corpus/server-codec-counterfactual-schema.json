@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/server-codec-counterfactual-schema.json",
+  "title": "Durable Workflow Server payload-codec counterfactual proof",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "proof_schema",
+    "fixture",
+    "test",
+    "boundaries"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri-reference"
+    },
+    "proof_schema": {
+      "const": "durable-workflow.server-codec-counterfactual/v1"
+    },
+    "fixture": {
+      "type": "string",
+      "pattern": "^tests/Fixtures/CodecRegression/[^/]+\\.json$"
+    },
+    "test": {
+      "type": "string",
+      "pattern": "^tests/(Feature|Unit)/.+\\.php$"
+    },
+    "boundaries": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^app/(Http/Controllers/Api|Support)/.+\\.php$"
+      }
+    }
+  }
+}

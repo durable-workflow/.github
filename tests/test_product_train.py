@@ -26,6 +26,22 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ProductTrainTest(unittest.TestCase):
+    def test_payload_codec_contract_is_avro_only_and_blocks_destructive_rollout(self) -> None:
+        schema = json.loads(
+            (ROOT / "product-train" / "payload-codec-contract-schema.json").read_text(encoding="utf-8")
+        )
+        contract = json.loads(
+            (ROOT / "product-train" / "payload-codec-contract.json").read_text(encoding="utf-8")
+        )
+        Draft202012Validator(schema).validate(contract)
+
+        self.assertEqual("2.0.0-rc.30", contract["product_train"])
+        self.assertEqual(["avro"], contract["public_payload_codecs"])
+        self.assertEqual("json", contract["http_transport"])
+        self.assertEqual("unsupported_payload_codec", contract["rejection"]["reason"])
+        self.assertFalse(contract["deployment_preflight"]["delete_history"])
+        self.assertEqual("prerelease", contract["release_qualification"]["channel"])
+
     def test_current_authority_matches_schema_and_one_supported_tuple(self) -> None:
         schema = json.loads((ROOT / "product-train" / "schema.json").read_text(encoding="utf-8"))
         contract = load_product_train()

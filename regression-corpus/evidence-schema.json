@@ -249,7 +249,10 @@
           ],
           "properties": {
             "type": {
-              "const": "malformed_service_response_envelope"
+              "enum": [
+                "malformed_service_response_envelope",
+                "unsupported_payload_codec"
+              ]
             },
             "exception": {
               "type": "string",

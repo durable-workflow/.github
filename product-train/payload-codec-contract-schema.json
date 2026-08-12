@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/durable-workflow/.github/main/product-train/payload-codec-contract-schema.json",
+  "type": "object",
+  "required": ["schema", "version", "product_train", "http_transport", "public_payload_codecs", "avro_value", "rejection", "deployment_preflight", "release_qualification"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {"type": "string"},
+    "schema": {"const": "durable-workflow.payload-codec-contract/v1"},
+    "version": {"const": 1},
+    "product_train": {"const": "2.0.0-rc.30"},
+    "http_transport": {"const": "json"},
+    "public_payload_codecs": {"const": ["avro"]},
+    "avro_value": {
+      "type": "object",
+      "required": ["schema", "fingerprint", "framing", "blob_encoding"],
+      "additionalProperties": false,
+      "properties": {
+        "schema": {"const": "durable_workflow.protocol.Value"},
+        "fingerprint": {"const": "crc64-avro:e2a33dff55802237"},
+        "framing": {"const": "avro-single-object"},
+        "blob_encoding": {"const": "base64"}
+      }
+    },
+    "rejection": {
+      "type": "object",
+      "required": ["reason", "rejects"],
+      "additionalProperties": false,
+      "properties": {
+        "reason": {"const": "unsupported_payload_codec"},
+        "rejects": {"const": ["json", "unknown", "untagged"]}
+      }
+    },
+    "deployment_preflight": {
+      "type": "object",
+      "required": ["required", "inventory", "frame_validation", "on_failure", "delete_history"],
+      "additionalProperties": false,
+      "properties": {
+        "required": {"const": true},
+        "inventory": {"const": "all-active-and-replay-relevant-payload-codec-fields-and-nested-history-envelopes"},
+        "frame_validation": {"const": "single-object-magic-and-fixed-schema-fingerprint"},
+        "on_failure": {"const": "block-with-drain-export-and-verified-avro-re-encode-remediation"},
+        "delete_history": {"const": false}
+      }
+    },
+    "release_qualification": {
+      "type": "object",
+      "required": ["channel", "published_artifacts", "evidence"],
+      "additionalProperties": false,
+      "properties": {
+        "channel": {"const": "prerelease"},
+        "published_artifacts": {"const": ["server-image", "composer-sdk", "pypi-sdk", "crates-sdk"]},
+        "evidence": {"const": ["cluster-advertises-only-avro", "json-request-rejected", "three-sdk-avro-corpus-roundtrip", "three-sdk-json-envelope-rejection", "managed-history-readable", "no-source-tree-substitutions"]}
+      }
+    }
+  }
+}
