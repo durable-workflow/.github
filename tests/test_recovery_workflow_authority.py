@@ -144,9 +144,9 @@ class RecoveryWorkflowAuthorityTest(unittest.TestCase):
         )
 
         waterline = histories["waterline"]["identities"]
-        self.assertEqual(2, len(waterline))
+        self.assertEqual(3, len(waterline))
         self.assertEqual(
-            "bcd3f627d3f2af5c2b2cd5663653b3049f490fc2",
+            "367c0a1896ad2978b4b9e4f67e2b09558686962b",
             waterline[-1]["source_commit"],
         )
         self.assertEqual(AUTHORITY["workflows"]["waterline"]["sha256"], waterline[-1]["sha256"])

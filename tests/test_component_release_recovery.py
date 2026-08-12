@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
-import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
-import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -56,13 +55,20 @@ from scripts.recovery_workflow_authority import normalized_source_sha256
 from tests.verification_fixture import legacy_beta_one_release_plan
 
 
-def github_http_error(status: int, body: bytes = b"error", **headers: str) -> urllib.error.HTTPError:
-    return urllib.error.HTTPError(
-        "https://api.github.com/repos/durable-workflow/.github/releases",
-        status,
-        "request failed",
-        headers,
-        io.BytesIO(body),
+def github_cli_result(
+    status: int = 200,
+    body: bytes = b"[]",
+    *,
+    stderr: bytes = b"",
+    **headers: str,
+) -> subprocess.CompletedProcess[bytes]:
+    response_headers = b"".join(f"{name}: {value}\r\n".encode() for name, value in headers.items())
+    output = f"HTTP/2.0 {status} response\r\n".encode() + response_headers + b"\r\n" + body
+    return subprocess.CompletedProcess(
+        ["gh", "api"],
+        0 if 200 <= status <= 299 else 1,
+        output,
+        stderr,
     )
 
 
@@ -1466,22 +1472,121 @@ class ComponentRecoveryContractTest(unittest.TestCase):
 
     def test_recovery_public_client_retries_transient_github_reads(self) -> None:
         sleeps: list[float] = []
-        client = PublicClient(max_attempts=3, retry_base_seconds=1, sleep=sleeps.append)
+        client = PublicClient(token="test-token", max_attempts=3, retry_base_seconds=1, sleep=sleeps.append)
         responses = [
-            github_http_error(503, **{"Retry-After": "4"}),
-            urllib.error.URLError(ConnectionResetError("connection reset")),
-            io.BytesIO(b"[]"),
+            github_cli_result(503, **{"Retry-After": "4"}),
+            github_cli_result(0, stderr=b"connection reset by peer"),
+            github_cli_result(),
         ]
 
-        with mock.patch(
-            "scripts.component_release_recovery.urllib.request.urlopen",
-            side_effect=responses,
-        ) as open_url:
+        with (
+            mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}),
+            mock.patch(
+                "scripts.component_release_recovery.subprocess.run",
+                side_effect=responses,
+            ) as run,
+        ):
             result = client.json("https://api.github.com/repos/durable-workflow/.github/releases?per_page=100")
 
         self.assertEqual([], result)
         self.assertEqual([4, 2], sleeps)
-        self.assertEqual(3, open_url.call_count)
+        self.assertEqual(3, run.call_count)
+
+    def test_runner_rate_limit_headers_are_case_insensitive_and_use_reset_delay(self) -> None:
+        sleeps: list[float] = []
+        client = PublicClient(
+            token="test-token",
+            max_attempts=2,
+            retry_base_seconds=1,
+            sleep=sleeps.append,
+            now=lambda: 100,
+        )
+        responses = [
+            github_cli_result(
+                403,
+                b'{"message":"Forbidden"}',
+                **{
+                    "x-ratelimit-remaining": "0",
+                    "X-rAtElImIt-ReSeT": "112",
+                },
+            ),
+            github_cli_result(),
+        ]
+
+        with (
+            mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}),
+            mock.patch(
+                "scripts.component_release_recovery.subprocess.run",
+                side_effect=responses,
+            ) as run,
+        ):
+            result = client.json("https://api.github.com/repos/durable-workflow/.github/releases")
+
+        self.assertEqual([], result)
+        self.assertEqual([12], sleeps)
+        self.assertEqual(2, run.call_count)
+
+    def test_recovery_public_client_uses_github_cli_and_retries_transient_certificate_failure(
+        self,
+    ) -> None:
+        sleeps: list[float] = []
+        client = PublicClient(token="test-token", max_attempts=2, retry_base_seconds=1, sleep=sleeps.append)
+        certificate_error = github_cli_result(
+            0,
+            stderr=b"x509: certificate signed by unknown authority",
+        )
+
+        with (
+            mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}),
+            mock.patch(
+                "scripts.component_release_recovery.subprocess.run",
+                side_effect=[certificate_error, github_cli_result()],
+            ) as run,
+        ):
+            result = client.json("https://api.github.com/repos/durable-workflow/.github/releases")
+
+        self.assertEqual([], result)
+        self.assertEqual([1], sleeps)
+        command = run.call_args.args[0]
+        self.assertEqual(
+            ["gh", "api", "--hostname", "github.com", "--include", "--method", "GET"],
+            command[:7],
+        )
+        self.assertEqual("repos/durable-workflow/.github/releases", command[-1])
+        self.assertNotIn("--insecure", command)
+        self.assertEqual("test-token", run.call_args.kwargs["env"]["GH_TOKEN"])
+        self.assertEqual("1", run.call_args.kwargs["env"]["GH_PROMPT_DISABLED"])
+
+    def test_recovery_public_client_reports_persistent_certificate_failure_as_runner_transport(
+        self,
+    ) -> None:
+        client = PublicClient(token="test-token", max_attempts=2, retry_base_seconds=1, sleep=lambda _delay: None)
+        certificate_error = github_cli_result(
+            0,
+            stderr=b"x509: certificate signed by unknown authority",
+        )
+
+        with (
+            mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}),
+            mock.patch(
+                "scripts.component_release_recovery.subprocess.run",
+                return_value=certificate_error,
+            ) as run,
+            self.assertRaises(PublicInfrastructureError) as raised,
+        ):
+            client.json("https://api.github.com/repos/durable-workflow/.github/releases")
+
+        self.assertEqual(2, run.call_count)
+        self.assertEqual(
+            {
+                "classification": "github-read-transient",
+                "endpoint_class": "releases-api",
+                "attempts": 2,
+                "reason": "retry-exhausted",
+                "failure": "transport=tls-certificate-verification",
+            },
+            raised.exception.evidence,
+        )
 
     def test_authenticated_requests_preserve_endpoint_api_versions(self) -> None:
         cases = (
@@ -1491,69 +1596,101 @@ class ComponentRecoveryContractTest(unittest.TestCase):
         for headers, expected_version in cases:
             with self.subTest(expected_version=expected_version):
                 client = PublicClient(token="test-token")
-                response = mock.Mock()
-                with mock.patch(
-                    "scripts.component_release_recovery.urllib.request.urlopen",
-                    return_value=response,
-                ) as open_url:
-                    self.assertIs(
-                        response,
-                        client.request(
-                            "https://api.github.com/repos/durable-workflow/.github/actions/runs/456",
-                            headers=headers,
-                        ),
+                with (
+                    mock.patch.dict(
+                        os.environ,
+                        {"GITHUB_ACTIONS": "true", "GH_HOST": "redirected.example"},
+                    ),
+                    mock.patch(
+                        "scripts.component_release_recovery.subprocess.run",
+                        return_value=github_cli_result(),
+                    ) as run,
+                ):
+                    response = client.request(
+                        "https://api.github.com/repos/durable-workflow/.github/actions/runs/456",
+                        headers=headers,
                     )
 
-                request = open_url.call_args.args[0]
-                request_headers = {key.lower(): value for key, value in request.header_items()}
-                self.assertEqual("Bearer test-token", request_headers["authorization"])
-                self.assertEqual(expected_version, request_headers["x-github-api-version"])
+                self.assertEqual(b"[]", response.read())
+                command = run.call_args.args[0]
+                declared_headers = [
+                    command[index + 1]
+                    for index, argument in enumerate(command)
+                    if argument == "--header"
+                ]
+                self.assertIn(f"X-GitHub-Api-Version: {expected_version}", declared_headers)
+                self.assertFalse(any(header.lower().startswith("authorization:") for header in declared_headers))
+                self.assertEqual("test-token", run.call_args.kwargs["env"]["GH_TOKEN"])
+
+    def test_runner_environment_never_uses_a_live_urllib_api_call(self) -> None:
+        client = PublicClient(token="test-token")
+        with (
+            mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}),
+            mock.patch(
+                "scripts.component_release_recovery.urllib.request.urlopen",
+                side_effect=AssertionError("runner transport bypassed the GitHub CLI mock"),
+            ) as open_url,
+            mock.patch(
+                "scripts.component_release_recovery.subprocess.run",
+                return_value=github_cli_result(),
+            ) as run,
+        ):
+            self.assertEqual(
+                [],
+                client.json("https://api.github.com/repos/durable-workflow/.github/releases"),
+            )
+
+        open_url.assert_not_called()
+        run.assert_called_once()
 
     def test_recovery_public_client_never_retries_authentication_with_rate_limit_guidance(self) -> None:
         sleeps: list[float] = []
-        client = PublicClient(max_attempts=3, retry_base_seconds=1, sleep=sleeps.append)
-        error = github_http_error(
+        client = PublicClient(token="test-token", max_attempts=3, retry_base_seconds=1, sleep=sleeps.append)
+        error = github_cli_result(
             401,
             b"Bad credentials: API rate limit exceeded",
             **{"Retry-After": "20", "X-RateLimit-Remaining": "0"},
         )
 
         with (
+            mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}),
             mock.patch(
-                "scripts.component_release_recovery.urllib.request.urlopen",
-                side_effect=error,
-            ) as open_url,
+                "scripts.component_release_recovery.subprocess.run",
+                return_value=error,
+            ) as run,
             self.assertRaisesRegex(RecoveryError, r"public request failed \(401\)"),
         ):
             client.json("https://api.github.com/repos/durable-workflow/.github/releases?per_page=100")
 
         self.assertEqual([], sleeps)
-        self.assertEqual(1, open_url.call_count)
+        self.assertEqual(1, run.call_count)
 
     def test_recovery_public_client_separates_exhausted_infrastructure_from_missing_resources(self) -> None:
-        client = PublicClient(max_attempts=2, retry_base_seconds=1, sleep=lambda _delay: None)
+        client = PublicClient(token="test-token", max_attempts=2, retry_base_seconds=1, sleep=lambda _delay: None)
         with (
+            mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}),
             mock.patch(
-                "scripts.component_release_recovery.urllib.request.urlopen",
-                side_effect=[github_http_error(503), github_http_error(502)],
-            ) as open_url,
+                "scripts.component_release_recovery.subprocess.run",
+                side_effect=[github_cli_result(503), github_cli_result(502)],
+            ) as run,
             self.assertRaisesRegex(
                 PublicInfrastructureError,
                 r"endpoint_class=releases-api, attempts=2, reason=retry-exhausted, status=502",
             ),
         ):
             client.json("https://api.github.com/repos/durable-workflow/.github/releases?per_page=100")
-        self.assertEqual(2, open_url.call_count)
+        self.assertEqual(2, run.call_count)
 
         with (
+            mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}),
             mock.patch(
-                "scripts.component_release_recovery.urllib.request.urlopen",
-                side_effect=github_http_error(404),
-            ) as open_url,
+                "scripts.component_release_recovery.subprocess.run",
+                return_value=github_cli_result(404),
+            ) as run,
             self.assertRaisesRegex(NotFound, "public resource is absent"),
         ):
             client.json("https://api.github.com/repos/durable-workflow/.github/releases/tags/missing")
-        self.assertEqual(1, open_url.call_count)
+        self.assertEqual(1, run.call_count)
 
     def test_explicit_discovery_accepts_only_an_exact_historical_v1_plan(self) -> None:
         historical = legacy_beta_one_release_plan()
@@ -2004,6 +2141,48 @@ jobs:
             evidence = json.loads(evidence_output.read_bytes())
             self.assertEqual("plan-discovery", evidence["phase"])
             self.assertEqual("no-op", evidence["outcome"])
+            self.assertEqual("action=none\n", github_output.read_text())
+
+    def test_scheduled_transport_exhaustion_records_runner_outcome_and_no_publication_action(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            evidence_output = root / "release-recovery-evidence.json"
+            github_output = root / "github-output"
+            arguments = [
+                "component_release_recovery.py",
+                "resolve",
+                "--component",
+                "server",
+                "--plan-output",
+                str(root / "release-plan.json"),
+                "--preparation-output",
+                str(root / "release-preparation.json"),
+                "--evidence",
+                str(evidence_output),
+                "--github-output",
+                str(github_output),
+                "--allow-empty",
+            ]
+            unavailable = PublicInfrastructureError(
+                "releases-api",
+                5,
+                reason="retry-exhausted",
+                failure="transport=tls-certificate-verification",
+            )
+
+            with (
+                mock.patch.object(sys, "argv", arguments),
+                mock.patch(
+                    "scripts.component_release_recovery.discover_plan",
+                    side_effect=unavailable,
+                ),
+            ):
+                self.assertEqual(75, main())
+
+            evidence = json.loads(evidence_output.read_bytes())
+            self.assertEqual("runner-transport", evidence["phase"])
+            self.assertEqual("runner-transport", evidence["outcome"])
+            self.assertEqual(unavailable.evidence, evidence["transport"])
             self.assertEqual("action=none\n", github_output.read_text())
 
 
