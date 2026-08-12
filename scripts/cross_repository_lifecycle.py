@@ -13,6 +13,7 @@ EVIDENCE_MARKER = "<!-- durable-workflow-cross-repository-lifecycle:v1 -->"
 HTML_PULL_PATTERN = re.compile(r"https://github\.com/([^/]+)/([^/]+)/pull/([1-9][0-9]*)$")
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+WORKFLOW_PATH_PATTERN = re.compile(r"[A-Za-z0-9_.-]+\.ya?ml")
 TRUSTED_REPOSITORY_ASSOCIATIONS = {"COLLABORATOR", "MEMBER", "OWNER"}
 REFERENCE_SNAPSHOT_ATTEMPTS = 2
 
@@ -44,17 +45,29 @@ def qualification_targets(policy: Mapping[str, Any]) -> dict[str, dict[str, Any]
         ):
             raise LifecycleError("target qualification policy contains an invalid target identity")
         checks: list[str] = []
+        required_workflows: list[dict[str, str]] = []
         for workflow in workflows:
             check = workflow.get("required_check") if isinstance(workflow, Mapping) else None
-            if not isinstance(check, str) or not check:
+            path = workflow.get("path") if isinstance(workflow, Mapping) else None
+            if (
+                not isinstance(check, str)
+                or not check
+                or not isinstance(path, str)
+                or WORKFLOW_PATH_PATTERN.fullmatch(path) is None
+            ):
                 raise LifecycleError(f"target qualification policy has no required check for {repository}@{branch}")
             checks.append(check)
+            required_workflows.append({"path": path, "required_check": check})
+        workflow_paths = [workflow["path"] for workflow in required_workflows]
+        if len(workflow_paths) != len(set(workflow_paths)) or len(checks) != len(set(checks)):
+            raise LifecycleError(f"target qualification policy repeats workflow identity for {repository}@{branch}")
         if repository in reduced:
             raise LifecycleError(f"target qualification policy repeats repository {repository}")
         reduced[repository] = {
             "branch": branch,
             "repository": repository,
             "required_checks": sorted(set(checks)),
+            "required_workflows": sorted(required_workflows, key=lambda workflow: workflow["path"]),
         }
     return reduced
 
@@ -216,13 +229,32 @@ def _pipeline_completion_record(
     organization: str,
     source_repository: str,
     targets: Sequence[Mapping[str, Any]],
-) -> tuple[str, tuple[tuple[str, str, str, tuple[str, ...], int], ...]] | None:
+) -> tuple[
+    str,
+    tuple[tuple[str, str, str, tuple[str, ...], tuple[tuple[str | None, str, int], ...]], ...],
+] | None:
     """Read the exact immutable landing and run identities emitted by the protected merge gate."""
 
-    expected = {
-        (str(target["repository"]), str(target["branch"])): tuple(sorted(set(target["required_checks"])))
-        for target in targets
-    }
+    expected: dict[tuple[str, str], tuple[tuple[str, ...], tuple[str, ...]]] = {}
+    for target in targets:
+        required_workflows = target.get("required_workflows")
+        if not isinstance(required_workflows, Sequence) or isinstance(required_workflows, str | bytes):
+            return None
+        workflow_paths = tuple(
+            sorted(
+                str(workflow.get("path"))
+                for workflow in required_workflows
+                if isinstance(workflow, Mapping)
+                and isinstance(workflow.get("path"), str)
+                and WORKFLOW_PATH_PATTERN.fullmatch(str(workflow["path"])) is not None
+            )
+        )
+        if not workflow_paths or len(workflow_paths) != len(required_workflows):
+            return None
+        expected[(str(target["repository"]), str(target["branch"]))] = (
+            tuple(sorted(set(target["required_checks"]))),
+            workflow_paths,
+        )
     source_targets = [identity for identity in expected if identity[0] == source_repository]
     if len(source_targets) != 1:
         return None
@@ -238,17 +270,55 @@ def _pipeline_completion_record(
         return None
     source_commit = primary_matches[0].group(2)
 
-    source_qualification_pattern = re.compile(
-        r"Required public qualification passed: "
+    source_run_url = (
         rf"https://github\.com/{re.escape(organization)}/{re.escape(source_repository)}/actions/runs/"
-        r"([1-9][0-9]*)"
     )
-    source_run_matches = [
-        match for line in lines if (match := source_qualification_pattern.fullmatch(line.strip())) is not None
+    legacy_source_qualification_pattern = re.compile(
+        r"Required public qualification passed: " + source_run_url + r"([1-9][0-9]*)"
+    )
+    named_source_qualification_patterns = (
+        re.compile(
+            r"Required public qualification (?P<name>[A-Za-z0-9][A-Za-z0-9 ._+:/-]*?) "
+            r"\(`?(?P<path>[A-Za-z0-9_.-]+\.ya?ml)`?\) passed in run "
+            r"\[(?P<run>[1-9][0-9]*)\]\(" + source_run_url + r"(?P<url_run>[1-9][0-9]*)\)\.?"
+        ),
+        re.compile(
+            r"Required public qualification (?P<name>[A-Za-z0-9][A-Za-z0-9 ._+:/-]*?) "
+            r"\(`?(?P<path>[A-Za-z0-9_.-]+\.ya?ml)`?\) passed in run "
+            r"(?P<run>[1-9][0-9]*) \(" + source_run_url + r"(?P<url_run>[1-9][0-9]*)\)\.?"
+        ),
+        re.compile(
+            r"Required public qualification (?P<name>[A-Za-z0-9][A-Za-z0-9 ._+:/-]*?) "
+            r"\(`?(?P<path>[A-Za-z0-9_.-]+\.ya?ml)`?\) passed in run "
+            r"(?P<run>[1-9][0-9]*): " + source_run_url + r"(?P<url_run>[1-9][0-9]*)\.?"
+        ),
+    )
+    legacy_source_runs = [
+        match
+        for line in lines
+        if (match := legacy_source_qualification_pattern.fullmatch(line.strip())) is not None
     ]
-    if len(source_run_matches) != 1:
+    named_source_runs = [
+        match
+        for line in lines
+        for pattern in named_source_qualification_patterns
+        if (match := pattern.fullmatch(line.strip())) is not None
+    ]
+    source_workflow_paths = expected[(source_repository, source_branch)][1]
+    source_qualifications: tuple[tuple[str | None, str, int], ...]
+    if len(legacy_source_runs) == 1 and not named_source_runs and len(source_workflow_paths) == 1:
+        source_qualifications = ((None, source_workflow_paths[0], int(legacy_source_runs[0].group(1))),)
+    elif not legacy_source_runs and named_source_runs:
+        claims = [
+            (match.group("name"), match.group("path"), int(match.group("run")))
+            for match in named_source_runs
+            if match.group("run") == match.group("url_run") and match.group("path") in source_workflow_paths
+        ]
+        if len(claims) != len(named_source_runs) or len(claims) != len(set(claims)):
+            return None
+        source_qualifications = tuple(sorted(claims, key=lambda claim: (claim[1], claim[2], claim[0] or "")))
+    else:
         return None
-    source_run = int(source_run_matches[0].group(1))
 
     peer_heading = "Required cross-repository target qualification passed:"
     headings = [index for index, line in enumerate(lines) if line.strip() == peer_heading]
@@ -257,11 +327,11 @@ def _pipeline_completion_record(
     peer_pattern = re.compile(
         rf"- `([a-z0-9_.-]+):(main|v2)` at \[`([0-9a-f]{{7,40}})`\]\("
         rf"https://github\.com/{re.escape(organization)}/([a-z0-9_.-]+)/commit/"
-        rf"({COMMIT_PATTERN.pattern})\) \(\[qualification\]\("
-        rf"https://github\.com/{re.escape(organization)}/([a-z0-9_.-]+)/actions/runs/"
-        r"([1-9][0-9]*)\)\)"
+        rf"({COMMIT_PATTERN.pattern})\) (?P<qualification>.+)"
     )
-    peer_records: list[tuple[str, str, str, tuple[str, ...], int]] = []
+    peer_records: list[
+        tuple[str, str, str, tuple[str, ...], tuple[tuple[str | None, str, int], ...]]
+    ] = []
     peer_lines_started = False
     for line in lines[headings[0] + 1 :]:
         stripped = line.strip()
@@ -277,20 +347,55 @@ def _pipeline_completion_record(
         match = peer_pattern.fullmatch(stripped)
         if match is None:
             return None
-        repository, branch, short_commit, url_repository, commit, run_repository, run_id = match.groups()
+        repository, branch, short_commit, url_repository, commit = match.groups()[:5]
         identity = (repository, branch)
         if (
             repository != url_repository
-            or repository != run_repository
             or identity not in expected
             or repository == source_repository
             or not commit.startswith(short_commit)
         ):
             return None
-        peer_records.append((repository, branch, commit, expected[identity], int(run_id)))
+        required_checks, workflow_paths = expected[identity]
+        peer_run_url = rf"https://github\.com/{re.escape(organization)}/{re.escape(repository)}/actions/runs/"
+        legacy_peer_pattern = re.compile(
+            r"\(\[qualification\]\(" + peer_run_url + r"(?P<run>[1-9][0-9]*)\)\)"
+        )
+        named_peer_patterns = (
+            re.compile(
+                r"(?:; |\()Required (?:public|target) qualification "
+                r"(?P<name>[A-Za-z0-9][A-Za-z0-9 ._+:/-]*?) "
+                r"\(`?(?P<path>[A-Za-z0-9_.-]+\.ya?ml)`?\) passed in run "
+                r"\[(?P<run>[1-9][0-9]*)\]\(" + peer_run_url + r"(?P<url_run>[1-9][0-9]*)\)\.?\)?"
+            ),
+            re.compile(
+                r"\(\[(?P<name>[A-Za-z0-9][A-Za-z0-9 ._+:/-]*?) "
+                r"\(`?(?P<path>[A-Za-z0-9_.-]+\.ya?ml)`?\)(?: passed in)? run "
+                r"(?P<run>[1-9][0-9]*)\]\(" + peer_run_url + r"(?P<url_run>[1-9][0-9]*)\)\)"
+            ),
+        )
+        qualification_text = match.group("qualification")
+        legacy_peer = legacy_peer_pattern.fullmatch(qualification_text)
+        named_peer = next(
+            (candidate for pattern in named_peer_patterns if (candidate := pattern.fullmatch(qualification_text))),
+            None,
+        )
+        if legacy_peer is not None and named_peer is None and len(workflow_paths) == 1:
+            qualifications = ((None, workflow_paths[0], int(legacy_peer.group("run"))),)
+        elif legacy_peer is None and named_peer is not None:
+            if named_peer.group("run") != named_peer.group("url_run") or named_peer.group("path") not in workflow_paths:
+                return None
+            qualifications = (
+                (named_peer.group("name"), named_peer.group("path"), int(named_peer.group("run"))),
+            )
+        else:
+            return None
+        peer_records.append((repository, branch, commit, required_checks, qualifications))
 
     expected_peers = set(expected) - set(source_targets)
-    observed_peers = [(repository, branch) for repository, branch, _commit, _checks, _run in peer_records]
+    observed_peers = [
+        (repository, branch) for repository, branch, _commit, _checks, _qualifications in peer_records
+    ]
     if (
         not peer_lines_started
         or len(observed_peers) != len(set(observed_peers))
@@ -311,8 +416,8 @@ def _pipeline_completion_record(
             source_repository,
             source_branch,
             source_commit,
-            expected[(source_repository, source_branch)],
-            source_run,
+            expected[(source_repository, source_branch)][0],
+            source_qualifications,
         )
     ]
     records.extend(peer_records)
@@ -325,7 +430,10 @@ def _recorded_completion(
     source_repository: str,
     issue: Mapping[str, Any],
     targets: Sequence[Mapping[str, Any]],
-) -> tuple[str, tuple[tuple[str, str, str, tuple[str, ...], int], ...]] | None:
+) -> tuple[
+    str,
+    tuple[tuple[str, str, str, tuple[str, ...], tuple[tuple[str | None, str, int], ...]], ...],
+] | None:
     """Select one semantically exact aggregate record from the authenticated lifecycle writer."""
 
     number = issue.get("number")
@@ -362,13 +470,14 @@ def lifecycle_authority_is_current(
 
     if not closing_references_are_current(client, organization, source_repository, issue, assessment):
         return False
-    if assessment.get("_authority_kind") != "protected-branch-record":
+    if assessment.get("_authority_kind") not in {"mixed-landing-record", "protected-branch-record"}:
         return True
     targets = [
         {
             "branch": target["branch"],
             "repository": target["repository"],
             "required_checks": target["required_checks"],
+            "required_workflows": target["required_workflows"],
         }
         for target in assessment["targets"]
     ]
@@ -583,6 +692,7 @@ def _evaluate_target(
     repository = str(target["repository"])
     branch = str(target["branch"])
     required_checks = list(target["required_checks"])
+    required_workflows = [dict(workflow) for workflow in target.get("required_workflows", ())]
     result: dict[str, Any] = {
         "approval_at": None,
         "approval_review": None,
@@ -603,6 +713,7 @@ def _evaluate_target(
         "reference_event": None,
         "repository": repository,
         "required_checks": required_checks,
+        "required_workflows": required_workflows,
         "state": "pending:no-linked-pull-request",
     }
     if pull is None:
@@ -663,12 +774,19 @@ def _evaluate_recorded_target(
     client: Any,
     organization: str,
     target: Mapping[str, Any],
-    completion: tuple[str, str, str, tuple[str, ...], int],
+    completion: tuple[
+        str,
+        str,
+        str,
+        tuple[str, ...],
+        tuple[tuple[str | None, str, int], ...],
+    ],
     completion_source: str,
 ) -> dict[str, Any]:
     """Independently revalidate one exact commit from a trusted aggregate completion record."""
 
-    repository, branch, commit, required_checks, qualification_run = completion
+    repository, branch, commit, required_checks, qualifications = completion
+    required_workflows = [dict(workflow) for workflow in target.get("required_workflows", ())]
     result: dict[str, Any] = {
         "approval_at": None,
         "approval_review": None,
@@ -685,13 +803,16 @@ def _evaluate_recorded_target(
         "provenance": "authenticated-completion-record",
         "pull_author": None,
         "pull_request": None,
-        "qualification_run": qualification_run,
+        "qualification_runs": [
+            {"name": name, "path": path, "run": run_id} for name, path, run_id in qualifications
+        ],
         "reference_actor": None,
         "reference_at": None,
         "reference_event": None,
         "repository": repository,
         "required_check_runs": {},
         "required_checks": list(required_checks),
+        "required_workflows": required_workflows,
         "state": "pending:landing-not-on-target",
     }
     if repository != target["repository"] or branch != target["branch"]:
@@ -702,11 +823,23 @@ def _evaluate_recorded_target(
         return result
     if not client.commit_reaches_branch(organization, repository, commit, branch):
         return result
-    if not client.successful_workflow_run(
-        organization,
-        repository,
-        qualification_run,
-        commit,
+    expected_workflow_paths = {
+        str(workflow.get("path")) for workflow in required_workflows if isinstance(workflow.get("path"), str)
+    }
+    if (
+        not qualifications
+        or any(path not in expected_workflow_paths for _name, path, _run_id in qualifications)
+        or any(
+            not client.successful_workflow_run(
+                organization,
+                repository,
+                run_id,
+                commit,
+                path,
+                name,
+            )
+            for name, path, run_id in qualifications
+        )
     ):
         result["state"] = "pending:qualification-identity"
         return result
@@ -754,7 +887,7 @@ def evaluate_lifecycle(
         ]
         authority_kind = "closing-references"
         completion_record = None
-        if results and all(result["state"] == "pending:no-linked-pull-request" for result in results):
+        if results and any(result["state"] == "pending:no-linked-pull-request" for result in results):
             completion_record = _recorded_completion(
                 client,
                 organization,
@@ -765,7 +898,7 @@ def evaluate_lifecycle(
             if completion_record is not None:
                 completion_source, recorded_targets = completion_record
                 by_repository = {record[0]: record for record in recorded_targets}
-                results = [
+                recorded_results = [
                     _evaluate_recorded_target(
                         client,
                         organization,
@@ -775,7 +908,17 @@ def evaluate_lifecycle(
                     )
                     for target in targets
                 ]
-                authority_kind = "protected-branch-record"
+                results = [
+                    recorded
+                    if current["state"] == "pending:no-linked-pull-request" or recorded["state"] != "complete"
+                    else current
+                    for current, recorded in zip(results, recorded_results, strict=True)
+                ]
+                authority_kind = (
+                    "protected-branch-record"
+                    if all(result["provenance"] == "authenticated-completion-record" for result in results)
+                    else "mixed-landing-record"
+                )
         assessment = {
             "_authority_kind": authority_kind,
             "_closing_reference_snapshot": snapshot,
@@ -849,7 +992,7 @@ def render_evidence(assessment: Mapping[str, Any]) -> str:
     ]
     completion_record = assessment.get("_completion_record_identity")
     if (
-        assessment.get("_authority_kind") == "protected-branch-record"
+        assessment.get("_authority_kind") in {"mixed-landing-record", "protected-branch-record"}
         and isinstance(completion_record, tuple)
         and completion_record
     ):
@@ -933,13 +1076,24 @@ def render_evidence(assessment: Mapping[str, Any]) -> str:
             )
             for name in required_checks
         )
-        qualification_run = target.get("qualification_run")
-        run_identity = (
-            f"; [cited qualification run `{qualification_run}`]"
-            f"(https://github.com/durable-workflow/{repository}/actions/runs/{qualification_run})"
-            if isinstance(qualification_run, int)
-            else ""
-        )
+        qualification_runs = target.get("qualification_runs", [])
+        cited_runs = []
+        for qualification_run in qualification_runs:
+            if not isinstance(qualification_run, Mapping) or not isinstance(qualification_run.get("run"), int):
+                continue
+            run_id = qualification_run["run"]
+            workflow_name = qualification_run.get("name")
+            workflow_path = qualification_run.get("path")
+            workflow_identity = (
+                f"`{workflow_name}` (`{workflow_path}`)"
+                if isinstance(workflow_name, str) and isinstance(workflow_path, str)
+                else f"`{workflow_path}`"
+            )
+            cited_runs.append(
+                f"{workflow_identity} [cited run `{run_id}`]"
+                f"(https://github.com/durable-workflow/{repository}/actions/runs/{run_id})"
+            )
+        run_identity = f"; cited qualification: {', '.join(cited_runs)}" if cited_runs else ""
         qualification = (
             "Pending: closing-reference authority changed"
             if target["state"] == "pending:closing-reference-changed"

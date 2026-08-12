@@ -2288,11 +2288,14 @@ class GitHubApi:
         repository: str,
         run_id: int,
         commit: str,
+        workflow_path: str,
+        workflow_name: str | None,
     ) -> bool:
-        """Verify one cited Actions run is green and belongs to the recorded repository and commit."""
+        """Verify one cited run's repository, workflow, commit, and successful conclusion."""
 
         run = self.request("GET", f"/repos/{organization}/{repository}/actions/runs/{run_id}")
         run_repository = run.get("repository") if isinstance(run, Mapping) else None
+        expected_workflow_path = f".github/workflows/{workflow_path}"
         return (
             isinstance(run, Mapping)
             and type(run.get("id")) is int
@@ -2300,6 +2303,8 @@ class GitHubApi:
             and run.get("status") == "completed"
             and run.get("conclusion") == "success"
             and run.get("head_sha") == commit
+            and run.get("path") == expected_workflow_path
+            and (workflow_name is None or run.get("name") == workflow_name)
             and run.get("html_url") == f"https://github.com/{organization}/{repository}/actions/runs/{run_id}"
             and isinstance(run_repository, Mapping)
             and run_repository.get("full_name") == f"{organization}/{repository}"

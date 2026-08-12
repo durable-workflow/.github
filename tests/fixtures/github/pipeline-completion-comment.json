@@ -1,5 +1,5 @@
 {
-  "body": "Completed in [`aaaaaaaaaaaa`](https://github.com/durable-workflow/.github/commit/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) on `main`.\n\nRequired public qualification passed: https://github.com/durable-workflow/.github/actions/runs/30200000001\n\nRequired cross-repository target qualification passed:\n- `durable-workflow.github.io:main` at [`bbbbbbbbbbbb`](https://github.com/durable-workflow/durable-workflow.github.io/commit/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb) ([qualification](https://github.com/durable-workflow/durable-workflow.github.io/actions/runs/30200000002))\n- `workflow:v2` at [`cccccccccccc`](https://github.com/durable-workflow/workflow/commit/cccccccccccccccccccccccccccccccccccccccc) ([qualification](https://github.com/durable-workflow/workflow/actions/runs/30200000003))\n\n<!-- durable-workflow-completion-source: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->\n<!-- durable-workflow-implementation-source: dddddddddddddddddddddddddddddddddddddddd -->\n",
+  "body": "Completed in [`aaaaaaaaaaaa`](https://github.com/durable-workflow/.github/commit/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) on `main`.\n\nRequired public qualification Source Qualification (source-qualification.yml) passed in run [30200000001](https://github.com/durable-workflow/.github/actions/runs/30200000001).\n\nRequired cross-repository target qualification passed:\n- `durable-workflow.github.io:main` at [`bbbbbbbbbbbb`](https://github.com/durable-workflow/durable-workflow.github.io/commit/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb) ([qualification](https://github.com/durable-workflow/durable-workflow.github.io/actions/runs/30200000002))\n- `workflow:v2` at [`cccccccccccc`](https://github.com/durable-workflow/workflow/commit/cccccccccccccccccccccccccccccccccccccccc) ([qualification](https://github.com/durable-workflow/workflow/actions/runs/30200000003))\n\n<!-- durable-workflow-completion-source: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->\n<!-- durable-workflow-implementation-source: dddddddddddddddddddddddddddddddddddddddd -->\n",
   "completion_source": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "targets": [
     {
@@ -7,21 +7,27 @@
       "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "qualification_run": 30200000001,
       "required_check_run": 30200000001,
-      "repository": ".github"
+      "repository": ".github",
+      "workflow_name": "Source Qualification",
+      "workflow_path": "source-qualification.yml"
     },
     {
       "branch": "main",
       "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "qualification_run": 30200000002,
       "required_check_run": 30200000102,
-      "repository": "durable-workflow.github.io"
+      "repository": "durable-workflow.github.io",
+      "workflow_name": null,
+      "workflow_path": "qualification.yml"
     },
     {
       "branch": "v2",
       "commit": "cccccccccccccccccccccccccccccccccccccccc",
       "qualification_run": 30200000003,
       "required_check_run": 30200000103,
-      "repository": "workflow"
+      "repository": "workflow",
+      "workflow_name": null,
+      "workflow_path": "php.yml"
     }
   ]
 }
