@@ -2288,14 +2288,22 @@ class GitHubApi:
         repository: str,
         run_id: int,
         commit: str,
-        workflow_path: str,
+        workflow_path: str | None,
         workflow_name: str | None,
     ) -> bool:
         """Verify one cited run's repository, workflow, commit, and successful conclusion."""
 
         run = self.request("GET", f"/repos/{organization}/{repository}/actions/runs/{run_id}")
         run_repository = run.get("repository") if isinstance(run, Mapping) else None
-        expected_workflow_path = f".github/workflows/{workflow_path}"
+        run_workflow_name = run.get("name") if isinstance(run, Mapping) else None
+        run_workflow_path = run.get("path") if isinstance(run, Mapping) else None
+        actual_workflow_is_identified = (
+            isinstance(run_workflow_name, str)
+            and bool(run_workflow_name.strip())
+            and isinstance(run_workflow_path, str)
+            and re.fullmatch(r"\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml", run_workflow_path) is not None
+        )
+        expected_workflow_path = f".github/workflows/{workflow_path}" if workflow_path is not None else None
         return (
             isinstance(run, Mapping)
             and type(run.get("id")) is int
@@ -2303,8 +2311,9 @@ class GitHubApi:
             and run.get("status") == "completed"
             and run.get("conclusion") == "success"
             and run.get("head_sha") == commit
-            and run.get("path") == expected_workflow_path
-            and (workflow_name is None or run.get("name") == workflow_name)
+            and actual_workflow_is_identified
+            and (expected_workflow_path is None or run_workflow_path == expected_workflow_path)
+            and (workflow_name is None or run_workflow_name == workflow_name)
             and run.get("html_url") == f"https://github.com/{organization}/{repository}/actions/runs/{run_id}"
             and isinstance(run_repository, Mapping)
             and run_repository.get("full_name") == f"{organization}/{repository}"

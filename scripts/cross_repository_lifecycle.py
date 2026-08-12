@@ -16,6 +16,9 @@ REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 WORKFLOW_PATH_PATTERN = re.compile(r"[A-Za-z0-9_.-]+\.ya?ml")
 TRUSTED_REPOSITORY_ASSOCIATIONS = {"COLLABORATOR", "MEMBER", "OWNER"}
 REFERENCE_SNAPSHOT_ATTEMPTS = 2
+QualificationClaim = tuple[str | None, str | None, int]
+RecordedTarget = tuple[str, str, str, tuple[str, ...], tuple[QualificationClaim, ...], str | None]
+RecordedCompletion = tuple[str, tuple[RecordedTarget, ...]]
 
 
 class LifecycleError(RuntimeError):
@@ -229,10 +232,7 @@ def _pipeline_completion_record(
     organization: str,
     source_repository: str,
     targets: Sequence[Mapping[str, Any]],
-) -> tuple[
-    str,
-    tuple[tuple[str, str, str, tuple[str, ...], tuple[tuple[str | None, str, int], ...]], ...],
-] | None:
+) -> RecordedCompletion | None:
     """Read the exact immutable landing and run identities emitted by the protected merge gate."""
 
     expected: dict[tuple[str, str], tuple[tuple[str, ...], tuple[str, ...]]] = {}
@@ -260,15 +260,43 @@ def _pipeline_completion_record(
         return None
     source_branch = source_targets[0][1]
     lines = body.splitlines()
-    primary_pattern = re.compile(
-        rf"Completed in \[`([0-9a-f]{{7,40}})`\]\("
-        rf"https://github\.com/{re.escape(organization)}/{re.escape(source_repository)}/commit/"
-        rf"({COMMIT_PATTERN.pattern})\) on `({re.escape(source_branch)})`\."
-    )
+    source_commit_url = rf"https://github\.com/{re.escape(organization)}/{re.escape(source_repository)}/commit/"
+    linked_commit = rf"\[`([0-9a-f]{{7,40}})`\]\({source_commit_url}({COMMIT_PATTERN.pattern})\)"
+    primary_pattern = re.compile(rf"Completed in {linked_commit} on `({re.escape(source_branch)})`\.")
     primary_matches = [match for line in lines if (match := primary_pattern.fullmatch(line.strip())) is not None]
-    if len(primary_matches) != 1 or not primary_matches[0].group(2).startswith(primary_matches[0].group(1)):
+    implementation_pattern = re.compile(
+        rf"Implemented in {linked_commit}(?: on `{re.escape(source_branch)}`)?\."
+    )
+    completion_pattern = re.compile(
+        rf"Included by completion source {linked_commit}(?: on `{re.escape(source_branch)}`)?\."
+    )
+    implementation_matches = [
+        match for line in lines if (match := implementation_pattern.fullmatch(line.strip())) is not None
+    ]
+    completion_matches = [
+        match for line in lines if (match := completion_pattern.fullmatch(line.strip())) is not None
+    ]
+    implementation_commit: str | None = None
+    if (
+        len(primary_matches) == 1
+        and not implementation_matches
+        and not completion_matches
+        and primary_matches[0].group(2).startswith(primary_matches[0].group(1))
+    ):
+        source_commit = primary_matches[0].group(2)
+    elif (
+        not primary_matches
+        and len(implementation_matches) == 1
+        and len(completion_matches) == 1
+        and implementation_matches[0].group(2).startswith(implementation_matches[0].group(1))
+        and completion_matches[0].group(2).startswith(completion_matches[0].group(1))
+    ):
+        implementation_commit = implementation_matches[0].group(2)
+        source_commit = completion_matches[0].group(2)
+        if implementation_commit == source_commit:
+            return None
+    else:
         return None
-    source_commit = primary_matches[0].group(2)
 
     source_run_url = (
         rf"https://github\.com/{re.escape(organization)}/{re.escape(source_repository)}/actions/runs/"
@@ -292,6 +320,11 @@ def _pipeline_completion_record(
             r"\(`?(?P<path>[A-Za-z0-9_.-]+\.ya?ml)`?\) passed in run "
             r"(?P<run>[1-9][0-9]*): " + source_run_url + r"(?P<url_run>[1-9][0-9]*)\.?"
         ),
+        re.compile(
+            r"Required public qualification `(?P<name>[A-Za-z0-9][A-Za-z0-9 ._+:/-]*?)` "
+            r"\(`?(?P<path>[A-Za-z0-9_.-]+\.ya?ml)`?\) passed in "
+            r"\[run (?P<run>[1-9][0-9]*)\]\(" + source_run_url + r"(?P<url_run>[1-9][0-9]*)\)\.?"
+        ),
     )
     legacy_source_runs = [
         match
@@ -305,9 +338,9 @@ def _pipeline_completion_record(
         if (match := pattern.fullmatch(line.strip())) is not None
     ]
     source_workflow_paths = expected[(source_repository, source_branch)][1]
-    source_qualifications: tuple[tuple[str | None, str, int], ...]
-    if len(legacy_source_runs) == 1 and not named_source_runs and len(source_workflow_paths) == 1:
-        source_qualifications = ((None, source_workflow_paths[0], int(legacy_source_runs[0].group(1))),)
+    source_qualifications: tuple[QualificationClaim, ...]
+    if len(legacy_source_runs) == 1 and not named_source_runs:
+        source_qualifications = ((None, None, int(legacy_source_runs[0].group(1))),)
     elif not legacy_source_runs and named_source_runs:
         claims = [
             (match.group("name"), match.group("path"), int(match.group("run")))
@@ -329,9 +362,7 @@ def _pipeline_completion_record(
         rf"https://github\.com/{re.escape(organization)}/([a-z0-9_.-]+)/commit/"
         rf"({COMMIT_PATTERN.pattern})\) (?P<qualification>.+)"
     )
-    peer_records: list[
-        tuple[str, str, str, tuple[str, ...], tuple[tuple[str | None, str, int], ...]]
-    ] = []
+    peer_records: list[RecordedTarget] = []
     peer_lines_started = False
     for line in lines[headings[0] + 1 :]:
         stripped = line.strip()
@@ -380,8 +411,8 @@ def _pipeline_completion_record(
             (candidate for pattern in named_peer_patterns if (candidate := pattern.fullmatch(qualification_text))),
             None,
         )
-        if legacy_peer is not None and named_peer is None and len(workflow_paths) == 1:
-            qualifications = ((None, workflow_paths[0], int(legacy_peer.group("run"))),)
+        if legacy_peer is not None and named_peer is None:
+            qualifications = ((None, None, int(legacy_peer.group("run"))),)
         elif legacy_peer is None and named_peer is not None:
             if named_peer.group("run") != named_peer.group("url_run") or named_peer.group("path") not in workflow_paths:
                 return None
@@ -390,11 +421,12 @@ def _pipeline_completion_record(
             )
         else:
             return None
-        peer_records.append((repository, branch, commit, required_checks, qualifications))
+        peer_records.append((repository, branch, commit, required_checks, qualifications, None))
 
     expected_peers = set(expected) - set(source_targets)
     observed_peers = [
-        (repository, branch) for repository, branch, _commit, _checks, _qualifications in peer_records
+        (repository, branch)
+        for repository, branch, _commit, _checks, _qualifications, _implementation_commit in peer_records
     ]
     if (
         not peer_lines_started
@@ -411,6 +443,17 @@ def _pipeline_completion_record(
         or marker_matches[0] != source_commit
     ):
         return None
+    if implementation_commit is not None:
+        implementation_marker_pattern = re.compile(
+            rf"<!--\s*durable-workflow-implementation-source:\s*({COMMIT_PATTERN.pattern})\s*-->"
+        )
+        implementation_marker_matches = implementation_marker_pattern.findall(body)
+        if (
+            len(implementation_marker_matches) != 1
+            or body.count("durable-workflow-implementation-source:") != 1
+            or implementation_marker_matches[0] != implementation_commit
+        ):
+            return None
     records = [
         (
             source_repository,
@@ -418,6 +461,7 @@ def _pipeline_completion_record(
             source_commit,
             expected[(source_repository, source_branch)][0],
             source_qualifications,
+            implementation_commit,
         )
     ]
     records.extend(peer_records)
@@ -430,10 +474,7 @@ def _recorded_completion(
     source_repository: str,
     issue: Mapping[str, Any],
     targets: Sequence[Mapping[str, Any]],
-) -> tuple[
-    str,
-    tuple[tuple[str, str, str, tuple[str, ...], tuple[tuple[str | None, str, int], ...]], ...],
-] | None:
+) -> RecordedCompletion | None:
     """Select one semantically exact aggregate record from the authenticated lifecycle writer."""
 
     number = issue.get("number")
@@ -774,18 +815,12 @@ def _evaluate_recorded_target(
     client: Any,
     organization: str,
     target: Mapping[str, Any],
-    completion: tuple[
-        str,
-        str,
-        str,
-        tuple[str, ...],
-        tuple[tuple[str | None, str, int], ...],
-    ],
+    completion: RecordedTarget,
     completion_source: str,
 ) -> dict[str, Any]:
     """Independently revalidate one exact commit from a trusted aggregate completion record."""
 
-    repository, branch, commit, required_checks, qualifications = completion
+    repository, branch, commit, required_checks, qualifications, implementation_commit = completion
     required_workflows = [dict(workflow) for workflow in target.get("required_workflows", ())]
     result: dict[str, Any] = {
         "approval_at": None,
@@ -799,6 +834,7 @@ def _evaluate_recorded_target(
         "head_commit": None,
         "head_ref": None,
         "head_repository": None,
+        "implementation_commit": implementation_commit,
         "missing_checks": list(required_checks),
         "provenance": "authenticated-completion-record",
         "pull_author": None,
@@ -823,12 +859,19 @@ def _evaluate_recorded_target(
         return result
     if not client.commit_reaches_branch(organization, repository, commit, branch):
         return result
+    if implementation_commit is not None and not client.commit_reaches_branch(
+        organization, repository, implementation_commit, branch
+    ):
+        return result
     expected_workflow_paths = {
         str(workflow.get("path")) for workflow in required_workflows if isinstance(workflow.get("path"), str)
     }
     if (
         not qualifications
-        or any(path not in expected_workflow_paths for _name, path, _run_id in qualifications)
+        or any(
+            path is not None and path not in expected_workflow_paths
+            for _name, path, _run_id in qualifications
+        )
         or any(
             not client.successful_workflow_run(
                 organization,
@@ -1059,11 +1102,17 @@ def render_evidence(assessment: Mapping[str, Any]) -> str:
         else:
             bound_provenance = "Pending"
         commit = target["commit"]
-        landing = (
-            f"[`{commit[:12]}`](https://github.com/durable-workflow/{repository}/commit/{commit})"
-            if commit
-            else "Pending"
-        )
+        implementation_commit = target.get("implementation_commit")
+        if commit and isinstance(implementation_commit, str):
+            landing = (
+                f"completion [`{commit[:12]}`](https://github.com/durable-workflow/{repository}/commit/{commit}); "
+                f"implementation [`{implementation_commit[:12]}`]"
+                f"(https://github.com/durable-workflow/{repository}/commit/{implementation_commit})"
+            )
+        elif commit:
+            landing = f"[`{commit[:12]}`](https://github.com/durable-workflow/{repository}/commit/{commit})"
+        else:
+            landing = "Pending"
         missing = target["missing_checks"]
         required_checks = target["required_checks"]
         required_check_runs = target.get("required_check_runs", {})
@@ -1088,6 +1137,8 @@ def render_evidence(assessment: Mapping[str, Any]) -> str:
                 f"`{workflow_name}` (`{workflow_path}`)"
                 if isinstance(workflow_name, str) and isinstance(workflow_path, str)
                 else f"`{workflow_path}`"
+                if isinstance(workflow_path, str)
+                else "legacy generic qualification"
             )
             cited_runs.append(
                 f"{workflow_identity} [cited run `{run_id}`]"

@@ -225,7 +225,7 @@ class FakeGitHubApi:
         self.successful_workflow_runs: set[tuple[str, int, str, str, str | None]] = set()
         self.reachability_requests: list[tuple[str, str, str]] = []
         self.check_requests: list[tuple[str, str]] = []
-        self.workflow_run_requests: list[tuple[str, int, str, str, str | None]] = []
+        self.workflow_run_requests: list[tuple[str, int, str, str | None, str | None]] = []
         self.comments: dict[tuple[str, int], str] = {}
         self.trusted_comments: dict[tuple[str, int], list[dict[str, Any]]] = {}
         self.comment_updates: list[tuple[str, int, str]] = []
@@ -384,12 +384,25 @@ class FakeGitHubApi:
         repository: str,
         run_id: int,
         commit: str,
-        workflow_path: str,
+        workflow_path: str | None,
         workflow_name: str | None,
     ) -> bool:
         identity = (repository, run_id, commit, workflow_path, workflow_name)
         self.workflow_run_requests.append(identity)
-        return identity in self.successful_workflow_runs
+        return any(
+            actual_repository == repository
+            and actual_run_id == run_id
+            and actual_commit == commit
+            and (workflow_path is None or actual_workflow_path == workflow_path)
+            and (workflow_name is None or actual_workflow_name == workflow_name)
+            for (
+                actual_repository,
+                actual_run_id,
+                actual_commit,
+                actual_workflow_path,
+                actual_workflow_name,
+            ) in self.successful_workflow_runs
+        )
 
     def list_trusted_issue_comments(
         self,
@@ -2744,6 +2757,18 @@ class GitHubApiTest(unittest.TestCase):
 
         self.assertTrue(successful)
 
+        with patch("urllib.request.urlopen", return_value=FakeResponse(json.dumps(payload).encode())):
+            legacy_generic = client.successful_workflow_run(
+                "durable-workflow",
+                "workflow",
+                30200000003,
+                commit,
+                None,
+                None,
+            )
+
+        self.assertTrue(legacy_generic)
+
         for field, value in (
             ("head_sha", "d" * 40),
             ("html_url", "https://github.com/durable-workflow/workflow/actions/runs/latest"),
@@ -2764,6 +2789,25 @@ class GitHubApiTest(unittest.TestCase):
                             commit,
                             "php.yml",
                             "PHP",
+                        )
+                    )
+
+        for field, value in (
+            ("name", ""),
+            ("path", ".github/workflows/README.md"),
+        ):
+            with self.subTest(generic_workflow_field=field):
+                rejected = dict(payload)
+                rejected[field] = value
+                with patch("urllib.request.urlopen", return_value=FakeResponse(json.dumps(rejected).encode())):
+                    self.assertFalse(
+                        client.successful_workflow_run(
+                            "durable-workflow",
+                            "workflow",
+                            30200000003,
+                            commit,
+                            None,
+                            None,
                         )
                     )
 
@@ -4173,6 +4217,140 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual("closed", parent["state"])
         self.assertEqual({"status:done"}, label_names(parent) & STATUS_LABELS)
         self.assert_no_github_mutations()
+
+    def test_legacy_generic_completion_uses_the_cited_runs_authenticated_workflow(self) -> None:
+        fixture = pipeline_completion_fixture()
+        targets = qualification_targets(qualification_fixture())
+        selected = [targets[record["repository"]] for record in fixture["targets"]]
+        source = next(record for record in fixture["targets"] if record["repository"] == ".github")
+        named_line = next(
+            line for line in fixture["body"].splitlines() if line.startswith("Required public qualification ")
+        )
+        fixture["body"] = fixture["body"].replace(
+            named_line,
+            "Required public qualification passed: "
+            f"https://github.com/durable-workflow/.github/actions/runs/{source['qualification_run']}",
+        )
+        install_pipeline_completion_evidence(self.client, fixture, targets)
+        self.client.successful_workflow_runs.remove(
+            (
+                source["repository"],
+                source["qualification_run"],
+                source["commit"],
+                source["workflow_path"],
+                source["workflow_name"],
+            )
+        )
+        self.client.successful_workflow_runs.add(
+            (
+                source["repository"],
+                source["qualification_run"],
+                source["commit"],
+                "public-boundary.yml",
+                "Public Boundary",
+            )
+        )
+        source_key = (source["repository"], source["commit"])
+        self.client.successful_check_runs[source_key] = {
+            check: 30200000901 for check in targets[source["repository"]]["required_checks"]
+        }
+
+        assessment = evaluate_lifecycle(
+            self.client,
+            "durable-workflow",
+            ".github",
+            {"number": 99},
+            selected,
+            trusted_actors=self.policy["intake"]["trusted_actors"],
+        )
+
+        self.assertTrue(assessment["complete"])
+        self.assertTrue(
+            all(
+                requested_path is None and requested_name is None
+                for _repository, _run, _commit, requested_path, requested_name in self.client.workflow_run_requests
+            )
+        )
+        source_result = next(
+            target for target in assessment["targets"] if target["repository"] == source["repository"]
+        )
+        self.assertNotIn(source["qualification_run"], source_result["required_check_runs"].values())
+
+    def test_split_completion_record_binds_backticked_workflow_and_both_source_commits(self) -> None:
+        fixture = pipeline_completion_fixture()
+        targets = qualification_targets(qualification_fixture())
+        selected = [targets[record["repository"]] for record in fixture["targets"]]
+        source = next(record for record in fixture["targets"] if record["repository"] == ".github")
+        implementation_commit = "e" * 40
+        completed_line = next(line for line in fixture["body"].splitlines() if line.startswith("Completed in "))
+        fixture["body"] = fixture["body"].replace(
+            completed_line,
+            "Implemented in "
+            f"[`{implementation_commit[:12]}`](https://github.com/durable-workflow/.github/commit/"
+            f"{implementation_commit}) on `main`.\n"
+            "Included by completion source "
+            f"[`{source['commit'][:12]}`](https://github.com/durable-workflow/.github/commit/"
+            f"{source['commit']}) on `main`.",
+        )
+        named_line = next(
+            line for line in fixture["body"].splitlines() if line.startswith("Required public qualification ")
+        )
+        fixture["body"] = fixture["body"].replace(
+            named_line,
+            f"Required public qualification `{source['workflow_name']}` (`{source['workflow_path']}`) "
+            f"passed in [run {source['qualification_run']}]"
+            f"(https://github.com/durable-workflow/.github/actions/runs/{source['qualification_run']}).",
+        ).replace(
+            "durable-workflow-implementation-source: " + "d" * 40,
+            f"durable-workflow-implementation-source: {implementation_commit}",
+        )
+        install_pipeline_completion_evidence(self.client, fixture, targets)
+        self.client.reachable.add((source["repository"], implementation_commit, source["branch"]))
+
+        assessment = evaluate_lifecycle(
+            self.client,
+            "durable-workflow",
+            ".github",
+            {"number": 99},
+            selected,
+            trusted_actors=self.policy["intake"]["trusted_actors"],
+        )
+
+        self.assertTrue(assessment["complete"])
+        source_result = next(
+            target for target in assessment["targets"] if target["repository"] == source["repository"]
+        )
+        self.assertEqual(implementation_commit, source_result["implementation_commit"])
+
+        trusted_comment = self.client.trusted_comments[(".github", 99)][0]
+        trusted_comment["body"] = fixture["body"].replace(
+            f"durable-workflow-implementation-source: {implementation_commit}",
+            "durable-workflow-implementation-source: " + "f" * 40,
+        )
+        forged_marker = evaluate_lifecycle(
+            self.client,
+            "durable-workflow",
+            ".github",
+            {"number": 99},
+            selected,
+            trusted_actors=self.policy["intake"]["trusted_actors"],
+        )
+        self.assertFalse(forged_marker["complete"])
+        trusted_comment["body"] = fixture["body"]
+
+        self.client.reachable.remove((source["repository"], implementation_commit, source["branch"]))
+        rejected = evaluate_lifecycle(
+            self.client,
+            "durable-workflow",
+            ".github",
+            {"number": 99},
+            selected,
+            trusted_actors=self.policy["intake"]["trusted_actors"],
+        )
+
+        self.assertFalse(rejected["complete"])
+        by_repository = {target["repository"]: target for target in rejected["targets"]}
+        self.assertEqual("pending:landing-not-on-target", by_repository[source["repository"]]["state"])
 
     def test_mixed_pull_request_and_protected_branch_completion_preserves_later_regression(self) -> None:
         fixture = pipeline_completion_fixture()
