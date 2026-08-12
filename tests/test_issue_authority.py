@@ -4352,6 +4352,230 @@ class MigrationTest(unittest.TestCase):
         by_repository = {target["repository"]: target for target in rejected["targets"]}
         self.assertEqual("pending:landing-not-on-target", by_repository[source["repository"]]["state"])
 
+    def test_named_completion_without_a_path_authenticates_the_runs_actual_workflow(self) -> None:
+        targets = qualification_targets(qualification_fixture())
+        for spelling in ("linked", "linked-backticked"):
+            with self.subTest(spelling=spelling):
+                fixture = pipeline_completion_fixture()
+                source = next(record for record in fixture["targets"] if record["repository"] == ".github")
+                named_line = next(
+                    line for line in fixture["body"].splitlines() if line.startswith("Required public qualification ")
+                )
+                if spelling == "linked":
+                    replacement = (
+                        f"Required public qualification {source['workflow_name']} passed in run "
+                        f"[{source['qualification_run']}]"
+                        f"(https://github.com/durable-workflow/.github/actions/runs/"
+                        f"{source['qualification_run']})."
+                    )
+                else:
+                    replacement = (
+                        f"Required public qualification `{source['workflow_name']}` passed in "
+                        f"[run {source['qualification_run']}]"
+                        f"(https://github.com/durable-workflow/.github/actions/runs/"
+                        f"{source['qualification_run']})."
+                    )
+                fixture["body"] = fixture["body"].replace(named_line, replacement)
+                client = FakeGitHubApi(self.policy)
+                install_pipeline_completion_evidence(client, fixture, targets)
+                selected = [targets[record["repository"]] for record in fixture["targets"]]
+
+                assessment = evaluate_lifecycle(
+                    client,
+                    "durable-workflow",
+                    ".github",
+                    {"number": 99},
+                    selected,
+                    trusted_actors=self.policy["intake"]["trusted_actors"],
+                )
+
+                self.assertTrue(assessment["complete"])
+                self.assertIn(
+                    (
+                        source["repository"],
+                        source["qualification_run"],
+                        source["commit"],
+                        None,
+                        source["workflow_name"],
+                    ),
+                    client.workflow_run_requests,
+                )
+                rendered = render_evidence(assessment)
+                self.assertIn(f"`{source['workflow_name']}` (authenticated workflow path)", rendered)
+
+                client.successful_workflow_runs.remove(
+                    (
+                        source["repository"],
+                        source["qualification_run"],
+                        source["commit"],
+                        source["workflow_path"],
+                        source["workflow_name"],
+                    )
+                )
+                client.successful_workflow_runs.add(
+                    (
+                        source["repository"],
+                        source["qualification_run"],
+                        source["commit"],
+                        source["workflow_path"],
+                        "Different workflow",
+                    )
+                )
+                rejected = evaluate_lifecycle(
+                    client,
+                    "durable-workflow",
+                    ".github",
+                    {"number": 99},
+                    selected,
+                    trusted_actors=self.policy["intake"]["trusted_actors"],
+                )
+                by_repository = {target["repository"]: target for target in rejected["targets"]}
+                self.assertEqual("pending:qualification-identity", by_repository[source["repository"]]["state"])
+
+    def test_historical_named_workflow_is_authenticated_independently_of_current_policy(self) -> None:
+        fixture = pipeline_completion_fixture()
+        targets = qualification_targets(qualification_fixture())
+        selected = [targets[record["repository"]] for record in fixture["targets"]]
+        source = next(record for record in fixture["targets"] if record["repository"] == ".github")
+        named_line = next(
+            line for line in fixture["body"].splitlines() if line.startswith("Required public qualification ")
+        )
+        historical_name = "Beta Candidate"
+        historical_path = "beta-candidate.yml"
+        fixture["body"] = fixture["body"].replace(
+            named_line,
+            f"Required public qualification {historical_name} ({historical_path}) passed in run "
+            f"[{source['qualification_run']}]"
+            f"(https://github.com/durable-workflow/.github/actions/runs/{source['qualification_run']}).",
+        )
+        install_pipeline_completion_evidence(self.client, fixture, targets)
+        self.client.successful_workflow_runs.remove(
+            (
+                source["repository"],
+                source["qualification_run"],
+                source["commit"],
+                source["workflow_path"],
+                source["workflow_name"],
+            )
+        )
+        self.client.successful_workflow_runs.add(
+            (
+                source["repository"],
+                source["qualification_run"],
+                source["commit"],
+                historical_path,
+                historical_name,
+            )
+        )
+
+        assessment = evaluate_lifecycle(
+            self.client,
+            "durable-workflow",
+            ".github",
+            {"number": 99},
+            selected,
+            trusted_actors=self.policy["intake"]["trusted_actors"],
+        )
+
+        self.assertTrue(assessment["complete"])
+        self.assertIn(
+            (
+                source["repository"],
+                source["qualification_run"],
+                source["commit"],
+                historical_path,
+                historical_name,
+            ),
+            self.client.workflow_run_requests,
+        )
+
+        trusted_comment = self.client.trusted_comments[(".github", 99)][0]
+        trusted_comment["body"] = fixture["body"].replace(historical_path, "../beta-candidate.yml")
+        malformed = evaluate_lifecycle(
+            self.client,
+            "durable-workflow",
+            ".github",
+            {"number": 99},
+            selected,
+            trusted_actors=self.policy["intake"]["trusted_actors"],
+        )
+        self.assertFalse(malformed["complete"])
+        trusted_comment["body"] = fixture["body"]
+
+        self.client.successful_check_runs[(source["repository"], source["commit"])] = {}
+        missing_checks = evaluate_lifecycle(
+            self.client,
+            "durable-workflow",
+            ".github",
+            {"number": 99},
+            selected,
+            trusted_actors=self.policy["intake"]["trusted_actors"],
+        )
+        by_repository = {target["repository"]: target for target in missing_checks["targets"]}
+        self.assertEqual("pending:qualification", by_repository[source["repository"]]["state"])
+
+    def test_historical_control_plane_alias_maps_only_to_dot_github(self) -> None:
+        targets = qualification_targets(qualification_fixture())
+        source = targets["sdk-python"]
+        peer = targets[".github"]
+        source_commit = "a" * 40
+        peer_commit = "b" * 40
+        source_run = 30200000011
+        peer_run = 30200000012
+        source_workflow = source["required_workflows"][0]["path"]
+        peer_workflow = peer["required_workflows"][0]["path"]
+        body = (
+            f"Completed in [`{source_commit[:12]}`](https://github.com/durable-workflow/sdk-python/commit/"
+            f"{source_commit}) on `main`.\n\n"
+            f"Required public qualification Python Target Qualification ({source_workflow}) passed in run "
+            f"[{source_run}](https://github.com/durable-workflow/sdk-python/actions/runs/{source_run}).\n\n"
+            "Required cross-repository target qualification passed:\n"
+            f"- `github-control-plane:main` at [`{peer_commit[:12]}`]"
+            f"(https://github.com/durable-workflow/.github/commit/{peer_commit}) "
+            f"([qualification](https://github.com/durable-workflow/.github/actions/runs/{peer_run}))\n\n"
+            f"<!-- durable-workflow-completion-source: {source_commit} -->\n"
+        )
+        for target, commit, run, workflow, name in (
+            (source, source_commit, source_run, source_workflow, "Python Target Qualification"),
+            (peer, peer_commit, peer_run, peer_workflow, "Source Qualification"),
+        ):
+            repository = target["repository"]
+            self.client.reachable.add((repository, commit, target["branch"]))
+            self.client.successful_workflow_runs.add((repository, run, commit, workflow, name))
+            self.client.successful_check_runs[(repository, commit)] = {
+                check: run for check in target["required_checks"]
+            }
+        self.client.trusted_comments[("sdk-python", 16)] = [
+            {"body": body, "id": 67, "user": {"id": 7, "login": "durable-workflow-ops"}}
+        ]
+        selected = [source, peer]
+
+        assessment = evaluate_lifecycle(
+            self.client,
+            "durable-workflow",
+            "sdk-python",
+            {"number": 16},
+            selected,
+            trusted_actors=self.policy["intake"]["trusted_actors"],
+        )
+
+        self.assertTrue(assessment["complete"])
+        self.assertEqual([".github", "sdk-python"], sorted(target["repository"] for target in assessment["targets"]))
+
+        self.client.trusted_comments[("sdk-python", 16)][0]["body"] = body.replace(
+            "github-control-plane:main",
+            "control-plane:main",
+        )
+        arbitrary_alias = evaluate_lifecycle(
+            self.client,
+            "durable-workflow",
+            "sdk-python",
+            {"number": 16},
+            selected,
+            trusted_actors=self.policy["intake"]["trusted_actors"],
+        )
+        self.assertFalse(arbitrary_alias["complete"])
+
     def test_mixed_pull_request_and_protected_branch_completion_preserves_later_regression(self) -> None:
         fixture = pipeline_completion_fixture()
         targets = qualification_targets(qualification_fixture())

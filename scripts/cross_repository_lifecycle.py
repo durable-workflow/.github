@@ -15,6 +15,7 @@ COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 WORKFLOW_PATH_PATTERN = re.compile(r"[A-Za-z0-9_.-]+\.ya?ml")
 TRUSTED_REPOSITORY_ASSOCIATIONS = {"COLLABORATOR", "MEMBER", "OWNER"}
+RECORDED_REPOSITORY_ALIASES = {"github-control-plane": ".github"}
 REFERENCE_SNAPSHOT_ATTEMPTS = 2
 QualificationClaim = tuple[str | None, str | None, int]
 RecordedTarget = tuple[str, str, str, tuple[str, ...], tuple[QualificationClaim, ...], str | None]
@@ -325,6 +326,14 @@ def _pipeline_completion_record(
             r"\(`?(?P<path>[A-Za-z0-9_.-]+\.ya?ml)`?\) passed in "
             r"\[run (?P<run>[1-9][0-9]*)\]\(" + source_run_url + r"(?P<url_run>[1-9][0-9]*)\)\.?"
         ),
+        re.compile(
+            r"Required public qualification (?P<name>[A-Za-z0-9][A-Za-z0-9 ._+:/-]*?) "
+            r"passed in run \[(?P<run>[1-9][0-9]*)\]\(" + source_run_url + r"(?P<url_run>[1-9][0-9]*)\)\.?"
+        ),
+        re.compile(
+            r"Required public qualification `(?P<name>[A-Za-z0-9][A-Za-z0-9 ._+:/-]*?)` "
+            r"passed in \[run (?P<run>[1-9][0-9]*)\]\(" + source_run_url + r"(?P<url_run>[1-9][0-9]*)\)\.?"
+        ),
     )
     legacy_source_runs = [
         match
@@ -337,15 +346,14 @@ def _pipeline_completion_record(
         for pattern in named_source_qualification_patterns
         if (match := pattern.fullmatch(line.strip())) is not None
     ]
-    source_workflow_paths = expected[(source_repository, source_branch)][1]
     source_qualifications: tuple[QualificationClaim, ...]
     if len(legacy_source_runs) == 1 and not named_source_runs:
         source_qualifications = ((None, None, int(legacy_source_runs[0].group(1))),)
     elif not legacy_source_runs and named_source_runs:
         claims = [
-            (match.group("name"), match.group("path"), int(match.group("run")))
+            (match.group("name"), match.groupdict().get("path"), int(match.group("run")))
             for match in named_source_runs
-            if match.group("run") == match.group("url_run") and match.group("path") in source_workflow_paths
+            if match.group("run") == match.group("url_run")
         ]
         if len(claims) != len(named_source_runs) or len(claims) != len(set(claims)):
             return None
@@ -378,7 +386,8 @@ def _pipeline_completion_record(
         match = peer_pattern.fullmatch(stripped)
         if match is None:
             return None
-        repository, branch, short_commit, url_repository, commit = match.groups()[:5]
+        recorded_repository, branch, short_commit, url_repository, commit = match.groups()[:5]
+        repository = RECORDED_REPOSITORY_ALIASES.get(recorded_repository, recorded_repository)
         identity = (repository, branch)
         if (
             repository != url_repository
@@ -863,26 +872,16 @@ def _evaluate_recorded_target(
         organization, repository, implementation_commit, branch
     ):
         return result
-    expected_workflow_paths = {
-        str(workflow.get("path")) for workflow in required_workflows if isinstance(workflow.get("path"), str)
-    }
-    if (
-        not qualifications
-        or any(
-            path is not None and path not in expected_workflow_paths
-            for _name, path, _run_id in qualifications
+    if not qualifications or any(
+        not client.successful_workflow_run(
+            organization,
+            repository,
+            run_id,
+            commit,
+            path,
+            name,
         )
-        or any(
-            not client.successful_workflow_run(
-                organization,
-                repository,
-                run_id,
-                commit,
-                path,
-                name,
-            )
-            for name, path, run_id in qualifications
-        )
+        for name, path, run_id in qualifications
     ):
         result["state"] = "pending:qualification-identity"
         return result
@@ -1138,6 +1137,8 @@ def render_evidence(assessment: Mapping[str, Any]) -> str:
                 if isinstance(workflow_name, str) and isinstance(workflow_path, str)
                 else f"`{workflow_path}`"
                 if isinstance(workflow_path, str)
+                else f"`{workflow_name}` (authenticated workflow path)"
+                if isinstance(workflow_name, str)
                 else "legacy generic qualification"
             )
             cited_runs.append(
