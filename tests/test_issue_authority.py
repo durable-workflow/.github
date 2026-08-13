@@ -27,6 +27,7 @@ from scripts.cross_repository_lifecycle import (
 from scripts.issue_authority import (
     COMPLETION_REQUIRED_LABEL,
     COMPLETION_VERIFIED_LABEL,
+    FROZEN_LIFECYCLE_EVIDENCE_MARKER,
     INTAKE_SCHEMA,
     OWNER_LABELS,
     STATUS_LABELS,
@@ -223,6 +224,7 @@ class FakeGitHubApi:
         self.successful_checks: dict[tuple[str, str], set[str]] = {}
         self.successful_check_runs: dict[tuple[str, str], dict[str, int]] = {}
         self.successful_workflow_runs: set[tuple[str, int, str, str, str | None]] = set()
+        self.successful_workflow_jobs: dict[tuple[str, int], dict[str, int]] = {}
         self.reachability_requests: list[tuple[str, str, str]] = []
         self.check_requests: list[tuple[str, str]] = []
         self.workflow_run_requests: list[tuple[str, int, str, str | None, str | None]] = []
@@ -403,6 +405,33 @@ class FakeGitHubApi:
                 actual_workflow_name,
             ) in self.successful_workflow_runs
         )
+
+    def successful_historical_workflow_run(
+        self,
+        organization: str,
+        repository: str,
+        run_id: int,
+        commit: str,
+        _branch: str,
+        workflow_path: str,
+        workflow_name: str,
+    ) -> bool:
+        return self.successful_workflow_run(
+            organization,
+            repository,
+            run_id,
+            commit,
+            workflow_path,
+            workflow_name,
+        )
+
+    def successful_historical_workflow_jobs(
+        self,
+        _organization: str,
+        repository: str,
+        run_id: int,
+    ) -> dict[str, int]:
+        return dict(self.successful_workflow_jobs.get((repository, run_id), {}))
 
     def list_trusted_issue_comments(
         self,
@@ -841,7 +870,7 @@ class ContractValidationTest(unittest.TestCase):
             qualification_fixture(),
         )
 
-        self.assertEqual("durable-workflow.legacy-cross-repository-targets/v4", migration["schema"])
+        self.assertEqual("durable-workflow.legacy-cross-repository-targets/v5", migration["schema"])
         self.assertTrue(migration["authorities"])
         self.assertEqual(
             [
@@ -863,6 +892,47 @@ class ContractValidationTest(unittest.TestCase):
         self.assertEqual(
             set(qualification_targets(qualification_fixture())),
             {landing["repository"] for landing in migration["protected_branch_landings"]},
+        )
+        frozen = {
+            (record["repository"], record["number"]): record
+            for record in migration["frozen_lifecycle_migrations"]
+        }
+        self.assertEqual(
+            {
+                ("durable-workflow.github.io", 63),
+                ("waterline", 79),
+            },
+            set(frozen),
+        )
+        documentation = frozen[("durable-workflow.github.io", 63)]
+        self.assertEqual("complete", documentation["outcome"])
+        self.assertEqual(
+            [30595766880, 30589737606],
+            [landing["qualification"]["run"] for landing in documentation["landings"]],
+        )
+        self.assertEqual(
+            [91047691168, 91030116510],
+            [landing["qualification"]["checks"][0]["job"] for landing in documentation["landings"]],
+        )
+        self.assertEqual(
+            "30e18cbdb4782516901991a78dd55361373bd7779a17a6be67276f071b125426",
+            documentation["approved_issue_revision_sha256"],
+        )
+        self.assertEqual(
+            "5ffcae7ed560f99c217788fb62df36cfc0df75f149ae349db661862e45ccc55b",
+            documentation["authority_snapshot_sha256"],
+        )
+        waterline = frozen[("waterline", 79)]
+        self.assertEqual("missing-evidence", waterline["outcome"])
+        self.assertEqual([], waterline["landings"])
+        self.assertIn("responsive opened-dialog qualification", waterline["missing_evidence"])
+        self.assertEqual(
+            "35bba728e5e08ebd8dc37f4929929c2d4cfb94e9970d477091cd99b88712a0fc",
+            waterline["approved_issue_revision_sha256"],
+        )
+        self.assertEqual(
+            "591adaf96dfbd9f9b0f8b31e3a213f73660dee14de0507d24b7779529794928d",
+            waterline["authority_snapshot_sha256"],
         )
         migrated_beta = {
             authority["id"]: authority["targets"]
@@ -2159,6 +2229,105 @@ class IssueIntakeTest(unittest.TestCase):
         self.assertEqual([], manifest["issues"])
         self.assertIn("without cross-repository authority", manifest["rejected_issues"][0]["reason"])
 
+    def test_frozen_lifecycle_migrations_bind_runtime_revisions_to_exact_trusted_creation(self) -> None:
+        policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
+        migration = legacy_target_fixture()
+        issues: dict[str, list[tuple[dict[str, Any], list[dict[str, Any]]]]] = {}
+        expected: dict[tuple[str, int], str] = {}
+        for frozen in migration["frozen_lifecycle_migrations"]:
+            approval_actor = next(
+                actor
+                for actor in policy["intake"]["trusted_actors"]
+                if hashlib.sha256(actor.casefold().encode("utf-8")).hexdigest()
+                == frozen["approval_actor_sha256"]
+            )
+            body = (
+                "Reviewed historical authority.\n\n"
+                f"{EVIDENCE_MARKER}\n\n"
+                "### Required source targets\n\n"
+                + "\n".join(frozen["declared_targets"])
+            )
+            issue = intake_issue(
+                author=approval_actor,
+                body=body,
+                labels=["authority:github", "kind:cross-repository", "priority:P2", "status:done"],
+                number=frozen["number"],
+            )
+            issue["created_at"] = frozen["approval_at"]
+            issue["state"] = "closed"
+            issue["state_reason"] = "completed"
+            issues.setdefault(frozen["repository"], []).append((issue, []))
+            revision = issue_revision_digest(issue["title"], issue["body"])
+            frozen["approved_issue_revision_sha256"] = revision
+            expected[(frozen["repository"], frozen["number"])] = revision
+
+        manifest, inventory = reconstruct_intake(
+            policy,
+            FakeDiscovery(policy, issues),
+            target_qualification=qualification_fixture(),
+            legacy_cross_repository_targets=migration,
+        )
+
+        records = {
+            (record["repository"], record["number"]): record for record in manifest["issues"]
+        }
+        self.assertEqual(set(expected), set(records))
+        for identity, revision in expected.items():
+            frozen = records[identity]["frozen_cross_repository_lifecycle"]
+            self.assertIsNotNone(frozen)
+            self.assertEqual(revision, frozen["approved_issue_revision_sha256"])
+            self.assertEqual(
+                frozen["approval_actor_sha256"],
+                hashlib.sha256(
+                    records[identity]["approval_actor"].casefold().encode("utf-8")
+                ).hexdigest(),
+            )
+        verified = verify_intake_manifest(
+            policy,
+            manifest,
+            FakeDiscovery(policy, issues),
+            target_qualification=qualification_fixture(),
+            legacy_cross_repository_targets=migration,
+        )
+        self.assertEqual(inventory, verified)
+
+        drifted = copy.deepcopy(issues)
+        drifted["durable-workflow.github.io"][0][0]["title"] += " after review"
+        drifted_manifest, _drifted_inventory = reconstruct_intake(
+            policy,
+            FakeDiscovery(policy, drifted),
+            target_qualification=qualification_fixture(),
+            legacy_cross_repository_targets=migration,
+        )
+        self.assertNotIn(
+            ("durable-workflow.github.io", 63),
+            {
+                (record["repository"], record["number"])
+                for record in drifted_manifest["issues"]
+            },
+        )
+        self.assertIn(
+            "current revision differs from reviewed frozen authority",
+            next(
+                record["reason"]
+                for record in drifted_manifest["rejected_issues"]
+                if (record["repository"], record["number"])
+                == ("durable-workflow.github.io", 63)
+            ),
+        )
+
+        changed = copy.deepcopy(issues)
+        changed_issue = changed["durable-workflow.github.io"][0][0]
+        changed_issue["last_edited_at"] = "2026-07-30T20:38:00Z"
+        with self.assertRaisesRegex(AuthorityError, "changed after read-only discovery"):
+            verify_intake_manifest(
+                policy,
+                manifest,
+                FakeDiscovery(policy, changed),
+                target_qualification=qualification_fixture(),
+                legacy_cross_repository_targets=migration,
+            )
+
     def test_legacy_cross_repository_authority_requires_edit_and_reapproval(self) -> None:
         policy, _backlog, _policy_schema, _backlog_schema = contract_fixture()
         legacy = intake_issue(
@@ -2737,6 +2906,8 @@ class GitHubApiTest(unittest.TestCase):
         workflow_id = 314161405
         payload = {
             "conclusion": "success",
+            "event": "push",
+            "head_branch": "v2",
             "head_sha": commit,
             "html_url": "https://github.com/durable-workflow/workflow/actions/runs/30200000003",
             "id": 30200000003,
@@ -2878,6 +3049,84 @@ class GitHubApiTest(unittest.TestCase):
                             None,
                         )
                     )
+
+    def test_historical_workflow_evidence_does_not_depend_on_current_definition_name(self) -> None:
+        client = GitHubApi("writer-token", read_token="job-token")
+        commit = "c" * 40
+        run_id = 30200000003
+        payload = {
+            "conclusion": "success",
+            "event": "push",
+            "head_branch": "v2",
+            "head_sha": commit,
+            "html_url": f"https://github.com/durable-workflow/workflow/actions/runs/{run_id}",
+            "id": run_id,
+            "name": "Archived qualification",
+            "path": ".github/workflows/archived.yml",
+            "repository": {"full_name": "durable-workflow/workflow"},
+            "status": "completed",
+        }
+
+        with patch("urllib.request.urlopen", return_value=FakeResponse(json.dumps(payload).encode())) as urlopen:
+            successful = client.successful_historical_workflow_run(
+                "durable-workflow",
+                "workflow",
+                run_id,
+                commit,
+                "v2",
+                "archived.yml",
+                "Archived qualification",
+            )
+
+        self.assertTrue(successful)
+        self.assertEqual(1, urlopen.call_count)
+
+        for field, value in (("event", "pull_request"), ("head_branch", "main")):
+            with self.subTest(field=field):
+                rejected = {**payload, field: value}
+                with patch(
+                    "urllib.request.urlopen",
+                    return_value=FakeResponse(json.dumps(rejected).encode()),
+                ):
+                    self.assertFalse(
+                        client.successful_historical_workflow_run(
+                            "durable-workflow",
+                            "workflow",
+                            run_id,
+                            commit,
+                            "v2",
+                            "archived.yml",
+                            "Archived qualification",
+                        )
+                    )
+
+        jobs = {
+            "jobs": [
+                {
+                    "conclusion": "success",
+                    "html_url": f"https://github.com/durable-workflow/workflow/actions/runs/{run_id}/job/91",
+                    "id": 91,
+                    "name": "Target branch qualification",
+                    "status": "completed",
+                },
+                {
+                    "conclusion": "failure",
+                    "html_url": f"https://github.com/durable-workflow/workflow/actions/runs/{run_id}/job/92",
+                    "id": 92,
+                    "name": "Failed check",
+                    "status": "completed",
+                },
+            ],
+            "total_count": 2,
+        }
+        with patch("urllib.request.urlopen", return_value=FakeResponse(json.dumps(jobs).encode())):
+            successful_jobs = client.successful_historical_workflow_jobs(
+                "durable-workflow",
+                "workflow",
+                run_id,
+            )
+
+        self.assertEqual({"Target branch qualification": 91}, successful_jobs)
 
     def test_issue_state_mutations_send_the_explicit_terminal_reason(self) -> None:
         client = GitHubApi("writer-token")
@@ -3764,6 +4013,174 @@ class MigrationTest(unittest.TestCase):
         self.assertIn(COMPLETION_REQUIRED_LABEL, label_names(issue))
         self.assertIn((repository, issue["number"], sorted(label_names(issue))), self.client.replacements)
         self.assertEqual([], self.client.state_updates)
+
+    def test_frozen_documentation_completion_revalidates_exact_runs_and_is_terminal_on_replay(self) -> None:
+        for item in self.backlog["items"]:
+            if item["kind"] == "cross-repository":
+                item["kind"] = "feature"
+        apply_backlog(self.policy, self.backlog, self.client)
+        migration = next(
+            record
+            for record in legacy_target_fixture()["frozen_lifecycle_migrations"]
+            if (record["repository"], record["number"]) == ("durable-workflow.github.io", 63)
+        )
+        frozen = {**copy.deepcopy(migration), "approved_issue_revision_sha256": "a" * 64}
+        qualified = qualification_targets(qualification_fixture())
+        selected = [
+            copy.deepcopy(qualified[target.split("/", 1)[1].rsplit("@", 1)[0]])
+            for target in migration["declared_targets"]
+        ]
+        for target in selected:
+            target["required_checks"] = ["Renamed after the frozen migration"]
+            target["required_workflows"] = [
+                {
+                    "path": "renamed-after-migration.yml",
+                    "required_check": "Renamed after the frozen migration",
+                }
+            ]
+        issue = {
+            "body": "A plain completion sentence is not authority.",
+            "html_url": "https://github.com/durable-workflow/durable-workflow.github.io/issues/63",
+            "labels": [
+                {"name": "authority:github"},
+                {"name": "kind:cross-repository"},
+                {"name": "priority:P2"},
+                {"name": "status:triage"},
+            ],
+            "milestone": None,
+            "number": 63,
+            "state": "open",
+            "state_reason": None,
+            "title": "Archived documentation authority",
+        }
+        self.client.issues["durable-workflow.github.io"].append(issue)
+        self.client.trusted_comments[("durable-workflow.github.io", 63)] = [
+            {
+                "body": "Completed in plain prose.",
+                "id": 9,
+                "user": {"id": 99, "login": "external-contributor"},
+            }
+        ]
+        for landing in migration["landings"]:
+            repository = landing["repository"]
+            commit = landing["commit"]
+            qualification = landing["qualification"]
+            self.client.reachable.add((repository, commit, landing["branch"]))
+            self.client.successful_workflow_runs.add(
+                (
+                    repository,
+                    qualification["run"],
+                    commit,
+                    qualification["workflow_path"],
+                    qualification["workflow_name"],
+                )
+            )
+            self.client.successful_workflow_jobs[(repository, qualification["run"])] = {
+                check["name"]: check["job"] for check in qualification["checks"]
+            }
+        declared = {("durable-workflow.github.io", 63): selected}
+        frozen_records = {("durable-workflow.github.io", 63): frozen}
+        self.clear_mutation_spies()
+
+        first = audit_backlog(
+            self.policy,
+            self.backlog,
+            self.client,
+            cross_repository_targets=declared,
+            frozen_cross_repository_lifecycles=frozen_records,
+        )
+
+        self.assertEqual("pass", first["outcome"])
+        self.assertEqual("closed", issue["state"])
+        self.assertEqual({"status:done"}, label_names(issue) & STATUS_LABELS)
+        self.assertIn(COMPLETION_VERIFIED_LABEL, label_names(issue))
+        self.assertIn(FROZEN_LIFECYCLE_EVIDENCE_MARKER, self.client.comments[("durable-workflow.github.io", 63)])
+        self.assertIn('"outcome": "complete"', self.client.comments[("durable-workflow.github.io", 63)])
+        self.assertIn("30589737606", self.client.comments[("durable-workflow.github.io", 63)])
+        self.clear_mutation_spies()
+
+        second = audit_backlog(
+            self.policy,
+            self.backlog,
+            self.client,
+            cross_repository_targets=declared,
+            frozen_cross_repository_lifecycles=frozen_records,
+        )
+
+        self.assertEqual("pass", second["outcome"])
+        self.assert_no_github_mutations()
+
+    def test_frozen_waterline_missing_evidence_reopens_once_and_plain_prose_cannot_forge_it(self) -> None:
+        for item in self.backlog["items"]:
+            if item["kind"] == "cross-repository":
+                item["kind"] = "feature"
+        apply_backlog(self.policy, self.backlog, self.client)
+        migration = next(
+            record
+            for record in legacy_target_fixture()["frozen_lifecycle_migrations"]
+            if (record["repository"], record["number"]) == ("waterline", 79)
+        )
+        frozen = {**copy.deepcopy(migration), "approved_issue_revision_sha256": "b" * 64}
+        qualified = qualification_targets(qualification_fixture())
+        selected = [
+            copy.deepcopy(qualified[target.split("/", 1)[1].rsplit("@", 1)[0]])
+            for target in migration["declared_targets"]
+        ]
+        issue = {
+            "body": "Completed after the release and peer qualification passed.",
+            "html_url": "https://github.com/durable-workflow/waterline/issues/79",
+            "labels": [
+                {"name": "authority:github"},
+                {"name": "kind:cross-repository"},
+                {"name": "priority:P2"},
+                {"name": "status:done"},
+            ],
+            "milestone": None,
+            "number": 79,
+            "state": "closed",
+            "state_reason": "completed",
+            "title": "Archived Waterline authority",
+        }
+        self.client.issues["waterline"].append(issue)
+        self.client.trusted_comments[("waterline", 79)] = [
+            {
+                "body": "Completed after the release and peer qualification passed.",
+                "id": 10,
+                "user": {"id": 99, "login": "external-contributor"},
+            }
+        ]
+        declared = {("waterline", 79): selected}
+        frozen_records = {("waterline", 79): frozen}
+        self.clear_mutation_spies()
+
+        first = audit_backlog(
+            self.policy,
+            self.backlog,
+            self.client,
+            cross_repository_targets=declared,
+            frozen_cross_repository_lifecycles=frozen_records,
+        )
+
+        self.assertEqual("pass", first["outcome"])
+        self.assertEqual("open", issue["state"])
+        self.assertEqual({"status:triage"}, label_names(issue) & STATUS_LABELS)
+        self.assertIn(COMPLETION_REQUIRED_LABEL, label_names(issue))
+        evidence = self.client.comments[("waterline", 79)]
+        self.assertIn(FROZEN_LIFECYCLE_EVIDENCE_MARKER, evidence)
+        self.assertIn('"outcome": "missing-evidence"', evidence)
+        self.assertIn("responsive opened-dialog qualification", evidence)
+        self.clear_mutation_spies()
+
+        second = audit_backlog(
+            self.policy,
+            self.backlog,
+            self.client,
+            cross_repository_targets=declared,
+            frozen_cross_repository_lifecycles=frozen_records,
+        )
+
+        self.assertEqual("pass", second["outcome"])
+        self.assert_no_github_mutations()
 
     def test_corrected_apply_converges_all_mutated_archived_states(self) -> None:
         for item in self.backlog["items"]:

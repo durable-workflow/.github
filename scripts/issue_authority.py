@@ -30,8 +30,8 @@ from scripts.beta_candidate import COMPONENTS
 
 POLICY_SCHEMA = "durable-workflow.github-issue-authority/v1"
 BACKLOG_SCHEMA = "durable-workflow.github-beta-backlog/v1"
-INTAKE_SCHEMA = "durable-workflow.github-issue-intake/v9"
-LEGACY_TARGET_SCHEMA = "durable-workflow.legacy-cross-repository-targets/v4"
+INTAKE_SCHEMA = "durable-workflow.github-issue-intake/v10"
+LEGACY_TARGET_SCHEMA = "durable-workflow.legacy-cross-repository-targets/v5"
 MARKER_PATTERN = re.compile(r"<!-- beta-work-id: ([a-z0-9][a-z0-9-]{2,79}) -->")
 WORK_MARKER_PATTERN = re.compile(r"<!-- durable-workflow-work-id: ([a-z0-9][a-z0-9-]{2,79}) -->")
 LEGACY_TARGET_HEADING = "### Affected public repositories"
@@ -43,6 +43,7 @@ NON_PUBLIC_CONTEXT_PATTERNS = (
     re.compile(r"\b(?:localhost|127\.0\.0\.1)(?::[0-9]+)?\b", re.I),
 )
 SUPERSESSION_EVIDENCE_MARKER = "<!-- durable-workflow-prerelease-supersession -->"
+FROZEN_LIFECYCLE_EVIDENCE_MARKER = "<!-- durable-workflow-frozen-lifecycle:v1 -->"
 SUPERSESSION_ACTIVATION_CONTEXT_PREFIX = "issue-authority/prerelease-supersession"
 SUPERSESSION_ACTIVATION_DESCRIPTION_PREFIX = "sha256:"
 GITHUB_ACTIONS_BOT_ID = 41_898_282
@@ -504,6 +505,94 @@ def load_legacy_cross_repository_targets(
             raise AuthorityError(
                 f"legacy historical completion has no protected-branch landings for {missing_landings}"
             )
+
+    frozen_identities: set[tuple[str, int]] = set()
+    frozen_snapshots: set[str] = set()
+    for frozen in migration["frozen_lifecycle_migrations"]:
+        repository = frozen["repository"]
+        identity = (repository, frozen["number"])
+        if repository not in target_map:
+            raise AuthorityError(
+                f"frozen lifecycle migration names unqualified source repository {repository}"
+            )
+        if identity in frozen_identities or identity in completed_identities:
+            raise AuthorityError(
+                f"frozen lifecycle migration repeats {repository}#{frozen['number']}"
+            )
+        frozen_identities.add(identity)
+        snapshot = frozen["authority_snapshot_sha256"]
+        if snapshot in frozen_snapshots:
+            raise AuthorityError("frozen lifecycle migrations repeat an approved authority snapshot")
+        frozen_snapshots.add(snapshot)
+        _parse_timestamp(frozen["approval_at"], "frozen lifecycle approval timestamp")
+        try:
+            declared = cross_repository_lifecycle.declared_targets(
+                f"{cross_repository_lifecycle.TARGET_HEADING}\n\n"
+                + "\n".join(frozen["declared_targets"]),
+                target_map,
+                organization="durable-workflow",
+                required=True,
+            )
+        except cross_repository_lifecycle.LifecycleError as error:
+            raise AuthorityError(str(error)) from error
+        declared_contract = {
+            (str(target["repository"]), str(target["branch"])) for target in declared
+        }
+        if not any(target["repository"] == repository for target in declared):
+            raise AuthorityError(
+                f"frozen lifecycle migration for {repository}#{frozen['number']} omits its source repository"
+            )
+        if frozen["outcome"] == "missing-evidence":
+            if (
+                frozen["completion_source"] is not None
+                or frozen["landings"]
+                or not isinstance(frozen["missing_evidence"], str)
+                or not frozen["missing_evidence"].strip()
+            ):
+                raise AuthorityError(
+                    f"frozen missing-evidence migration for {repository}#{frozen['number']} "
+                    "must contain only its bounded reason"
+                )
+            continue
+        if frozen["missing_evidence"] is not None or not frozen["landings"]:
+            raise AuthorityError(
+                f"frozen completed migration for {repository}#{frozen['number']} has no exact landings"
+            )
+        landing_contract: set[tuple[str, str]] = set()
+        source_commits: list[str] = []
+        for landing in frozen["landings"]:
+            landing_identity = (landing["repository"], landing["branch"])
+            if landing_identity not in declared_contract or landing_identity in landing_contract:
+                raise AuthorityError(
+                    f"frozen lifecycle migration for {repository}#{frozen['number']} "
+                    "has duplicated or undeclared landing evidence"
+                )
+            landing_contract.add(landing_identity)
+            if landing["repository"] == repository:
+                source_commits.append(landing["commit"])
+            qualification = landing["qualification"]
+            checks = qualification["checks"]
+            check_names = [check["name"] for check in checks]
+            check_jobs = [check["job"] for check in checks]
+            if (
+                len(check_names) != len(set(check_names))
+                or len(check_jobs) != len(set(check_jobs))
+                or any(check["run"] != qualification["run"] for check in checks)
+            ):
+                raise AuthorityError(
+                    f"frozen lifecycle migration for {repository}#{frozen['number']} "
+                    "has ambiguous qualification check identity"
+                )
+        if landing_contract != declared_contract:
+            raise AuthorityError(
+                f"frozen lifecycle migration for {repository}#{frozen['number']} "
+                "does not cover its exact declared target set"
+            )
+        if source_commits != [frozen["completion_source"]]:
+            raise AuthorityError(
+                f"frozen lifecycle migration for {repository}#{frozen['number']} "
+                "does not bind its source completion commit"
+            )
     return migration
 
 
@@ -891,6 +980,16 @@ def _manifest_historical_cross_repository_completions(
         (record["repository"], record["number"]): list(record["historical_cross_repository_completion"])
         for record in manifest["issues"]
         if record["historical_cross_repository_completion"]
+    }
+
+
+def _manifest_frozen_cross_repository_lifecycles(
+    manifest: Mapping[str, Any],
+) -> dict[tuple[str, int], dict[str, Any]]:
+    return {
+        (record["repository"], record["number"]): dict(record["frozen_cross_repository_lifecycle"])
+        for record in manifest["issues"]
+        if record["frozen_cross_repository_lifecycle"] is not None
     }
 
 
@@ -1353,6 +1452,55 @@ def _legacy_historical_completion(
     return [dict(landing_map[(str(target["repository"]), str(target["branch"]))]) for target in declared]
 
 
+def _frozen_lifecycle_migration(
+    source_repository: str,
+    issue: Mapping[str, Any],
+    assessment: Mapping[str, Any],
+    declared: Sequence[Mapping[str, Any]],
+    migration: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Bind one reviewed migration to the exact trusted issue revision."""
+
+    if migration is None:
+        return None
+    matches = [
+        record
+        for record in migration["frozen_lifecycle_migrations"]
+        if record["repository"] == source_repository and record["number"] == issue.get("number")
+    ]
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise AuthorityError("cross-repository issue matches multiple frozen lifecycle migrations")
+    frozen = matches[0]
+    approval_actor = assessment.get("approval_actor")
+    approval_actor_sha256 = (
+        hashlib.sha256(approval_actor.casefold().encode("utf-8")).hexdigest()
+        if isinstance(approval_actor, str)
+        else None
+    )
+    if (
+        approval_actor_sha256 != frozen["approval_actor_sha256"]
+        or assessment.get("approval_at") != frozen["approval_at"]
+        or assessment.get("approval_mode") != frozen["approval_mode"]
+    ):
+        raise AuthorityError(
+            f"GitHub issue {issue['number']}: frozen lifecycle authority differs from its trusted intake"
+        )
+    if assessment.get("revision") != frozen["approved_issue_revision_sha256"]:
+        raise AuthorityError(
+            f"GitHub issue {issue['number']}: current revision differs from reviewed frozen authority"
+        )
+    expected_targets = sorted(
+        f"durable-workflow/{target['repository']}@{target['branch']}" for target in declared
+    )
+    if sorted(frozen["declared_targets"]) != expected_targets:
+        raise AuthorityError(
+            f"GitHub issue {issue['number']}: frozen lifecycle targets differ from its declared target set"
+        )
+    return json.loads(json.dumps(frozen))
+
+
 def _issue_cross_repository_targets(
     source_repository: str,
     issue: Mapping[str, Any],
@@ -1519,6 +1667,13 @@ def reconstruct_intake(
                     cross_repository_targets,
                     legacy_cross_repository_targets,
                 )
+                frozen_lifecycle = _frozen_lifecycle_migration(
+                    repository,
+                    issue,
+                    assessment,
+                    cross_repository_targets,
+                    legacy_cross_repository_targets,
+                )
             except AuthorityError as error:
                 rejected_records.append(_target_rejection(repository, number, assessment, error))
                 if is_trigger:
@@ -1532,6 +1687,7 @@ def reconstruct_intake(
                     "approval_mode": assessment["approval_mode"],
                     "completion_evidence_required": COMPLETION_REQUIRED_LABEL in _intake_label_names(issue),
                     "cross_repository_targets": cross_repository_targets,
+                    "frozen_cross_repository_lifecycle": frozen_lifecycle,
                     "historical_cross_repository_completion": historical_completion,
                     "number": number,
                     "repository": repository,
@@ -1728,6 +1884,7 @@ def verify_intake_manifest(
         "approval_mode",
         "completion_evidence_required",
         "cross_repository_targets",
+        "frozen_cross_repository_lifecycle",
         "historical_cross_repository_completion",
         "number",
         "repository",
@@ -1757,6 +1914,10 @@ def verify_intake_manifest(
             or number < 1
             or not isinstance(record.get("completion_evidence_required"), bool)
             or not isinstance(record.get("cross_repository_targets"), list)
+            or (
+                record.get("frozen_cross_repository_lifecycle") is not None
+                and not isinstance(record.get("frozen_cross_repository_lifecycle"), Mapping)
+            )
             or not isinstance(record.get("historical_cross_repository_completion"), list)
             or (superseded_by is not None and not _valid_superseded_by(superseded_by, inventory))
         ):
@@ -1792,12 +1953,20 @@ def verify_intake_manifest(
             expected_targets,
             legacy_cross_repository_targets,
         )
+        expected_frozen_lifecycle = _frozen_lifecycle_migration(
+            repository,
+            issue,
+            assessment,
+            expected_targets,
+            legacy_cross_repository_targets,
+        )
         current = {
             "approval_actor": assessment.get("approval_actor"),
             "approval_at": assessment.get("approval_at"),
             "approval_mode": assessment.get("approval_mode"),
             "completion_evidence_required": record["completion_evidence_required"],
             "cross_repository_targets": expected_targets,
+            "frozen_cross_repository_lifecycle": expected_frozen_lifecycle,
             "historical_cross_repository_completion": expected_historical_completion,
             "number": issue.get("number"),
             "repository": repository,
@@ -1859,6 +2028,13 @@ def verify_intake_manifest(
                 repository,
                 issue,
                 timeline,
+                assessment,
+                expected_targets,
+                legacy_cross_repository_targets,
+            )
+            _frozen_lifecycle_migration(
+                repository,
+                issue,
                 assessment,
                 expected_targets,
                 legacy_cross_repository_targets,
@@ -2338,6 +2514,82 @@ class GitHubApi:
             and (workflow_name is None or definition_name == workflow_name)
         )
 
+    def successful_historical_workflow_run(
+        self,
+        organization: str,
+        repository: str,
+        run_id: int,
+        commit: str,
+        branch: str,
+        workflow_path: str,
+        workflow_name: str,
+    ) -> bool:
+        """Verify immutable run metadata without consulting a renamed current workflow."""
+
+        run = self.request("GET", f"/repos/{organization}/{repository}/actions/runs/{run_id}")
+        run_repository = run.get("repository") if isinstance(run, Mapping) else None
+        return (
+            isinstance(run, Mapping)
+            and type(run.get("id")) is int
+            and run["id"] == run_id
+            and run.get("status") == "completed"
+            and run.get("conclusion") == "success"
+            and run.get("head_sha") == commit
+            and run.get("event") == "push"
+            and run.get("head_branch") == branch
+            and run.get("name") == workflow_name
+            and run.get("path") == f".github/workflows/{workflow_path}"
+            and run.get("html_url")
+            == f"https://github.com/{organization}/{repository}/actions/runs/{run_id}"
+            and isinstance(run_repository, Mapping)
+            and run_repository.get("full_name") == f"{organization}/{repository}"
+        )
+
+    def successful_historical_workflow_jobs(
+        self,
+        organization: str,
+        repository: str,
+        run_id: int,
+    ) -> dict[str, int]:
+        """Return successful latest-attempt jobs bound to one immutable workflow run."""
+
+        jobs: list[dict[str, Any]] = []
+        for page in range(1, 11):
+            payload = self.request(
+                "GET",
+                f"/repos/{organization}/{repository}/actions/runs/{run_id}/jobs"
+                f"?filter=latest&per_page=100&page={page}",
+            )
+            page_jobs = payload.get("jobs") if isinstance(payload, Mapping) else None
+            if not isinstance(page_jobs, list) or not all(isinstance(job, dict) for job in page_jobs):
+                raise AuthorityError("GitHub Actions run jobs did not return a complete collection")
+            jobs.extend(page_jobs)
+            if len(page_jobs) < 100:
+                successful: dict[str, int] = {}
+                for job in jobs:
+                    if (
+                        isinstance(job.get("name"), str)
+                        and type(job.get("id")) is int
+                        and job["id"] > 0
+                        and job.get("status") == "completed"
+                        and job.get("conclusion") == "success"
+                        and isinstance(job.get("html_url"), str)
+                        and re.fullmatch(
+                            rf"https://github\.com/{re.escape(organization)}/"
+                            rf"{re.escape(repository)}/actions/runs/{run_id}/job/[1-9][0-9]*",
+                            job["html_url"],
+                        )
+                        is not None
+                    ):
+                        name = str(job["name"])
+                        if name in successful:
+                            raise AuthorityError(
+                                "GitHub Actions run contains duplicate successful job names"
+                            )
+                        successful[name] = int(job["id"])
+                return successful
+        raise AuthorityError("GitHub Actions run jobs exceeded the pagination bound")
+
     def list_trusted_issue_comments(
         self,
         organization: str,
@@ -2693,6 +2945,105 @@ def _preflight_markers(
     return resolved
 
 
+def _evaluate_frozen_lifecycle(
+    client: Any,
+    organization: str,
+    migration: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Revalidate exact frozen landing, workflow-run, and check identities."""
+
+    if migration["outcome"] == "missing-evidence":
+        return {
+            "missing_evidence": migration["missing_evidence"],
+            "outcome": "missing-evidence",
+            "targets": [],
+        }
+    targets: list[dict[str, Any]] = []
+    for landing in migration["landings"]:
+        repository = landing["repository"]
+        branch = landing["branch"]
+        commit = landing["commit"]
+        qualification = landing["qualification"]
+        result = {
+            "branch": branch,
+            "commit": commit,
+            "qualification": json.loads(json.dumps(qualification)),
+            "repository": repository,
+            "state": "pending:landing-not-on-target",
+        }
+        if not client.commit_reaches_branch(organization, repository, commit, branch):
+            targets.append(result)
+            continue
+        if not client.successful_historical_workflow_run(
+            organization,
+            repository,
+            qualification["run"],
+            commit,
+            branch,
+            qualification["workflow_path"],
+            qualification["workflow_name"],
+        ):
+            result["state"] = "pending:qualification-run"
+            targets.append(result)
+            continue
+        successful_checks = client.successful_historical_workflow_jobs(
+            organization,
+            repository,
+            qualification["run"],
+        )
+        if any(
+            successful_checks.get(check["name"]) != check["job"]
+            for check in qualification["checks"]
+        ):
+            result["state"] = "pending:qualification-check"
+            targets.append(result)
+            continue
+        result["state"] = "complete"
+        targets.append(result)
+    incomplete = [
+        f"{target['repository']}@{target['branch']}={target['state']}"
+        for target in targets
+        if target["state"] != "complete"
+    ]
+    return {
+        "missing_evidence": (
+            "Exact frozen aggregate revalidation failed: " + ", ".join(incomplete)
+            if incomplete
+            else None
+        ),
+        "outcome": "missing-evidence" if incomplete else "complete",
+        "targets": targets,
+    }
+
+
+def _render_frozen_lifecycle_evidence(
+    migration: Mapping[str, Any],
+    result: Mapping[str, Any],
+) -> str:
+    record = {
+        "approval": {
+            "actor_sha256": migration["approval_actor_sha256"],
+            "at": migration["approval_at"],
+            "mode": migration["approval_mode"],
+        },
+        "authority_snapshot_sha256": migration["authority_snapshot_sha256"],
+        "completion_source": migration["completion_source"],
+        "declared_targets": list(migration["declared_targets"]),
+        "missing_evidence": result["missing_evidence"],
+        "outcome": result["outcome"],
+        "approved_issue_revision_sha256": migration["approved_issue_revision_sha256"],
+        "schema": "durable-workflow.frozen-cross-repository-lifecycle/v1",
+        "targets": list(result["targets"]),
+    }
+    return (
+        f"{FROZEN_LIFECYCLE_EVIDENCE_MARKER}\n"
+        "Historical cross-repository lifecycle result generated by protected Issue Authority.\n\n"
+        "```json\n"
+        + json.dumps(record, indent=2, sort_keys=True)
+        + "\n```\n"
+    )
+
+
 def _audit_state_labels(
     policy: dict[str, Any],
     client: Any,
@@ -2700,10 +3051,22 @@ def _audit_state_labels(
     approved_completion_holds: set[tuple[str, int]],
     cross_repository_targets: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] | None,
     historical_cross_repository_completions: (Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] | None),
+    frozen_cross_repository_lifecycles: Mapping[tuple[str, int], Mapping[str, Any]] | None,
     prerelease_supersessions: Mapping[tuple[str, int], Mapping[str, Any]] | None,
 ) -> list[str]:
     organization = policy["organization"]
     historical_completion_identities = set(historical_cross_repository_completions or {})
+    frozen_results: dict[tuple[str, int], dict[str, Any]] = {}
+    for identity, migration in sorted((frozen_cross_repository_lifecycles or {}).items()):
+        declared = (cross_repository_targets or {}).get(identity, ())
+        declared_contract = sorted(
+            f"durable-workflow/{target.get('repository')}@{target.get('branch')}" for target in declared
+        )
+        if declared_contract != sorted(migration["declared_targets"]):
+            raise AuthorityError(
+                f"{identity[0]}#{identity[1]} frozen lifecycle evidence differs from its declared target set"
+            )
+        frozen_results[identity] = _evaluate_frozen_lifecycle(client, organization, migration)
     recorded_landing_results: dict[tuple[str, str, str, tuple[str, ...]], Mapping[str, Any]] = {}
     for identity, landings in sorted((historical_cross_repository_completions or {}).items()):
         declared = (cross_repository_targets or {}).get(identity, ())
@@ -2793,10 +3156,14 @@ def _audit_state_labels(
             replacement = set(labels)
             aggregated_close = False
             assessment: dict[str, Any] | None = None
-            approved_completion_hold = (repository, number) in approved_completion_holds
+            identity = (repository, number)
+            approved_completion_hold = identity in approved_completion_holds
+            frozen_migration = (frozen_cross_repository_lifecycles or {}).get(identity)
+            frozen_result = frozen_results.get(identity)
             supersession = (prerelease_supersessions or {}).get((repository, number))
             if (
                 supersession is None
+                and frozen_migration is None
                 and approved_completion_hold
                 and COMPLETION_REQUIRED_LABEL not in labels
                 and COMPLETION_VERIFIED_LABEL not in labels
@@ -2853,6 +3220,28 @@ def _audit_state_labels(
                     failures.append(f"{location} must have exactly one priority label")
                 continue
 
+            if frozen_migration is not None:
+                if frozen_result is None:
+                    raise AuthorityError(f"{location} has no evaluated frozen lifecycle result")
+                client.upsert_lifecycle_comment(
+                    organization,
+                    repository,
+                    number,
+                    FROZEN_LIFECYCLE_EVIDENCE_MARKER,
+                    _render_frozen_lifecycle_evidence(frozen_migration, frozen_result),
+                )
+                replacement = set(labels) - COMPLETION_LABELS
+                replacement.add(
+                    COMPLETION_VERIFIED_LABEL
+                    if frozen_result["outcome"] == "complete"
+                    else COMPLETION_REQUIRED_LABEL
+                )
+                if replacement != labels:
+                    client.replace_issue_labels(organization, repository, number, sorted(replacement))
+                    issue["labels"] = [{"name": label} for label in sorted(replacement)]
+                    labels = set(replacement)
+                    statuses = labels & STATUS_LABELS
+
             completion_is_pending = COMPLETION_REQUIRED_LABEL in labels and COMPLETION_VERIFIED_LABEL not in labels
             declared_targets = (
                 cross_repository_targets.get((repository, number), ()) if cross_repository_targets is not None else ()
@@ -2862,7 +3251,9 @@ def _audit_state_labels(
             )
             target_completion_is_pending = False
             target_contract_failure_reported = False
-            if (repository, number) in historical_completion_identities:
+            if frozen_result is not None:
+                target_completion_is_pending = frozen_result["outcome"] != "complete"
+            elif (repository, number) in historical_completion_identities:
                 target_completion_is_pending = False
             elif declared_targets:
                 try:
@@ -2929,7 +3320,8 @@ def _audit_state_labels(
                     if target_completion_is_pending
                     else "closed before its required public completion evidence was verified"
                 )
-                failures.append(f"{location} {reason}")
+                if frozen_result is None:
+                    failures.append(f"{location} {reason}")
                 target_contract_failure_reported = target_contract_is_missing
             elif state == "open" and declared_targets and not must_remain_open:
                 client.update_issue_state(
@@ -2952,7 +3344,7 @@ def _audit_state_labels(
                 client.replace_issue_labels(organization, repository, number, sorted(replacement))
                 issue["labels"] = [{"name": label} for label in sorted(replacement)]
                 labels = replacement
-                if not aggregated_close:
+                if not aggregated_close and frozen_result is None:
                     failures.append(f"{location} closed state overrode stale lifecycle labels {sorted(statuses)}")
             elif state == "open" and "status:done" in statuses:
                 replacement.remove("status:done")
@@ -2961,7 +3353,8 @@ def _audit_state_labels(
                 client.replace_issue_labels(organization, repository, number, sorted(replacement))
                 issue["labels"] = [{"name": label} for label in sorted(replacement)]
                 labels = replacement
-                failures.append(f"{location} open state overrode stale status:done")
+                if frozen_result is None:
+                    failures.append(f"{location} open state overrode stale status:done")
             elif state == "open" and len(statuses & OPEN_STATUS_LABELS) != 1:
                 replacement.add("authority:conflict")
                 client.replace_issue_labels(organization, repository, number, sorted(replacement))
@@ -3055,6 +3448,7 @@ def apply_backlog(
     approved_completion_holds: set[tuple[str, int]] | None = None,
     cross_repository_targets: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] | None = None,
     historical_cross_repository_completions: (Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] | None) = None,
+    frozen_cross_repository_lifecycles: Mapping[tuple[str, int], Mapping[str, Any]] | None = None,
     prerelease_supersessions: Mapping[tuple[str, int], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     organization = policy["organization"]
@@ -3128,6 +3522,7 @@ def apply_backlog(
         approved_completion_holds or set(),
         cross_repository_targets,
         historical_cross_repository_completions,
+        frozen_cross_repository_lifecycles,
         prerelease_supersessions,
     )
     failures.extend(_audit_migrated_classification(backlog, resolved))
@@ -3155,6 +3550,7 @@ def audit_backlog(
     approved_completion_holds: set[tuple[str, int]] | None = None,
     cross_repository_targets: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] | None = None,
     historical_cross_repository_completions: (Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] | None) = None,
+    frozen_cross_repository_lifecycles: Mapping[tuple[str, int], Mapping[str, Any]] | None = None,
     prerelease_supersessions: Mapping[tuple[str, int], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     inventory = inventory if inventory is not None else _inventory(policy, client)
@@ -3169,6 +3565,7 @@ def audit_backlog(
         approved_completion_holds or set(),
         cross_repository_targets,
         historical_cross_repository_completions,
+        frozen_cross_repository_lifecycles,
         prerelease_supersessions,
     )
     failures.extend(_audit_migrated_classification(backlog, resolved))
@@ -3372,6 +3769,7 @@ def main(argv: list[str] | None = None) -> int:
         approved_completion_holds = _manifest_completion_holds(manifest)
         cross_repository_targets = _manifest_cross_repository_targets(manifest)
         historical_cross_repository_completions = _manifest_historical_cross_repository_completions(manifest)
+        frozen_cross_repository_lifecycles = _manifest_frozen_cross_repository_lifecycles(manifest)
         prerelease_supersessions = _manifest_prerelease_supersessions(manifest)
         token = os.environ.get("BETA_PRODUCT_WORK_TOKEN") or ""
         client = GitHubApi(
@@ -3390,6 +3788,7 @@ def main(argv: list[str] | None = None) -> int:
                 approved_completion_holds=approved_completion_holds,
                 cross_repository_targets=cross_repository_targets,
                 historical_cross_repository_completions=historical_cross_repository_completions,
+                frozen_cross_repository_lifecycles=frozen_cross_repository_lifecycles,
                 prerelease_supersessions=prerelease_supersessions,
             )
         else:
@@ -3401,6 +3800,7 @@ def main(argv: list[str] | None = None) -> int:
                 approved_completion_holds=approved_completion_holds,
                 cross_repository_targets=cross_repository_targets,
                 historical_cross_repository_completions=historical_cross_repository_completions,
+                frozen_cross_repository_lifecycles=frozen_cross_repository_lifecycles,
                 prerelease_supersessions=prerelease_supersessions,
             )
         evidence["intake"] = _manifest_core(manifest)

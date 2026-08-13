@@ -44,6 +44,168 @@
       "format": "date-time",
       "type": "string"
     },
+    "frozen_lifecycle_migrations": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "approval_actor_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "approval_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "approval_mode": {
+            "enum": [
+              "trusted-creation",
+              "trusted-label"
+            ]
+          },
+          "authority_snapshot_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "completion_source": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "declared_targets": {
+            "items": {
+              "pattern": "^durable-workflow/[a-z0-9_.-]+@(main|v2)$",
+              "type": "string"
+            },
+            "minItems": 2,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "landings": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "branch": {
+                  "enum": [
+                    "main",
+                    "v2"
+                  ]
+                },
+                "commit": {
+                  "pattern": "^[0-9a-f]{40}$",
+                  "type": "string"
+                },
+                "qualification": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "checks": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "job": {
+                            "minimum": 1,
+                            "type": "integer"
+                          },
+                          "name": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "run": {
+                            "minimum": 1,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "job",
+                          "name",
+                          "run"
+                        ],
+                        "type": "object"
+                      },
+                      "minItems": 1,
+                      "type": "array"
+                    },
+                    "run": {
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "workflow_name": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "workflow_path": {
+                      "pattern": "^[A-Za-z0-9_.-]+\\.ya?ml$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "run",
+                    "workflow_name",
+                    "workflow_path",
+                    "checks"
+                  ],
+                  "type": "object"
+                },
+                "repository": {
+                  "pattern": "^[a-z0-9_.-]+$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "repository",
+                "branch",
+                "commit",
+                "qualification"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "missing_evidence": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "number": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "outcome": {
+            "enum": [
+              "complete",
+              "missing-evidence"
+            ]
+          },
+          "repository": {
+            "pattern": "^[a-z0-9_.-]+$",
+            "type": "string"
+          },
+          "approved_issue_revision_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository",
+          "number",
+          "authority_snapshot_sha256",
+          "approved_issue_revision_sha256",
+          "approval_actor_sha256",
+          "approval_at",
+          "approval_mode",
+          "outcome",
+          "declared_targets",
+          "completion_source",
+          "landings",
+          "missing_evidence"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
     "historical_completions": {
       "items": {
         "additionalProperties": false,
@@ -154,7 +316,7 @@
       "type": "array"
     },
     "schema": {
-      "const": "durable-workflow.legacy-cross-repository-targets/v4"
+      "const": "durable-workflow.legacy-cross-repository-targets/v5"
     }
   },
   "required": [
@@ -163,6 +325,7 @@
     "authorities",
     "immutable_issue_targets",
     "historical_completions",
+    "frozen_lifecycle_migrations",
     "protected_branch_landings"
   ],
   "type": "object"

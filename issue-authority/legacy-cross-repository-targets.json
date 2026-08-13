@@ -397,6 +397,77 @@
       ]
     }
   ],
+  "frozen_lifecycle_migrations": [
+    {
+      "approval_actor_sha256": "c1e557a26d086d65ed41bfcf3dbc8bbd2526544117a56aa2c08b3115f9ca802e",
+      "approval_at": "2026-07-30T20:37:14Z",
+      "approval_mode": "trusted-creation",
+      "authority_snapshot_sha256": "5ffcae7ed560f99c217788fb62df36cfc0df75f149ae349db661862e45ccc55b",
+      "completion_source": "6542094b6ae27711186a17ba107a6718fa3a1c83",
+      "declared_targets": [
+        "durable-workflow/durable-workflow.github.io@main",
+        "durable-workflow/workflow@v2"
+      ],
+      "approved_issue_revision_sha256": "30e18cbdb4782516901991a78dd55361373bd7779a17a6be67276f071b125426",
+      "landings": [
+        {
+          "branch": "main",
+          "commit": "6542094b6ae27711186a17ba107a6718fa3a1c83",
+          "qualification": {
+            "checks": [
+              {
+                "job": 91047691168,
+                "name": "Executable documentation contracts",
+                "run": 30595766880
+              }
+            ],
+            "run": 30595766880,
+            "workflow_name": "Documentation Qualification",
+            "workflow_path": "qualification.yml"
+          },
+          "repository": "durable-workflow.github.io"
+        },
+        {
+          "branch": "v2",
+          "commit": "7eb21763078fd1cf3ec00fbccebf48eb85547110",
+          "qualification": {
+            "checks": [
+              {
+                "job": 91030116510,
+                "name": "build",
+                "run": 30589737606
+              }
+            ],
+            "run": 30589737606,
+            "workflow_name": "build",
+            "workflow_path": "php.yml"
+          },
+          "repository": "workflow"
+        }
+      ],
+      "missing_evidence": null,
+      "number": 63,
+      "outcome": "complete",
+      "repository": "durable-workflow.github.io"
+    },
+    {
+      "approval_actor_sha256": "c1e557a26d086d65ed41bfcf3dbc8bbd2526544117a56aa2c08b3115f9ca802e",
+      "approval_at": "2026-08-10T00:33:42Z",
+      "approval_mode": "trusted-creation",
+      "authority_snapshot_sha256": "591adaf96dfbd9f9b0f8b31e3a213f73660dee14de0507d24b7779529794928d",
+      "completion_source": null,
+      "declared_targets": [
+        "durable-workflow/sample-app@main",
+        "durable-workflow/waterline@v2"
+      ],
+      "approved_issue_revision_sha256": "35bba728e5e08ebd8dc37f4929929c2d4cfb94e9970d477091cd99b88712a0fc",
+      "landings": [],
+      "missing_evidence": "The protected Waterline landing fa28853fe0e12743d0159eb29497d95b4e7d2d57 is installable as 2.0.0-rc.14, but no exact successful post-correction Sample App run records that released package completing the required responsive opened-dialog qualification on the protected target branch.",
+      "number": 79,
+      "outcome": "missing-evidence",
+      "repository": "waterline"
+    }
+  ],
   "protected_branch_landings": [
     {
       "branch": "main",
@@ -482,5 +553,5 @@
     }
   ],
   "created_before": "2026-07-25T00:01:08Z",
-  "schema": "durable-workflow.legacy-cross-repository-targets/v4"
+  "schema": "durable-workflow.legacy-cross-repository-targets/v5"
 }
