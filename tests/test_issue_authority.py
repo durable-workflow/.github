@@ -2734,6 +2734,7 @@ class GitHubApiTest(unittest.TestCase):
     def test_cited_workflow_run_binds_success_to_repository_workflow_and_commit(self) -> None:
         client = GitHubApi("writer-token", read_token="job-token")
         commit = "c" * 40
+        workflow_id = 314161405
         payload = {
             "conclusion": "success",
             "head_sha": commit,
@@ -2743,9 +2744,21 @@ class GitHubApiTest(unittest.TestCase):
             "path": ".github/workflows/php.yml",
             "repository": {"full_name": "durable-workflow/workflow"},
             "status": "completed",
+            "workflow_id": workflow_id,
+        }
+        workflow = {
+            "id": workflow_id,
+            "name": "PHP",
+            "path": ".github/workflows/php.yml",
         }
 
-        with patch("urllib.request.urlopen", return_value=FakeResponse(json.dumps(payload).encode())):
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=[
+                FakeResponse(json.dumps(payload).encode()),
+                FakeResponse(json.dumps(workflow).encode()),
+            ],
+        ):
             successful = client.successful_workflow_run(
                 "durable-workflow",
                 "workflow",
@@ -2757,7 +2770,13 @@ class GitHubApiTest(unittest.TestCase):
 
         self.assertTrue(successful)
 
-        with patch("urllib.request.urlopen", return_value=FakeResponse(json.dumps(payload).encode())):
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=[
+                FakeResponse(json.dumps(payload).encode()),
+                FakeResponse(json.dumps(workflow).encode()),
+            ],
+        ):
             legacy_generic = client.successful_workflow_run(
                 "durable-workflow",
                 "workflow",
@@ -2769,10 +2788,33 @@ class GitHubApiTest(unittest.TestCase):
 
         self.assertTrue(legacy_generic)
 
+        custom_run_name = {**payload, "name": "Candidate main", "path": ".github/workflows/beta-candidate.yml"}
+        beta_definition = {
+            "id": workflow_id,
+            "name": "Beta candidate",
+            "path": ".github/workflows/beta-candidate.yml",
+        }
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=[
+                FakeResponse(json.dumps(custom_run_name).encode()),
+                FakeResponse(json.dumps(beta_definition).encode()),
+            ],
+        ):
+            custom_named_run = client.successful_workflow_run(
+                "durable-workflow",
+                "workflow",
+                30200000003,
+                commit,
+                "beta-candidate.yml",
+                "Beta candidate",
+            )
+
+        self.assertTrue(custom_named_run)
+
         for field, value in (
             ("head_sha", "d" * 40),
             ("html_url", "https://github.com/durable-workflow/workflow/actions/runs/latest"),
-            ("name", "Unrelated workflow"),
             ("path", ".github/workflows/unrelated.yml"),
             ("repository", {"full_name": "external/workflow"}),
             ("conclusion", "failure"),
@@ -2793,8 +2835,34 @@ class GitHubApiTest(unittest.TestCase):
                     )
 
         for field, value in (
+            ("id", workflow_id + 1),
+            ("name", "Unrelated workflow"),
+            ("path", ".github/workflows/unrelated.yml"),
+        ):
+            with self.subTest(workflow_definition_field=field):
+                rejected_workflow = {**workflow, field: value}
+                with patch(
+                    "urllib.request.urlopen",
+                    side_effect=[
+                        FakeResponse(json.dumps(payload).encode()),
+                        FakeResponse(json.dumps(rejected_workflow).encode()),
+                    ],
+                ):
+                    self.assertFalse(
+                        client.successful_workflow_run(
+                            "durable-workflow",
+                            "workflow",
+                            30200000003,
+                            commit,
+                            "php.yml",
+                            "PHP",
+                        )
+                    )
+
+        for field, value in (
             ("name", ""),
             ("path", ".github/workflows/README.md"),
+            ("workflow_id", None),
         ):
             with self.subTest(generic_workflow_field=field):
                 rejected = dict(payload)

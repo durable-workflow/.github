@@ -2297,14 +2297,17 @@ class GitHubApi:
         run_repository = run.get("repository") if isinstance(run, Mapping) else None
         run_workflow_name = run.get("name") if isinstance(run, Mapping) else None
         run_workflow_path = run.get("path") if isinstance(run, Mapping) else None
+        run_workflow_id = run.get("workflow_id") if isinstance(run, Mapping) else None
         actual_workflow_is_identified = (
             isinstance(run_workflow_name, str)
             and bool(run_workflow_name.strip())
             and isinstance(run_workflow_path, str)
             and re.fullmatch(r"\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml", run_workflow_path) is not None
+            and type(run_workflow_id) is int
+            and run_workflow_id > 0
         )
         expected_workflow_path = f".github/workflows/{workflow_path}" if workflow_path is not None else None
-        return (
+        run_matches = (
             isinstance(run, Mapping)
             and type(run.get("id")) is int
             and run["id"] == run_id
@@ -2313,10 +2316,26 @@ class GitHubApi:
             and run.get("head_sha") == commit
             and actual_workflow_is_identified
             and (expected_workflow_path is None or run_workflow_path == expected_workflow_path)
-            and (workflow_name is None or run_workflow_name == workflow_name)
             and run.get("html_url") == f"https://github.com/{organization}/{repository}/actions/runs/{run_id}"
             and isinstance(run_repository, Mapping)
             and run_repository.get("full_name") == f"{organization}/{repository}"
+        )
+        if not run_matches:
+            return False
+
+        workflow = self.request(
+            "GET",
+            f"/repos/{organization}/{repository}/actions/workflows/{run_workflow_id}",
+        )
+        definition_name = workflow.get("name") if isinstance(workflow, Mapping) else None
+        return (
+            isinstance(workflow, Mapping)
+            and type(workflow.get("id")) is int
+            and workflow["id"] == run_workflow_id
+            and isinstance(definition_name, str)
+            and bool(definition_name.strip())
+            and workflow.get("path") == run_workflow_path
+            and (workflow_name is None or definition_name == workflow_name)
         )
 
     def list_trusted_issue_comments(
