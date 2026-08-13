@@ -33,8 +33,11 @@ from scripts.qualification_policy import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+CACHE_V5_PIN = "caa296126883cff596d87d8935842f9db880ef25"
+CACHE_V6_PIN = "55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
 CHECKOUT_PIN = "d23441a48e516b6c34aea4fa41551a30e30af803"
 CHECKOUT_V7_PIN = "3d3c42e5aac5ba805825da76410c181273ba90b1"
+DOCKER_LOGIN_V46_PIN = "dbcb813823bdd20940b903addbd779551569679f"
 
 
 class FakeResponse:
@@ -87,6 +90,8 @@ class FakeGitHubClient:
         if "/contents/.github/workflows?" in path:
             paths = {f".github/workflows/{workflow['path']}" for workflow in target["workflows"]}
             paths.add(".github/workflows/release.yml")
+            if repository == "sample-app":
+                paths.add(".github/workflows/devcontainer-image.yml")
             if repository == ".github":
                 paths.add(".github/workflows/beta-conformance-retention.yml")
                 paths.add(".github/workflows/beta-continuity-resolution.yml")
@@ -204,7 +209,7 @@ jobs:
         checkout_pin, checkout_version = (
             (CHECKOUT_V7_PIN, "v7.0.1") if repository == "sample-app" else (CHECKOUT_PIN, "v6")
         )
-        return f"""name: qualification
+        source = f"""name: qualification
 on:
   push:
     branches: [{branch}]
@@ -222,7 +227,19 @@ jobs:
       fail-fast: false
     steps:
       - uses: actions/checkout@{checkout_pin} # {checkout_version}
-""".encode()
+"""
+        if repository == "sample-app" and "/contents/.github/workflows/ci.yml?" in path:
+            source += f"""      - uses: actions/cache@{CACHE_V6_PIN} # v6.1.0
+        with:
+          path: vendor
+          key: ${{{{ github.event_name }}}}-dependencies
+"""
+        if repository == "sample-app" and "/contents/.github/workflows/devcontainer-image.yml?" in path:
+            source += f"""      - uses: docker/login-action@{DOCKER_LOGIN_V46_PIN} # v4.6.0
+        with:
+          registry: ghcr.io
+"""
+        return source.encode()
 
     def collection(self, path: str, key: str) -> list[dict[str, Any]]:
         self._repository(path)
@@ -259,7 +276,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@{CHECKOUT_PIN} # v6
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - uses: actions/cache@{CACHE_V5_PIN} # v5
         with:
           path: vendor
           key: ${{{{ github.event_name }}}}-dependencies
@@ -360,6 +377,41 @@ jobs:
             ),
             "arbitrary v7 commit": (
                 source.replace(CHECKOUT_V7_PIN, "f" * 40),
+                "is not centrally approved",
+            ),
+        }
+        for name, (candidate, message) in rejected.items():
+            with self.subTest(name=name), self.assertRaisesRegex(PolicyError, message):
+                scan_workflow_sources(policy, "cli", {"fixture.yml": candidate})
+
+    def test_workflow_trust_admits_only_the_exact_cache_v610_release(self) -> None:
+        policy = policy_fixture()
+        source = self.trusted_pull_request_source().replace(
+            f"actions/cache@{CACHE_V5_PIN} # v5",
+            f"actions/cache@{CACHE_V6_PIN} # v6.1.0",
+        )
+
+        evidence = scan_workflow_sources(policy, "cli", {"fixture.yml": source})
+
+        self.assertEqual(
+            {
+                CACHE_V5_PIN: "v5",
+                CACHE_V6_PIN: "v6.1.0",
+            },
+            policy["action_runtime"]["allowed_releases"]["actions/cache"],
+        )
+        self.assertIn(
+            f"actions/cache@{CACHE_V6_PIN}",
+            evidence["fixture.yml"]["external_actions"],
+        )
+
+        rejected = {
+            "floating v6 tag": (
+                source.replace(f"@{CACHE_V6_PIN}", "@v6"),
+                "not pinned to a full commit SHA",
+            ),
+            "unknown cache commit": (
+                source.replace(CACHE_V6_PIN, "f" * 40),
                 "is not centrally approved",
             ),
         }
@@ -1490,8 +1542,10 @@ jobs:
                 set(target["protected_checks"]),
                 set(target["successful_check_runs"]),
             )
-            self.assertEqual("node24", target["action_releases"][0]["runtime"])
-            self.assertIn(".github/workflows/release.yml", target["action_releases"][0]["workflows"])
+            self.assertTrue(all(release["runtime"] == "node24" for release in target["action_releases"]))
+            self.assertTrue(
+                any(".github/workflows/release.yml" in release["workflows"] for release in target["action_releases"])
+            )
         sample_checkout = next(
             release
             for release in evidence["targets"]["sample-app"]["action_releases"]
@@ -1500,6 +1554,22 @@ jobs:
         self.assertEqual(CHECKOUT_V7_PIN, sample_checkout["commit"])
         self.assertEqual("v7.0.1", sample_checkout["version"])
         self.assertEqual("node24", sample_checkout["runtime"])
+        sample_cache = next(
+            release
+            for release in evidence["targets"]["sample-app"]["action_releases"]
+            if release["repository"] == "actions/cache"
+        )
+        self.assertEqual(CACHE_V6_PIN, sample_cache["commit"])
+        self.assertEqual("v6.1.0", sample_cache["version"])
+        self.assertEqual("node24", sample_cache["runtime"])
+        sample_login = next(
+            release
+            for release in evidence["targets"]["sample-app"]["action_releases"]
+            if release["repository"] == "docker/login-action"
+        )
+        self.assertEqual(DOCKER_LOGIN_V46_PIN, sample_login["commit"])
+        self.assertEqual("v4.6.0", sample_login["version"])
+        self.assertEqual("node24", sample_login["runtime"])
 
     def test_audit_rejects_a_plan_commit_after_its_target_branch_advances(self) -> None:
         policy = policy_fixture()
