@@ -915,7 +915,7 @@ class ContractValidationTest(unittest.TestCase):
             [landing["qualification"]["checks"][0]["job"] for landing in documentation["landings"]],
         )
         self.assertEqual(
-            "30e18cbdb4782516901991a78dd55361373bd7779a17a6be67276f071b125426",
+            "4da46c504298af75643744bea5e793671f4318007dac5ba9608a68dc2d160909",
             documentation["approved_issue_revision_sha256"],
         )
         self.assertEqual(
@@ -927,7 +927,7 @@ class ContractValidationTest(unittest.TestCase):
         self.assertEqual([], waterline["landings"])
         self.assertIn("responsive opened-dialog qualification", waterline["missing_evidence"])
         self.assertEqual(
-            "35bba728e5e08ebd8dc37f4929929c2d4cfb94e9970d477091cd99b88712a0fc",
+            "c8f2b27b33e562350b31cd781f95270abd83d37cbd5b8f926d24d8ac60357d77",
             waterline["approved_issue_revision_sha256"],
         )
         self.assertEqual(
@@ -2291,30 +2291,48 @@ class IssueIntakeTest(unittest.TestCase):
         )
         self.assertEqual(inventory, verified)
 
-        drifted = copy.deepcopy(issues)
-        drifted["durable-workflow.github.io"][0][0]["title"] += " after review"
-        drifted_manifest, _drifted_inventory = reconstruct_intake(
-            policy,
-            FakeDiscovery(policy, drifted),
-            target_qualification=qualification_fixture(),
-            legacy_cross_repository_targets=migration,
-        )
-        self.assertNotIn(
-            ("durable-workflow.github.io", 63),
-            {
-                (record["repository"], record["number"])
-                for record in drifted_manifest["issues"]
-            },
-        )
-        self.assertIn(
-            "current revision differs from reviewed frozen authority",
-            next(
-                record["reason"]
-                for record in drifted_manifest["rejected_issues"]
-                if (record["repository"], record["number"])
-                == ("durable-workflow.github.io", 63)
-            ),
-        )
+        for identity in expected:
+            repository, number = identity
+            for field in ("title", "body"):
+                with self.subTest(identity=identity, drifted_field=field):
+                    drifted = copy.deepcopy(issues)
+                    drifted_issue = drifted[repository][0][0]
+                    if field == "title":
+                        drifted_issue[field] += " after review"
+                    else:
+                        drifted_issue[field] = "Changed after review.\n\n" + drifted_issue[field]
+                    drifted_manifest, _drifted_inventory = reconstruct_intake(
+                        policy,
+                        FakeDiscovery(policy, drifted),
+                        target_qualification=qualification_fixture(),
+                        legacy_cross_repository_targets=migration,
+                    )
+                    self.assertNotIn(
+                        identity,
+                        {
+                            (record["repository"], record["number"])
+                            for record in drifted_manifest["issues"]
+                        },
+                    )
+                    self.assertIn(
+                        "current revision differs from reviewed frozen authority",
+                        next(
+                            record["reason"]
+                            for record in drifted_manifest["rejected_issues"]
+                            if (record["repository"], record["number"]) == identity
+                        ),
+                    )
+                    with self.assertRaisesRegex(
+                        AuthorityError,
+                        "current revision differs from reviewed frozen authority",
+                    ):
+                        verify_intake_manifest(
+                            policy,
+                            manifest,
+                            FakeDiscovery(policy, drifted),
+                            target_qualification=qualification_fixture(),
+                            legacy_cross_repository_targets=migration,
+                        )
 
         changed = copy.deepcopy(issues)
         changed_issue = changed["durable-workflow.github.io"][0][0]
@@ -4014,7 +4032,7 @@ class MigrationTest(unittest.TestCase):
         self.assertIn((repository, issue["number"], sorted(label_names(issue))), self.client.replacements)
         self.assertEqual([], self.client.state_updates)
 
-    def test_frozen_documentation_completion_revalidates_exact_runs_and_is_terminal_on_replay(self) -> None:
+    def test_frozen_documentation_apply_revalidates_exact_runs_and_is_terminal_on_replay(self) -> None:
         for item in self.backlog["items"]:
             if item["kind"] == "cross-repository":
                 item["kind"] = "feature"
@@ -4082,7 +4100,7 @@ class MigrationTest(unittest.TestCase):
         frozen_records = {("durable-workflow.github.io", 63): frozen}
         self.clear_mutation_spies()
 
-        first = audit_backlog(
+        first = apply_backlog(
             self.policy,
             self.backlog,
             self.client,
@@ -4099,7 +4117,7 @@ class MigrationTest(unittest.TestCase):
         self.assertIn("30589737606", self.client.comments[("durable-workflow.github.io", 63)])
         self.clear_mutation_spies()
 
-        second = audit_backlog(
+        second = apply_backlog(
             self.policy,
             self.backlog,
             self.client,
@@ -4110,7 +4128,7 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual("pass", second["outcome"])
         self.assert_no_github_mutations()
 
-    def test_frozen_waterline_missing_evidence_reopens_once_and_plain_prose_cannot_forge_it(self) -> None:
+    def test_frozen_waterline_apply_reopens_once_and_plain_prose_cannot_forge_it(self) -> None:
         for item in self.backlog["items"]:
             if item["kind"] == "cross-repository":
                 item["kind"] = "feature"
@@ -4153,7 +4171,7 @@ class MigrationTest(unittest.TestCase):
         frozen_records = {("waterline", 79): frozen}
         self.clear_mutation_spies()
 
-        first = audit_backlog(
+        first = apply_backlog(
             self.policy,
             self.backlog,
             self.client,
@@ -4171,7 +4189,7 @@ class MigrationTest(unittest.TestCase):
         self.assertIn("responsive opened-dialog qualification", evidence)
         self.clear_mutation_spies()
 
-        second = audit_backlog(
+        second = apply_backlog(
             self.policy,
             self.backlog,
             self.client,

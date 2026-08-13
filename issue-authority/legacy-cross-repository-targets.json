@@ -408,7 +408,7 @@
         "durable-workflow/durable-workflow.github.io@main",
         "durable-workflow/workflow@v2"
       ],
-      "approved_issue_revision_sha256": "30e18cbdb4782516901991a78dd55361373bd7779a17a6be67276f071b125426",
+      "approved_issue_revision_sha256": "4da46c504298af75643744bea5e793671f4318007dac5ba9608a68dc2d160909",
       "landings": [
         {
           "branch": "main",
@@ -460,7 +460,7 @@
         "durable-workflow/sample-app@main",
         "durable-workflow/waterline@v2"
       ],
-      "approved_issue_revision_sha256": "35bba728e5e08ebd8dc37f4929929c2d4cfb94e9970d477091cd99b88712a0fc",
+      "approved_issue_revision_sha256": "c8f2b27b33e562350b31cd781f95270abd83d37cbd5b8f926d24d8ac60357d77",
       "landings": [],
       "missing_evidence": "The protected Waterline landing fa28853fe0e12743d0159eb29497d95b4e7d2d57 is installable as 2.0.0-rc.14, but no exact successful post-correction Sample App run records that released package completing the required responsive opened-dialog qualification on the protected target branch.",
       "number": 79,
