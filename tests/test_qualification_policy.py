@@ -34,6 +34,7 @@ from scripts.qualification_policy import (
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECKOUT_PIN = "d23441a48e516b6c34aea4fa41551a30e30af803"
+CHECKOUT_V7_PIN = "3d3c42e5aac5ba805825da76410c181273ba90b1"
 
 
 class FakeResponse:
@@ -200,6 +201,9 @@ jobs:
             (workflow["required_check"] for workflow in target["workflows"] if f"/{workflow['path']}?" in path),
             "Fixture qualification",
         )
+        checkout_pin, checkout_version = (
+            (CHECKOUT_V7_PIN, "v7.0.1") if repository == "sample-app" else (CHECKOUT_PIN, "v6")
+        )
         return f"""name: qualification
 on:
   push:
@@ -217,7 +221,7 @@ jobs:
     strategy:
       fail-fast: false
     steps:
-      - uses: actions/checkout@{CHECKOUT_PIN} # v6
+      - uses: actions/checkout@{checkout_pin} # {checkout_version}
 """.encode()
 
     def collection(self, path: str, key: str) -> list[dict[str, Any]]:
@@ -326,6 +330,42 @@ jobs:
             {".github/workflows/fixture.yml": self.trusted_pull_request_source()},
         )
         self.assertEqual([], evidence[".github/workflows/fixture.yml"]["privileged_jobs"])
+
+    def test_workflow_trust_admits_only_the_reviewed_checkout_v7_release(self) -> None:
+        policy = policy_fixture()
+        source = self.trusted_pull_request_source().replace(
+            f"actions/checkout@{CHECKOUT_PIN} # v6",
+            f"actions/checkout@{CHECKOUT_V7_PIN} # v7.0.1",
+        )
+
+        evidence = scan_workflow_sources(policy, "cli", {"fixture.yml": source})
+
+        self.assertEqual(
+            {
+                "11d5960a326750d5838078e36cf38b85af677262": "v4",
+                CHECKOUT_PIN: "v6",
+                CHECKOUT_V7_PIN: "v7.0.1",
+            },
+            policy["action_runtime"]["allowed_releases"]["actions/checkout"],
+        )
+        self.assertIn(
+            f"actions/checkout@{CHECKOUT_V7_PIN}",
+            evidence["fixture.yml"]["external_actions"],
+        )
+
+        rejected = {
+            "floating v7 tag": (
+                source.replace(f"@{CHECKOUT_V7_PIN}", "@v7"),
+                "not pinned to a full commit SHA",
+            ),
+            "arbitrary v7 commit": (
+                source.replace(CHECKOUT_V7_PIN, "f" * 40),
+                "is not centrally approved",
+            ),
+        }
+        for name, (candidate, message) in rejected.items():
+            with self.subTest(name=name), self.assertRaisesRegex(PolicyError, message):
+                scan_workflow_sources(policy, "cli", {"fixture.yml": candidate})
 
     def test_workflow_trust_rejects_mutable_actions_and_missing_version_comments(self) -> None:
         source = self.trusted_pull_request_source()
@@ -1452,6 +1492,14 @@ jobs:
             )
             self.assertEqual("node24", target["action_releases"][0]["runtime"])
             self.assertIn(".github/workflows/release.yml", target["action_releases"][0]["workflows"])
+        sample_checkout = next(
+            release
+            for release in evidence["targets"]["sample-app"]["action_releases"]
+            if release["repository"] == "actions/checkout"
+        )
+        self.assertEqual(CHECKOUT_V7_PIN, sample_checkout["commit"])
+        self.assertEqual("v7.0.1", sample_checkout["version"])
+        self.assertEqual("node24", sample_checkout["runtime"])
 
     def test_audit_rejects_a_plan_commit_after_its_target_branch_advances(self) -> None:
         policy = policy_fixture()
@@ -1502,16 +1550,19 @@ jobs:
         with self.assertRaisesRegex(PolicyError, "is not pinned to a full commit SHA"):
             audit_policy(policy, FlowStyleReleaseClient(policy))
 
-    def test_audit_rejects_a_retired_action_javascript_runtime(self) -> None:
+    def test_audit_rejects_the_checkout_v7_release_on_a_retired_runtime(self) -> None:
         policy = policy_fixture()
 
         class RetiredRuntimeClient(FakeGitHubClient):
             def bytes(self, path: str) -> bytes:
-                if path.startswith("/repos/actions/checkout/contents/action.yml?"):
+                if path.startswith("/repos/actions/checkout/contents/action.yml?") and CHECKOUT_V7_PIN in path:
                     return b"name: checkout\nruns:\n  using: node20\n  main: dist/index.js\n"
                 return super().bytes(path)
 
-        with self.assertRaisesRegex(PolicyError, "uses retired JavaScript runtime node20"):
+        with self.assertRaisesRegex(
+            PolicyError,
+            rf"actions/checkout@{CHECKOUT_V7_PIN}.*uses retired JavaScript runtime node20",
+        ):
             audit_policy(policy, RetiredRuntimeClient(policy))
 
     def test_audit_rejects_a_failed_required_check(self) -> None:
