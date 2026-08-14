@@ -22,7 +22,7 @@
       "additionalProperties": {
         "$ref": "#/$defs/target"
       },
-      "minProperties": 10,
+      "minProperties": 12,
       "type": "object"
     },
     "workflow_trust": {
@@ -103,6 +103,9 @@
         "repository": {
           "minLength": 1,
           "type": "string"
+        },
+        "public_audit": {
+          "type": "boolean"
         },
         "workflows": {
           "items": {
@@ -297,6 +300,9 @@
     "workflow": {
       "additionalProperties": false,
       "properties": {
+        "action_policy_preflight": {
+          "type": "boolean"
+        },
         "matrix_independent": {
           "type": "boolean"
         },

@@ -27,6 +27,15 @@ python scripts/qualification_policy.py validate \
   --workflow-directory ../server/.github/workflows
 ```
 
+Every governed product target runs that validator from its protected aggregate
+pull-request check. The preflight checks out the candidate without credentials,
+loads the current policy from the protected control-plane branch, and makes the
+aggregate fail closed when any workflow uses an unknown or mutable Action
+reference. Policy validation verifies this wiring as part of the machine-owned
+qualification contract, and the target audit rechecks every publicly auditable
+target, so adding a dependency pin and adding its policy authority cannot drift
+into separate landings.
+
 Every workflow must declare read-only or empty top-level token permissions.
 Write access is job-local, pull-request jobs cannot reference environments or
 secrets, and pull-request caches have separate event namespaces and narrow

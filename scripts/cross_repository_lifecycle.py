@@ -36,6 +36,8 @@ def qualification_targets(policy: Mapping[str, Any]) -> dict[str, dict[str, Any]
     for value in targets.values():
         if not isinstance(value, Mapping):
             raise LifecycleError("target qualification policy contains a malformed target")
+        if value.get("public_audit", True) is False:
+            continue
         repository = value.get("repository")
         branch = value.get("branch")
         workflows = value.get("workflows")

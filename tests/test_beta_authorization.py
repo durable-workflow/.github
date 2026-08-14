@@ -132,6 +132,7 @@ def qualification() -> dict[str, object]:
                 ],
             }
             for index, (name, target) in enumerate(policy["targets"].items())
+            if target.get("public_audit", True) is not False
         },
     }
 

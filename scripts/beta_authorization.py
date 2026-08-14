@@ -600,9 +600,12 @@ def validate_qualification_policy_contract(value: Any, context: str) -> dict[str
 
     repositories: set[str] = set()
     for name, value in targets.items():
+        target_keys = {"branch", "repository", "workflows"}
+        if isinstance(value, dict) and "public_audit" in value:
+            target_keys.add("public_audit")
         target = require_exact_keys(
             value,
-            {"branch", "repository", "workflows"},
+            target_keys,
             f"{context} target {name}",
         )
         repository = target["repository"]
@@ -616,15 +619,19 @@ def validate_qualification_policy_contract(value: Any, context: str) -> dict[str
             or not QUALIFICATION_BRANCH_PATTERN.fullmatch(branch)
             or not isinstance(workflows, list)
             or not workflows
+            or ("public_audit" in target and not isinstance(target["public_audit"], bool))
         ):
             raise CandidateError(f"{context} target {name} has an invalid immutable contract")
         repositories.add(repository)
         paths: set[str] = set()
         checks: set[str] = set()
         for value in workflows:
+            workflow_keys = {"matrix_independent", "path", "required_check"}
+            if isinstance(value, dict) and "action_policy_preflight" in value:
+                workflow_keys.add("action_policy_preflight")
             workflow = require_exact_keys(
                 value,
-                {"matrix_independent", "path", "required_check"},
+                workflow_keys,
                 f"{context} target {name} workflow",
             )
             path = workflow["path"]
@@ -637,6 +644,10 @@ def validate_qualification_policy_contract(value: Any, context: str) -> dict[str
                 or not check.strip()
                 or check in checks
                 or not isinstance(workflow["matrix_independent"], bool)
+                or (
+                    "action_policy_preflight" in workflow
+                    and not isinstance(workflow["action_policy_preflight"], bool)
+                )
             ):
                 raise CandidateError(
                     f"{context} target {name} workflow has an invalid immutable contract"
@@ -832,12 +843,21 @@ def validate_qualification_evidence(
             else None
         )
     )
+    policy_targets = (
+        {
+            name: target
+            for name, target in policy["targets"].items()
+            if target.get("public_audit", True) is not False
+        }
+        if policy is not None
+        else None
+    )
     if (
         not isinstance(qualification, dict)
         or set(qualification) != {"schema", "targets"}
         or qualification.get("schema") != QUALIFICATION_SCHEMA
         or not isinstance(targets, dict)
-        or (policy is not None and set(targets) != set(policy["targets"]))
+        or (policy_targets is not None and set(targets) != set(policy_targets))
         or (
             policy is None
             and not set(targets) >= set(request["authorization"]["components"])
@@ -849,8 +869,8 @@ def validate_qualification_evidence(
     ):
         raise CandidateError("cited qualification evidence has an invalid authority shape")
     target_contracts = (
-        policy["targets"]
-        if policy is not None
+        policy_targets
+        if policy_targets is not None
         else {name: None for name in targets}
     )
     for name, target_policy in target_contracts.items():

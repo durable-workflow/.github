@@ -889,9 +889,9 @@ class ContractValidationTest(unittest.TestCase):
             {2, 26, 32, 33, 35, 36, 37, 38, 39, 41, 46, 48},
             {completion["number"] for completion in migration["historical_completions"]},
         )
-        self.assertEqual(
-            set(qualification_targets(qualification_fixture())),
+        self.assertLessEqual(
             {landing["repository"] for landing in migration["protected_branch_landings"]},
+            set(qualification_targets(qualification_fixture())),
         )
         frozen = {
             (record["repository"], record["number"]): record
@@ -1078,7 +1078,7 @@ class ContractValidationTest(unittest.TestCase):
         affected = next(field for field in form["body"] if field.get("id") == "affected")
         expected = {
             f"durable-workflow/{target['repository']}@{target['branch']}"
-            for target in qualification["targets"].values()
+            for target in qualification_targets(qualification).values()
         }
 
         self.assertEqual("dropdown", affected["type"])

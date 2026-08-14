@@ -27,7 +27,9 @@ SCHEMA = "durable-workflow.github-target-qualification/v1"
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 SUPPORTED_JAVASCRIPT_ACTION_RUNTIMES = ["node24"]
 EXPECTED_TARGETS = {
+    "ai": ("ai", "main"),
     "cli": ("cli", "main"),
+    "cloud": ("cloud", "main"),
     "documentation": ("durable-workflow.github.io", "main"),
     "github-control-plane": (".github", "main"),
     "sample-app": ("sample-app", "main"),
@@ -38,6 +40,7 @@ EXPECTED_TARGETS = {
     "waterline": ("waterline", "v2"),
     "workflow": ("workflow", "v2"),
 }
+EXPECTED_PUBLIC_AUDIT_TARGETS = set(EXPECTED_TARGETS) - {"cloud"}
 GITHUB_API_MAX_ATTEMPTS = 5
 GITHUB_API_RETRY_BASE_SECONDS = 2.0
 GITHUB_API_RETRY_MAX_SECONDS = 120.0
@@ -631,11 +634,15 @@ def validate_policy(policy: dict[str, Any]) -> None:
                 f"{name} must target {expected_repository}@{expected_branch}, got "
                 f"{target.get('repository')}@{target.get('branch')}"
             )
+        expected_public_audit = name in EXPECTED_PUBLIC_AUDIT_TARGETS
+        if target.get("public_audit", True) is not expected_public_audit:
+            raise PolicyError(f"{name} public_audit must be {expected_public_audit}")
         workflows = target.get("workflows")
         if not isinstance(workflows, list) or not workflows:
             raise PolicyError(f"{name} must declare at least one qualification workflow")
         checks: set[str] = set()
         paths: set[str] = set()
+        preflight_workflows: list[str] = []
         for workflow in workflows:
             path = workflow.get("path")
             check = workflow.get("required_check")
@@ -645,10 +652,117 @@ def validate_policy(policy: dict[str, Any]) -> None:
                 raise PolicyError(f"{name}/{path} has no required check context")
             if not isinstance(workflow.get("matrix_independent"), bool):
                 raise PolicyError(f"{name}/{path} must declare matrix_independent")
+            action_policy_preflight = workflow.get("action_policy_preflight", False)
+            if not isinstance(action_policy_preflight, bool):
+                raise PolicyError(f"{name}/{path} action_policy_preflight must be a boolean")
+            if action_policy_preflight:
+                preflight_workflows.append(path)
             if path in paths or check in checks:
                 raise PolicyError(f"{name} has duplicate workflow paths or check contexts")
             paths.add(path)
             checks.add(check)
+
+        expected_preflight_count = 0 if name == "github-control-plane" else 1
+        if len(preflight_workflows) != expected_preflight_count:
+            raise PolicyError(
+                f"{name} must declare exactly {expected_preflight_count} central action policy "
+                f"preflight workflow(s), got {sorted(preflight_workflows)}"
+            )
+
+
+def _normalized_shell(value: object) -> str:
+    return re.sub(r"\s+", " ", value.strip()) if isinstance(value, str) else ""
+
+
+def _is_action_step(step: object, repository: str) -> bool:
+    if not isinstance(step, dict) or not isinstance(step.get("uses"), str):
+        return False
+    parsed = _split_action_reference(step["uses"])
+    return (
+        parsed is not None
+        and parsed[0] == repository
+        and parsed[1] == ""
+        and COMMIT_PATTERN.fullmatch(parsed[2]) is not None
+    )
+
+
+def _verify_action_policy_preflight(
+    target_name: str,
+    label: str,
+    jobs: dict[str, Any],
+    gate_job_name: str,
+) -> None:
+    preflight = jobs.get("action-policy")
+    if not isinstance(preflight, dict):
+        raise PolicyError(f"{label} has no central action policy preflight job")
+    if (
+        preflight.get("name") != "Central action policy preflight"
+        or _condition_without_expression_wrapper(preflight.get("if", ""))
+        != "github.server_url == 'https://github.com'"
+        or preflight.get("runs-on") != "ubuntu-latest"
+        or preflight.get("timeout-minutes") != "5"
+        or preflight.get("needs") is not None
+        or preflight.get("permissions") is not None
+        or preflight.get("env") is not None
+    ):
+        raise PolicyError(f"{label} central action policy preflight job is not the reviewed read-only shape")
+
+    steps = preflight.get("steps")
+    if not isinstance(steps, list) or len(steps) != 5 or not all(isinstance(step, dict) for step in steps):
+        raise PolicyError(f"{label} central action policy preflight must contain the five reviewed steps")
+    candidate, central, setup_python, install, validate = steps
+    if (
+        not _is_action_step(candidate, "actions/checkout")
+        or candidate.get("with") != {"persist-credentials": "false"}
+    ):
+        raise PolicyError(f"{label} central action policy preflight must check out credential-free candidate source")
+    if (
+        not _is_action_step(central, "actions/checkout")
+        or central.get("with")
+        != {
+            "repository": "durable-workflow/.github",
+            "ref": "main",
+            "path": ".central-action-policy",
+            "persist-credentials": "false",
+        }
+    ):
+        raise PolicyError(f"{label} central action policy preflight must use protected central policy source")
+    if (
+        not _is_action_step(setup_python, "actions/setup-python")
+        or setup_python.get("with") != {"python-version": "3.13"}
+    ):
+        raise PolicyError(f"{label} central action policy preflight must use the reviewed Python runtime")
+    if set(install) - {"name", "run"} or _normalized_shell(install.get("run")) != (
+        "python -m pip install PyYAML==6.0.2"
+    ):
+        raise PolicyError(f"{label} central action policy preflight must install the reviewed policy dependency")
+    expected_validation = (
+        "python .central-action-policy/scripts/qualification_policy.py validate "
+        f"--policy .central-action-policy/qualification/policy.json --target {target_name} "
+        "--workflow-directory .github/workflows"
+    )
+    if set(validate) - {"name", "run"} or _normalized_shell(validate.get("run")) != expected_validation:
+        raise PolicyError(f"{label} central action policy preflight does not invoke the reviewed validator")
+
+    gate = jobs[gate_job_name]
+    if "action-policy" not in _job_needs(gate, f"{label} required check gate"):
+        raise PolicyError(f"{label} required check does not depend on the central action policy preflight")
+    condition = gate.get("if")
+    if not isinstance(condition, str) or "always()" not in _condition_without_expression_wrapper(condition):
+        raise PolicyError(f"{label} required check must run after a failed central action policy preflight")
+    reviewed_gate = {
+        "if": "${{ github.server_url == 'https://github.com' }}",
+        "env": {"ACTION_POLICY_RESULT": "${{ needs.action-policy.result }}"},
+        "run": 'test "$ACTION_POLICY_RESULT" = success',
+    }
+    if not any(
+        isinstance(step, dict)
+        and step.get("if") == reviewed_gate["if"]
+        and step.get("env") == reviewed_gate["env"]
+        and _normalized_shell(step.get("run")) == reviewed_gate["run"]
+        for step in gate.get("steps") or []
+    ):
+        raise PolicyError(f"{label} required check does not fail closed on the central action policy result")
 
 
 def verify_workflow_source(name: str, branch: str, workflow: dict[str, Any], source: str) -> None:
@@ -685,6 +799,8 @@ def verify_workflow_source(name: str, branch: str, workflow: dict[str, Any], sou
             f"{label} does not emit required check {required_check!r} as exactly one stable non-matrix job; "
             f"matching jobs={stable_jobs}"
         )
+    if workflow.get("action_policy_preflight") is True:
+        _verify_action_policy_preflight(name, label, jobs, stable_jobs[0])
 
 
 def _parse_yaml(source: str, label: str) -> Any:
@@ -1602,6 +1718,15 @@ def validate_local_action_references(
         path.as_posix(): path.read_text(encoding="utf-8") for path in sorted(directory.glob("*.y*ml")) if path.is_file()
     }
     evidence = scan_workflow_sources(policy, target_name, sources)
+    target = policy["targets"][target_name]
+    for workflow in target["workflows"]:
+        if workflow.get("action_policy_preflight") is not True:
+            continue
+        workflow_path = (directory / workflow["path"]).as_posix()
+        source = sources.get(workflow_path)
+        if source is None:
+            raise PolicyError(f"{target_name} is missing action policy preflight workflow {workflow['path']}")
+        verify_workflow_source(target_name, target["branch"], workflow, source)
     return sorted(
         {
             specification
@@ -1698,6 +1823,8 @@ def audit_policy(
     evidence: dict[str, Any] = {"schema": SCHEMA, "targets": {}}
     action_cache: dict[str, dict[str, Any]] = {}
     for name, target in policy["targets"].items():
+        if target.get("public_audit", True) is False:
+            continue
         repository = target["repository"]
         branch = target["branch"]
         slug = f"{organization}/{repository}"

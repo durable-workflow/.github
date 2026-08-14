@@ -230,14 +230,40 @@
     "pull_request_target_exceptions": []
   },
   "targets": {
+    "ai": {
+      "branch": "main",
+      "repository": "ai",
+      "workflows": [
+        {
+          "action_policy_preflight": true,
+          "matrix_independent": true,
+          "path": "ci.yml",
+          "required_check": "Target branch qualification"
+        }
+      ]
+    },
     "cli": {
       "branch": "main",
       "repository": "cli",
       "workflows": [
         {
+          "action_policy_preflight": true,
           "matrix_independent": true,
           "path": "build.yml",
           "required_check": "Target branch qualification"
+        }
+      ]
+    },
+    "cloud": {
+      "branch": "main",
+      "public_audit": false,
+      "repository": "cloud",
+      "workflows": [
+        {
+          "action_policy_preflight": true,
+          "matrix_independent": false,
+          "path": "ci.yml",
+          "required_check": "Route Drift Guard"
         }
       ]
     },
@@ -246,6 +272,7 @@
       "repository": "durable-workflow.github.io",
       "workflows": [
         {
+          "action_policy_preflight": true,
           "matrix_independent": false,
           "path": "qualification.yml",
           "required_check": "Executable documentation contracts"
@@ -268,6 +295,7 @@
       "repository": "sample-app",
       "workflows": [
         {
+          "action_policy_preflight": true,
           "matrix_independent": true,
           "path": "ci.yml",
           "required_check": "Target branch qualification"
@@ -289,6 +317,7 @@
       "repository": "sdk-php",
       "workflows": [
         {
+          "action_policy_preflight": true,
           "matrix_independent": true,
           "path": "ci.yml",
           "required_check": "Target branch qualification"
@@ -300,6 +329,7 @@
       "repository": "sdk-python",
       "workflows": [
         {
+          "action_policy_preflight": true,
           "matrix_independent": true,
           "path": "ci.yml",
           "required_check": "Target branch qualification"
@@ -311,6 +341,7 @@
       "repository": "sdk-rust",
       "workflows": [
         {
+          "action_policy_preflight": true,
           "matrix_independent": true,
           "path": "ci.yml",
           "required_check": "Target branch qualification"
@@ -322,6 +353,7 @@
       "repository": "server",
       "workflows": [
         {
+          "action_policy_preflight": true,
           "matrix_independent": false,
           "path": "phpunit-feature.yml",
           "required_check": "PHPUnit feature suite"
@@ -333,6 +365,7 @@
       "repository": "waterline",
       "workflows": [
         {
+          "action_policy_preflight": true,
           "matrix_independent": true,
           "path": "php.yml",
           "required_check": "Target branch qualification"
@@ -344,6 +377,7 @@
       "repository": "workflow",
       "workflows": [
         {
+          "action_policy_preflight": true,
           "matrix_independent": true,
           "path": "php.yml",
           "required_check": "build"

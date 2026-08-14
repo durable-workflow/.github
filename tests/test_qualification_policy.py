@@ -19,6 +19,7 @@ from typing import Any
 from unittest.mock import patch
 
 from scripts.qualification_policy import (
+    EXPECTED_PUBLIC_AUDIT_TARGETS,
     EXPECTED_TARGETS,
     INFRASTRUCTURE_EXIT_CODE,
     GitHubClient,
@@ -202,10 +203,11 @@ jobs:
         repository = self._repository(path)
         target = self.targets_by_repository[repository]
         branch = target["branch"]
-        required_check = next(
-            (workflow["required_check"] for workflow in target["workflows"] if f"/{workflow['path']}?" in path),
-            "Fixture qualification",
+        workflow_contract = next(
+            (workflow for workflow in target["workflows"] if f"/{workflow['path']}?" in path),
+            None,
         )
+        required_check = workflow_contract["required_check"] if workflow_contract else "Fixture qualification"
         checkout_pin, checkout_version = (
             (CHECKOUT_V7_PIN, "v7.0.1") if repository == "sample-app" else (CHECKOUT_PIN, "v6")
         )
@@ -219,7 +221,51 @@ on:
 permissions:
   contents: read
 jobs:
+"""
+        if workflow_contract and workflow_contract.get("action_policy_preflight") is True:
+            target_name = next(
+                name for name, candidate in self.policy["targets"].items() if candidate is target
+            )
+            source += f"""  action-policy:
+    name: Central action policy preflight
+    if: ${{{{ github.server_url == 'https://github.com' }}}}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out candidate source
+        uses: actions/checkout@{checkout_pin} # {checkout_version}
+        with:
+          persist-credentials: false
+      - name: Check out central action policy
+        uses: actions/checkout@{checkout_pin} # {checkout_version}
+        with:
+          repository: durable-workflow/.github
+          ref: main
+          path: .central-action-policy
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+      - name: Install policy dependencies
+        run: python -m pip install PyYAML==6.0.2
+      - name: Require centrally approved immutable action commits
+        run: >-
+          python .central-action-policy/scripts/qualification_policy.py validate
+          --policy .central-action-policy/qualification/policy.json
+          --target {target_name}
+          --workflow-directory .github/workflows
   test:
+    name: Workload
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@{checkout_pin} # {checkout_version}
+"""
+        else:
+            source += f"""  test:
     name: {json.dumps(required_check)}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -238,6 +284,20 @@ jobs:
             source += f"""      - uses: docker/login-action@{DOCKER_LOGIN_V46_PIN} # v4.6.0
         with:
           registry: ghcr.io
+"""
+        if workflow_contract and workflow_contract.get("action_policy_preflight") is True:
+            source += f"""  qualification:
+    name: {json.dumps(required_check)}
+    needs: [action-policy, test]
+    if: ${{{{ always() }}}}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require central action policy preflight
+        if: ${{{{ github.server_url == 'https://github.com' }}}}
+        env:
+          ACTION_POLICY_RESULT: ${{{{ needs.action-policy.result }}}}
+        run: test "$ACTION_POLICY_RESULT" = success
 """
         return source.encode()
 
@@ -1385,24 +1445,56 @@ jobs:
         actual = {name: (target["repository"], target["branch"]) for name, target in policy["targets"].items()}
         self.assertEqual(EXPECTED_TARGETS, actual)
 
-    def test_private_cloud_is_rejected_from_the_public_target_inventory(self) -> None:
+    def test_governed_target_inventory_includes_ai_and_cloud(self) -> None:
         policy = policy_fixture()
-        self.assertEqual(10, len(EXPECTED_TARGETS))
-        self.assertNotIn("cloud", EXPECTED_TARGETS)
-        self.assertNotIn("cloud", policy["targets"])
+        self.assertEqual(12, len(EXPECTED_TARGETS))
+        self.assertEqual(("ai", "main"), EXPECTED_TARGETS["ai"])
+        self.assertEqual(("cloud", "main"), EXPECTED_TARGETS["cloud"])
+        self.assertEqual("Target branch qualification", policy["targets"]["ai"]["workflows"][0]["required_check"])
+        self.assertEqual("Route Drift Guard", policy["targets"]["cloud"]["workflows"][0]["required_check"])
+        self.assertFalse(policy["targets"]["cloud"]["public_audit"])
+        self.assertNotIn("cloud", EXPECTED_PUBLIC_AUDIT_TARGETS)
 
-        policy["targets"]["cloud"] = {
-            "branch": "main",
-            "repository": "cloud",
-            "workflows": [
-                {
-                    "matrix_independent": False,
-                    "path": "ci.yml",
-                    "required_check": "Route Drift Guard",
-                }
-            ],
-        }
-        with self.assertRaisesRegex(PolicyError, "target inventory mismatch"):
+    def test_every_product_target_has_one_enforced_action_policy_preflight(self) -> None:
+        policy = policy_fixture()
+        for name, target in policy["targets"].items():
+            preflights = [
+                workflow["path"]
+                for workflow in target["workflows"]
+                if workflow.get("action_policy_preflight") is True
+            ]
+            with self.subTest(target=name):
+                self.assertEqual(0 if name == "github-control-plane" else 1, len(preflights))
+
+    def test_required_check_cannot_disconnect_the_reviewed_preflight(self) -> None:
+        policy = policy_fixture()
+        workflow = policy["targets"]["cli"]["workflows"][0]
+        source = FakeGitHubClient(policy).bytes(
+            "/repos/durable-workflow/cli/contents/.github/workflows/build.yml?ref=" + "a" * 40
+        ).decode()
+        verify_workflow_source("cli", "main", workflow, source)
+
+        disconnected = source.replace(
+            "needs: [action-policy, test]",
+            "needs: [test]",
+        )
+        with self.assertRaisesRegex(PolicyError, "does not depend on the central action policy"):
+            verify_workflow_source("cli", "main", workflow, disconnected)
+
+    def test_each_product_preflight_rejects_an_unapproved_immutable_action_pin(self) -> None:
+        policy = policy_fixture()
+        source = self.trusted_pull_request_source().replace(CHECKOUT_PIN, "f" * 40)
+        for name in sorted(set(EXPECTED_TARGETS) - {"github-control-plane"}):
+            with self.subTest(target=name), self.assertRaisesRegex(
+                PolicyError,
+                "is not centrally approved",
+            ):
+                scan_workflow_sources(policy, name, {"candidate.yml": source})
+
+    def test_policy_rejects_a_product_target_without_one_preflight_workflow(self) -> None:
+        policy = policy_fixture()
+        del policy["targets"]["cli"]["workflows"][0]["action_policy_preflight"]
+        with self.assertRaisesRegex(PolicyError, "must declare exactly 1 central action policy"):
             validate_policy(policy)
 
     def test_policy_rejects_a_missing_public_target(self) -> None:
@@ -1446,7 +1538,7 @@ jobs:
         class DynamicMatrixClient(FakeGitHubClient):
             def __init__(self, dynamic_policy: dict[str, Any]) -> None:
                 super().__init__(dynamic_policy)
-                self.check_run_requests = 0
+                self.checked_repositories: list[str] = []
 
             def bytes(self, path: str) -> bytes:
                 if "/repos/durable-workflow/cli/contents/.github/workflows/build.yml?" in path:
@@ -1474,7 +1566,7 @@ jobs:
                 return super().bytes(path)
 
             def collection(self, path: str, key: str) -> list[dict[str, Any]]:
-                self.check_run_requests += 1
+                self.checked_repositories.append(self._repository(path))
                 return super().collection(path, key)
 
         client = DynamicMatrixClient(policy)
@@ -1484,7 +1576,7 @@ jobs:
         ):
             audit_policy(policy, client)
 
-        self.assertEqual(0, client.check_run_requests)
+        self.assertNotIn("cli", client.checked_repositories)
 
     def test_workflow_contract_accepts_an_exact_aggregate_for_dynamic_matrix_cells(self) -> None:
         workflow = {
@@ -1535,7 +1627,7 @@ jobs:
     def test_audit_binds_successful_checks_and_protection_to_exact_heads(self) -> None:
         policy = policy_fixture()
         evidence = audit_policy(policy, FakeGitHubClient(policy))
-        self.assertEqual(set(EXPECTED_TARGETS), set(evidence["targets"]))
+        self.assertEqual(EXPECTED_PUBLIC_AUDIT_TARGETS, set(evidence["targets"]))
         for target in evidence["targets"].values():
             self.assertEqual("a" * 40, target["commit"])
             self.assertEqual(

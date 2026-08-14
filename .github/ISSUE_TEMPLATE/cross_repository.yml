@@ -19,6 +19,7 @@ body:
       label: Primary owning repository
       options:
         - durable-workflow/.github
+        - durable-workflow/ai
         - durable-workflow/workflow
         - durable-workflow/waterline
         - durable-workflow/server
@@ -41,6 +42,7 @@ body:
       multiple: true
       options:
         - durable-workflow/.github@main
+        - durable-workflow/ai@main
         - durable-workflow/workflow@v2
         - durable-workflow/waterline@v2
         - durable-workflow/server@main
