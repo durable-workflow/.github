@@ -39,6 +39,8 @@ CACHE_V6_PIN = "55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
 CHECKOUT_PIN = "d23441a48e516b6c34aea4fa41551a30e30af803"
 CHECKOUT_V7_PIN = "3d3c42e5aac5ba805825da76410c181273ba90b1"
 DOCKER_LOGIN_V46_PIN = "dbcb813823bdd20940b903addbd779551569679f"
+SETUP_BUILDX_V43_PIN = "37fe631027851001ddb9b187196cc803df7f5f0e"
+SETUP_PYTHON_V7_PIN = "5fda3b95a4ea91299a34e894583c3862153e4b97"
 
 
 class FakeResponse:
@@ -478,6 +480,55 @@ jobs:
         for name, (candidate, message) in rejected.items():
             with self.subTest(name=name), self.assertRaisesRegex(PolicyError, message):
                 scan_workflow_sources(policy, "cli", {"fixture.yml": candidate})
+
+    def test_workflow_trust_admits_only_the_reviewed_sample_app_action_releases(self) -> None:
+        policy = policy_fixture()
+        source = (
+            self.trusted_pull_request_source()
+            + f"""      - uses: actions/setup-python@{SETUP_PYTHON_V7_PIN} # v7
+        with:
+          python-version: "3.13"
+      - uses: docker/setup-buildx-action@{SETUP_BUILDX_V43_PIN} # v4
+"""
+        )
+
+        evidence = scan_workflow_sources(policy, "sample-app", {"fixture.yml": source})
+
+        self.assertEqual(
+            "v7",
+            policy["action_runtime"]["allowed_releases"]["actions/setup-python"][SETUP_PYTHON_V7_PIN],
+        )
+        self.assertEqual(
+            "v4",
+            policy["action_runtime"]["allowed_releases"]["docker/setup-buildx-action"][SETUP_BUILDX_V43_PIN],
+        )
+        self.assertIn(f"actions/setup-python@{SETUP_PYTHON_V7_PIN}", evidence["fixture.yml"]["external_actions"])
+        self.assertIn(
+            f"docker/setup-buildx-action@{SETUP_BUILDX_V43_PIN}",
+            evidence["fixture.yml"]["external_actions"],
+        )
+
+        rejected = {
+            "floating setup-python v7 tag": (
+                source.replace(f"@{SETUP_PYTHON_V7_PIN}", "@v7"),
+                "not pinned to a full commit SHA",
+            ),
+            "arbitrary setup-python commit": (
+                source.replace(SETUP_PYTHON_V7_PIN, "f" * 40),
+                "is not centrally approved",
+            ),
+            "floating setup-buildx v4 tag": (
+                source.replace(f"@{SETUP_BUILDX_V43_PIN}", "@v4"),
+                "not pinned to a full commit SHA",
+            ),
+            "arbitrary setup-buildx commit": (
+                source.replace(SETUP_BUILDX_V43_PIN, "f" * 40),
+                "is not centrally approved",
+            ),
+        }
+        for name, (candidate, message) in rejected.items():
+            with self.subTest(name=name), self.assertRaisesRegex(PolicyError, message):
+                scan_workflow_sources(policy, "sample-app", {"fixture.yml": candidate})
 
     def test_workflow_trust_rejects_mutable_actions_and_missing_version_comments(self) -> None:
         source = self.trusted_pull_request_source()
