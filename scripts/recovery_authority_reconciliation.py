@@ -20,13 +20,16 @@ from scripts.beta_candidate import COMPONENTS, CandidateError, PublicClient, can
 from scripts.recovery_workflow_authority import (
     AUTHORITY_PATH,
     CHECK_RUN_APP,
+    MAX_SOURCE_IDENTITIES_BYTES,
     SOURCE_IDENTITIES_PATH,
+    SOURCE_IDENTITY_HISTORY_LIMIT,
     RecoveryWorkflowAuthorityError,
     branch_url,
     compare_url,
     exact_source_sha256,
     qualification_policy_binding,
     resolve_qualification_policy,
+    source_history_binding,
     validate_authority,
     validate_source_identities,
     verify_authority_source_identities,
@@ -194,6 +197,8 @@ def reconcile_authority(
     policy_binding: Mapping[str, str],
     client: Any,
     components: Mapping[str, tuple[str, str]],
+    *,
+    source_raw: bytes | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     workflows = validate_authority(authority, components)
     resolved_policy, requirements = resolve_qualification_policy(
@@ -251,19 +256,48 @@ def reconcile_authority(
             },
         }
         proposed_authority["workflows"][name]["sha256"] = successor["sha256"]
-        proposed_sources["workflows"][name]["identities"].append(successor)
-        changes.append(
-            {
-                "component": name,
-                "previous": successor["supersedes"],
-                "successor": {
-                    "source_commit": successor["source_commit"],
-                    "sha256": successor["sha256"],
-                    "qualification": successor["qualification"],
-                    "qualification_policy": successor["qualification_policy"],
-                },
+        proposed_record = proposed_sources["workflows"][name]
+        checkpoint: dict[str, Any] | None = None
+        if len(source_identities[name]["identities"]) == SOURCE_IDENTITY_HISTORY_LIMIT:
+            if source_raw is None:
+                raise RecoveryWorkflowAuthorityError(
+                    "the exact protected source identity document is required for history rollover"
+                )
+            try:
+                source_value = json.loads(source_raw)
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise RecoveryWorkflowAuthorityError(
+                    "recovery protected source identities are not valid UTF-8 JSON"
+                ) from error
+            if source_value != source_document:
+                raise RecoveryWorkflowAuthorityError(
+                    "recovery source history rollover bytes do not match the validated document"
+                )
+            checkpoint = {
+                "accepted_identities": (
+                    source_identities[name].get("checkpoint", {}).get("accepted_identities", 0)
+                    + SOURCE_IDENTITY_HISTORY_LIMIT
+                ),
+                "predecessor": dict(successor["supersedes"]),
+                "source": source_history_binding(source_raw, policy_binding["commit"]),
             }
-        )
+            proposed_record["checkpoint"] = checkpoint
+            proposed_record["identities"] = [successor]
+        else:
+            proposed_record["identities"].append(successor)
+        change = {
+            "component": name,
+            "previous": successor["supersedes"],
+            "successor": {
+                "source_commit": successor["source_commit"],
+                "sha256": successor["sha256"],
+                "qualification": successor["qualification"],
+                "qualification_policy": successor["qualification_policy"],
+            },
+        }
+        if checkpoint is not None:
+            change["checkpoint"] = checkpoint
+        changes.append(change)
 
     proposed_workflows = validate_authority(proposed_authority, components)
     validate_source_identities(
@@ -300,6 +334,12 @@ def _write_reconciliation(
         raise RecoveryWorkflowAuthorityError("qualification policy is not valid UTF-8 JSON") from error
     if not isinstance(policy, dict):
         raise RecoveryWorkflowAuthorityError("qualification policy must contain a JSON object")
+    try:
+        source_raw = source_path.read_bytes()
+    except OSError as error:
+        raise RecoveryWorkflowAuthorityError(f"cannot read recovery protected source identities: {error}") from error
+    if len(source_raw) > MAX_SOURCE_IDENTITIES_BYTES:
+        raise RecoveryWorkflowAuthorityError("recovery protected source identities exceed the 1 MiB limit")
     proposed_authority, proposed_sources, observation = reconcile_authority(
         _load_json(authority_path, "recovery workflow authority"),
         _load_json(source_path, "recovery protected source identities"),
@@ -307,6 +347,7 @@ def _write_reconciliation(
         qualification_policy_binding(policy_raw, policy_commit),
         client,
         component_identities(),
+        source_raw=source_raw,
     )
     proposed_authority_path.write_bytes(canonical_json(proposed_authority))
     proposed_source_path.write_bytes(canonical_json(proposed_sources))
@@ -341,6 +382,12 @@ def _verify_proposal(
         raise RecoveryWorkflowAuthorityError("qualification policy is not valid UTF-8 JSON") from error
     if not isinstance(policy, dict):
         raise RecoveryWorkflowAuthorityError("qualification policy must contain a JSON object")
+    try:
+        source_raw = source_path.read_bytes()
+    except OSError as error:
+        raise RecoveryWorkflowAuthorityError(f"cannot read recovery protected source identities: {error}") from error
+    if len(source_raw) > MAX_SOURCE_IDENTITIES_BYTES:
+        raise RecoveryWorkflowAuthorityError("recovery protected source identities exceed the 1 MiB limit")
     expected_authority, expected_sources, expected_observation = reconcile_authority(
         _load_json(authority_path, "recovery workflow authority"),
         _load_json(source_path, "recovery protected source identities"),
@@ -348,6 +395,7 @@ def _verify_proposal(
         qualification_policy_binding(policy_raw, policy_commit),
         client,
         component_identities(),
+        source_raw=source_raw,
     )
     supplied_authority = _load_json(proposed_authority_path, "proposed recovery workflow authority")
     supplied_sources = _load_json(proposed_source_path, "proposed recovery protected source identities")

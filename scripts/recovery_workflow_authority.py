@@ -20,6 +20,8 @@ QUALIFICATION_REF_PATH = f"{QUALIFICATION_WORKFLOW}@{AUTHORITY_REF}"
 WORKFLOW_PATH = ".github/workflows/release-plan-recovery.yml"
 SOURCE_IDENTITIES_SCHEMA = "durable-workflow.component-release-recovery-source-identities/v2"
 SOURCE_IDENTITIES_PATH = "release-recovery/protected-source-identities.json"
+SOURCE_IDENTITY_HISTORY_LIMIT = 100
+MAX_SOURCE_IDENTITIES_BYTES = 1024 * 1024
 QUALIFICATION_POLICY_PATH = "qualification/policy.json"
 MAX_QUALIFICATION_POLICY_BYTES = 256 * 1024
 CHECK_RUN_APP = "github-actions"
@@ -106,6 +108,13 @@ def authority_ref_url() -> str:
 def authority_url(commit: str) -> str:
     return (
         f"https://api.github.com/repos/{CONTROL_REPOSITORY}/contents/{AUTHORITY_PATH}"
+        f"?ref={commit}"
+    )
+
+
+def source_identities_url(commit: str) -> str:
+    return (
+        f"https://api.github.com/repos/{CONTROL_REPOSITORY}/contents/{SOURCE_IDENTITIES_PATH}"
         f"?ref={commit}"
     )
 
@@ -304,6 +313,8 @@ def qualification_requirements(
             or not re.fullmatch(r"[A-Za-z0-9._-]+\.ya?ml", workflow_path)
             or not isinstance(required_check, str)
             or not required_check
+            or len(f".github/workflows/{workflow_path}") > 256
+            or len(required_check) > 256
         ):
             raise RecoveryWorkflowAuthorityError(
                 f"{name} recovery qualification policy has an invalid workflow identity"
@@ -331,6 +342,55 @@ def qualification_policy_binding(raw: bytes, commit: str) -> dict[str, str]:
         "path": QUALIFICATION_POLICY_PATH,
         "sha256": hashlib.sha256(raw).hexdigest(),
     }
+
+
+def source_history_binding(raw: bytes, commit: str) -> dict[str, str]:
+    if len(raw) > MAX_SOURCE_IDENTITIES_BYTES:
+        raise RecoveryWorkflowAuthorityError("recovery protected source identities exceed the 1 MiB limit")
+    try:
+        value = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RecoveryWorkflowAuthorityError(
+            "recovery protected source identities are not valid UTF-8 JSON"
+        ) from error
+    if not isinstance(value, dict):
+        raise RecoveryWorkflowAuthorityError(
+            "recovery protected source identities must contain a JSON object"
+        )
+    return {
+        "repository": CONTROL_REPOSITORY,
+        "ref": f"refs/heads/{AUTHORITY_REF}",
+        "commit": _commit(commit, "recovery source history checkpoint"),
+        "path": SOURCE_IDENTITIES_PATH,
+        "sha256": hashlib.sha256(raw).hexdigest(),
+    }
+
+
+def _validate_source_history_binding(name: str, value: Any) -> dict[str, str]:
+    expected = {
+        "repository": CONTROL_REPOSITORY,
+        "ref": f"refs/heads/{AUTHORITY_REF}",
+        "path": SOURCE_IDENTITIES_PATH,
+    }
+    if not isinstance(value, dict) or set(value) != {*expected, "commit", "sha256"}:
+        raise RecoveryWorkflowAuthorityError(
+            f"{name} recovery source history checkpoint binding has an invalid shape"
+        )
+    if any(value.get(field) != expected_value for field, expected_value in expected.items()):
+        raise RecoveryWorkflowAuthorityError(
+            f"{name} recovery source history checkpoint binding has a mismatched protected identity"
+        )
+    commit = _commit(value.get("commit"), f"{name} recovery source history checkpoint")
+    digest = value.get("sha256")
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise RecoveryWorkflowAuthorityError(
+            f"{name} recovery source history checkpoint binding has an invalid SHA-256"
+        )
+    return {**expected, "commit": commit, "sha256": digest}
 
 
 def _validate_qualification_policy_binding(name: str, value: Any) -> dict[str, str]:
@@ -442,6 +502,8 @@ def _validate_qualification(
         or not re.fullmatch(r"\.github/workflows/[A-Za-z0-9._-]+\.ya?ml", workflow)
         or not isinstance(required_check, str)
         or not required_check
+        or len(workflow) > 256
+        or len(required_check) > 256
     ):
         raise RecoveryWorkflowAuthorityError(
             f"{name} recovery source qualification has an invalid protected policy contract"
@@ -476,6 +538,53 @@ def _validate_qualification(
     return dict(value)
 
 
+def _validate_predecessor(name: str, value: Any) -> dict[str, str]:
+    if not isinstance(value, dict) or set(value) != {"source_commit", "sha256"}:
+        raise RecoveryWorkflowAuthorityError(
+            f"{name} recovery source history checkpoint predecessor has an invalid shape"
+        )
+    commit = _commit(
+        value.get("source_commit"),
+        f"{name} recovery source history checkpoint predecessor",
+    )
+    digest = value.get("sha256")
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise RecoveryWorkflowAuthorityError(
+            f"{name} recovery source history checkpoint predecessor has an invalid SHA-256"
+        )
+    return {"source_commit": commit, "sha256": digest}
+
+
+def _validate_source_history_checkpoint(name: str, value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != {
+        "accepted_identities",
+        "predecessor",
+        "source",
+    }:
+        raise RecoveryWorkflowAuthorityError(
+            f"{name} recovery source history checkpoint has an invalid shape"
+        )
+    accepted_identities = value.get("accepted_identities")
+    if (
+        not isinstance(accepted_identities, int)
+        or isinstance(accepted_identities, bool)
+        or accepted_identities < SOURCE_IDENTITY_HISTORY_LIMIT
+        or accepted_identities % SOURCE_IDENTITY_HISTORY_LIMIT
+    ):
+        raise RecoveryWorkflowAuthorityError(
+            f"{name} recovery source history checkpoint has an invalid accepted identity count"
+        )
+    return {
+        "accepted_identities": accepted_identities,
+        "predecessor": _validate_predecessor(name, value["predecessor"]),
+        "source": _validate_source_history_binding(name, value["source"]),
+    }
+
+
 def validate_source_identities(
     value: Any,
     workflows: Mapping[str, Mapping[str, str]],
@@ -505,17 +614,33 @@ def validate_source_identities(
             "path": WORKFLOW_PATH,
             "state": "active",
         }
-        if not isinstance(record, dict) or set(record) != {*expected_identity, "identities"}:
+        if not isinstance(record, dict) or set(record) not in (
+            {*expected_identity, "identities"},
+            {*expected_identity, "checkpoint", "identities"},
+        ):
             raise RecoveryWorkflowAuthorityError(f"{name} recovery protected source history has an invalid shape")
         if any(record.get(field) != expected for field, expected in expected_identity.items()):
             raise RecoveryWorkflowAuthorityError(f"{name} recovery protected source history has a mismatched identity")
         identities = record.get("identities")
         if not isinstance(identities, list) or not identities:
             raise RecoveryWorkflowAuthorityError(f"{name} recovery protected source history is empty")
+        if len(identities) > SOURCE_IDENTITY_HISTORY_LIMIT:
+            raise RecoveryWorkflowAuthorityError(
+                f"{name} recovery protected source history exceeds the {SOURCE_IDENTITY_HISTORY_LIMIT}-identity limit"
+            )
 
-        previous: dict[str, Any] | None = None
+        checkpoint = (
+            _validate_source_history_checkpoint(name, record["checkpoint"])
+            if "checkpoint" in record
+            else None
+        )
+        previous: dict[str, Any] | None = checkpoint["predecessor"] if checkpoint is not None else None
         accepted: list[dict[str, Any]] = []
-        seen: set[tuple[str, str]] = set()
+        seen: set[tuple[str, str]] = (
+            {(previous["source_commit"], previous["sha256"])}
+            if previous is not None
+            else set()
+        )
         for index, identity in enumerate(identities):
             expected_fields = {
                 "source_commit",
@@ -523,7 +648,7 @@ def validate_source_identities(
                 "qualification",
                 "qualification_policy",
             }
-            if index:
+            if index or checkpoint is not None:
                 expected_fields.add("supersedes")
             if not isinstance(identity, dict) or set(identity) != expected_fields:
                 raise RecoveryWorkflowAuthorityError(f"{name} recovery protected source identity has an invalid shape")
@@ -582,7 +707,11 @@ def validate_source_identities(
             raise RecoveryWorkflowAuthorityError(
                 f"{name} recovery protected source history does not bind the current authority"
             )
-        validated[name] = {**expected_identity, "identities": accepted}
+        validated[name] = {
+            **expected_identity,
+            **({"checkpoint": checkpoint} if checkpoint is not None else {}),
+            "identities": accepted,
+        }
     return validated
 
 
@@ -591,6 +720,8 @@ def decode_source_identities(
     workflows: Mapping[str, Mapping[str, str]],
     components: Mapping[str, tuple[str, str]],
 ) -> dict[str, dict[str, Any]]:
+    if len(raw) > MAX_SOURCE_IDENTITIES_BYTES:
+        raise RecoveryWorkflowAuthorityError("recovery protected source identities exceed the 1 MiB limit")
     try:
         value = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -670,6 +801,86 @@ def validate_live_qualification(
     return dict(recorded)
 
 
+def _verify_source_history_checkpoint(
+    client: Any,
+    name: str,
+    checkpoint: Mapping[str, Any],
+    components: Mapping[str, tuple[str, str]],
+    protected_head: str,
+    cache: dict[tuple[str, str], dict[str, dict[str, Any]]],
+) -> dict[str, Any]:
+    binding = _validate_source_history_binding(name, checkpoint["source"])
+    cache_key = (binding["commit"], binding["sha256"])
+    if cache_key not in cache:
+        commit = binding["commit"]
+        if commit != protected_head:
+            comparison = client.json(compare_url(CONTROL_REPOSITORY, commit, protected_head))
+            if (
+                not isinstance(comparison, dict)
+                or comparison.get("status") != "ahead"
+                or comparison.get("base_commit", {}).get("sha") != commit
+                or comparison.get("merge_base_commit", {}).get("sha") != commit
+            ):
+                raise RecoveryWorkflowAuthorityError(
+                    f"{name} recovery source history checkpoint is not on the protected branch"
+                )
+        source_raw = client.bytes(
+            source_identities_url(commit),
+            accept="application/vnd.github.raw+json",
+        )
+        if len(source_raw) > MAX_SOURCE_IDENTITIES_BYTES:
+            raise RecoveryWorkflowAuthorityError(
+                f"{name} recovery source history checkpoint exceeds the 1 MiB limit"
+            )
+        if not hmac.compare_digest(hashlib.sha256(source_raw).hexdigest(), binding["sha256"]):
+            raise RecoveryWorkflowAuthorityError(
+                f"{name} recovery source history checkpoint does not match its protected binding"
+            )
+        authority_raw = client.bytes(
+            authority_url(commit),
+            accept="application/vnd.github.raw+json",
+        )
+        if len(authority_raw) > 64 * 1024:
+            raise RecoveryWorkflowAuthorityError(
+                f"{name} recovery source history checkpoint authority exceeds the 64 KiB limit"
+            )
+        historical_workflows = decode_authority(authority_raw, components)
+        cache[cache_key] = decode_source_identities(
+            source_raw,
+            historical_workflows,
+            components,
+        )
+
+    historical_record = cache[cache_key][name]
+    historical_identities = historical_record["identities"]
+    if len(historical_identities) != SOURCE_IDENTITY_HISTORY_LIMIT:
+        raise RecoveryWorkflowAuthorityError(
+            f"{name} recovery source history checkpoint was not created at the retention boundary"
+        )
+    historical_count = (
+        historical_record["checkpoint"]["accepted_identities"]
+        if "checkpoint" in historical_record
+        else 0
+    )
+    if checkpoint["accepted_identities"] != historical_count + SOURCE_IDENTITY_HISTORY_LIMIT:
+        raise RecoveryWorkflowAuthorityError(
+            f"{name} recovery source history checkpoint has a discontinuous accepted identity count"
+        )
+    predecessor = {
+        "source_commit": historical_identities[-1]["source_commit"],
+        "sha256": historical_identities[-1]["sha256"],
+    }
+    if checkpoint["predecessor"] != predecessor:
+        raise RecoveryWorkflowAuthorityError(
+            f"{name} recovery source history checkpoint does not bind the exact current predecessor"
+        )
+    return {
+        "accepted_identities": checkpoint["accepted_identities"],
+        "predecessor": predecessor,
+        "source": binding,
+    }
+
+
 def verify_authority_source_identities(
     client: Any,
     workflows: Mapping[str, Mapping[str, str]],
@@ -687,6 +898,7 @@ def verify_authority_source_identities(
         for name, expected in workflows.items()
     }
     policy_cache: dict[tuple[str, str], dict[str, dict[str, str]]] = {}
+    checkpoint_cache: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
     for name, expected in workflows.items():
         record = source_identities[name]
         repository = expected["repository"]
@@ -705,20 +917,38 @@ def verify_authority_source_identities(
                 f"{name} recovery workflow does not expose the protected path and state"
             )
 
+        checkpoint = record.get("checkpoint")
+        verified_checkpoint = (
+            _verify_source_history_checkpoint(
+                client,
+                name,
+                checkpoint,
+                policy_components,
+                policy_head,
+                checkpoint_cache,
+            )
+            if checkpoint is not None
+            else None
+        )
         verified_history: list[dict[str, Any]] = []
         head_source: bytes | None = None
+        previous_source_commit = (
+            verified_checkpoint["predecessor"]["source_commit"]
+            if verified_checkpoint is not None
+            else None
+        )
         for identity in record["identities"]:
             commit = identity["source_commit"]
-            if commit != head_commit:
-                comparison = client.json(compare_url(repository, commit, head_commit))
+            if previous_source_commit is not None:
+                comparison = client.json(compare_url(repository, previous_source_commit, commit))
                 if (
                     not isinstance(comparison, dict)
                     or comparison.get("status") != "ahead"
-                    or comparison.get("base_commit", {}).get("sha") != commit
-                    or comparison.get("merge_base_commit", {}).get("sha") != commit
+                    or comparison.get("base_commit", {}).get("sha") != previous_source_commit
+                    or comparison.get("merge_base_commit", {}).get("sha") != previous_source_commit
                 ):
                     raise RecoveryWorkflowAuthorityError(
-                        f"{name} recovery protected source commit is not on the protected branch"
+                        f"{name} recovery protected source successor does not descend from its exact predecessor"
                     )
             raw = client.bytes(
                 workflow_source_url(repository, expected["path"], commit),
@@ -768,6 +998,19 @@ def verify_authority_source_identities(
                     "qualification_policy": dict(binding),
                 }
             )
+            previous_source_commit = commit
+        terminal_commit = record["identities"][-1]["source_commit"]
+        if terminal_commit != head_commit:
+            comparison = client.json(compare_url(repository, terminal_commit, head_commit))
+            if (
+                not isinstance(comparison, dict)
+                or comparison.get("status") != "ahead"
+                or comparison.get("base_commit", {}).get("sha") != terminal_commit
+                or comparison.get("merge_base_commit", {}).get("sha") != terminal_commit
+            ):
+                raise RecoveryWorkflowAuthorityError(
+                    f"{name} recovery protected source history is not on the protected branch"
+                )
         if head_source is None:
             head_source = client.bytes(
                 workflow_source_url(repository, expected["path"], head_commit),
@@ -787,6 +1030,7 @@ def verify_authority_source_identities(
             "sha256": head_sha256,
             "workflow_id": metadata.get("id"),
             "url": metadata.get("html_url"),
+            **({"checkpoint": verified_checkpoint} if verified_checkpoint is not None else {}),
             "identities": verified_history,
         }
     return evidence

@@ -49,17 +49,38 @@
       "required": ["identities", "path", "ref", "repository", "state"],
       "additionalProperties": false,
       "properties": {
+        "checkpoint": {"$ref": "#/$defs/checkpoint"},
         "identities": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 100,
-          "items": {"$ref": "#/$defs/identity"}
+          "maxItems": 100
         },
         "path": {"const": ".github/workflows/release-plan-recovery.yml"},
         "ref": {"type": "string", "pattern": "^refs/heads/(main|v2)$"},
         "repository": {"type": "string", "pattern": "^durable-workflow/[a-z0-9.-]+$"},
         "state": {"const": "active"}
-      }
+      },
+      "allOf": [
+        {
+          "if": {"required": ["checkpoint"]},
+          "then": {
+            "properties": {
+              "identities": {
+                "prefixItems": [{"$ref": "#/$defs/successorIdentity"}],
+                "items": {"$ref": "#/$defs/successorIdentity"}
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "identities": {
+                "prefixItems": [{"$ref": "#/$defs/rootIdentity"}],
+                "items": {"$ref": "#/$defs/successorIdentity"}
+              }
+            }
+          }
+        }
+      ]
     },
     "identity": {
       "type": "object",
@@ -71,6 +92,40 @@
         "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
         "supersedes": {"$ref": "#/$defs/predecessor"}
+      }
+    },
+    "rootIdentity": {
+      "allOf": [
+        {"$ref": "#/$defs/identity"},
+        {"not": {"required": ["supersedes"]}}
+      ]
+    },
+    "successorIdentity": {
+      "allOf": [
+        {"$ref": "#/$defs/identity"},
+        {"required": ["supersedes"]}
+      ]
+    },
+    "checkpoint": {
+      "type": "object",
+      "required": ["accepted_identities", "predecessor", "source"],
+      "additionalProperties": false,
+      "properties": {
+        "accepted_identities": {"type": "integer", "minimum": 100, "multipleOf": 100},
+        "predecessor": {"$ref": "#/$defs/predecessor"},
+        "source": {"$ref": "#/$defs/checkpointSource"}
+      }
+    },
+    "checkpointSource": {
+      "type": "object",
+      "required": ["commit", "path", "ref", "repository", "sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "path": {"const": "release-recovery/protected-source-identities.json"},
+        "ref": {"const": "refs/heads/main"},
+        "repository": {"const": "durable-workflow/.github"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     },
     "qualificationPolicy": {
@@ -121,7 +176,7 @@
         "event": {"const": "push"},
         "head_branch": {"enum": ["main", "v2"]},
         "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-        "required_check": {"type": "string", "minLength": 1},
+        "required_check": {"type": "string", "minLength": 1, "maxLength": 256},
         "run_attempt": {"type": "integer", "minimum": 1},
         "run_id": {"type": "integer", "minimum": 1},
         "status": {"const": "completed"},
@@ -131,6 +186,7 @@
         },
         "workflow": {
           "type": "string",
+          "maxLength": 256,
           "pattern": "^\\.github/workflows/[A-Za-z0-9._-]+\\.ya?ml$"
         }
       }
