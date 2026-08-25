@@ -18,8 +18,10 @@ QUALIFICATION_WORKFLOW = ".github/workflows/beta-candidate.yml"
 QUALIFICATION_EVENT = "push"
 QUALIFICATION_REF_PATH = f"{QUALIFICATION_WORKFLOW}@{AUTHORITY_REF}"
 WORKFLOW_PATH = ".github/workflows/release-plan-recovery.yml"
-SOURCE_IDENTITIES_SCHEMA = "durable-workflow.component-release-recovery-source-identities/v1"
+SOURCE_IDENTITIES_SCHEMA = "durable-workflow.component-release-recovery-source-identities/v2"
 SOURCE_IDENTITIES_PATH = "release-recovery/protected-source-identities.json"
+QUALIFICATION_POLICY_PATH = "qualification/policy.json"
+MAX_QUALIFICATION_POLICY_BYTES = 256 * 1024
 CHECK_RUN_APP = "github-actions"
 SOURCE_IDENTITY = {
     "repository": CONTROL_REPOSITORY,
@@ -104,6 +106,13 @@ def authority_ref_url() -> str:
 def authority_url(commit: str) -> str:
     return (
         f"https://api.github.com/repos/{CONTROL_REPOSITORY}/contents/{AUTHORITY_PATH}"
+        f"?ref={commit}"
+    )
+
+
+def qualification_policy_url(commit: str) -> str:
+    return (
+        f"https://api.github.com/repos/{CONTROL_REPOSITORY}/contents/{QUALIFICATION_POLICY_PATH}"
         f"?ref={commit}"
     )
 
@@ -306,6 +315,102 @@ def qualification_requirements(
     return requirements
 
 
+def qualification_policy_binding(raw: bytes, commit: str) -> dict[str, str]:
+    if len(raw) > MAX_QUALIFICATION_POLICY_BYTES:
+        raise RecoveryWorkflowAuthorityError("recovery qualification policy exceeds the 256 KiB limit")
+    try:
+        value = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RecoveryWorkflowAuthorityError("recovery qualification policy is not valid UTF-8 JSON") from error
+    if not isinstance(value, dict):
+        raise RecoveryWorkflowAuthorityError("recovery qualification policy must contain a JSON object")
+    return {
+        "repository": CONTROL_REPOSITORY,
+        "ref": f"refs/heads/{AUTHORITY_REF}",
+        "commit": _commit(commit, "recovery qualification policy"),
+        "path": QUALIFICATION_POLICY_PATH,
+        "sha256": hashlib.sha256(raw).hexdigest(),
+    }
+
+
+def _validate_qualification_policy_binding(name: str, value: Any) -> dict[str, str]:
+    expected = {
+        "repository": CONTROL_REPOSITORY,
+        "ref": f"refs/heads/{AUTHORITY_REF}",
+        "path": QUALIFICATION_POLICY_PATH,
+    }
+    if not isinstance(value, dict) or set(value) != {*expected, "commit", "sha256"}:
+        raise RecoveryWorkflowAuthorityError(
+            f"{name} recovery source qualification policy binding has an invalid shape"
+        )
+    if any(value.get(field) != expected_value for field, expected_value in expected.items()):
+        raise RecoveryWorkflowAuthorityError(
+            f"{name} recovery source qualification policy binding has a mismatched protected identity"
+        )
+    commit = _commit(value.get("commit"), f"{name} recovery source qualification policy")
+    digest = value.get("sha256")
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise RecoveryWorkflowAuthorityError(
+            f"{name} recovery source qualification policy binding has an invalid SHA-256"
+        )
+    return {**expected, "commit": commit, "sha256": digest}
+
+
+def resolve_qualification_policy(
+    client: Any,
+    binding: Mapping[str, Any],
+    components: Mapping[str, tuple[str, str]],
+    *,
+    protected_head: str | None = None,
+) -> tuple[dict[str, Any], dict[str, dict[str, str]]]:
+    name = next(iter(components), "protected")
+    validated = _validate_qualification_policy_binding(name, binding)
+    head = (
+        _commit(protected_head, "recovery qualification policy protected branch")
+        if protected_head is not None
+        else validate_authority_commit(client.json(authority_ref_url()))
+    )
+    commit = validated["commit"]
+    if commit != head:
+        comparison = client.json(compare_url(CONTROL_REPOSITORY, commit, head))
+        if (
+            not isinstance(comparison, dict)
+            or comparison.get("status") != "ahead"
+            or comparison.get("base_commit", {}).get("sha") != commit
+            or comparison.get("merge_base_commit", {}).get("sha") != commit
+        ):
+            raise RecoveryWorkflowAuthorityError(
+                f"{name} recovery source qualification policy is not on the protected branch"
+            )
+    raw = client.bytes(
+        qualification_policy_url(commit),
+        accept="application/vnd.github.raw+json",
+    )
+    if len(raw) > MAX_QUALIFICATION_POLICY_BYTES:
+        raise RecoveryWorkflowAuthorityError(
+            f"{name} recovery source qualification policy exceeds the 256 KiB limit"
+        )
+    if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), validated["sha256"]):
+        raise RecoveryWorkflowAuthorityError(
+            f"{name} recovery source qualification policy does not match its protected binding"
+        )
+    try:
+        policy = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RecoveryWorkflowAuthorityError(
+            f"{name} recovery source qualification policy is not valid UTF-8 JSON"
+        ) from error
+    if not isinstance(policy, dict):
+        raise RecoveryWorkflowAuthorityError(
+            f"{name} recovery source qualification policy must contain a JSON object"
+        )
+    return policy, qualification_requirements(policy, components)
+
+
 def _validate_qualification(
     name: str,
     value: Any,
@@ -330,6 +435,17 @@ def _validate_qualification(
     }
     if not isinstance(value, dict) or set(value) != fields:
         raise RecoveryWorkflowAuthorityError(f"{name} recovery source qualification has an invalid shape")
+    workflow = requirement.get("workflow")
+    required_check = requirement.get("required_check")
+    if (
+        not isinstance(workflow, str)
+        or not re.fullmatch(r"\.github/workflows/[A-Za-z0-9._-]+\.ya?ml", workflow)
+        or not isinstance(required_check, str)
+        or not required_check
+    ):
+        raise RecoveryWorkflowAuthorityError(
+            f"{name} recovery source qualification has an invalid protected policy contract"
+        )
     run_id = _positive_integer(value.get("run_id"), f"{name} recovery qualification run")
     run_attempt = _positive_integer(
         value.get("run_attempt"),
@@ -346,12 +462,12 @@ def _validate_qualification(
         "event": "push",
         "head_branch": branch,
         "head_sha": commit,
-        "required_check": requirement["required_check"],
+        "required_check": required_check,
         "run_attempt": run_attempt,
         "run_id": run_id,
         "status": "completed",
         "url": f"https://github.com/{repository}/actions/runs/{run_id}",
-        "workflow": requirement["workflow"],
+        "workflow": workflow,
     }
     if value != expected:
         raise RecoveryWorkflowAuthorityError(
@@ -364,7 +480,6 @@ def validate_source_identities(
     value: Any,
     workflows: Mapping[str, Mapping[str, str]],
     components: Mapping[str, tuple[str, str]],
-    requirements: Mapping[str, Mapping[str, str]],
 ) -> dict[str, dict[str, Any]]:
     expected_source = {
         "repository": CONTROL_REPOSITORY,
@@ -381,11 +496,6 @@ def validate_source_identities(
         raise RecoveryWorkflowAuthorityError(
             "recovery protected source identities do not name the complete component set"
         )
-    if set(requirements) != set(components):
-        raise RecoveryWorkflowAuthorityError(
-            "recovery qualification requirements do not name the complete component set"
-        )
-
     validated: dict[str, dict[str, Any]] = {}
     for name, (repository, branch) in components.items():
         record = records[name]
@@ -407,7 +517,12 @@ def validate_source_identities(
         accepted: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
         for index, identity in enumerate(identities):
-            expected_fields = {"source_commit", "sha256", "qualification"}
+            expected_fields = {
+                "source_commit",
+                "sha256",
+                "qualification",
+                "qualification_policy",
+            }
             if index:
                 expected_fields.add("supersedes")
             if not isinstance(identity, dict) or set(identity) != expected_fields:
@@ -445,7 +560,16 @@ def validate_source_identities(
                     repository,
                     branch,
                     commit,
-                    requirements[name],
+                    {
+                        "workflow": identity["qualification"].get("workflow"),
+                        "required_check": identity["qualification"].get("required_check"),
+                    }
+                    if isinstance(identity.get("qualification"), dict)
+                    else {},
+                ),
+                "qualification_policy": _validate_qualification_policy_binding(
+                    name,
+                    identity["qualification_policy"],
                 ),
             }
             if previous is not None:
@@ -466,13 +590,12 @@ def decode_source_identities(
     raw: bytes,
     workflows: Mapping[str, Mapping[str, str]],
     components: Mapping[str, tuple[str, str]],
-    requirements: Mapping[str, Mapping[str, str]],
 ) -> dict[str, dict[str, Any]]:
     try:
         value = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise RecoveryWorkflowAuthorityError("recovery protected source identities are not valid UTF-8 JSON") from error
-    return validate_source_identities(value, workflows, components, requirements)
+    return validate_source_identities(value, workflows, components)
 
 
 def load_qualified_authority(
@@ -551,11 +674,19 @@ def verify_authority_source_identities(
     client: Any,
     workflows: Mapping[str, Mapping[str, str]],
     source_identities: Mapping[str, Mapping[str, Any]],
-    requirements: Mapping[str, Mapping[str, str]],
     *,
     require_current: bool = True,
 ) -> dict[str, dict[str, Any]]:
     evidence: dict[str, dict[str, Any]] = {}
+    policy_head = validate_authority_commit(client.json(authority_ref_url()))
+    policy_components = {
+        name: (
+            expected["repository"],
+            expected["ref"].removeprefix("refs/heads/"),
+        )
+        for name, expected in workflows.items()
+    }
+    policy_cache: dict[tuple[str, str], dict[str, dict[str, str]]] = {}
     for name, expected in workflows.items():
         record = source_identities[name]
         repository = expected["repository"]
@@ -599,19 +730,42 @@ def verify_authority_source_identities(
                 raise RecoveryWorkflowAuthorityError(
                     f"{name} recovery protected source bytes do not match the accepted identity"
                 )
+            binding = identity["qualification_policy"]
+            policy_identity = (binding["commit"], binding["sha256"])
+            if policy_identity not in policy_cache:
+                _policy, policy_cache[policy_identity] = resolve_qualification_policy(
+                    client,
+                    binding,
+                    policy_components,
+                    protected_head=policy_head,
+                )
+            requirement = policy_cache[policy_identity].get(name)
+            if requirement is None:
+                raise RecoveryWorkflowAuthorityError(
+                    f"{name} recovery source qualification policy does not resolve its protected target"
+                )
+            _validate_qualification(
+                name,
+                identity["qualification"],
+                repository,
+                branch,
+                commit,
+                requirement,
+            )
             qualification = validate_live_qualification(
                 client,
                 name,
                 repository,
                 branch,
                 identity,
-                requirements[name],
+                requirement,
             )
             verified_history.append(
                 {
                     "source_commit": commit,
                     "sha256": identity["sha256"],
                     "qualification": qualification,
+                    "qualification_policy": dict(binding),
                 }
             )
         if head_source is None:

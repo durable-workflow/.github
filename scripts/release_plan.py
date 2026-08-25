@@ -60,7 +60,6 @@ from scripts.recovery_workflow_authority import (
     decode_authority,
     decode_source_identities,
     load_qualified_authority,
-    qualification_requirements,
     verify_authority_source_identities,
     verify_workflow_source,
 )
@@ -169,7 +168,6 @@ def verify_local_recovery_workflow_authority(
     client: PublicClient,
     *,
     source_identities_path: Path = Path(SOURCE_IDENTITIES_PATH),
-    qualification_policy_path: Path = Path("qualification/policy.json"),
 ) -> dict[str, Any]:
     try:
         raw = path.read_bytes()
@@ -184,19 +182,15 @@ def verify_local_recovery_workflow_authority(
     try:
         workflows = decode_authority(raw, identities)
         source_identities_raw = source_identities_path.read_bytes()
-        qualification_policy = json.loads(qualification_policy_path.read_bytes())
-        requirements = qualification_requirements(qualification_policy, identities)
         source_identities = decode_source_identities(
             source_identities_raw,
             workflows,
             identities,
-            requirements,
         )
         protected_sources = verify_authority_source_identities(
             client,
             workflows,
             source_identities,
-            requirements,
         )
     except (OSError, json.JSONDecodeError, RecoveryWorkflowAuthorityError) as error:
         raise CandidateError(f"invalid component release recovery authority: {error}") from error

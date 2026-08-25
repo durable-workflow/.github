@@ -25,7 +25,8 @@ from scripts.recovery_workflow_authority import (
     branch_url,
     compare_url,
     exact_source_sha256,
-    qualification_requirements,
+    qualification_policy_binding,
+    resolve_qualification_policy,
     validate_authority,
     validate_source_identities,
     verify_authority_source_identities,
@@ -190,22 +191,29 @@ def reconcile_authority(
     authority: dict[str, Any],
     source_document: dict[str, Any],
     policy: dict[str, Any],
+    policy_binding: Mapping[str, str],
     client: Any,
     components: Mapping[str, tuple[str, str]],
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     workflows = validate_authority(authority, components)
-    requirements = qualification_requirements(policy, components)
+    resolved_policy, requirements = resolve_qualification_policy(
+        client,
+        policy_binding,
+        components,
+    )
+    if resolved_policy != policy:
+        raise RecoveryWorkflowAuthorityError(
+            "current recovery qualification policy differs from its protected binding"
+        )
     source_identities = validate_source_identities(
         source_document,
         workflows,
         components,
-        requirements,
     )
     verify_authority_source_identities(
         client,
         workflows,
         source_identities,
-        requirements,
         require_current=False,
     )
 
@@ -236,6 +244,7 @@ def reconcile_authority(
             )
         successor = {
             **observation,
+            "qualification_policy": dict(policy_binding),
             "supersedes": {
                 "source_commit": current["source_commit"],
                 "sha256": current["sha256"],
@@ -251,6 +260,7 @@ def reconcile_authority(
                     "source_commit": successor["source_commit"],
                     "sha256": successor["sha256"],
                     "qualification": successor["qualification"],
+                    "qualification_policy": successor["qualification_policy"],
                 },
             }
         )
@@ -260,7 +270,6 @@ def reconcile_authority(
         proposed_sources,
         proposed_workflows,
         components,
-        requirements,
     )
     observation = {
         "schema": OBSERVATION_SCHEMA,
@@ -277,13 +286,25 @@ def _write_reconciliation(
     proposed_authority_path: Path,
     proposed_source_path: Path,
     observation_path: Path,
+    policy_commit: str,
     client: Any,
     github_output: Path | None,
 ) -> dict[str, Any]:
+    try:
+        policy_raw = policy_path.read_bytes()
+    except OSError as error:
+        raise RecoveryWorkflowAuthorityError(f"cannot read qualification policy: {error}") from error
+    try:
+        policy = json.loads(policy_raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RecoveryWorkflowAuthorityError("qualification policy is not valid UTF-8 JSON") from error
+    if not isinstance(policy, dict):
+        raise RecoveryWorkflowAuthorityError("qualification policy must contain a JSON object")
     proposed_authority, proposed_sources, observation = reconcile_authority(
         _load_json(authority_path, "recovery workflow authority"),
         _load_json(source_path, "recovery protected source identities"),
-        _load_json(policy_path, "qualification policy"),
+        policy,
+        qualification_policy_binding(policy_raw, policy_commit),
         client,
         component_identities(),
     )
@@ -307,12 +328,24 @@ def _verify_proposal(
     proposed_authority_path: Path,
     proposed_source_path: Path,
     observation_path: Path,
+    policy_commit: str,
     client: Any,
 ) -> dict[str, Any]:
+    try:
+        policy_raw = policy_path.read_bytes()
+    except OSError as error:
+        raise RecoveryWorkflowAuthorityError(f"cannot read qualification policy: {error}") from error
+    try:
+        policy = json.loads(policy_raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RecoveryWorkflowAuthorityError("qualification policy is not valid UTF-8 JSON") from error
+    if not isinstance(policy, dict):
+        raise RecoveryWorkflowAuthorityError("qualification policy must contain a JSON object")
     expected_authority, expected_sources, expected_observation = reconcile_authority(
         _load_json(authority_path, "recovery workflow authority"),
         _load_json(source_path, "recovery protected source identities"),
-        _load_json(policy_path, "qualification policy"),
+        policy,
+        qualification_policy_binding(policy_raw, policy_commit),
         client,
         component_identities(),
     )
@@ -338,6 +371,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--authority", type=Path, default=Path(AUTHORITY_PATH))
     parser.add_argument("--source-identities", type=Path, default=Path(SOURCE_IDENTITIES_PATH))
     parser.add_argument("--policy", type=Path, default=Path("qualification/policy.json"))
+    parser.add_argument("--policy-commit", default=os.environ.get("GITHUB_SHA"))
     parser.add_argument("--proposed-authority", type=Path, required=True)
     parser.add_argument("--proposed-source-identities", type=Path, required=True)
     parser.add_argument("--observation", type=Path, required=True)
@@ -349,6 +383,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     try:
+        if args.policy_commit is None:
+            raise RecoveryWorkflowAuthorityError(
+                "the exact protected qualification policy commit is required"
+            )
         client = PublicClient(args.github_token)
         if args.command == "reconcile":
             result = _write_reconciliation(
@@ -358,6 +396,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.proposed_authority,
                 args.proposed_source_identities,
                 args.observation,
+                args.policy_commit,
                 client,
                 args.github_output,
             )
@@ -369,6 +408,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.proposed_authority,
                 args.proposed_source_identities,
                 args.observation,
+                args.policy_commit,
                 client,
             )
         print(json.dumps(result, sort_keys=True))

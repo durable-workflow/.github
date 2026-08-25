@@ -7,7 +7,7 @@
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "durable-workflow.component-release-recovery-source-identities/v1"
+      "const": "durable-workflow.component-release-recovery-source-identities/v2"
     },
     "source": {
       "type": "object",
@@ -63,13 +63,26 @@
     },
     "identity": {
       "type": "object",
-      "required": ["qualification", "sha256", "source_commit"],
+      "required": ["qualification", "qualification_policy", "sha256", "source_commit"],
       "additionalProperties": false,
       "properties": {
         "qualification": {"$ref": "#/$defs/qualification"},
+        "qualification_policy": {"$ref": "#/$defs/qualificationPolicy"},
         "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
         "supersedes": {"$ref": "#/$defs/predecessor"}
+      }
+    },
+    "qualificationPolicy": {
+      "type": "object",
+      "required": ["commit", "path", "ref", "repository", "sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "path": {"const": "qualification/policy.json"},
+        "ref": {"const": "refs/heads/main"},
+        "repository": {"const": "durable-workflow/.github"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     },
     "predecessor": {

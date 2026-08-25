@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -31,7 +32,6 @@ from scripts.recovery_workflow_authority import (
 ROOT = Path(__file__).resolve().parents[1]
 AUTHORITY = json.loads((ROOT / AUTHORITY_PATH).read_bytes())
 SOURCE_IDENTITIES = json.loads((ROOT / SOURCE_IDENTITIES_PATH).read_bytes())
-QUALIFICATION_POLICY = json.loads((ROOT / "qualification" / "policy.json").read_bytes())
 IDENTITIES = {
     name: (component.repository, component.default_branch)
     for name, component in COMPONENTS.items()
@@ -135,12 +135,10 @@ class RecoveryWorkflowAuthorityTest(unittest.TestCase):
 
     def test_public_source_history_binds_the_current_waterline_reconciliation(self) -> None:
         workflows = validate_authority(AUTHORITY, IDENTITIES)
-        requirements = qualification_requirements(QUALIFICATION_POLICY, IDENTITIES)
         histories = validate_source_identities(
             SOURCE_IDENTITIES,
             workflows,
             IDENTITIES,
-            requirements,
         )
 
         waterline = histories["waterline"]["identities"]
@@ -158,6 +156,38 @@ class RecoveryWorkflowAuthorityTest(unittest.TestCase):
             waterline[-1]["supersedes"],
         )
         self.assertEqual("success", waterline[-1]["qualification"]["conclusion"])
+        expected_binding = {
+            "commit": "6c177285bd9224bad7a58da1e07c0d9f52850160",
+            "path": "qualification/policy.json",
+            "ref": "refs/heads/main",
+            "repository": "durable-workflow/.github",
+            "sha256": "c4383fe691fef8f571a9b58c6dbd7f0d41f9925b24df8ae651570204b394e724",
+        }
+        ancestry = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", expected_binding["commit"], "HEAD"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+        )
+        self.assertEqual(0, ancestry.returncode)
+        historical_policy = subprocess.run(
+            ["git", "show", f"{expected_binding['commit']}:{expected_binding['path']}"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+        ).stdout
+        self.assertEqual(expected_binding["sha256"], hashlib.sha256(historical_policy).hexdigest())
+        historical_requirements = qualification_requirements(json.loads(historical_policy), IDENTITIES)
+        for name, record in histories.items():
+            for identity in record["identities"]:
+                self.assertEqual(expected_binding, identity["qualification_policy"])
+                self.assertEqual(
+                    historical_requirements[name],
+                    {
+                        field: identity["qualification"][field]
+                        for field in ("workflow", "required_check")
+                    },
+                )
 
     def test_component_loader_reads_only_the_successfully_qualified_exact_revision(self) -> None:
         client = FixtureClient(AUTHORITY)
