@@ -3,8 +3,10 @@ from __future__ import annotations
 import copy
 import json
 import unittest
+import urllib.parse
 from collections.abc import Mapping
 from pathlib import Path
+from unittest.mock import patch
 
 from jsonschema import Draft202012Validator
 
@@ -56,6 +58,14 @@ SOURCE_IDENTITIES_JSON_SCHEMA = json.loads(
 PUBLIC_SOURCE_IDENTITIES = json.loads(
     (ROOT / "release-recovery" / "protected-source-identities.json").read_bytes()
 )
+
+
+def exact_check_runs_url(repository: str, commit: str, check_name: str) -> str:
+    encoded_check_name = urllib.parse.quote(check_name, safe="")
+    return (
+        f"https://api.github.com/repos/{repository}/commits/{commit}/check-runs"
+        f"?filter=latest&check_name={encoded_check_name}&per_page=100"
+    )
 
 
 def requirement(workflow: str, required_check: str) -> dict[str, str]:
@@ -176,10 +186,12 @@ class FixtureClient:
         successor_requirement: Mapping[str, str] | None = None,
         qualified: bool = True,
         run_branch: str = BRANCH,
+        qualification_on_second_page: bool = False,
     ) -> None:
         self.head = head
         self.qualified = qualified
         self.run_branch = run_branch
+        self.qualification_on_second_page = qualification_on_second_page
         self.requests: list[tuple[str, str]] = []
         self.current_policy = current_policy or policy()
         self.current_policy_commit = current_policy_commit
@@ -255,8 +267,48 @@ class FixtureClient:
                     protected_requirement,
                     successful=True,
                 )
-            if url.endswith(f"/commits/{commit}/check-runs?filter=latest&per_page=100"):
+            if url == exact_check_runs_url(
+                REPOSITORY,
+                commit,
+                protected_requirement["required_check"],
+            ):
                 return {
+                    "total_count": 1,
+                    "check_runs": [
+                        self._check(
+                            commit,
+                            run_id,
+                            check_run_id,
+                            protected_requirement,
+                            successful=self.qualified or commit != self.head,
+                        )
+                    ]
+                }
+            if url.startswith(
+                f"https://api.github.com/repos/{REPOSITORY}/commits/{commit}/check-runs"
+                "?filter=latest&check_name="
+            ) and url.endswith("&per_page=100"):
+                return {"total_count": 0, "check_runs": []}
+            if url.endswith(f"/commits/{commit}/check-runs?filter=latest&per_page=100"):
+                if self.qualification_on_second_page and commit == self.head:
+                    return {
+                        "total_count": 186,
+                        "check_runs": [
+                            {
+                                **self._check(
+                                    commit,
+                                    run_id,
+                                    check_run_id + index + 1,
+                                    protected_requirement,
+                                    successful=True,
+                                ),
+                                "name": f"Unrelated check {index}",
+                            }
+                            for index in range(100)
+                        ]
+                    }
+                return {
+                    "total_count": 1,
                     "check_runs": [
                         self._check(
                             commit,
@@ -463,6 +515,83 @@ class RecoveryAuthorityReconciliationTest(unittest.TestCase):
             exact_source_sha256(NEW_SOURCE),
             proposed_authority["workflows"]["waterline"]["sha256"],
         )
+
+    def test_exact_required_check_is_resolved_past_unfiltered_page_boundary(self) -> None:
+        client = FixtureClient(
+            head=NEW_COMMIT,
+            qualification_on_second_page=True,
+        )
+
+        proposed_authority, _proposed_sources, observation = self.reconcile(client)
+
+        self.assertEqual("change-required", observation["outcome"])
+        self.assertEqual(
+            exact_source_sha256(NEW_SOURCE),
+            proposed_authority["workflows"]["waterline"]["sha256"],
+        )
+        self.assertIn(
+            ("json", exact_check_runs_url(REPOSITORY, NEW_COMMIT, POLICY_A_CHECK)),
+            client.requests,
+        )
+        self.assertNotIn(
+            (
+                "json",
+                f"https://api.github.com/repos/{REPOSITORY}/commits/{NEW_COMMIT}/check-runs"
+                "?filter=latest&per_page=100",
+            ),
+            client.requests,
+        )
+
+    def test_current_and_proposed_documents_enforce_the_same_byte_limit(self) -> None:
+        current_sources = source_identities()
+        current_raw = canonical_json(current_sources)
+        _authority, expected_sources, _observation = self.reconcile(
+            FixtureClient(head=NEW_COMMIT),
+            source_document=current_sources,
+            source_raw=current_raw,
+        )
+        proposed_raw = canonical_json(expected_sources)
+        self.assertLess(len(current_raw), len(proposed_raw))
+
+        with (
+            patch(
+                "scripts.recovery_authority_reconciliation.MAX_SOURCE_IDENTITIES_BYTES",
+                len(current_raw) - 1,
+            ),
+            self.assertRaisesRegex(RecoveryWorkflowAuthorityError, "protected source identities exceed"),
+        ):
+            self.reconcile(
+                FixtureClient(head=NEW_COMMIT),
+                source_document=current_sources,
+                source_raw=current_raw,
+            )
+
+        with patch(
+            "scripts.recovery_authority_reconciliation.MAX_SOURCE_IDENTITIES_BYTES",
+            len(proposed_raw),
+        ):
+            _authority, exact_boundary_sources, _observation = self.reconcile(
+                FixtureClient(head=NEW_COMMIT),
+                source_document=current_sources,
+                source_raw=current_raw,
+            )
+        self.assertEqual(expected_sources, exact_boundary_sources)
+
+        with (
+            patch(
+                "scripts.recovery_authority_reconciliation.MAX_SOURCE_IDENTITIES_BYTES",
+                len(proposed_raw) - 1,
+            ),
+            self.assertRaisesRegex(
+                RecoveryWorkflowAuthorityError,
+                "proposed recovery protected source identities exceed",
+            ),
+        ):
+            self.reconcile(
+                FixtureClient(head=NEW_COMMIT),
+                source_document=current_sources,
+                source_raw=current_raw,
+            )
 
     def test_successor_at_the_retention_boundary_rolls_over_and_remains_verifiable(self) -> None:
         (

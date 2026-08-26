@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sys
+import urllib.parse
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -64,8 +65,12 @@ def component_identities() -> dict[str, tuple[str, str]]:
     return {name: (component.repository, DEFAULT_BRANCHES[name]) for name, component in COMPONENTS.items()}
 
 
-def check_runs_url(repository: str, commit: str) -> str:
-    return f"https://api.github.com/repos/{repository}/commits/{commit}/check-runs?filter=latest&per_page=100"
+def check_runs_url(repository: str, commit: str, check_name: str) -> str:
+    encoded_check_name = urllib.parse.quote(check_name, safe="")
+    return (
+        f"https://api.github.com/repos/{repository}/commits/{commit}/check-runs"
+        f"?filter=latest&check_name={encoded_check_name}&per_page=100"
+    )
 
 
 def _qualified_identity(
@@ -76,7 +81,7 @@ def _qualified_identity(
     commit: str,
     requirement: Mapping[str, str],
 ) -> dict[str, Any]:
-    response = client.json(check_runs_url(repository, commit))
+    response = client.json(check_runs_url(repository, commit, requirement["required_check"]))
     check_runs = response.get("check_runs") if isinstance(response, dict) else None
     if not isinstance(check_runs, list):
         raise RecoveryWorkflowAuthorityError(f"{name} recovery qualification checks have an invalid response")
@@ -200,6 +205,8 @@ def reconcile_authority(
     *,
     source_raw: bytes | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    if source_raw is not None and len(source_raw) > MAX_SOURCE_IDENTITIES_BYTES:
+        raise RecoveryWorkflowAuthorityError("recovery protected source identities exceed the 1 MiB limit")
     workflows = validate_authority(authority, components)
     resolved_policy, requirements = resolve_qualification_policy(
         client,
@@ -215,6 +222,8 @@ def reconcile_authority(
         workflows,
         components,
     )
+    if source_raw is None and len(canonical_json(source_document)) > MAX_SOURCE_IDENTITIES_BYTES:
+        raise RecoveryWorkflowAuthorityError("recovery protected source identities exceed the 1 MiB limit")
     verify_authority_source_identities(
         client,
         workflows,
@@ -299,6 +308,10 @@ def reconcile_authority(
             change["checkpoint"] = checkpoint
         changes.append(change)
 
+    if len(canonical_json(proposed_sources)) > MAX_SOURCE_IDENTITIES_BYTES:
+        raise RecoveryWorkflowAuthorityError(
+            "proposed recovery protected source identities exceed the 1 MiB limit"
+        )
     proposed_workflows = validate_authority(proposed_authority, components)
     validate_source_identities(
         proposed_sources,

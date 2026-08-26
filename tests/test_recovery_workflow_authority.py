@@ -18,6 +18,7 @@ from scripts.recovery_workflow_authority import (
     QUALIFICATION_EVENT,
     QUALIFICATION_WORKFLOW,
     SOURCE_IDENTITIES_PATH,
+    SOURCE_IDENTITY_HISTORY_LIMIT,
     RecoveryWorkflowAuthorityError,
     authority_ref_url,
     authority_url,
@@ -133,7 +134,7 @@ class RecoveryWorkflowAuthorityTest(unittest.TestCase):
             AUTHORITY["source"]["qualification"],
         )
 
-    def test_public_source_history_binds_the_current_waterline_reconciliation(self) -> None:
+    def test_public_source_history_satisfies_bounded_continuity(self) -> None:
         workflows = validate_authority(AUTHORITY, IDENTITIES)
         histories = validate_source_identities(
             SOURCE_IDENTITIES,
@@ -141,48 +142,45 @@ class RecoveryWorkflowAuthorityTest(unittest.TestCase):
             IDENTITIES,
         )
 
-        waterline = histories["waterline"]["identities"]
-        self.assertEqual(3, len(waterline))
-        self.assertEqual(
-            "367c0a1896ad2978b4b9e4f67e2b09558686962b",
-            waterline[-1]["source_commit"],
-        )
-        self.assertEqual(AUTHORITY["workflows"]["waterline"]["sha256"], waterline[-1]["sha256"])
-        self.assertEqual(
-            {
-                "source_commit": waterline[-2]["source_commit"],
-                "sha256": waterline[-2]["sha256"],
-            },
-            waterline[-1]["supersedes"],
-        )
-        self.assertEqual("success", waterline[-1]["qualification"]["conclusion"])
-        expected_binding = {
-            "commit": "6c177285bd9224bad7a58da1e07c0d9f52850160",
-            "path": "qualification/policy.json",
-            "ref": "refs/heads/main",
-            "repository": "durable-workflow/.github",
-            "sha256": "c4383fe691fef8f571a9b58c6dbd7f0d41f9925b24df8ae651570204b394e724",
-        }
-        ancestry = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", expected_binding["commit"], "HEAD"],
-            cwd=ROOT,
-            check=False,
-            capture_output=True,
-        )
-        self.assertEqual(0, ancestry.returncode)
-        historical_policy = subprocess.run(
-            ["git", "show", f"{expected_binding['commit']}:{expected_binding['path']}"],
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-        ).stdout
-        self.assertEqual(expected_binding["sha256"], hashlib.sha256(historical_policy).hexdigest())
-        historical_requirements = qualification_requirements(json.loads(historical_policy), IDENTITIES)
+        policy_requirements: dict[tuple[str, str], dict[str, dict[str, str]]] = {}
         for name, record in histories.items():
-            for identity in record["identities"]:
-                self.assertEqual(expected_binding, identity["qualification_policy"])
+            identities = record["identities"]
+            self.assertLessEqual(len(identities), SOURCE_IDENTITY_HISTORY_LIMIT)
+            self.assertEqual(AUTHORITY["workflows"][name]["sha256"], identities[-1]["sha256"])
+            previous = record.get("checkpoint", {}).get("predecessor")
+            for identity in identities:
+                if previous is None:
+                    self.assertNotIn("supersedes", identity)
+                else:
+                    self.assertEqual(previous, identity["supersedes"])
+                previous = {
+                    "source_commit": identity["source_commit"],
+                    "sha256": identity["sha256"],
+                }
+
+                binding = identity["qualification_policy"]
+                policy_identity = (binding["commit"], binding["sha256"])
+                if policy_identity not in policy_requirements:
+                    ancestry = subprocess.run(
+                        ["git", "merge-base", "--is-ancestor", binding["commit"], "HEAD"],
+                        cwd=ROOT,
+                        check=False,
+                        capture_output=True,
+                    )
+                    self.assertEqual(0, ancestry.returncode)
+                    historical_policy = subprocess.run(
+                        ["git", "show", f"{binding['commit']}:{binding['path']}"],
+                        cwd=ROOT,
+                        check=True,
+                        capture_output=True,
+                    ).stdout
+                    self.assertEqual(binding["sha256"], hashlib.sha256(historical_policy).hexdigest())
+                    policy_requirements[policy_identity] = qualification_requirements(
+                        json.loads(historical_policy),
+                        IDENTITIES,
+                    )
                 self.assertEqual(
-                    historical_requirements[name],
+                    policy_requirements[policy_identity][name],
                     {
                         field: identity["qualification"][field]
                         for field in ("workflow", "required_check")
