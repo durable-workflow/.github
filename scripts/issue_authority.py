@@ -44,6 +44,8 @@ NON_PUBLIC_CONTEXT_PATTERNS = (
 )
 SUPERSESSION_EVIDENCE_MARKER = "<!-- durable-workflow-prerelease-supersession -->"
 FROZEN_LIFECYCLE_EVIDENCE_MARKER = "<!-- durable-workflow-frozen-lifecycle:v1 -->"
+PUBLIC_LIFECYCLE_MARKER = "<!-- durable-workflow-public-lifecycle:v1 -->"
+PUBLIC_RETIREMENT_RECORD_MARKER = "<!-- durable-workflow-public-lifecycle-state:superseded;condition:none -->"
 SUPERSESSION_ACTIVATION_CONTEXT_PREFIX = "issue-authority/prerelease-supersession"
 SUPERSESSION_ACTIVATION_DESCRIPTION_PREFIX = "sha256:"
 GITHUB_ACTIONS_BOT_ID = 41_898_282
@@ -2650,6 +2652,29 @@ def _label_names(issue: dict[str, Any]) -> set[str]:
     return names
 
 
+def _has_trusted_public_retirement(
+    client: Any,
+    organization: str,
+    repository: str,
+    number: int,
+) -> bool:
+    """Recognize only the authenticated lifecycle writer's retirement record."""
+
+    records = []
+    for comment in client.list_trusted_issue_comments(organization, repository, number):
+        lines = comment["body"].splitlines()
+        if PUBLIC_LIFECYCLE_MARKER in lines:
+            records.append(lines)
+    if len(records) > 1:
+        raise AuthorityError(f"GitHub issue {repository}#{number} has duplicate public lifecycle records")
+    if not records:
+        return False
+    marker_count = records[0].count(PUBLIC_RETIREMENT_RECORD_MARKER)
+    if marker_count > 1:
+        raise AuthorityError(f"GitHub issue {repository}#{number} has duplicate public retirement markers")
+    return marker_count == 1
+
+
 def _issue_url(issue: dict[str, Any], organization: str, repository: str) -> str:
     url = issue.get("html_url")
     if isinstance(url, str) and url.startswith("https://github.com/"):
@@ -3055,9 +3080,32 @@ def _audit_state_labels(
     prerelease_supersessions: Mapping[tuple[str, int], Mapping[str, Any]] | None,
 ) -> list[str]:
     organization = policy["organization"]
+    failures: list[str] = []
+    trusted_retirements: set[tuple[str, int]] = set()
+    retirement_quarantines: set[tuple[str, int]] = set()
+    for repository, issues in inventory.items():
+        for issue in issues:
+            number = issue.get("number")
+            if type(number) is not int:
+                continue
+            identity = (repository, number)
+            try:
+                if _has_trusted_public_retirement(
+                    client,
+                    organization,
+                    repository,
+                    number,
+                ):
+                    trusted_retirements.add(identity)
+            except AuthorityError as error:
+                failures.append(f"{repository}#{number} retirement record is malformed: {error}")
+                retirement_quarantines.add(identity)
+
     historical_completion_identities = set(historical_cross_repository_completions or {})
     frozen_results: dict[tuple[str, int], dict[str, Any]] = {}
     for identity, migration in sorted((frozen_cross_repository_lifecycles or {}).items()):
+        if identity in trusted_retirements or identity in retirement_quarantines:
+            continue
         declared = (cross_repository_targets or {}).get(identity, ())
         declared_contract = sorted(
             f"durable-workflow/{target.get('repository')}@{target.get('branch')}" for target in declared
@@ -3069,6 +3117,8 @@ def _audit_state_labels(
         frozen_results[identity] = _evaluate_frozen_lifecycle(client, organization, migration)
     recorded_landing_results: dict[tuple[str, str, str, tuple[str, ...]], Mapping[str, Any]] = {}
     for identity, landings in sorted((historical_cross_repository_completions or {}).items()):
+        if identity in trusted_retirements or identity in retirement_quarantines:
+            continue
         declared = (cross_repository_targets or {}).get(identity, ())
         if not declared:
             raise AuthorityError(
@@ -3132,31 +3182,62 @@ def _audit_state_labels(
             for landing in landings
         ]
         if any(result["state"] != "complete" for result in results):
-            failures = [
+            landing_failures = [
                 f"{target['repository']}@{target['branch']}={target['state']}"
                 for target in results
                 if target["state"] != "complete"
             ]
             raise AuthorityError(
                 f"{identity[0]}#{identity[1]} historical completion evidence failed revalidation: "
-                + ", ".join(failures)
+                + ", ".join(landing_failures)
             )
 
-    failures: list[str] = []
     for repository, issues in inventory.items():
         for issue in issues:
             labels = _label_names(issue)
-            if "authority:github" not in labels:
-                continue
             number = int(issue["number"])
             location = f"{repository}#{number}"
+            identity = (repository, number)
+            if identity in retirement_quarantines:
+                continue
+            trusted_retirement = identity in trusted_retirements
+            if "authority:github" not in labels and not trusted_retirement:
+                continue
             statuses = labels & STATUS_LABELS
             open_statuses_before_lifecycle = statuses & OPEN_STATUS_LABELS
             state = issue.get("state")
             replacement = set(labels)
             aggregated_close = False
             assessment: dict[str, Any] | None = None
-            identity = (repository, number)
+            if trusted_retirement:
+                replacement -= STATUS_LABELS
+                replacement -= COMPLETION_LABELS
+                replacement.update({"authority:github", SUPERSEDED_STATUS_LABEL})
+                if replacement != labels:
+                    client.replace_issue_labels(
+                        organization,
+                        repository,
+                        number,
+                        sorted(replacement),
+                    )
+                    issue["labels"] = [{"name": label} for label in sorted(replacement)]
+                    labels = replacement
+                if state != "closed" or issue.get("state_reason") != "not_planned":
+                    client.update_issue_state(
+                        organization,
+                        repository,
+                        number,
+                        "closed",
+                        state_reason="not_planned",
+                    )
+                    issue["state"] = "closed"
+                    issue["state_reason"] = "not_planned"
+                if len(labels & KIND_LABELS) != 1:
+                    failures.append(f"{location} must have exactly one kind label")
+                if len(labels & PRIORITY_LABELS) != 1:
+                    failures.append(f"{location} must have exactly one priority label")
+                continue
+
             approved_completion_hold = identity in approved_completion_holds
             frozen_migration = (frozen_cross_repository_lifecycles or {}).get(identity)
             frozen_result = frozen_results.get(identity)

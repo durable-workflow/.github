@@ -30,6 +30,8 @@ from scripts.issue_authority import (
     FROZEN_LIFECYCLE_EVIDENCE_MARKER,
     INTAKE_SCHEMA,
     OWNER_LABELS,
+    PUBLIC_LIFECYCLE_MARKER,
+    PUBLIC_RETIREMENT_RECORD_MARKER,
     STATUS_LABELS,
     SUPERSEDED_STATUS_LABEL,
     SUPERSESSION_EVIDENCE_MARKER,
@@ -38,6 +40,8 @@ from scripts.issue_authority import (
     AuthorityError,
     GitHubApi,
     GitHubDiscovery,
+    _audit_state_labels,
+    _has_trusted_public_retirement,
     _write_discovery_outputs,
     _write_evidence,
     activate_prerelease_supersessions,
@@ -3342,6 +3346,30 @@ class GitHubApiTest(unittest.TestCase):
 
         self.assertEqual([12], [comment["id"] for comment in trusted])
 
+    def test_spoofed_lifecycle_comment_cannot_manufacture_retirement(self) -> None:
+        client = GitHubApi("writer-token", read_token="job-token")
+        comments = [
+            {
+                "body": f"{PUBLIC_LIFECYCLE_MARKER}\n{PUBLIC_RETIREMENT_RECORD_MARKER}\n",
+                "id": 10,
+                "user": {"id": 100, "login": "external-contributor"},
+            }
+        ]
+        responses = [
+            FakeResponse(json.dumps(comments).encode()),
+            FakeResponse(b'{"id":7,"login":"durable-workflow-ops"}'),
+        ]
+
+        with patch("urllib.request.urlopen", side_effect=responses):
+            retired = _has_trusted_public_retirement(
+                client,
+                "durable-workflow",
+                ".github",
+                87,
+            )
+
+        self.assertFalse(retired)
+
     def test_read_request_retries_transient_transport_failure(self) -> None:
         client = GitHubApi("secret")
         responses = [
@@ -3680,6 +3708,115 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual("open", issue["state"])
         self.assertEqual("reopened", issue["state_reason"])
         self.assertIn((repository, issue["number"], "open", "reopened"), self.client.state_updates)
+
+    def test_trusted_retirement_precedes_incomplete_historical_targets(self) -> None:
+        retired = prerelease_authority_issue(59, status=SUPERSEDED_STATUS_LABEL)
+        retired["state"] = "closed"
+        retired["state_reason"] = "not_planned"
+        retired["labels"] = [
+            {"name": "kind:cross-repository" if label["name"] == "kind:release-blocker" else label["name"]}
+            for label in retired["labels"]
+        ]
+        neighboring = prerelease_authority_issue(60, status=SUPERSEDED_STATUS_LABEL)
+        neighboring["state"] = "closed"
+        neighboring["state_reason"] = "not_planned"
+        neighboring["labels"] = [
+            {"name": "kind:cross-repository" if label["name"] == "kind:release-blocker" else label["name"]}
+            for label in neighboring["labels"]
+        ]
+        self.client.issues[".github"].extend((retired, neighboring))
+        self.client.trusted_comments[(".github", 59)] = [
+            {
+                "body": f"{PUBLIC_LIFECYCLE_MARKER}\n{PUBLIC_RETIREMENT_RECORD_MARKER}\n",
+                "id": 59,
+                "user": {"id": 7, "login": "durable-workflow-ops"},
+            }
+        ]
+        target = qualification_targets(qualification_fixture())[".github"]
+        landing = historical_landing_fixture(".github")[0]
+
+        failures = _audit_state_labels(
+            self.policy,
+            self.client,
+            self.client.issues,
+            set(),
+            {(".github", 59): [target]},
+            {(".github", 59): [landing]},
+            None,
+            None,
+        )
+
+        self.assertEqual("closed", retired["state"])
+        self.assertEqual("not_planned", retired["state_reason"])
+        self.assertEqual({SUPERSEDED_STATUS_LABEL}, label_names(retired) & STATUS_LABELS)
+        self.assertNotIn((".github", 59, "open", "reopened"), self.client.state_updates)
+        self.assertEqual([], self.client.reachability_requests)
+        self.assertEqual("open", neighboring["state"])
+        self.assertEqual({"status:triage"}, label_names(neighboring) & STATUS_LABELS)
+        self.assertIn((".github", 60, "open", "reopened"), self.client.state_updates)
+        self.assertTrue(any(".github#60" in failure for failure in failures))
+
+    def test_trusted_retirement_repairs_issue_event_drift_idempotently(self) -> None:
+        issue = prerelease_authority_issue(59, status=SUPERSEDED_STATUS_LABEL)
+        issue["state"] = "closed"
+        issue["state_reason"] = "not_planned"
+        self.client.issues[".github"].append(issue)
+        self.client.trusted_comments[(".github", 59)] = [
+            {
+                "body": f"{PUBLIC_LIFECYCLE_MARKER}\n{PUBLIC_RETIREMENT_RECORD_MARKER}\n",
+                "id": 59,
+                "user": {"id": 7, "login": "durable-workflow-ops"},
+            }
+        ]
+
+        for event, state, status in (
+            ("closed", "closed", "status:done"),
+            ("labeled", "closed", "status:ready"),
+            ("unlabeled", "closed", None),
+            ("edited", "open", "status:triage"),
+            ("reopened", "open", "status:ready"),
+            ("scheduled", "open", "status:blocked"),
+            ("workflow_dispatch", "open", None),
+        ):
+            with self.subTest(event=event):
+                issue["state"] = state
+                issue["state_reason"] = "completed" if state == "closed" else "reopened"
+                issue["labels"] = [label for label in issue["labels"] if label["name"] not in STATUS_LABELS]
+                if status is not None:
+                    issue["labels"].append({"name": status})
+                self.clear_mutation_spies()
+
+                failures = _audit_state_labels(
+                    self.policy,
+                    self.client,
+                    self.client.issues,
+                    set(),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+
+                self.assertEqual([], failures)
+                self.assertEqual("closed", issue["state"])
+                self.assertEqual("not_planned", issue["state_reason"])
+                self.assertEqual({SUPERSEDED_STATUS_LABEL}, label_names(issue) & STATUS_LABELS)
+
+        self.clear_mutation_spies()
+        self.assertEqual(
+            [],
+            _audit_state_labels(
+                self.policy,
+                self.client,
+                self.client.issues,
+                set(),
+                None,
+                None,
+                None,
+                None,
+            ),
+        )
+        self.assert_no_github_mutations()
 
     def test_valid_prerelease_supersession_is_terminal_without_false_completion(self) -> None:
         for item in self.backlog["items"]:
