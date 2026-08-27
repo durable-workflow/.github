@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
@@ -10,6 +12,7 @@ from typing import Any
 TARGET_HEADING = "### Required source targets"
 TARGET_HEADING_PATTERN = re.compile(r"(?m)^#{2,3}[ \t]+Required source targets[ \t]*\r?$")
 EVIDENCE_MARKER = "<!-- durable-workflow-cross-repository-lifecycle:v1 -->"
+QUALIFICATION_LEDGER_MARKER = "durable-workflow-item-qualification-ledger:v1"
 HTML_PULL_PATTERN = re.compile(r"https://github\.com/([^/]+)/([^/]+)/pull/([1-9][0-9]*)$")
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
@@ -870,10 +873,19 @@ def _evaluate_recorded_target(
         return result
     if not client.commit_reaches_branch(organization, repository, commit, branch):
         return result
-    if implementation_commit is not None and not client.commit_reaches_branch(
-        organization, repository, implementation_commit, branch
-    ):
-        return result
+    if implementation_commit is not None:
+        if not client.commit_reaches_branch(
+            organization, repository, implementation_commit, branch
+        ):
+            return result
+        if not client.commit_contains(
+            organization,
+            repository,
+            commit,
+            implementation_commit,
+        ):
+            result["state"] = "pending:completion-source-does-not-contain-implementation"
+            return result
     if not qualifications or any(
         not client.successful_workflow_run(
             organization,
@@ -963,10 +975,26 @@ def evaluate_lifecycle(
                     if all(result["provenance"] == "authenticated-completion-record" for result in results)
                     else "mixed-landing-record"
                 )
+        qualification_advancements = [
+            {
+                "branch": result["branch"],
+                "implementation_source": result["implementation_commit"],
+                "qualified_source": result["commit"],
+                "qualification_runs": [dict(record) for record in result["qualification_runs"]],
+                "repository": result["repository"],
+            }
+            for result in results
+            if (
+                result["state"] == "complete"
+                and isinstance(result.get("implementation_commit"), str)
+                and result["implementation_commit"] != result["commit"]
+            )
+        ]
         assessment = {
             "_authority_kind": authority_kind,
             "_closing_reference_snapshot": snapshot,
             "_completion_record_identity": completion_record,
+            "_qualification_ledger_advancements": qualification_advancements,
             "complete": bool(results) and all(result["state"] == "complete" for result in results),
             "targets": results,
         }
@@ -1173,4 +1201,14 @@ def render_evidence(assessment: Mapping[str, Any]) -> str:
             ),
         ]
     )
+    qualification_advancements = assessment.get("_qualification_ledger_advancements", [])
+    if qualification_advancements:
+        ledger = {
+            "advancements": qualification_advancements,
+            "schema": "durable-workflow.item-qualification-ledger/v1",
+        }
+        digest = hashlib.sha256(
+            json.dumps(ledger, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        rows.extend(["", f"<!-- {QUALIFICATION_LEDGER_MARKER};sha256:{digest} -->"])
     return "\n".join(rows) + "\n"

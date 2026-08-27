@@ -10,6 +10,7 @@
     "authority_repository",
     "state_direction",
     "intake",
+    "lifecycle",
     "repositories",
     "labels",
     "milestones",
@@ -60,6 +61,59 @@
               }
             }
           ]
+        }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "audit_interval_seconds",
+        "creation_stale_age_seconds",
+        "completed_issue_closure_seconds",
+        "execution_state_direction",
+        "max_open_actionable_per_repository",
+        "maintainer_vetting_seconds",
+        "priority_escalation_seconds",
+        "approved_state_seconds",
+        "product_owner_alert_seconds",
+        "projection_actors",
+        "projection_event",
+        "stale_approved_transition_seconds",
+        "unattended_placeholder_seconds",
+        "state_labels"
+      ],
+      "properties": {
+        "audit_interval_seconds": {"const": 600},
+        "creation_stale_age_seconds": {"const": 604800},
+        "completed_issue_closure_seconds": {"const": 900},
+        "execution_state_direction": {"const": "trusted-execution-to-github"},
+        "max_open_actionable_per_repository": {"const": 1},
+        "maintainer_vetting_seconds": {"const": 86400},
+        "priority_escalation_seconds": {"const": 259200},
+        "approved_state_seconds": {"const": 86400},
+        "product_owner_alert_seconds": {"const": 604800},
+        "projection_actors": {"const": ["durable-workflow-ops"]},
+        "projection_event": {"const": "public-lifecycle"},
+        "stale_approved_transition_seconds": {"const": 259200},
+        "unattended_placeholder_seconds": {"const": 1209600},
+        "state_labels": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "awaiting-maintainer-vetting",
+            "approved-queued",
+            "in-progress",
+            "blocked",
+            "completed"
+          ],
+          "properties": {
+            "awaiting-maintainer-vetting": {"const": "status:triage"},
+            "approved-queued": {"const": "status:ready"},
+            "in-progress": {"const": "status:in-progress"},
+            "blocked": {"const": "status:blocked"},
+            "completed": {"const": "status:done"}
+          }
         }
       }
     },

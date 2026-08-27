@@ -15,6 +15,7 @@
         "authority:github",
         "beta:blocker",
         "completion:evidence-required",
+        "kind:release-blocker",
         "status:ready"
       ],
       "work_id": "beta-continuity-post-acceptance-publication"
@@ -26,6 +27,7 @@
         "authority:github",
         "beta:blocker",
         "completion:evidence-required",
+        "kind:release-blocker",
         "status:ready"
       ],
       "work_id": "continuity-converges-routed-release-blockers"
@@ -33,10 +35,15 @@
   ],
   "first_component": "workflow",
   "plan_prefix": "workspace-unavailable-release-pages",
+  "public_issue_budget": {
+    "max_open_actionable": 1,
+    "stale_age_seconds": 604800
+  },
   "required_issue_labels": [
     "authority:github",
     "beta:blocker",
     "completion:evidence-required",
+    "kind:cross-repository",
     "status:ready"
   ],
   "superseded_interruption": {

@@ -12,8 +12,10 @@ on:
       - scripts/cross_repository_lifecycle.py
   issues:
     types: [opened, edited, closed, reopened, labeled, unlabeled, milestoned, demilestoned]
+  repository_dispatch:
+    types: [public-lifecycle]
   schedule:
-    - cron: '41 3 * * *'
+    - cron: '*/10 * * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -63,14 +65,119 @@ jobs:
           python -m json.tool issue-authority/backlog.json >/dev/null
           python -m json.tool issue-authority/backlog-schema.json >/dev/null
 
+  metadata-age-audit:
+    name: Audit metadata-only public lifecycle age
+    if: >-
+      ${{ github.ref == 'refs/heads/main' &&
+          github.server_url == 'https://github.com' &&
+          (github.event_name == 'schedule' ||
+           (github.event_name == 'workflow_dispatch' && inputs.mode == 'audit')) }}
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.13"
+
+      - name: Install schema validator
+        run: python -m pip install jsonschema==4.23.0
+
+      - name: Audit admitted repository metadata without issue prose
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/issue_authority.py metadata-audit \
+            issue-authority/policy.json issue-authority/backlog.json \
+            --evidence public-issue-age-audit.json
+
+      - name: Retain the exact public age contract artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: public-issue-age-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: public-issue-age-audit.json
+          if-no-files-found: error
+          retention-days: 90
+
+  release_completion:
+    name: Reconcile verified releases before issue intake
+    if: >-
+      ${{ github.ref == 'refs/heads/main' &&
+          github.server_url == 'https://github.com' &&
+          github.event_name == 'repository_dispatch' }}
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: beta-product-work
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.13"
+
+      - name: Install schema validator
+        run: python -m pip install jsonschema==4.23.0
+
+      - name: Materialize the authenticated release projection
+        env:
+          PROJECTION_JSON: ${{ toJSON(github.event.client_payload.projection) }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          projection = json.loads(os.environ["PROJECTION_JSON"])
+          Path("public-lifecycle-projection.json").write_text(
+              json.dumps(projection, separators=(",", ":")) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Close source-bound releases before intake can reserve them
+        env:
+          BETA_PRODUCT_WORK_TOKEN: ${{ secrets.BETA_PRODUCT_WORK_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PROJECTION_ACTOR: ${{ github.actor }}
+        run: |
+          python scripts/issue_authority.py complete-before-intake \
+            issue-authority/policy.json issue-authority/backlog.json \
+            --lifecycle-projection public-lifecycle-projection.json \
+            --projection-actor "$PROJECTION_ACTOR" \
+            --evidence pre-intake-release-completion.json
+
+      - name: Retain pre-intake completion evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: pre-intake-release-completion-${{ github.run_id }}-${{ github.run_attempt }}
+          path: pre-intake-release-completion.json
+          if-no-files-found: error
+          retention-days: 90
+
   intake:
     name: Reconstruct vetted issue revisions with read-only access
     if: >-
-      ${{ github.server_url == 'https://github.com' &&
+      ${{ always() &&
+          needs.validate.result == 'success' &&
+          (needs.release_completion.result == 'success' || needs.release_completion.result == 'skipped') &&
+          github.server_url == 'https://github.com' &&
           (github.event_name == 'push' || github.event_name == 'schedule' ||
            github.event_name == 'issues' ||
+           github.event_name == 'repository_dispatch' ||
            (github.event_name == 'workflow_dispatch' && inputs.mode != 'activate')) }}
-    needs: validate
+    needs: [validate, release_completion]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -102,10 +209,29 @@ jobs:
           EVENT_LABEL: ${{ github.event.label.name }}
           EVENT_NAME: ${{ github.event_name }}
           GITHUB_TOKEN: ${{ github.token }}
+          PROJECTION_ACTOR: ${{ github.actor }}
+          PROJECTION_JSON: ${{ toJSON(github.event.client_payload.projection) }}
           TRIGGER_NUMBER: ${{ github.event.issue.number }}
           TRIGGER_REPOSITORY: ${{ github.event.repository.name }}
         run: |
           arguments=()
+          if [[ "$EVENT_NAME" == "repository_dispatch" ]]; then
+            python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          projection = json.loads(os.environ["PROJECTION_JSON"])
+          Path("public-lifecycle-projection.json").write_text(
+              json.dumps(projection, separators=(",", ":")) + "\n",
+              encoding="utf-8",
+          )
+          PY
+            arguments+=(
+              --lifecycle-projection public-lifecycle-projection.json
+              --projection-actor "$PROJECTION_ACTOR"
+            )
+          fi
           if [[ "$EVENT_NAME" == "issues" ]]; then
             arguments+=(
               --trigger-repository "$TRIGGER_REPOSITORY"
@@ -290,6 +416,7 @@ jobs:
           github.server_url == 'https://github.com' &&
           needs.intake.outputs.intake_ready == 'true' &&
           (github.event_name == 'schedule' ||
+           github.event_name == 'repository_dispatch' ||
            (github.event_name == 'issues' && needs.intake.outputs.trigger_approved == 'true') ||
            (github.event_name == 'workflow_dispatch' && inputs.mode == 'audit')) }}
     needs: [validate, intake]
@@ -367,15 +494,37 @@ jobs:
       - name: Install schema validator
         run: python -m pip install jsonschema==4.23.0
 
-      - name: Reject duplicate authority and reverse lifecycle drift
+      - name: Reconcile lifecycle and audit public issue and pull-request age
         env:
           BETA_PRODUCT_WORK_TOKEN: ${{ secrets.BETA_PRODUCT_WORK_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
           GITHUB_TOKEN: ${{ github.token }}
+          PROJECTION_ACTOR: ${{ github.actor }}
+          PROJECTION_JSON: ${{ toJSON(github.event.client_payload.projection) }}
         run: |
+          arguments=()
+          if [[ "$EVENT_NAME" == "repository_dispatch" ]]; then
+            python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          projection = json.loads(os.environ["PROJECTION_JSON"])
+          Path("public-lifecycle-projection.json").write_text(
+              json.dumps(projection, separators=(",", ":")) + "\n",
+              encoding="utf-8",
+          )
+          PY
+            arguments+=(
+              --lifecycle-projection public-lifecycle-projection.json
+              --projection-actor "$PROJECTION_ACTOR"
+            )
+          fi
           python scripts/issue_authority.py audit \
             issue-authority/policy.json issue-authority/backlog.json \
             --intake-manifest isolated-issue-intake/issue-intake.json \
-            --evidence issue-authority-evidence.json
+            --evidence issue-authority-evidence.json \
+            "${arguments[@]}"
 
       - name: Preserve a failure record when authority evidence is unavailable
         if: failure()
@@ -387,11 +536,46 @@ jobs:
               >issue-authority-evidence.json
           fi
 
+      - name: Materialize the exact metadata age audit
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          evidence_path = Path("issue-authority-evidence.json")
+          if not evidence_path.exists():
+              raise SystemExit(0)
+          evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+          age_audit = evidence.get("age_audit")
+          if age_audit is not None:
+              Path("public-issue-age-audit.json").write_text(
+                  json.dumps(age_audit, indent=2, sort_keys=True) + "\n",
+                  encoding="utf-8",
+              )
+              pipeline_health = age_audit.get("pipeline_health")
+              if pipeline_health is not None:
+                  Path("public-issue-lifecycle-health.json").write_text(
+                      json.dumps(pipeline_health, indent=2, sort_keys=True) + "\n",
+                      encoding="utf-8",
+                  )
+          issue_sweep = evidence.get("issue_sweep")
+          if issue_sweep is not None:
+              Path("public-issue-sweep.json").write_text(
+                  json.dumps(issue_sweep, indent=2, sort_keys=True) + "\n",
+                  encoding="utf-8",
+              )
+          PY
+
       - name: Retain authority audit evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: github-issue-authority-audit-${{ github.run_id }}-${{ github.run_attempt }}
-          path: issue-authority-evidence.json
+          path: |
+            issue-authority-evidence.json
+            public-issue-age-audit.json
+            public-issue-lifecycle-health.json
+            public-issue-sweep.json
           if-no-files-found: ignore
           retention-days: 90

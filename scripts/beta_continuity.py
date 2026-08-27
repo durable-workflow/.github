@@ -127,6 +127,7 @@ ROUTED_BLOCKER_LABELS = (
     *ROUTED_BLOCKER_AUTHORITY_LABELS,
     "status:ready",
 )
+ISSUE_KIND_LABELS = {"kind:defect", "kind:feature", "kind:release-blocker", "kind:cross-repository"}
 ROUTED_BLOCKER_MARKER = re.compile(
     r"<!-- beta-continuity-blocker: "
     r"(?P<component>[a-z0-9][a-z0-9-]*)-(?P<reason>source-version|occupied-version)-"
@@ -150,6 +151,23 @@ class PlanBlocked(ContinuityError):
         super().__init__("; ".join(blocker["reason"] for blocker in blockers))
 
 
+def replace_issue_kind(labels: set[str], kind: str, location: str) -> set[str]:
+    """Replace an incompatible kind at an issue writer boundary."""
+
+    if kind not in ISSUE_KIND_LABELS:
+        raise ContinuityError(f"{location} requested an unsupported issue kind {kind!r}")
+    replacement = {label for label in labels if not label.startswith("kind:")}
+    replacement.add(kind)
+    return replacement
+
+
+def require_exact_issue_kind(labels: set[str], location: str) -> str:
+    kinds = {label for label in labels if label.startswith("kind:")}
+    if len(kinds) != 1 or not kinds <= ISSUE_KIND_LABELS:
+        raise ContinuityError(f"{location} must write exactly one supported kind:* label, got {sorted(kinds)}")
+    return next(iter(kinds))
+
+
 class GitHubWriter:
     """Small bounded client for authenticated GitHub mutations and run discovery."""
 
@@ -165,6 +183,13 @@ class GitHubWriter:
         }
 
     def request(self, method: str, path: str, payload: Any | None = None) -> Any:
+        if (
+            method in {"PATCH", "POST"}
+            and re.fullmatch(r"/repos/.+/issues(?:/[1-9][0-9]*)?", path)
+            and isinstance(payload, dict)
+            and isinstance(payload.get("labels"), list)
+        ):
+            require_exact_issue_kind(set(payload["labels"]), f"GitHub issue writer {path}")
         data = None if payload is None else json.dumps(payload).encode()
         request = urllib.request.Request(
             f"{self.api_url}{path}",
@@ -338,6 +363,7 @@ def load_config(path: Path) -> dict[str, Any]:
         "evidence_work_items",
         "first_component",
         "plan_prefix",
+        "public_issue_budget",
         "required_issue_labels",
         "superseded_interruption",
     }:
@@ -383,17 +409,25 @@ def load_config(path: Path) -> dict[str, Any]:
             <= set(work_item["required_labels"])
         ):
             raise ContinuityError("continuity evidence work item authority is invalid")
+        require_exact_issue_kind(
+            set(work_item["required_labels"]),
+            f"continuity evidence work item {work_item['repository']}#{work_item['number']}",
+        )
         location = (work_item["repository"], work_item["number"])
         if location in work_item_locations or location == (issue["repository"], issue["number"]):
             raise ContinuityError("continuity evidence work item inventory contains a duplicate authority")
         work_item_locations.add(location)
     if not isinstance(value.get("plan_prefix"), str) or not PLAN_PREFIX_PATTERN.fullmatch(value["plan_prefix"]):
         raise ContinuityError("continuity plan prefix has an invalid identity")
+    budget = value.get("public_issue_budget")
+    if budget != {"max_open_actionable": 1, "stale_age_seconds": 604800}:
+        raise ContinuityError("continuity public issue budget is invalid")
     if value.get("first_component") not in COMPONENTS:
         raise ContinuityError("continuity first component is unknown")
     labels = value.get("required_issue_labels")
     if not isinstance(labels, list) or not labels or not all(isinstance(label, str) and label for label in labels):
         raise ContinuityError("continuity required issue labels are invalid")
+    require_exact_issue_kind(set(labels), "continuity parent authority")
     superseded = value.get("superseded_interruption")
     if (
         not isinstance(superseded, dict)
@@ -2073,6 +2107,11 @@ def converge_routed_blockers(
         desired_labels = {label for label in labels if not label.startswith("status:")}
         desired_labels.discard("completion:evidence-required")
         desired_labels.update({"completion:evidence-verified", "status:done"})
+        desired_labels = replace_issue_kind(
+            desired_labels,
+            "kind:release-blocker",
+            f"routed blocker {repository}#{number}",
+        )
         if current.get("state") != "closed" or labels != desired_labels:
             writer.request(
                 "PATCH",
@@ -2113,6 +2152,10 @@ def validate_evidence_work_item(
 ) -> set[str]:
     labels = {label.get("name") for label in issue.get("labels", []) if isinstance(label, dict) and label.get("name")}
     required = set(specification["required_labels"])
+    required_kind = require_exact_issue_kind(
+        required,
+        f"trusted evidence work item {specification['repository']}#{specification['number']}",
+    )
     authority = {label for label in required if not label.startswith("status:") and not label.startswith("completion:")}
     statuses = {label for label in labels if label.startswith("status:")}
     completions = {label for label in labels if label.startswith("completion:")}
@@ -2134,6 +2177,11 @@ def validate_evidence_work_item(
         raise ContinuityError(
             f"trusted evidence work item {specification['repository']}#{specification['number']} "
             "does not match its configured work-id, labels, and lifecycle"
+        )
+    location = f"trusted evidence work item {specification['repository']}#{specification['number']}"
+    if require_exact_issue_kind(labels, location) != required_kind:
+        raise ContinuityError(
+            f"{location} has an incompatible kind"
         )
     return labels
 
@@ -2175,6 +2223,15 @@ def converge_evidence_work_items(
             label for label in labels if not label.startswith("status:") and not label.startswith("completion:")
         }
         desired_labels.update({"completion:evidence-verified", "status:done"})
+        required_kind = require_exact_issue_kind(
+            set(specification["required_labels"]),
+            f"trusted evidence work item {repository}#{number}",
+        )
+        desired_labels = replace_issue_kind(
+            desired_labels,
+            required_kind,
+            f"trusted evidence work item {repository}#{number}",
+        )
         if current.get("state") != "closed" or labels != desired_labels:
             writer.request("PATCH", path, {"labels": sorted(desired_labels), "state": "closed"})
         live = writer.get(path)
@@ -2263,6 +2320,8 @@ def close_authority_issue(
     labels.discard("status:blocked")
     labels.discard("completion:evidence-required")
     labels.update({"status:done", "completion:evidence-verified"})
+    parent_kind = require_exact_issue_kind(required_parent_labels, "parent continuity issue")
+    labels = replace_issue_kind(labels, parent_kind, "parent continuity issue completion")
     if current.get("state") != "closed" or labels != current_labels:
         writer.request("PATCH", path, {"labels": sorted(labels), "state": "closed"})
     live_parent = writer.get(path)
@@ -2676,6 +2735,85 @@ def blocker_body(config: dict[str, Any], blocker: dict[str, str], selection: dic
     )
 
 
+def consolidated_blocker_finding(blocker: dict[str, str], selection: dict[str, Any]) -> str:
+    selection_url = f"https://github.com/{CONTROL_REPOSITORY}/tree/{selection['tag']}"
+    return (
+        f"## Consolidated continuity finding: {blocker['component']}\n\n"
+        f"The retained [continuity selection]({selection_url}) cannot advance because "
+        f"{blocker['reason']}.\n\n"
+        "### Additional acceptance criteria\n\n"
+        f"- Prepare and qualify version `{blocker['version']}` from the repository default branch.\n"
+        "- Resume the same retained release selection after this condition clears.\n\n"
+        f"<!-- beta-continuity-consolidated-finding: {blocker['slug']} -->\n"
+    )
+
+
+def _continuity_creation_budget(
+    config: dict[str, Any],
+    issues: list[dict[str, Any]],
+) -> tuple[list[str], dict[str, Any] | None]:
+    budget = config["public_issue_budget"]
+    now = dt.datetime.now(dt.UTC)
+
+    def labels(issue: dict[str, Any]) -> set[str]:
+        return {
+            str(label["name"])
+            for label in issue.get("labels", [])
+            if isinstance(label, dict) and isinstance(label.get("name"), str)
+        }
+
+    open_issues = [
+        issue
+        for issue in issues
+        if (
+            isinstance(issue, dict)
+            and "pull_request" not in issue
+            and issue.get("state") == "open"
+        )
+    ]
+    actionable = [
+        issue
+        for issue in open_issues
+        if "authority:github" in labels(issue)
+        and not labels(issue) & {"status:done", "status:superseded"}
+    ]
+
+    def created_at(issue: dict[str, Any]) -> dt.datetime | None:
+        value = issue.get("created_at")
+        if value is None:
+            return None
+        try:
+            return parse_github_timestamp(value, "routed blocker creation timestamp")
+        except ContinuityError:
+            return None
+
+    reasons: list[str] = []
+    if len(actionable) >= int(budget["max_open_actionable"]):
+        reasons.append("open-actionable-budget")
+    if any(
+        created is not None and int((now - created).total_seconds()) >= int(budget["stale_age_seconds"])
+        for issue in open_issues
+        if (created := created_at(issue)) is not None
+    ):
+        reasons.append("open-issue-older-than-7d")
+    roots = [
+        issue
+        for issue in actionable
+        if {"authority:github", "kind:release-blocker"} <= labels(issue)
+        and isinstance(issue.get("body"), str)
+        and type(issue.get("number")) is int
+    ]
+    root = min(
+        roots,
+        key=lambda issue: (
+            created_at(issue) or dt.datetime.max.replace(tzinfo=dt.UTC),
+            int(issue["number"]),
+        ),
+        default=None,
+    )
+    return reasons, root
+
+
 def route_blockers(config_path: Path, state_path: Path) -> None:
     config = load_config(config_path)
     state = load_json(state_path, "continuity planning state")
@@ -2689,6 +2827,7 @@ def route_blockers(config_path: Path, state_path: Path) -> None:
         os.environ.get("BETA_PRODUCT_WORK_TOKEN", ""),
         os.environ.get("GITHUB_API_URL", "https://api.github.com"),
     )
+    routing: list[dict[str, Any]] = []
     for blocker in blockers:
         repository = blocker["repository"]
         issues = writer.list(f"/repos/{repository}/issues?state=all")
@@ -2713,11 +2852,47 @@ def route_blockers(config_path: Path, state_path: Path) -> None:
                 label for label in labels if not label.startswith("status:") and not label.startswith("completion:")
             }
             desired_labels.add("status:ready")
+            desired_labels = replace_issue_kind(
+                desired_labels,
+                "kind:release-blocker",
+                f"routed blocker {repository}#{number}",
+            )
             if issue.get("state") != "open" or labels != desired_labels:
                 writer.request(
                     "PATCH",
                     f"/repos/{repository}/issues/{number}",
                     {"state": "open", "labels": sorted(desired_labels)},
+                )
+            routing.append({"action": "reused", "number": number, "repository": repository})
+            continue
+        budget_reasons, root = _continuity_creation_budget(config, issues)
+        if budget_reasons:
+            if root is not None:
+                marker = f"<!-- beta-continuity-consolidated-finding: {blocker['slug']} -->"
+                body = str(root["body"])
+                if marker not in body:
+                    body = f"{body.rstrip()}\n\n{consolidated_blocker_finding(blocker, selection)}"
+                    writer.request(
+                        "PATCH",
+                        f"/repos/{repository}/issues/{root['number']}",
+                        {"body": body},
+                    )
+                    root["body"] = body
+                routing.append(
+                    {
+                        "action": "consolidated",
+                        "budget_reasons": budget_reasons,
+                        "number": int(root["number"]),
+                        "repository": repository,
+                    }
+                )
+            else:
+                routing.append(
+                    {
+                        "action": "retained-private-audit",
+                        "budget_reasons": budget_reasons,
+                        "repository": repository,
+                    }
                 )
             continue
         component = blocker["component"]
@@ -2730,6 +2905,9 @@ def route_blockers(config_path: Path, state_path: Path) -> None:
                 "labels": list(ROUTED_BLOCKER_LABELS),
             },
         )
+        routing.append({"action": "created", "repository": repository})
+    state["routing"] = sorted(routing, key=lambda record: (record["repository"], record["action"]))
+    state_path.write_bytes(canonical_json(state))
 
 
 def main() -> int:

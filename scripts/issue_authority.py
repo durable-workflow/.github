@@ -14,7 +14,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Collection, Mapping, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -30,10 +30,13 @@ from scripts.beta_candidate import COMPONENTS
 
 POLICY_SCHEMA = "durable-workflow.github-issue-authority/v1"
 BACKLOG_SCHEMA = "durable-workflow.github-beta-backlog/v1"
-INTAKE_SCHEMA = "durable-workflow.github-issue-intake/v10"
+INTAKE_SCHEMA = "durable-workflow.github-issue-intake/v11"
 LEGACY_TARGET_SCHEMA = "durable-workflow.legacy-cross-repository-targets/v5"
 MARKER_PATTERN = re.compile(r"<!-- beta-work-id: ([a-z0-9][a-z0-9-]{2,79}) -->")
 WORK_MARKER_PATTERN = re.compile(r"<!-- durable-workflow-work-id: ([a-z0-9][a-z0-9-]{2,79}) -->")
+CONSOLIDATED_FINDING_PATTERN = re.compile(
+    r"<!-- durable-workflow-consolidated-finding: ([a-z0-9][a-z0-9-]{2,79}) -->"
+)
 LEGACY_TARGET_HEADING = "### Affected public repositories"
 UNBLOCK_CONTEXT_START = "<!-- beta-unblock-condition:start -->"
 UNBLOCK_CONTEXT_END = "<!-- beta-unblock-condition:end -->"
@@ -46,6 +49,7 @@ SUPERSESSION_EVIDENCE_MARKER = "<!-- durable-workflow-prerelease-supersession --
 FROZEN_LIFECYCLE_EVIDENCE_MARKER = "<!-- durable-workflow-frozen-lifecycle:v1 -->"
 PUBLIC_LIFECYCLE_MARKER = "<!-- durable-workflow-public-lifecycle:v1 -->"
 PUBLIC_RETIREMENT_RECORD_MARKER = "<!-- durable-workflow-public-lifecycle-state:superseded;condition:none -->"
+PUBLIC_LIFECYCLE_PROJECTION_SCHEMA = "durable-workflow.public-lifecycle-projection/v1"
 SUPERSESSION_ACTIVATION_CONTEXT_PREFIX = "issue-authority/prerelease-supersession"
 SUPERSESSION_ACTIVATION_DESCRIPTION_PREFIX = "sha256:"
 GITHUB_ACTIONS_BOT_ID = 41_898_282
@@ -54,6 +58,7 @@ SUPERSEDED_STATUS_LABEL = "status:superseded"
 STATUS_LABELS = {
     "status:triage",
     "status:ready",
+    "status:in-progress",
     "status:blocked",
     "status:done",
     SUPERSEDED_STATUS_LABEL,
@@ -63,6 +68,22 @@ COMPLETION_REQUIRED_LABEL = "completion:evidence-required"
 COMPLETION_VERIFIED_LABEL = "completion:evidence-verified"
 COMPLETION_LABELS = {COMPLETION_REQUIRED_LABEL, COMPLETION_VERIFIED_LABEL}
 KIND_LABELS = {"kind:defect", "kind:feature", "kind:release-blocker", "kind:cross-repository"}
+PUBLIC_EXECUTION_STATES = {
+    "blocked",
+    "built",
+    "claimed",
+    "completed",
+    "failed",
+    "integrated",
+    "integrating",
+    "pending",
+    "superseded",
+}
+PUBLIC_CONDITIONS = {
+    "dependency-pending": "A required public dependency or decision is still pending.",
+    "qualification-failed": "Required public qualification has not completed successfully.",
+    "release-evidence-pending": "Changes have landed; release or completion evidence is still pending.",
+}
 PRIORITY_LABELS = {"priority:P0", "priority:P1", "priority:P2", "priority:P3", "priority:untriaged"}
 CLASSIFICATION_LABELS = {"beta:blocker", "beta:compatible", "post-2.0"}
 OWNER_LABELS = {
@@ -96,7 +117,9 @@ query IssueIntake($owner: String!, $repository: String!, $cursor: String) {
       nodes {
         number
         createdAt
+        closedAt
         lastEditedAt
+        updatedAt
         url
         state
         stateReason
@@ -106,9 +129,13 @@ query IssueIntake($owner: String!, $repository: String!, $cursor: String) {
           nodes { name }
           pageInfo { hasNextPage }
         }
-        timelineItems(last: 100, itemTypes: [LABELED_EVENT, RENAMED_TITLE_EVENT, UNLABELED_EVENT]) {
+        timelineItems(
+          last: 100
+          itemTypes: [CLOSED_EVENT, LABELED_EVENT, RENAMED_TITLE_EVENT, REOPENED_EVENT, UNLABELED_EVENT]
+        ) {
           nodes {
             __typename
+            ... on ClosedEvent { createdAt }
             ... on LabeledEvent {
               createdAt
               actor { login }
@@ -122,6 +149,7 @@ query IssueIntake($owner: String!, $repository: String!, $cursor: String) {
             ... on RenamedTitleEvent {
               createdAt
             }
+            ... on ReopenedEvent { createdAt }
           }
         }
       }
@@ -142,7 +170,9 @@ query IssueRevision($owner: String!, $repository: String!, $number: Int!) {
       title
       body
       createdAt
+      closedAt
       lastEditedAt
+      updatedAt
       url
       state
       stateReason
@@ -152,9 +182,13 @@ query IssueRevision($owner: String!, $repository: String!, $number: Int!) {
         nodes { name }
         pageInfo { hasNextPage }
       }
-      timelineItems(last: 100, itemTypes: [LABELED_EVENT, RENAMED_TITLE_EVENT, UNLABELED_EVENT]) {
+      timelineItems(
+        last: 100
+        itemTypes: [CLOSED_EVENT, LABELED_EVENT, RENAMED_TITLE_EVENT, REOPENED_EVENT, UNLABELED_EVENT]
+      ) {
         nodes {
           __typename
+          ... on ClosedEvent { createdAt }
           ... on LabeledEvent {
             createdAt
             actor { login }
@@ -168,7 +202,35 @@ query IssueRevision($owner: String!, $repository: String!, $number: Int!) {
           ... on RenamedTitleEvent {
             createdAt
           }
+          ... on ReopenedEvent { createdAt }
         }
+      }
+    }
+  }
+}
+"""
+
+PULL_REQUEST_METADATA_QUERY = """
+query PullRequestMetadata($owner: String!, $repository: String!, $cursor: String) {
+  repository(owner: $owner, name: $repository) {
+    pullRequests(
+      first: 100
+      after: $cursor
+      orderBy: {field: CREATED_AT, direction: ASC}
+      states: [OPEN, CLOSED, MERGED]
+    ) {
+      nodes {
+        number
+        createdAt
+        closedAt
+        mergedAt
+        updatedAt
+        url
+        state
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
       }
     }
   }
@@ -212,6 +274,14 @@ class AuthorityError(RuntimeError):
     """The public issue-authority contract cannot be satisfied."""
 
 
+class LifecycleAuditError(AuthorityError):
+    """Lifecycle reconciliation applied safe changes but retained isolated failures."""
+
+    def __init__(self, message: str, evidence: Mapping[str, Any]) -> None:
+        super().__init__(message)
+        self.evidence = dict(evidence)
+
+
 def _load_json(path: Path, label: str) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -240,6 +310,136 @@ def _public_safe(values: Sequence[str]) -> None:
             match = pattern.search(value)
             if match:
                 raise AuthorityError(f"selective backlog contains non-public context matching {match.group(0)!r}")
+
+
+def load_public_lifecycle_projection(
+    path: Path,
+    policy: Mapping[str, Any],
+    actor: str | None,
+) -> tuple[dict[tuple[str, int], dict[str, Any]], list[str]]:
+    """Validate an authenticated, public-safe execution-state projection issue by issue."""
+
+    projection_actors = {str(value).casefold() for value in policy["lifecycle"]["projection_actors"]}
+    if not isinstance(actor, str) or actor.casefold() not in projection_actors:
+        raise AuthorityError("public lifecycle projection actor is not allowlisted")
+    payload = _load_json(path, "public lifecycle projection")
+    if set(payload) != {"generated_at", "issues", "schema"}:
+        raise AuthorityError("public lifecycle projection envelope has unexpected fields")
+    if payload.get("schema") != PUBLIC_LIFECYCLE_PROJECTION_SCHEMA:
+        raise AuthorityError("public lifecycle projection uses an unsupported schema")
+    generated_at = _parse_timestamp(payload.get("generated_at"), "projection generation timestamp")
+    raw_issues = payload.get("issues")
+    if not isinstance(raw_issues, list) or len(raw_issues) > 1000:
+        raise AuthorityError("public lifecycle projection has an invalid issue bound")
+
+    admitted_repositories = set(policy["repositories"])
+    projections: dict[tuple[str, int], dict[str, Any]] = {}
+    failures: list[str] = []
+    quarantined: set[tuple[str, int]] = set()
+    for index, raw in enumerate(raw_issues):
+        if not isinstance(raw, Mapping):
+            failures.append(f"projection entry {index} is not an object")
+            continue
+        repository = raw.get("repository")
+        number = raw.get("number")
+        identity = (
+            (repository, number)
+            if isinstance(repository, str) and type(number) is int and number > 0
+            else None
+        )
+        location = (
+            f"{repository}#{number}"
+            if identity is not None and repository in admitted_repositories
+            else f"projection entry {index}"
+        )
+        allowed_fields = {
+            "completion_evidence",
+            "implementation_source",
+            "number",
+            "public_condition",
+            "repository",
+            "state",
+            "transition_at",
+            "verified_release",
+        }
+        try:
+            if identity is None or repository not in admitted_repositories:
+                raise AuthorityError("has an invalid public issue identity")
+            if set(raw) - allowed_fields:
+                raise AuthorityError("has unexpected fields")
+            state = raw.get("state")
+            if state not in PUBLIC_EXECUTION_STATES:
+                raise AuthorityError("has an unsupported execution state")
+            transition_at = _parse_timestamp(raw.get("transition_at"), "projection transition timestamp")
+            if transition_at > generated_at:
+                raise AuthorityError("has a transition after the projection generation time")
+            condition = raw.get("public_condition")
+            if state in {"blocked", "failed"}:
+                if condition not in {"dependency-pending", "qualification-failed"}:
+                    raise AuthorityError("must select a bounded public blocker condition")
+            elif state == "integrated":
+                if condition not in {None, "release-evidence-pending"}:
+                    raise AuthorityError("has an incompatible public condition")
+                condition = "release-evidence-pending"
+            elif condition is not None:
+                raise AuthorityError("has a public condition outside a conditional state")
+            completion_evidence = raw.get("completion_evidence")
+            if state == "completed":
+                if completion_evidence != "verified":
+                    raise AuthorityError("cannot complete without verified public evidence")
+            elif completion_evidence is not None:
+                raise AuthorityError("has completion evidence outside the completed state")
+            implementation_source = raw.get("implementation_source")
+            verified_release = raw.get("verified_release")
+            if implementation_source is not None or verified_release is not None:
+                if state != "completed" or completion_evidence != "verified":
+                    raise AuthorityError("has release completion evidence outside the completed state")
+                if (
+                    not isinstance(implementation_source, str)
+                    or re.fullmatch(r"[0-9a-f]{40}", implementation_source) is None
+                ):
+                    raise AuthorityError("has an invalid implementation source")
+                if not isinstance(verified_release, Mapping) or set(verified_release) != {
+                    "repository",
+                    "source_shas",
+                    "version",
+                }:
+                    raise AuthorityError("has malformed verified release evidence")
+                release_repository = verified_release.get("repository")
+                release_version = verified_release.get("version")
+                source_shas = verified_release.get("source_shas")
+                if (
+                    not isinstance(release_repository, str)
+                    or release_repository not in admitted_repositories
+                    or not isinstance(release_version, str)
+                    or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,99}", release_version) is None
+                    or not isinstance(source_shas, list)
+                    or not 1 <= len(source_shas) <= 1000
+                    or any(
+                        not isinstance(source_sha, str)
+                        or re.fullmatch(r"[0-9a-f]{40}", source_sha) is None
+                        for source_sha in source_shas
+                    )
+                    or len(source_shas) != len(set(source_shas))
+                ):
+                    raise AuthorityError("has invalid verified release identity")
+                if implementation_source not in source_shas:
+                    raise AuthorityError("verified release does not contain the bound implementation source")
+            if identity in projections or identity in quarantined:
+                projections.pop(identity, None)
+                quarantined.add(identity)
+                raise AuthorityError("is duplicated and was quarantined")
+            projections[identity] = {
+                "completion_evidence": completion_evidence,
+                "implementation_source": implementation_source,
+                "public_condition": condition,
+                "state": state,
+                "transition_at": transition_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+                "verified_release": dict(verified_release) if verified_release is not None else None,
+            }
+        except AuthorityError as error:
+            failures.append(f"{location} {error}")
+    return projections, failures
 
 
 def validate_contract(
@@ -751,11 +951,13 @@ def _normalize_intake_issue(node: Mapping[str, Any]) -> tuple[dict[str, Any], li
         if not isinstance(event, Mapping):
             continue
         event_type = {
+            "ClosedEvent": "closed",
             "LabeledEvent": "labeled",
             "RenamedTitleEvent": "renamed",
+            "ReopenedEvent": "reopened",
             "UnlabeledEvent": "unlabeled",
         }.get(event.get("__typename"))
-        if event_type == "renamed":
+        if event_type in {"closed", "renamed", "reopened"}:
             timeline.append({"created_at": event.get("createdAt"), "event": event_type})
             continue
         label = event.get("label")
@@ -775,6 +977,7 @@ def _normalize_intake_issue(node: Mapping[str, Any]) -> tuple[dict[str, Any], li
     issue = {
         "author": node.get("author"),
         "body": node.get("body"),
+        "closed_at": node.get("closedAt"),
         "created_at": node.get("createdAt"),
         "html_url": node.get("url"),
         "labels": [label for label in labels if isinstance(label, Mapping)],
@@ -784,6 +987,7 @@ def _normalize_intake_issue(node: Mapping[str, Any]) -> tuple[dict[str, Any], li
         "state": str(node.get("state", "")).lower(),
         "state_reason": (str(node["stateReason"]).lower() if isinstance(node.get("stateReason"), str) else None),
         "title": node.get("title"),
+        "updated_at": node.get("updatedAt"),
     }
     return issue, timeline
 
@@ -926,6 +1130,46 @@ class GitHubDiscovery:
                 raise AuthorityError("GitHub issue discovery omitted its next cursor")
         raise AuthorityError(f"GitHub issue discovery for {repository} exceeded the pagination bound")
 
+    def list_pull_requests(self, organization: str, repository: str) -> list[dict[str, Any]]:
+        """Read bounded pull-request metadata without fetching titles, bodies, or comments."""
+
+        pulls: list[dict[str, Any]] = []
+        cursor: str | None = None
+        for _page in range(10):
+            data = self.graphql(
+                PULL_REQUEST_METADATA_QUERY,
+                {"cursor": cursor, "owner": organization, "repository": repository},
+            )
+            repository_node = data.get("repository")
+            connection = repository_node.get("pullRequests") if isinstance(repository_node, Mapping) else None
+            if not isinstance(connection, Mapping) or not isinstance(connection.get("nodes"), list):
+                raise AuthorityError(f"GitHub pull-request metadata discovery cannot read {organization}/{repository}")
+            for node in connection["nodes"]:
+                if not isinstance(node, Mapping):
+                    continue
+                pulls.append(
+                    {
+                        "closed_at": node.get("closedAt"),
+                        "created_at": node.get("createdAt"),
+                        "merged_at": node.get("mergedAt"),
+                        "number": node.get("number"),
+                        "repository": repository,
+                        "state": str(node.get("state", "")).lower(),
+                        "type": "pull_request",
+                        "updated_at": node.get("updatedAt"),
+                        "url": node.get("url"),
+                    }
+                )
+            page_info = connection.get("pageInfo")
+            if not isinstance(page_info, Mapping):
+                raise AuthorityError("GitHub pull-request metadata discovery returned malformed pagination")
+            if not page_info.get("hasNextPage"):
+                return pulls
+            cursor = page_info.get("endCursor")
+            if not isinstance(cursor, str) or not cursor:
+                raise AuthorityError("GitHub pull-request metadata discovery omitted its next cursor")
+        raise AuthorityError(f"GitHub pull-request metadata for {repository} exceeded the pagination bound")
+
     def get_issue(
         self,
         organization: str,
@@ -952,9 +1196,78 @@ def _manifest_core(manifest: Mapping[str, Any]) -> dict[str, Any]:
             "policy_digest",
             "legacy_target_migration_digest",
             "issues",
+            "public_metadata",
             "rejected_issues",
         )
     }
+
+
+def _manifest_public_metadata(manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
+    records = manifest.get("public_metadata")
+    if not isinstance(records, list):
+        raise AuthorityError("issue-intake manifest has no metadata-only public inventory")
+    identities: set[tuple[str, str, int]] = set()
+    normalized: list[dict[str, Any]] = []
+    issue_keys = {
+        "approved",
+        "approval_reason",
+        "closed_at",
+        "created_at",
+        "label_transition_at",
+        "labels",
+        "last_transition_at",
+        "number",
+        "repository",
+        "specialized_lifecycle",
+        "state",
+        "type",
+        "updated_at",
+        "url",
+    }
+    pull_request_keys = {
+        "closed_at",
+        "created_at",
+        "merged_at",
+        "number",
+        "repository",
+        "state",
+        "type",
+        "updated_at",
+        "url",
+    }
+    quarantine_keys = {"quarantined", "reconciliation_failure"}
+    for record in records:
+        if not isinstance(record, Mapping):
+            raise AuthorityError("issue-intake manifest contains malformed public metadata")
+        record_type = record.get("type")
+        repository = record.get("repository")
+        number = record.get("number")
+        if (
+            record_type not in {"issue", "pull_request"}
+            or not isinstance(repository, str)
+            or type(number) is not int
+            or number < 1
+        ):
+            raise AuthorityError("issue-intake manifest contains invalid public metadata identity")
+        keys = set(record)
+        expected_keys = issue_keys if record_type == "issue" else pull_request_keys
+        if not expected_keys <= keys or keys - expected_keys - quarantine_keys:
+            raise AuthorityError("issue-intake manifest public metadata exceeds its metadata-only field set")
+        expected_url = (
+            f"https://github.com/{manifest.get('organization')}/{repository}/"
+            f"{'issues' if record_type == 'issue' else 'pull'}/{number}"
+        )
+        if record.get("url") != expected_url:
+            raise AuthorityError("issue-intake manifest contains a non-public metadata URL")
+        labels = record.get("labels") if record_type == "issue" else []
+        if not isinstance(labels, list) or not all(isinstance(label, str) and label for label in labels):
+            raise AuthorityError("issue-intake manifest contains invalid public label metadata")
+        identity = (repository, str(record_type), number)
+        if identity in identities:
+            raise AuthorityError("issue-intake manifest repeats a public metadata identity")
+        identities.add(identity)
+        normalized.append(dict(record))
+    return normalized
 
 
 def _manifest_completion_holds(manifest: Mapping[str, Any]) -> set[tuple[str, int]]:
@@ -1578,10 +1891,124 @@ def _target_rejection(
     }
 
 
+def _latest_lifecycle_transition(
+    issue: Mapping[str, Any],
+    timeline: Sequence[Mapping[str, Any]],
+    *,
+    approval_label: str,
+) -> str:
+    """Return the latest metadata-only timestamp that can change public lifecycle meaning."""
+
+    candidates = [issue.get("created_at")]
+    if issue.get("closed_at") is not None:
+        candidates.append(issue.get("closed_at"))
+    for event in timeline:
+        if event.get("event") in {"closed", "reopened"} or (
+            event.get("event") in {"labeled", "unlabeled"}
+            and event.get("label") in {*STATUS_LABELS, *COMPLETION_LABELS, approval_label}
+        ):
+            candidates.append(event.get("created_at"))
+    parsed = [
+        (_parse_timestamp(value, "public lifecycle transition timestamp"), str(value))
+        for value in candidates
+        if value is not None
+    ]
+    if not parsed:
+        raise AuthorityError(f"GitHub issue {issue.get('number')} has no lifecycle timestamp")
+    return max(parsed, key=lambda record: record[0])[1]
+
+
+def _issue_metadata_record(
+    repository: str,
+    issue: Mapping[str, Any],
+    timeline: Sequence[Mapping[str, Any]],
+    assessment: Mapping[str, Any],
+    *,
+    approval_label: str,
+) -> dict[str, Any]:
+    labels = sorted(_intake_label_names(issue))
+    label_transition_at: dict[str, str] = {}
+    for label in (*STATUS_LABELS, *COMPLETION_LABELS, approval_label):
+        transitions = [
+            (event.get("created_at"), event.get("event"))
+            for event in timeline
+            if event.get("label") == label and event.get("event") in {"labeled", "unlabeled"}
+        ]
+        if transitions:
+            latest_at, latest_event = max(
+                transitions,
+                key=lambda record: _parse_timestamp(record[0], "label transition timestamp"),
+            )
+            if latest_event == "labeled" and label in labels:
+                label_transition_at[label] = str(latest_at)
+    return {
+        "approved": assessment.get("approved") is True,
+        "approval_reason": str(assessment.get("reason", "unknown")),
+        "closed_at": issue.get("closed_at"),
+        "created_at": issue.get("created_at"),
+        "label_transition_at": label_transition_at,
+        "labels": labels,
+        "last_transition_at": _latest_lifecycle_transition(
+            issue,
+            timeline,
+            approval_label=approval_label,
+        ),
+        "number": issue.get("number"),
+        "repository": repository,
+        "specialized_lifecycle": False,
+        "state": issue.get("state"),
+        "type": "issue",
+        "updated_at": issue.get("updated_at"),
+        "url": issue.get("html_url"),
+    }
+
+
+def discover_public_issue_metadata(policy: Mapping[str, Any], client: Any) -> list[dict[str, Any]]:
+    """Collect only public issue metadata; never request instruction-bearing prose."""
+
+    intake_policy = policy["intake"]
+    metadata: list[dict[str, Any]] = []
+    for repository in policy["repositories"]:
+        for issue, timeline in client.list_issues(policy["organization"], repository):
+            assessment = assess_issue_intake(
+                issue,
+                timeline,
+                approval_label=intake_policy["approval_label"],
+                trusted_actors=intake_policy["trusted_actors"],
+                bind_revision=False,
+            )
+            metadata.append(
+                _issue_metadata_record(
+                    repository,
+                    issue,
+                    timeline,
+                    assessment,
+                    approval_label=intake_policy["approval_label"],
+                )
+            )
+    return sorted(
+        metadata,
+        key=lambda record: (str(record["repository"]), int(record["number"])),
+    )
+
+
+def discover_public_metadata(policy: Mapping[str, Any], client: Any) -> list[dict[str, Any]]:
+    """Collect only public issue/PR metadata; never request instruction-bearing prose."""
+
+    metadata = discover_public_issue_metadata(policy, client)
+    for repository in policy["repositories"]:
+        metadata.extend(client.list_pull_requests(policy["organization"], repository))
+    return sorted(
+        metadata,
+        key=lambda record: (str(record["repository"]), str(record["type"]), int(record["number"])),
+    )
+
+
 def reconstruct_intake(
     policy: dict[str, Any],
     client: Any,
     *,
+    pre_intake_release_completions: Collection[tuple[str, int]] = (),
     target_qualification: Mapping[str, Any] | None = None,
     legacy_cross_repository_targets: Mapping[str, Any] | None = None,
     trigger_repository: str | None = None,
@@ -1601,8 +2028,11 @@ def reconstruct_intake(
     )
     records: list[dict[str, Any]] = []
     rejected_records: list[dict[str, Any]] = []
+    public_metadata: list[dict[str, Any]] = []
+    metadata_by_identity: dict[tuple[str, int], dict[str, Any]] = {}
     inventory: dict[str, list[dict[str, Any]]] = {repository: [] for repository in policy["repositories"]}
     trigger_assessment: dict[str, Any] | None = None
+    terminal_release_completions = set(pre_intake_release_completions)
     for repository in policy["repositories"]:
         for issue, timeline in client.list_issues(policy["organization"], repository):
             number = issue["number"]
@@ -1636,6 +2066,40 @@ def reconstruct_intake(
                 trusted_actors=intake_policy["trusted_actors"],
                 bind_revision=False,
             )
+            metadata = _issue_metadata_record(
+                repository,
+                issue,
+                timeline,
+                preliminary,
+                approval_label=intake_policy["approval_label"],
+            )
+            public_metadata.append(metadata)
+            metadata_by_identity[(repository, number)] = metadata
+            if (repository, number) in terminal_release_completions:
+                labels = _intake_label_names(issue)
+                terminal = (
+                    preliminary["approved"]
+                    and issue.get("state") == "closed"
+                    and labels & STATUS_LABELS == {"status:done"}
+                    and COMPLETION_VERIFIED_LABEL in labels
+                )
+                if not terminal:
+                    metadata["quarantined"] = True
+                    metadata["reconciliation_failure"] = "release-completion-not-terminal"
+                else:
+                    metadata["approved"] = True
+                    metadata["approval_reason"] = str(preliminary["reason"])
+                    metadata["specialized_lifecycle"] = True
+                if is_trigger:
+                    trigger_assessment = (
+                        dict(preliminary)
+                        if terminal
+                        else {"approved": False, "reason": "release-completion-not-terminal"}
+                    )
+                # A verified release completion is terminal before any approved
+                # revision is fetched or prerelease supersession is bound. This
+                # keeps the completed issue out of successor reservation.
+                continue
             if not preliminary["approved"]:
                 if is_trigger:
                     trigger_assessment = dict(preliminary)
@@ -1678,10 +2142,18 @@ def reconstruct_intake(
                 )
             except AuthorityError as error:
                 rejected_records.append(_target_rejection(repository, number, assessment, error))
+                metadata["quarantined"] = True
+                metadata["reconciliation_failure"] = "approved-intake-invalid"
                 if is_trigger:
                     trigger_assessment = {"approved": False, "reason": "source-targets-invalid"}
                 continue
             inventory[repository].append(issue)
+            metadata["approved"] = True
+            metadata["approval_reason"] = str(assessment["reason"])
+            metadata["labels"] = sorted(_intake_label_names(issue))
+            metadata["specialized_lifecycle"] = bool(
+                cross_repository_targets or frozen_lifecycle
+            )
             records.append(
                 {
                     "approval_actor": assessment["approval_actor"],
@@ -1698,6 +2170,10 @@ def reconstruct_intake(
                 }
             )
 
+        list_pull_requests = getattr(client, "list_pull_requests", None)
+        if callable(list_pull_requests):
+            public_metadata.extend(list_pull_requests(policy["organization"], repository))
+
     _bind_prerelease_supersessions(
         policy,
         records,
@@ -1705,12 +2181,19 @@ def reconstruct_intake(
         client,
         require_activations=require_supersession_activations,
     )
+    for record in records:
+        if record["superseded_by"] is not None:
+            metadata_by_identity[(record["repository"], record["number"])]["specialized_lifecycle"] = True
     manifest: dict[str, Any] = {
         "schema": INTAKE_SCHEMA,
         "organization": policy["organization"],
         "policy_digest": _object_digest(policy),
         "legacy_target_migration_digest": _object_digest(legacy_cross_repository_targets or {}),
         "issues": records,
+        "public_metadata": sorted(
+            public_metadata,
+            key=lambda record: (str(record["repository"]), str(record["type"]), int(record["number"])),
+        ),
         "rejected_issues": rejected_records,
     }
     if trigger_repository is not None or trigger_number is not None:
@@ -2102,6 +2585,16 @@ class GitHubApi:
         *,
         writer_authenticated_read: bool = False,
     ) -> Any:
+        if (
+            payload is not None
+            and isinstance(payload.get("labels"), Sequence)
+            and not isinstance(payload.get("labels"), str | bytes)
+            and re.fullmatch(r"/repos/[^/]+/[^/]+/issues(?:/[1-9][0-9]*)?(?:/labels)?", path)
+        ):
+            raw_labels = payload["labels"]
+            if not all(isinstance(label, str) for label in raw_labels):
+                raise AuthorityError(f"GitHub issue writer {path} received invalid labels")
+            _require_exact_kind_label(raw_labels, f"GitHub issue writer {path}")
         body = None
         headers = dict(self.read_headers if method == "GET" and not writer_authenticated_read else self.headers)
         if payload is not None:
@@ -2293,6 +2786,7 @@ class GitHubApi:
         labels: Sequence[str],
         milestone: int,
     ) -> dict[str, Any]:
+        _require_exact_kind_label(labels, f"new GitHub issue {repository}/{title}")
         result = self.request(
             "POST",
             f"/repos/{organization}/{repository}/issues",
@@ -2309,6 +2803,7 @@ class GitHubApi:
         number: int,
         labels: Sequence[str],
     ) -> None:
+        _require_exact_kind_label(labels, f"GitHub issue {repository}#{number}")
         self.request(
             "PUT",
             f"/repos/{organization}/{repository}/issues/{number}/labels",
@@ -2407,6 +2902,21 @@ class GitHubApi:
         comparison = self.request(
             "GET",
             f"/repos/{organization}/{repository}/compare/{encoded_commit}...{encoded_branch}",
+        )
+        return isinstance(comparison, dict) and comparison.get("status") in {"ahead", "identical"}
+
+    def commit_contains(
+        self,
+        organization: str,
+        repository: str,
+        descendant: str,
+        ancestor: str,
+    ) -> bool:
+        encoded_ancestor = urllib.parse.quote(ancestor, safe="")
+        encoded_descendant = urllib.parse.quote(descendant, safe="")
+        comparison = self.request(
+            "GET",
+            f"/repos/{organization}/{repository}/compare/{encoded_ancestor}...{encoded_descendant}",
         )
         return isinstance(comparison, dict) and comparison.get("status") in {"ahead", "identical"}
 
@@ -2623,23 +3133,65 @@ class GitHubApi:
         number: int,
         marker: str,
         body: str,
-    ) -> None:
+    ) -> bool:
+        comment = self._managed_lifecycle_comment(organization, repository, number, marker)
+        if comment is not None:
+            if comment["body"] == body:
+                return False
+            comment_id = comment.get("id")
+            if not isinstance(comment_id, int):
+                raise AuthorityError(f"GitHub issue {repository}#{number} has lifecycle evidence without an identity")
+            self.request("PATCH", f"/repos/{organization}/{repository}/issues/comments/{comment_id}", {"body": body})
+            return True
+        self.request("POST", f"/repos/{organization}/{repository}/issues/{number}/comments", {"body": body})
+        return True
+
+    def _managed_lifecycle_comment(
+        self,
+        organization: str,
+        repository: str,
+        number: int,
+        marker: str,
+    ) -> dict[str, Any] | None:
         comments = self.list_trusted_issue_comments(organization, repository, number)
         matches = [comment for comment in comments if marker in comment["body"]]
         if len(matches) > 1:
             raise AuthorityError(
                 f"GitHub issue {repository}#{number} has duplicate cross-repository lifecycle evidence"
             )
-        if matches:
-            comment = matches[0]
-            if comment["body"] == body:
-                return
-            comment_id = comment.get("id")
-            if not isinstance(comment_id, int):
-                raise AuthorityError(f"GitHub issue {repository}#{number} has lifecycle evidence without an identity")
-            self.request("PATCH", f"/repos/{organization}/{repository}/issues/comments/{comment_id}", {"body": body})
-            return
-        self.request("POST", f"/repos/{organization}/{repository}/issues/{number}/comments", {"body": body})
+        return matches[0] if matches else None
+
+    def managed_lifecycle_comment_body(
+        self,
+        organization: str,
+        repository: str,
+        number: int,
+        marker: str,
+    ) -> str | None:
+        comment = self._managed_lifecycle_comment(organization, repository, number, marker)
+        return str(comment["body"]) if comment is not None else None
+
+    def has_managed_lifecycle_comment(
+        self,
+        organization: str,
+        repository: str,
+        number: int,
+        marker: str | None = None,
+    ) -> bool:
+        markers = (
+            {marker}
+            if marker is not None
+            else {
+                FROZEN_LIFECYCLE_EVIDENCE_MARKER,
+                PUBLIC_LIFECYCLE_MARKER,
+                SUPERSESSION_EVIDENCE_MARKER,
+                cross_repository_lifecycle.EVIDENCE_MARKER,
+            }
+        )
+        return any(
+            any(marker in comment["body"] for marker in markers)
+            for comment in self.list_trusted_issue_comments(organization, repository, number)
+        )
 
 
 def _label_names(issue: dict[str, Any]) -> set[str]:
@@ -2650,6 +3202,10 @@ def _label_names(issue: dict[str, Any]) -> set[str]:
         elif isinstance(label, dict) and isinstance(label.get("name"), str):
             names.add(label["name"])
     return names
+
+
+def _kind_label_names(labels: Collection[str]) -> set[str]:
+    return {label for label in labels if label.startswith("kind:")}
 
 
 def _has_trusted_public_retirement(
@@ -2673,6 +3229,27 @@ def _has_trusted_public_retirement(
     if marker_count > 1:
         raise AuthorityError(f"GitHub issue {repository}#{number} has duplicate public retirement markers")
     return marker_count == 1
+
+
+def _require_exact_kind_label(labels: Collection[str], location: str) -> str:
+    kinds = _kind_label_names(labels)
+    if len(kinds) != 1:
+        raise AuthorityError(f"{location} label write must contain exactly one kind:* label, got {sorted(kinds)}")
+    kind = next(iter(kinds))
+    if kind not in KIND_LABELS:
+        raise AuthorityError(f"{location} label write contains unsupported lifecycle kind {kind!r}")
+    return kind
+
+
+def _replace_kind_label(labels: Collection[str], kind: str) -> set[str]:
+    """Replace, rather than append, the kind at completion and release writer boundaries."""
+
+    if kind not in KIND_LABELS:
+        raise AuthorityError(f"unsupported lifecycle kind transition {kind!r}")
+    replacement = {label for label in labels if not label.startswith("kind:")}
+    replacement.add(kind)
+    _require_exact_kind_label(replacement, "lifecycle kind transition")
+    return replacement
 
 
 def _issue_url(issue: dict[str, Any], organization: str, repository: str) -> str:
@@ -2909,12 +3486,21 @@ def _marker_index(
             if not isinstance(body, str):
                 continue
             ids = MARKER_PATTERN.findall(body)
+            consolidated_ids = CONSOLIDATED_FINDING_PATTERN.findall(body)
             if len(ids) != len(set(ids)):
                 raise AuthorityError(f"issue {repository}/{issue.get('number')} repeats its beta work marker")
+            if len(consolidated_ids) != len(set(consolidated_ids)):
+                raise AuthorityError(
+                    f"issue {repository}/{issue.get('number')} repeats a consolidated finding marker"
+                )
+            if set(ids) & set(consolidated_ids):
+                raise AuthorityError(
+                    f"issue {repository}/{issue.get('number')} repeats one work identity across marker kinds"
+                )
             distinct_ids = sorted(set(ids))
             if len(distinct_ids) > 1:
                 aliases.append((repository, issue, distinct_ids))
-            for work_id in ids:
+            for work_id in [*ids, *consolidated_ids]:
                 markers.setdefault(work_id, []).append((repository, issue))
     return markers, aliases
 
@@ -3203,15 +3789,29 @@ def _audit_state_labels(
             trusted_retirement = identity in trusted_retirements
             if "authority:github" not in labels and not trusted_retirement:
                 continue
-            statuses = labels & STATUS_LABELS
-            open_statuses_before_lifecycle = statuses & OPEN_STATUS_LABELS
             state = issue.get("state")
-            replacement = set(labels)
-            aggregated_close = False
-            assessment: dict[str, Any] | None = None
+            if (
+                state == "closed"
+                and not trusted_retirement
+                and not client.has_managed_lifecycle_comment(
+                    organization,
+                    repository,
+                    number,
+                )
+            ):
+                # Closed history is metadata-only unless this authority already
+                # owns a managed lifecycle record for an explicit transition.
+                continue
+            kinds = _kind_label_names(labels)
+            if len(kinds) != 1 or not kinds <= KIND_LABELS:
+                failures.append(f"{location} must have exactly one supported kind:* label, got {sorted(kinds)}")
+                # A classification choice is maintainer authority. Quarantine
+                # this identity without guessing while unrelated issues keep
+                # reconciling in the same aggregate run.
+                continue
             if trusted_retirement:
-                replacement -= STATUS_LABELS
-                replacement -= COMPLETION_LABELS
+                replacement = labels - STATUS_LABELS - COMPLETION_LABELS
+                replacement.discard("authority:conflict")
                 replacement.update({"authority:github", SUPERSEDED_STATUS_LABEL})
                 if replacement != labels:
                     client.replace_issue_labels(
@@ -3232,12 +3832,14 @@ def _audit_state_labels(
                     )
                     issue["state"] = "closed"
                     issue["state_reason"] = "not_planned"
-                if len(labels & KIND_LABELS) != 1:
-                    failures.append(f"{location} must have exactly one kind label")
                 if len(labels & PRIORITY_LABELS) != 1:
                     failures.append(f"{location} must have exactly one priority label")
                 continue
-
+            statuses = labels & STATUS_LABELS
+            open_statuses_before_lifecycle = statuses & OPEN_STATUS_LABELS
+            replacement = set(labels)
+            aggregated_close = False
+            assessment: dict[str, Any] | None = None
             approved_completion_hold = identity in approved_completion_holds
             frozen_migration = (frozen_cross_repository_lifecycles or {}).get(identity)
             frozen_result = frozen_results.get(identity)
@@ -3404,7 +4006,10 @@ def _audit_state_labels(
                 if frozen_result is None:
                     failures.append(f"{location} {reason}")
                 target_contract_failure_reported = target_contract_is_missing
-            elif state == "open" and declared_targets and not must_remain_open:
+            elif state == "open" and (
+                (declared_targets and not must_remain_open)
+                or (COMPLETION_VERIFIED_LABEL in labels and not must_remain_open)
+            ):
                 client.update_issue_state(
                     organization,
                     repository,
@@ -3491,7 +4096,7 @@ def _audit_state_labels(
                 )
                 issue["state_reason"] = "completed"
 
-            if len(labels & KIND_LABELS) != 1:
+            if len(_kind_label_names(labels)) != 1:
                 failures.append(f"{location} must have exactly one kind label")
             if len(labels & PRIORITY_LABELS) != 1:
                 failures.append(f"{location} must have exactly one priority label")
@@ -3520,6 +4125,890 @@ def _audit_migrated_classification(
     return failures
 
 
+def _public_blocker_condition(issue: Mapping[str, Any] | None) -> str:
+    if issue is None or not isinstance(issue.get("body"), str):
+        return "See the public issue for the condition that must change before work can resume."
+    body = str(issue["body"])
+    if body.count(UNBLOCK_CONTEXT_START) != 1 or body.count(UNBLOCK_CONTEXT_END) != 1:
+        return "See the public issue for the condition that must change before work can resume."
+    start = body.index(UNBLOCK_CONTEXT_START) + len(UNBLOCK_CONTEXT_START)
+    end = body.index(UNBLOCK_CONTEXT_END)
+    if start >= end:
+        return "See the public issue for the condition that must change before work can resume."
+    condition = body[start:end].strip()
+    condition = re.sub(r"^##[ \t]+Unblock condition[ \t]*\r?\n+", "", condition).strip()
+    if not condition:
+        return "See the public issue for the condition that must change before work can resume."
+    try:
+        _public_safe([condition])
+    except AuthorityError:
+        return "See the public issue for the condition that must change before work can resume."
+    return condition
+
+
+def _public_lifecycle_state(
+    metadata: Mapping[str, Any],
+    labels: Collection[str],
+) -> str:
+    if SUPERSEDED_STATUS_LABEL in labels:
+        return "superseded"
+    if metadata.get("state") == "closed" or "status:done" in labels:
+        return "completed"
+    if metadata.get("approved") is not True:
+        return "awaiting-maintainer-vetting"
+    if "status:blocked" in labels:
+        return "blocked"
+    if "status:in-progress" in labels:
+        return "in-progress"
+    return "approved-queued"
+
+
+def _render_public_lifecycle_comment(
+    state: str,
+    condition: str | None = None,
+    *,
+    condition_key: str | None = None,
+) -> str:
+    headings = {
+        "approved-queued": "Approved and queued",
+        "awaiting-maintainer-vetting": "Awaiting maintainer vetting",
+        "blocked": "Blocked",
+        "completed": "Completed",
+        "in-progress": "In progress",
+        "superseded": "Superseded",
+    }
+    explanations = {
+        "approved-queued": "A maintainer approved the current issue revision and it is queued for product work.",
+        "awaiting-maintainer-vetting": "A maintainer has not yet approved the current issue revision.",
+        "blocked": "Work cannot advance until the public condition below changes.",
+        "completed": "The approved work and its required public completion evidence are complete.",
+        "in-progress": "Implementation is actively in progress.",
+        "superseded": "A reviewed successor or disposition replaced this work.",
+    }
+    if state not in headings:
+        raise AuthorityError(f"unsupported public lifecycle state {state!r}")
+    condition_heading = "Public unblock condition" if state == "blocked" else "Public condition"
+    condition_section = f"\n\n**{condition_heading}**\n\n{condition}" if condition else ""
+    rendered_condition_key = condition_key or "none"
+    return (
+        f"{PUBLIC_LIFECYCLE_MARKER}\n"
+        f"<!-- durable-workflow-public-lifecycle-state:{state};condition:{rendered_condition_key} -->\n"
+        "### Public lifecycle\n\n"
+        f"**State:** {headings[state]}\n\n"
+        f"{explanations[state]}"
+        f"{condition_section}\n"
+    )
+
+
+def reconcile_public_lifecycle(
+    policy: Mapping[str, Any],
+    client: Any,
+    public_metadata: Sequence[dict[str, Any]],
+    inventory: Mapping[str, Sequence[dict[str, Any]]],
+    *,
+    lifecycle_projection: Mapping[tuple[str, int], Mapping[str, Any]] | None = None,
+    now: datetime | None = None,
+    projection_failures: Sequence[str] = (),
+) -> list[str]:
+    """Converge labels/comments per issue while quarantining malformed identities."""
+
+    organization = str(policy["organization"])
+    lifecycle_policy = policy["lifecycle"]
+    state_labels = lifecycle_policy["state_labels"]
+    transition_at = (now or datetime.now(UTC)).astimezone(UTC).isoformat().replace("+00:00", "Z")
+    projection = lifecycle_projection or {}
+    approved_issues = {
+        (repository, int(issue["number"])): issue
+        for repository, issues in inventory.items()
+        for issue in issues
+        if type(issue.get("number")) is int
+    }
+    failures: list[str] = list(projection_failures)
+    seen_projection_identities: set[tuple[str, int]] = set()
+    for metadata in public_metadata:
+        if metadata.get("type") != "issue":
+            continue
+        repository = metadata.get("repository")
+        number = metadata.get("number")
+        if not isinstance(repository, str) or type(number) is not int:
+            failures.append("public issue metadata has an invalid identity")
+            continue
+        location = f"{repository}#{number}"
+        if metadata.get("quarantined") is True:
+            failures.append(f"{location} has quarantined approved intake")
+            continue
+        issue = approved_issues.get((repository, number))
+        if issue is not None:
+            metadata["approved"] = True
+            metadata["labels"] = sorted(_label_names(issue))
+            metadata["state"] = issue.get("state")
+            metadata["closed_at"] = issue.get("closed_at")
+        labels = set(metadata.get("labels", ()))
+        identity = (repository, number)
+        projected = projection.get(identity)
+        if projected is not None:
+            seen_projection_identities.add(identity)
+            if metadata.get("approved") is not True:
+                failures.append(f"{location} projection does not match approved public intake")
+                metadata["reconciliation_failure"] = "projection-not-approved"
+                continue
+
+        try:
+            trusted_retirement = _has_trusted_public_retirement(
+                client,
+                organization,
+                repository,
+                number,
+            )
+        except AuthorityError as error:
+            failures.append(f"{location} retirement record is malformed: {error}")
+            metadata["reconciliation_failure"] = "retirement-record"
+            continue
+        if trusted_retirement:
+            kinds = _kind_label_names(labels)
+            if len(kinds) != 1 or not kinds <= KIND_LABELS:
+                failures.append(f"{location} has malformed kind labels {sorted(kinds)}")
+                metadata["reconciliation_failure"] = "malformed-kind-labels"
+                continue
+            if projected is not None and projected.get("state") != "superseded":
+                failures.append(f"{location} projection conflicts with trusted retirement")
+                metadata["reconciliation_failure"] = "projection-conflicts-with-retirement"
+            replacement = labels - STATUS_LABELS - COMPLETION_LABELS
+            replacement.discard("authority:conflict")
+            replacement.update({"authority:github", SUPERSEDED_STATUS_LABEL})
+            if replacement != labels:
+                client.replace_issue_labels(
+                    organization,
+                    repository,
+                    number,
+                    sorted(replacement),
+                )
+                labels = replacement
+                metadata["labels"] = sorted(labels)
+                if issue is not None:
+                    issue["labels"] = [{"name": label} for label in sorted(labels)]
+            if metadata.get("state") != "closed" or (issue is not None and issue.get("state_reason") != "not_planned"):
+                client.update_issue_state(
+                    organization,
+                    repository,
+                    number,
+                    "closed",
+                    state_reason="not_planned",
+                )
+                metadata["state"] = "closed"
+                metadata["closed_at"] = transition_at
+                if issue is not None:
+                    issue["state"] = "closed"
+                    issue["state_reason"] = "not_planned"
+            metadata["public_state"] = "superseded"
+            continue
+
+        if metadata.get("state") == "closed":
+            metadata["public_state"] = _public_lifecycle_state(metadata, labels)
+            if metadata.get("specialized_lifecycle") is True or projected is None:
+                continue
+            projected_state = projected.get("state")
+            if projected_state not in {"completed", "superseded"}:
+                continue
+            if not client.has_managed_lifecycle_comment(
+                organization,
+                repository,
+                number,
+                PUBLIC_LIFECYCLE_MARKER,
+            ):
+                continue
+            public_state = "completed" if projected_state == "completed" else "superseded"
+            metadata["public_state"] = public_state
+            try:
+                client.upsert_lifecycle_comment(
+                    organization,
+                    repository,
+                    number,
+                    PUBLIC_LIFECYCLE_MARKER,
+                    _render_public_lifecycle_comment(public_state),
+                )
+            except AuthorityError as error:
+                failures.append(f"{location} lifecycle comment reconciliation failed: {error}")
+                metadata["reconciliation_failure"] = "lifecycle-comment"
+            continue
+
+        kinds = _kind_label_names(labels)
+        if len(kinds) != 1 or not kinds <= KIND_LABELS:
+            failures.append(f"{location} has malformed kind labels {sorted(kinds)}")
+            metadata["reconciliation_failure"] = "malformed-kind-labels"
+            continue
+        statuses = labels & STATUS_LABELS
+        if len(statuses) > 1:
+            failures.append(f"{location} has ambiguous lifecycle labels {sorted(statuses)}")
+            metadata["reconciliation_failure"] = "ambiguous-lifecycle-labels"
+            continue
+
+        projected_state = projected.get("state") if projected is not None else None
+        completion_target_pending = (
+            COMPLETION_REQUIRED_LABEL in labels and COMPLETION_VERIFIED_LABEL not in labels
+        )
+        if projected_state == "completed" and completion_target_pending:
+            failures.append(f"{location} verified release completion is waiting on required target evidence")
+            metadata["reconciliation_failure"] = "required-target-evidence"
+            projected_state = "integrated"
+        desired_state = None
+        if projected_state == "completed" or (
+            projected is None
+            and metadata.get("approved") is True
+            and COMPLETION_VERIFIED_LABEL in labels
+        ):
+            desired_state = "completed"
+        elif projected_state == "superseded":
+            desired_state = "superseded"
+
+        effective_transition_at = str(projected.get("transition_at")) if projected is not None else transition_at
+        if desired_state in {"completed", "superseded"}:
+            state_reason = "completed" if desired_state == "completed" else "not_planned"
+            client.update_issue_state(
+                organization,
+                repository,
+                number,
+                "closed",
+                state_reason=state_reason,
+            )
+            metadata["state"] = "closed"
+            metadata["closed_at"] = transition_at
+            metadata["last_transition_at"] = effective_transition_at
+
+        if desired_state == "completed":
+            desired_status = state_labels["completed"]
+        elif desired_state == "superseded":
+            desired_status = SUPERSEDED_STATUS_LABEL
+        elif metadata.get("approved") is not True:
+            desired_status = state_labels["awaiting-maintainer-vetting"]
+        elif projected_state in {"blocked", "failed"} or (
+            projected is None and "status:blocked" in statuses
+        ):
+            desired_status = state_labels["blocked"]
+        elif projected_state in {"built", "claimed", "integrated", "integrating"} or (
+            projected is None and "status:in-progress" in statuses
+        ):
+            desired_status = state_labels["in-progress"]
+        else:
+            desired_status = state_labels["approved-queued"]
+
+        replacement = labels - STATUS_LABELS | {desired_status}
+        if projected is not None:
+            # A unique authenticated projection, a non-duplicated managed
+            # lifecycle record, and unambiguous kind/status labels prove that
+            # an older authority conflict has been resolved.
+            replacement.discard("authority:conflict")
+        if desired_state == "completed":
+            replacement -= COMPLETION_LABELS
+            replacement.add(COMPLETION_VERIFIED_LABEL)
+        elif desired_state == "superseded":
+            replacement -= COMPLETION_LABELS
+        status_changed = statuses != {desired_status}
+        if metadata.get("approved") is True:
+            replacement.add("authority:github")
+        if replacement != labels:
+            client.replace_issue_labels(organization, repository, number, sorted(replacement))
+            labels = replacement
+            metadata["labels"] = sorted(labels)
+            if status_changed:
+                metadata["last_transition_at"] = effective_transition_at
+                metadata.setdefault("label_transition_at", {})[desired_status] = effective_transition_at
+            if issue is not None:
+                issue["labels"] = [{"name": label} for label in sorted(labels)]
+
+        public_state = _public_lifecycle_state(metadata, labels)
+        metadata["public_state"] = public_state
+        if metadata.get("specialized_lifecycle") is True:
+            continue
+        if projected is not None and projected.get("public_condition") is not None:
+            public_condition = str(projected["public_condition"])
+            condition = PUBLIC_CONDITIONS[public_condition]
+            condition_key = f"projection:{public_condition}"
+        else:
+            condition = _public_blocker_condition(issue) if public_state == "blocked" else None
+            condition_key = (
+                f"public-text:{hashlib.sha256(condition.encode('utf-8')).hexdigest()[:16]}"
+                if condition is not None
+                else None
+            )
+        try:
+            existing_comment = client.managed_lifecycle_comment_body(
+                organization,
+                repository,
+                number,
+                PUBLIC_LIFECYCLE_MARKER,
+            )
+            if (
+                projected is None
+                and existing_comment is not None
+                and f"lifecycle-state:{public_state};condition:projection:" in existing_comment
+            ):
+                continue
+            client.upsert_lifecycle_comment(
+                organization,
+                repository,
+                number,
+                PUBLIC_LIFECYCLE_MARKER,
+                _render_public_lifecycle_comment(
+                    public_state,
+                    condition,
+                    condition_key=condition_key,
+                ),
+            )
+        except AuthorityError as error:
+            failures.append(f"{location} lifecycle comment reconciliation failed: {error}")
+            metadata["reconciliation_failure"] = "lifecycle-comment"
+    for repository, number in sorted(set(projection) - seen_projection_identities):
+        failures.append(f"{repository}#{number} projection does not match admitted public issue metadata")
+    return failures
+
+
+def _verified_release_completions(
+    projection: Mapping[tuple[str, int], Mapping[str, Any]],
+) -> dict[tuple[str, int], Mapping[str, Any]]:
+    """Select only source-bound release completions for the pre-intake writer."""
+
+    return {
+        identity: record
+        for identity, record in projection.items()
+        if (
+            record.get("state") == "completed"
+            and record.get("completion_evidence") == "verified"
+            and isinstance(record.get("implementation_source"), str)
+            and isinstance(record.get("verified_release"), Mapping)
+        )
+    }
+
+
+def reconcile_verified_releases_before_intake(
+    policy: Mapping[str, Any],
+    client: Any,
+    public_metadata: Sequence[dict[str, Any]],
+    lifecycle_projection: Mapping[tuple[str, int], Mapping[str, Any]],
+    *,
+    now: datetime | None = None,
+    projection_failures: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Close verified release completions before intake can bind or reserve them."""
+
+    release_completions = _verified_release_completions(lifecycle_projection)
+    selected_metadata = [
+        metadata
+        for metadata in public_metadata
+        if (
+            metadata.get("type") == "issue"
+            and (metadata.get("repository"), metadata.get("number")) in release_completions
+        )
+    ]
+    inventory: dict[str, list[dict[str, Any]]] = {
+        str(repository): [] for repository in policy["repositories"]
+    }
+    for metadata in selected_metadata:
+        if metadata.get("approved") is not True:
+            continue
+        repository = str(metadata["repository"])
+        inventory[repository].append(
+            {
+                "closed_at": metadata.get("closed_at"),
+                "labels": [{"name": label} for label in metadata.get("labels", [])],
+                "number": int(metadata["number"]),
+                "state": metadata.get("state"),
+                "state_reason": None,
+            }
+        )
+    failures = reconcile_public_lifecycle(
+        policy,
+        client,
+        selected_metadata,
+        inventory,
+        lifecycle_projection=release_completions,
+        now=now,
+        projection_failures=projection_failures,
+    )
+    terminal_identities = sorted(
+        f"{metadata['repository']}#{metadata['number']}"
+        for metadata in selected_metadata
+        if (
+            metadata.get("state") == "closed"
+            and set(metadata.get("labels", ())) & STATUS_LABELS == {"status:done"}
+            and COMPLETION_VERIFIED_LABEL in set(metadata.get("labels", ()))
+        )
+    )
+    return {
+        "failures": list(failures),
+        "mode": "pre-intake-release-completion",
+        "outcome": "fail" if failures else "pass",
+        "release_completion_count": len(release_completions),
+        "schema": "durable-workflow.github-issue-authority-evidence/v1",
+        "terminal_identities": terminal_identities,
+    }
+
+
+def build_public_age_audit(
+    policy: Mapping[str, Any],
+    public_metadata: Sequence[Mapping[str, Any]],
+    reconciliation_failures: Sequence[str],
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Build a metadata-only, public-safe age artifact with issues and PRs separate."""
+
+    audited_at = (now or datetime.now(UTC)).astimezone(UTC)
+    lifecycle_policy = policy["lifecycle"]
+    approved_state_seconds = int(lifecycle_policy["approved_state_seconds"])
+    audit_interval_seconds = int(lifecycle_policy["audit_interval_seconds"])
+    closure_seconds = int(lifecycle_policy["completed_issue_closure_seconds"])
+    creation_stale_seconds = int(lifecycle_policy["creation_stale_age_seconds"])
+    maximum_open_actionable = int(lifecycle_policy["max_open_actionable_per_repository"])
+    priority_escalation_seconds = int(lifecycle_policy["priority_escalation_seconds"])
+    product_owner_alert_seconds = int(lifecycle_policy["product_owner_alert_seconds"])
+    triage_seconds = int(lifecycle_policy["maintainer_vetting_seconds"])
+    stale_transition_seconds = int(lifecycle_policy["stale_approved_transition_seconds"])
+    unattended_seconds = int(lifecycle_policy["unattended_placeholder_seconds"])
+    repositories: dict[str, dict[str, Any]] = {}
+    age_bucket_template = {"under-24h": 0, "24h-to-72h": 0, "72h-to-7d": 0, "over-7d": 0}
+
+    def empty_bucket() -> dict[str, Any]:
+        return {
+            "age_buckets": dict(age_bucket_template),
+            "actionable_open_count": 0,
+            "closed_count": 0,
+            "counts_by_state": {},
+            "creation_suppressed": False,
+            "oldest_age_seconds": 0,
+            "oldest_open_created_age_seconds": 0,
+            "open_count": 0,
+            "over_budget": False,
+            "stale_identities": [],
+            "total_count": 0,
+        }
+
+    totals = {
+        "issues": empty_bucket(),
+        "pull_requests": empty_bucket(),
+    }
+    for repository in policy["repositories"]:
+        repositories[str(repository)] = {
+            "issues": empty_bucket(),
+            "pull_requests": empty_bucket(),
+        }
+
+    metadata_failures: list[str] = []
+    actionable_records: dict[str, list[dict[str, Any]]] = {
+        str(repository): [] for repository in policy["repositories"]
+    }
+    open_issue_created_ages: dict[str, list[int]] = {
+        str(repository): [] for repository in policy["repositories"]
+    }
+    external_intake: list[dict[str, Any]] = []
+    notification_crossings: list[dict[str, Any]] = []
+    for record in public_metadata:
+        repository = record.get("repository")
+        number = record.get("number")
+        record_type = record.get("type")
+        if repository not in repositories or type(number) is not int or record_type not in {"issue", "pull_request"}:
+            metadata_failures.append("public age audit encountered an invalid metadata identity")
+            continue
+        bucket_name = "issues" if record_type == "issue" else "pull_requests"
+        bucket = repositories[str(repository)][bucket_name]
+        total_bucket = totals[bucket_name]
+        if record_type == "issue":
+            labels = set(record.get("labels", ()))
+            state = str(record.get("public_state") or _public_lifecycle_state(record, labels))
+            transition_value = record.get("last_transition_at") or record.get("created_at")
+        else:
+            state = "merged" if record.get("merged_at") else str(record.get("state", "unknown"))
+            transition_value = (
+                record.get("merged_at")
+                or record.get("closed_at")
+                or record.get("updated_at")
+                or record.get("created_at")
+            )
+        try:
+            transition = _parse_timestamp(transition_value, f"{record_type} age timestamp").astimezone(UTC)
+        except AuthorityError as error:
+            metadata_failures.append(f"{repository}#{number} has invalid age metadata: {error}")
+            continue
+        age_seconds = max(0, int((audited_at - transition).total_seconds()))
+        created_age_seconds = age_seconds
+        if record_type == "issue":
+            try:
+                created_at = _parse_timestamp(record.get("created_at"), "issue creation timestamp").astimezone(UTC)
+                created_age_seconds = max(0, int((audited_at - created_at).total_seconds()))
+            except AuthorityError:
+                created_age_seconds = age_seconds
+        age_bucket = (
+            "under-24h"
+            if age_seconds < 24 * 3600
+            else "24h-to-72h"
+            if age_seconds < 72 * 3600
+            else "72h-to-7d"
+            if age_seconds < 7 * 24 * 3600
+            else "over-7d"
+        )
+        for current in (bucket, total_bucket):
+            counts = current["counts_by_state"]
+            counts[state] = counts.get(state, 0) + 1
+            current["oldest_age_seconds"] = max(current["oldest_age_seconds"], age_seconds)
+            current["age_buckets"][age_bucket] += 1
+            current["total_count"] += 1
+            if record.get("state") == "open":
+                current["open_count"] += 1
+                current["oldest_open_created_age_seconds"] = max(
+                    current["oldest_open_created_age_seconds"],
+                    created_age_seconds,
+                )
+            else:
+                current["closed_count"] += 1
+
+        stale: list[dict[str, Any]] = []
+        identity = f"{repository}#{number}"
+        if record_type == "issue":
+            labels = set(record.get("labels", ()))
+            if record.get("state") == "open":
+                open_issue_created_ages[str(repository)].append(created_age_seconds)
+            if record.get("state") == "open" and record.get("approved") is True:
+                priority = next((label for label in PRIORITY_LABELS if label in labels), "priority:untriaged")
+                actionable_record = {
+                    "age_seconds": created_age_seconds,
+                    "identity": identity,
+                    "kind": next((label for label in KIND_LABELS if label in labels), None),
+                    "priority": priority,
+                    "repository": str(repository),
+                    "state": state,
+                }
+                actionable_records[str(repository)].append(actionable_record)
+                bucket["actionable_open_count"] += 1
+                total_bucket["actionable_open_count"] += 1
+            elif record.get("state") == "open" and record.get("approved") is not True:
+                external_intake.append(
+                    {
+                        "age_seconds": created_age_seconds,
+                        "identity": identity,
+                        "kind": next((label for label in KIND_LABELS if label in labels), None),
+                        "repository": str(repository),
+                    }
+                )
+            if (
+                record.get("state") == "open"
+                and record.get("approved") is True
+                and age_seconds >= stale_transition_seconds
+            ):
+                stale.append(
+                    {
+                        "age_seconds": age_seconds,
+                        "identity": identity,
+                        "target": (
+                            "stale-blocker-72h"
+                            if state == "blocked"
+                            else "approved-transition-72h"
+                        ),
+                    }
+                )
+            if (
+                record.get("state") == "open"
+                and record.get("approved") is True
+                and created_age_seconds >= product_owner_alert_seconds
+            ):
+                stale.append(
+                    {
+                        "age_seconds": created_age_seconds,
+                        "identity": identity,
+                        "target": "product-owner-alert-7d",
+                    }
+                )
+                if created_age_seconds < product_owner_alert_seconds + audit_interval_seconds:
+                    notification_crossings.append(
+                        {"identity": identity, "target": "product-owner-alert-7d"}
+                    )
+            if (
+                record.get("state") == "open"
+                and record.get("approved") is True
+                and created_age_seconds >= unattended_seconds
+            ):
+                unattended_target = "blocker-review-14d" if state == "blocked" else "unattended-placeholder-14d"
+                stale.append(
+                    {
+                        "age_seconds": created_age_seconds,
+                        "identity": identity,
+                        "target": unattended_target,
+                    }
+                )
+                if created_age_seconds < unattended_seconds + audit_interval_seconds:
+                    notification_crossings.append({"identity": identity, "target": unattended_target})
+            if (
+                record.get("state") == "open"
+                and record.get("approved") is True
+                and (
+                    len(labels & STATUS_LABELS) != 1
+                    or record.get("reconciliation_failure") is not None
+                )
+                and age_seconds >= approved_state_seconds
+            ):
+                stale.append({"age_seconds": age_seconds, "identity": identity, "target": "approved-state-24h"})
+            if (
+                record.get("state") == "open"
+                and record.get("approved") is not True
+                and "status:triage" not in labels
+                and age_seconds >= triage_seconds
+            ):
+                stale.append({"age_seconds": age_seconds, "identity": identity, "target": "triage-visibility-24h"})
+            if record.get("state") == "open" and COMPLETION_VERIFIED_LABEL in labels:
+                verified_at = record.get("label_transition_at", {}).get(COMPLETION_VERIFIED_LABEL)
+                try:
+                    verified_timestamp = _parse_timestamp(verified_at, "completion verification timestamp")
+                    verified_age = int(
+                        (audited_at - verified_timestamp).total_seconds()
+                    )
+                except AuthorityError:
+                    verified_age = age_seconds
+                if verified_age >= closure_seconds:
+                    stale.append(
+                        {"age_seconds": verified_age, "identity": identity, "target": "verified-closure-15m"}
+                    )
+        bucket["stale_identities"].extend(stale)
+        total_bucket["stale_identities"].extend(stale)
+
+    priority_order = ["priority:P0", "priority:P1", "priority:P2", "priority:P3", "priority:untriaged"]
+    claim_order: list[dict[str, Any]] = []
+    over_budget_repositories: list[str] = []
+    for repository, records in actionable_records.items():
+        issue_bucket = repositories[repository]["issues"]
+        oldest_created_age = max(open_issue_created_ages[repository], default=0)
+        creation_suppressed = (
+            len(records) >= maximum_open_actionable or oldest_created_age >= creation_stale_seconds
+        )
+        over_budget = len(records) > maximum_open_actionable or oldest_created_age >= creation_stale_seconds
+        issue_bucket["creation_suppressed"] = creation_suppressed
+        issue_bucket["over_budget"] = over_budget
+        if over_budget:
+            over_budget_repositories.append(repository)
+        if (
+            len(records) == maximum_open_actionable
+            and records
+            and min(int(record["age_seconds"]) for record in records) < audit_interval_seconds
+        ):
+            notification_crossings.append(
+                {"identity": repository, "target": "open-actionable-budget"}
+            )
+        for record in records:
+            if record["state"] != "approved-queued":
+                continue
+            priority_index = priority_order.index(str(record["priority"]))
+            escalated = int(record["age_seconds"]) >= priority_escalation_seconds
+            effective_index = max(0, priority_index - 1) if escalated else priority_index
+            claim_order.append(
+                {
+                    "age_escalated": escalated,
+                    "age_seconds": int(record["age_seconds"]),
+                    "effective_priority": priority_order[effective_index],
+                    "identity": record["identity"],
+                    "priority": record["priority"],
+                }
+            )
+    claim_order.sort(
+        key=lambda record: (
+            priority_order.index(str(record["effective_priority"])),
+            -int(record["age_seconds"]),
+            str(record["identity"]),
+        )
+    )
+    totals["issues"]["creation_suppressed"] = any(
+        repositories[repository]["issues"]["creation_suppressed"] for repository in repositories
+    )
+    totals["issues"]["over_budget"] = bool(over_budget_repositories)
+
+    deduplication_candidates: list[dict[str, Any]] = []
+    for intake in external_intake:
+        roots = [
+            record
+            for record in actionable_records[intake["repository"]]
+            if intake["kind"] is not None and record["kind"] == intake["kind"]
+        ]
+        deduplication_candidates.append(
+            {
+                "identity": intake["identity"],
+                "root": max(roots, key=lambda record: int(record["age_seconds"]))["identity"] if roots else None,
+                "triage_exempt_from_creation_budget": True,
+            }
+        )
+
+    notification_crossings = sorted(
+        {json.dumps(record, sort_keys=True) for record in notification_crossings}
+    )
+    notification_records = [json.loads(record) for record in notification_crossings]
+    notification_digest = hashlib.sha256(
+        json.dumps(notification_records, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    pipeline_health = {
+        "claim_order": claim_order,
+        "deduplication_candidates": deduplication_candidates,
+        "dm_notification": {
+            "dedupe_key": f"public-issue-lifecycle:{notification_digest}",
+            "required": bool(notification_records),
+            "threshold_crossings": notification_records,
+        },
+        "open_count_by_repository": {
+            repository: repositories[repository]["issues"]["open_count"]
+            for repository in repositories
+        },
+        "oldest_open_created_age_seconds": totals["issues"]["oldest_open_created_age_seconds"],
+        "over_budget_repositories": sorted(over_budget_repositories),
+        "schema": "durable-workflow.public-issue-lifecycle-health/v1",
+        "status_distribution": dict(totals["issues"]["counts_by_state"]),
+    }
+
+    failures = [*reconciliation_failures, *metadata_failures]
+    stale_count = sum(len(totals[bucket]["stale_identities"]) for bucket in ("issues", "pull_requests"))
+    return {
+        "schema": "durable-workflow.public-issue-age-audit/v1",
+        "audited_at": audited_at.isoformat().replace("+00:00", "Z"),
+        "outcome": "fail" if failures else "attention-required" if stale_count else "pass",
+        "operational_targets_seconds": {
+            "audit_interval": audit_interval_seconds,
+            "approved_state": approved_state_seconds,
+            "completed_issue_closure": closure_seconds,
+            "creation_stale_age": creation_stale_seconds,
+            "maintainer_vetting": triage_seconds,
+            "priority_escalation": priority_escalation_seconds,
+            "product_owner_alert": product_owner_alert_seconds,
+            "stale_approved_transition": stale_transition_seconds,
+            "unattended_placeholder": unattended_seconds,
+        },
+        "pipeline_health": pipeline_health,
+        "repositories": repositories,
+        "reconciliation_failures": list(failures),
+        "stale_identity_count": stale_count,
+        "summary": totals,
+    }
+
+
+def _issue_sweep_evidence(
+    policy: Mapping[str, Any],
+    before: Mapping[str, Any],
+    after: Mapping[str, Any],
+    reconciliation_failures: Sequence[str],
+) -> dict[str, Any]:
+    return {
+        "schema": "durable-workflow.public-issue-lifecycle-sweep/v1",
+        "before": dict(before["summary"]["issues"]),
+        "after": dict(after["summary"]["issues"]),
+        "repositories": {
+            repository: {
+                "before": dict(before["repositories"][repository]["issues"]),
+                "after": dict(after["repositories"][repository]["issues"]),
+            }
+            for repository in policy["repositories"]
+        },
+        "reconciliation_failures": list(reconciliation_failures),
+    }
+
+
+def _issue_created_at(issue: Mapping[str, Any]) -> datetime | None:
+    value = issue.get("created_at") or issue.get("createdAt")
+    if value is None:
+        return None
+    try:
+        return _parse_timestamp(value, "public issue creation timestamp").astimezone(UTC)
+    except AuthorityError:
+        return None
+
+
+def _is_open_actionable_issue(issue: Mapping[str, Any]) -> bool:
+    labels = _label_names(dict(issue))
+    return (
+        issue.get("state") == "open"
+        and "pull_request" not in issue
+        and "authority:github" in labels
+        and not labels & {"status:done", SUPERSEDED_STATUS_LABEL}
+    )
+
+
+def _creation_budget(
+    policy: Mapping[str, Any],
+    issues: Sequence[dict[str, Any]],
+    item: Mapping[str, Any],
+    *,
+    now: datetime,
+    public_metadata: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    lifecycle = policy["lifecycle"]
+    maximum = int(lifecycle["max_open_actionable_per_repository"])
+    stale_seconds = int(lifecycle["creation_stale_age_seconds"])
+    open_issues = [
+        issue
+        for issue in issues
+        if issue.get("state") == "open" and "pull_request" not in issue
+    ]
+    actionable = [issue for issue in open_issues if _is_open_actionable_issue(issue)]
+
+    def oldest_key(issue: Mapping[str, Any]) -> tuple[datetime, int]:
+        return (
+            _issue_created_at(issue) or datetime.max.replace(tzinfo=UTC),
+            int(issue.get("number")) if type(issue.get("number")) is int else 2**63 - 1,
+        )
+
+    creation_times = [
+        created_at
+        for issue in open_issues
+        if (created_at := _issue_created_at(issue)) is not None
+    ]
+    for record in public_metadata or ():
+        if (
+            record.get("repository") != item["repository"]
+            or record.get("type") != "issue"
+            or record.get("state") != "open"
+        ):
+            continue
+        try:
+            creation_times.append(
+                _parse_timestamp(record.get("created_at"), "public issue creation timestamp").astimezone(UTC)
+            )
+        except AuthorityError:
+            continue
+    oldest_created_at = min(creation_times) if creation_times else None
+    oldest_age_seconds = max(0, int((now - oldest_created_at).total_seconds())) if oldest_created_at else 0
+    reasons: list[str] = []
+    if len(actionable) >= maximum:
+        reasons.append("open-actionable-budget")
+    if oldest_age_seconds >= stale_seconds:
+        reasons.append("open-issue-older-than-7d")
+
+    required_labels = set(_item_labels(dict(item)))
+    required_kind = next(label for label in required_labels if label.startswith("kind:"))
+    required_classification = next(label for label in required_labels if label in CLASSIFICATION_LABELS)
+    applicable = [
+        issue
+        for issue in actionable
+        if {required_kind, required_classification} <= _label_names(issue)
+        and isinstance(issue.get("body"), str)
+        and type(issue.get("number")) is int
+    ]
+    root = min(applicable, key=oldest_key) if applicable else None
+    return {
+        "blocked": bool(reasons),
+        "oldest_age_seconds": oldest_age_seconds,
+        "open_actionable_count": len(actionable),
+        "reasons": reasons,
+        "root": root,
+    }
+
+
+def _consolidate_backlog_finding(item: Mapping[str, Any], root: Mapping[str, Any]) -> str | None:
+    body = root.get("body")
+    if not isinstance(body, str):
+        raise AuthorityError(f"consolidation root for {item['id']} has no public body")
+    marker = f"<!-- durable-workflow-consolidated-finding: {item['id']} -->"
+    if marker in body:
+        return None
+    finding = (
+        f"## Consolidated finding: {item['title']}\n\n"
+        f"{str(item['body']).strip()}\n\n"
+        f"{marker}\n"
+    )
+    return f"{body.rstrip()}\n\n{finding}"
+
+
 def apply_backlog(
     policy: dict[str, Any],
     backlog: dict[str, Any],
@@ -3530,10 +5019,20 @@ def apply_backlog(
     cross_repository_targets: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] | None = None,
     historical_cross_repository_completions: (Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] | None) = None,
     frozen_cross_repository_lifecycles: Mapping[tuple[str, int], Mapping[str, Any]] | None = None,
+    lifecycle_projection: Mapping[tuple[str, int], Mapping[str, Any]] | None = None,
+    lifecycle_projection_failures: Sequence[str] = (),
     prerelease_supersessions: Mapping[tuple[str, int], Mapping[str, Any]] | None = None,
+    public_metadata: list[dict[str, Any]] | None = None,
+    audit_time: datetime | None = None,
 ) -> dict[str, Any]:
     organization = policy["organization"]
     inventory = inventory if inventory is not None else _inventory(policy, client)
+    effective_audit_time = audit_time or datetime.now(UTC)
+    before_age_audit = (
+        build_public_age_audit(policy, public_metadata, [], now=effective_audit_time)
+        if public_metadata is not None
+        else None
+    )
     resolved = _preflight_markers(policy, backlog, client, inventory, allow_missing=True)
     _preflight_unblock_context_layouts(backlog, inventory)
     planned_body_updates = _plan_unblock_context_updates(backlog, resolved)
@@ -3578,6 +5077,47 @@ def apply_backlog(
                 "url": _issue_url(issue, organization, repository),
             }
             continue
+        budget = _creation_budget(
+            policy,
+            inventory[item["repository"]],
+            item,
+            now=effective_audit_time,
+            public_metadata=public_metadata,
+        )
+        if budget["blocked"]:
+            root = budget["root"]
+            if isinstance(root, Mapping):
+                updated_body = _consolidate_backlog_finding(item, root)
+                if updated_body is not None:
+                    client.update_issue_body(
+                        organization,
+                        item["repository"],
+                        int(root["number"]),
+                        updated_body,
+                    )
+                    root["body"] = updated_body
+                resolved[item["id"]] = (item["repository"], root)
+                dependency_urls[item["id"]] = _issue_url(root, organization, item["repository"])
+                issue_evidence[item["id"]] = {
+                    "action": "consolidated" if updated_body is not None else "preserved-consolidation",
+                    "budget_reasons": list(budget["reasons"]),
+                    "state": root.get("state"),
+                    "url": dependency_urls[item["id"]],
+                }
+            else:
+                issue_evidence[item["id"]] = {
+                    "action": "retained-private-audit",
+                    "budget_reasons": list(budget["reasons"]),
+                    "open_actionable_count": int(budget["open_actionable_count"]),
+                }
+            continue
+        unresolved_dependencies = [dependency for dependency in item["depends_on"] if dependency not in dependency_urls]
+        if unresolved_dependencies:
+            issue_evidence[item["id"]] = {
+                "action": "retained-private-audit",
+                "budget_reasons": ["dependency-was-not-publicly-routed"],
+            }
+            continue
         dependency_urls_for_item = {dependency: dependency_urls[dependency] for dependency in item["depends_on"]}
         issue = client.create_issue(
             organization,
@@ -3607,12 +5147,22 @@ def apply_backlog(
         prerelease_supersessions,
     )
     failures.extend(_audit_migrated_classification(backlog, resolved))
-    if failures:
-        raise AuthorityError("GitHub issue state drift was corrected or flagged: " + "; ".join(failures))
-    return {
+    if public_metadata is not None:
+        failures.extend(
+            reconcile_public_lifecycle(
+                policy,
+                client,
+                public_metadata,
+                inventory,
+                lifecycle_projection=lifecycle_projection,
+                now=effective_audit_time,
+                projection_failures=lifecycle_projection_failures,
+            )
+        )
+    evidence = {
         "schema": "durable-workflow.github-issue-authority-evidence/v1",
         "mode": "apply",
-        "outcome": "pass",
+        "outcome": "fail" if failures else "pass",
         "metadata": metadata_evidence,
         "issues": issue_evidence,
         "prerelease_supersessions": _supersession_evidence(
@@ -3620,6 +5170,27 @@ def apply_backlog(
             prerelease_supersessions,
         ),
     }
+    if public_metadata is not None:
+        after_age_audit = build_public_age_audit(
+            policy,
+            public_metadata,
+            failures,
+            now=effective_audit_time,
+        )
+        evidence["age_audit"] = after_age_audit
+        assert before_age_audit is not None
+        evidence["issue_sweep"] = _issue_sweep_evidence(
+            policy,
+            before_age_audit,
+            after_age_audit,
+            failures,
+        )
+    if failures:
+        raise LifecycleAuditError(
+            "GitHub issue state drift was corrected or flagged: " + "; ".join(failures),
+            evidence,
+        )
+    return evidence
 
 
 def audit_backlog(
@@ -3632,10 +5203,48 @@ def audit_backlog(
     cross_repository_targets: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] | None = None,
     historical_cross_repository_completions: (Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] | None) = None,
     frozen_cross_repository_lifecycles: Mapping[tuple[str, int], Mapping[str, Any]] | None = None,
+    lifecycle_projection: Mapping[tuple[str, int], Mapping[str, Any]] | None = None,
+    lifecycle_projection_failures: Sequence[str] = (),
     prerelease_supersessions: Mapping[tuple[str, int], Mapping[str, Any]] | None = None,
+    public_metadata: list[dict[str, Any]] | None = None,
+    audit_time: datetime | None = None,
 ) -> dict[str, Any]:
     inventory = inventory if inventory is not None else _inventory(policy, client)
-    resolved = _preflight_markers(policy, backlog, client, inventory, allow_missing=False)
+    effective_audit_time = audit_time or datetime.now(UTC)
+    before_age_audit = (
+        build_public_age_audit(policy, public_metadata, [], now=effective_audit_time)
+        if public_metadata is not None
+        else None
+    )
+    resolved = _preflight_markers(policy, backlog, client, inventory, allow_missing=True)
+    budget_deferrals: dict[str, dict[str, Any]] = {}
+    missing_failures: list[str] = []
+    for item in backlog["items"]:
+        if item["id"] in resolved:
+            continue
+        budget = _creation_budget(
+            policy,
+            inventory[item["repository"]],
+            item,
+            now=effective_audit_time,
+            public_metadata=public_metadata,
+        )
+        if not budget["blocked"]:
+            missing_failures.append(f"{item['id']} has no GitHub issue")
+            continue
+        root = budget["root"]
+        budget_deferrals[item["id"]] = {
+            "action": "awaiting-consolidation" if isinstance(root, Mapping) else "retained-private-audit",
+            "budget_reasons": list(budget["reasons"]),
+            "open_actionable_count": int(budget["open_actionable_count"]),
+            **(
+                {"url": _issue_url(root, policy["organization"], item["repository"])}
+                if isinstance(root, Mapping)
+                else {}
+            ),
+        }
+    if missing_failures:
+        raise AuthorityError("issue authority marker audit failed: " + "; ".join(missing_failures))
     _preflight_unblock_context_layouts(backlog, inventory)
     _plan_unblock_context_updates(backlog, resolved)
     _milestones, metadata_evidence = sync_metadata(policy, client)
@@ -3650,13 +5259,23 @@ def audit_backlog(
         prerelease_supersessions,
     )
     failures.extend(_audit_migrated_classification(backlog, resolved))
-    if failures:
-        raise AuthorityError("GitHub issue state drift was corrected or flagged: " + "; ".join(failures))
+    if public_metadata is not None:
+        failures.extend(
+            reconcile_public_lifecycle(
+                policy,
+                client,
+                public_metadata,
+                inventory,
+                lifecycle_projection=lifecycle_projection,
+                now=effective_audit_time,
+                projection_failures=lifecycle_projection_failures,
+            )
+        )
     organization = policy["organization"]
-    return {
+    evidence = {
         "schema": "durable-workflow.github-issue-authority-evidence/v1",
         "mode": "audit",
-        "outcome": "pass",
+        "outcome": "fail" if failures else "pass",
         "metadata": metadata_evidence,
         "prerelease_supersessions": _supersession_evidence(
             organization,
@@ -3668,8 +5287,30 @@ def audit_backlog(
                 "url": _issue_url(issue, organization, repository),
             }
             for work_id, (repository, issue) in sorted(resolved.items())
-        },
+        }
+        | budget_deferrals,
     }
+    if public_metadata is not None:
+        after_age_audit = build_public_age_audit(
+            policy,
+            public_metadata,
+            failures,
+            now=effective_audit_time,
+        )
+        evidence["age_audit"] = after_age_audit
+        assert before_age_audit is not None
+        evidence["issue_sweep"] = _issue_sweep_evidence(
+            policy,
+            before_age_audit,
+            after_age_audit,
+            failures,
+        )
+    if failures:
+        raise LifecycleAuditError(
+            "GitHub issue state drift was corrected or flagged: " + "; ".join(failures),
+            evidence,
+        )
+    return evidence
 
 
 def _supersession_evidence(
@@ -3731,7 +5372,15 @@ def _write_discovery_outputs(path: Path | None, manifest: dict[str, Any]) -> Non
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for name in ("validate", "discover", "activate", "apply", "audit"):
+    for name in (
+        "validate",
+        "discover",
+        "metadata-audit",
+        "complete-before-intake",
+        "activate",
+        "apply",
+        "audit",
+    ):
         command = subparsers.add_parser(name)
         command.add_argument("policy", type=Path)
         command.add_argument("backlog", type=Path)
@@ -3750,16 +5399,26 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         if name == "discover":
             command.add_argument("--output", type=Path, required=True)
             command.add_argument("--github-output", type=Path)
+            command.add_argument("--lifecycle-projection", type=Path)
+            command.add_argument("--projection-actor")
             command.add_argument("--trigger-repository")
             command.add_argument("--trigger-number", type=int)
             command.add_argument("--trigger-action")
             command.add_argument("--trigger-actor")
             command.add_argument("--trigger-label")
+        elif name == "metadata-audit":
+            command.add_argument("--evidence", type=Path, required=True)
+        elif name == "complete-before-intake":
+            command.add_argument("--evidence", type=Path, required=True)
+            command.add_argument("--lifecycle-projection", type=Path, required=True)
+            command.add_argument("--projection-actor", required=True)
         elif name == "activate":
             command.add_argument("--evidence", type=Path)
         elif name in {"apply", "audit"}:
             command.add_argument("--evidence", type=Path)
             command.add_argument("--intake-manifest", type=Path, required=True)
+            command.add_argument("--lifecycle-projection", type=Path)
+            command.add_argument("--projection-actor")
     return parser.parse_args(argv)
 
 
@@ -3795,14 +5454,65 @@ def main(argv: list[str] | None = None) -> int:
             os.environ.get("GITHUB_GRAPHQL_URL", "https://api.github.com/graphql"),
             api_url=os.environ.get("GITHUB_API_URL", "https://api.github.com"),
         )
+        if arguments.command == "metadata-audit":
+            public_metadata = discover_public_metadata(policy, discovery)
+            evidence = build_public_age_audit(policy, public_metadata, [])
+            _write_evidence(evidence_path, evidence)
+            notification = evidence["pipeline_health"]["dm_notification"]
+            if notification["required"]:
+                print(
+                    f"::warning title=Public lifecycle age audit::"
+                    f"Lifecycle thresholds crossed for {len(notification['threshold_crossings'])} "
+                    "public identities; use the retained dedupe key for one product-owner notification.",
+                    file=sys.stderr,
+                )
+            return 0
+        if arguments.command == "complete-before-intake":
+            lifecycle_projection, lifecycle_projection_failures = load_public_lifecycle_projection(
+                arguments.lifecycle_projection,
+                policy,
+                arguments.projection_actor,
+            )
+            public_metadata = discover_public_issue_metadata(policy, discovery)
+            token = os.environ.get("BETA_PRODUCT_WORK_TOKEN") or ""
+            client = GitHubApi(
+                token,
+                os.environ.get("GITHUB_API_URL", "https://api.github.com"),
+                activation_token=discovery_token,
+                read_token=discovery_token,
+                graphql_url=os.environ.get("GITHUB_GRAPHQL_URL", "https://api.github.com/graphql"),
+            )
+            evidence = reconcile_verified_releases_before_intake(
+                policy,
+                client,
+                public_metadata,
+                lifecycle_projection,
+                projection_failures=lifecycle_projection_failures,
+            )
+            _write_evidence(evidence_path, evidence)
+            for failure in evidence["failures"]:
+                print(f"issue authority isolated {failure}", file=sys.stderr)
+            return 0
         if arguments.command == "discover":
             has_repository = arguments.trigger_repository is not None
             has_number = arguments.trigger_number is not None
             if has_repository != has_number:
                 raise AuthorityError("trigger repository and issue number must be provided together")
+            lifecycle_projection: dict[tuple[str, int], dict[str, Any]] = {}
+            if arguments.lifecycle_projection is not None:
+                lifecycle_projection, lifecycle_projection_failures = load_public_lifecycle_projection(
+                    arguments.lifecycle_projection,
+                    policy,
+                    arguments.projection_actor,
+                )
+                for failure in lifecycle_projection_failures:
+                    print(f"issue authority isolated {failure}", file=sys.stderr)
+            elif arguments.projection_actor is not None:
+                raise AuthorityError("public lifecycle projection actor was supplied without a projection")
             manifest, _inventory = reconstruct_intake(
                 policy,
                 discovery,
+                pre_intake_release_completions=_verified_release_completions(lifecycle_projection),
                 target_qualification=target_qualification,
                 legacy_cross_repository_targets=legacy_cross_repository_targets,
                 trigger_repository=arguments.trigger_repository,
@@ -3852,6 +5562,17 @@ def main(argv: list[str] | None = None) -> int:
         historical_cross_repository_completions = _manifest_historical_cross_repository_completions(manifest)
         frozen_cross_repository_lifecycles = _manifest_frozen_cross_repository_lifecycles(manifest)
         prerelease_supersessions = _manifest_prerelease_supersessions(manifest)
+        public_metadata = _manifest_public_metadata(manifest)
+        lifecycle_projection: dict[tuple[str, int], dict[str, Any]] = {}
+        lifecycle_projection_failures: list[str] = []
+        if arguments.lifecycle_projection is not None:
+            lifecycle_projection, lifecycle_projection_failures = load_public_lifecycle_projection(
+                arguments.lifecycle_projection,
+                policy,
+                arguments.projection_actor,
+            )
+        elif arguments.projection_actor is not None:
+            raise AuthorityError("public lifecycle projection actor was supplied without a projection")
         token = os.environ.get("BETA_PRODUCT_WORK_TOKEN") or ""
         client = GitHubApi(
             token,
@@ -3870,7 +5591,10 @@ def main(argv: list[str] | None = None) -> int:
                 cross_repository_targets=cross_repository_targets,
                 historical_cross_repository_completions=historical_cross_repository_completions,
                 frozen_cross_repository_lifecycles=frozen_cross_repository_lifecycles,
+                lifecycle_projection=lifecycle_projection,
+                lifecycle_projection_failures=lifecycle_projection_failures,
                 prerelease_supersessions=prerelease_supersessions,
+                public_metadata=public_metadata,
             )
         else:
             evidence = audit_backlog(
@@ -3882,20 +5606,28 @@ def main(argv: list[str] | None = None) -> int:
                 cross_repository_targets=cross_repository_targets,
                 historical_cross_repository_completions=historical_cross_repository_completions,
                 frozen_cross_repository_lifecycles=frozen_cross_repository_lifecycles,
+                lifecycle_projection=lifecycle_projection,
+                lifecycle_projection_failures=lifecycle_projection_failures,
                 prerelease_supersessions=prerelease_supersessions,
+                public_metadata=public_metadata,
             )
         evidence["intake"] = _manifest_core(manifest)
         _write_evidence(evidence_path, evidence)
         return 0
     except AuthorityError as error:
-        _write_evidence(
-            evidence_path,
-            {
+        failure_evidence = getattr(error, "evidence", None)
+        if arguments.command == "metadata-audit" and "policy" in locals():
+            failure_evidence = build_public_age_audit(policy, [], [str(error)])
+        if not isinstance(failure_evidence, dict):
+            failure_evidence = {
                 "schema": "durable-workflow.github-issue-authority-evidence/v1",
                 "mode": arguments.command,
                 "outcome": "fail",
-                "error": str(error),
-            },
+            }
+        failure_evidence["error"] = str(error)
+        _write_evidence(
+            evidence_path,
+            failure_evidence,
         )
         print(f"issue authority failed: {error}", file=sys.stderr)
         return 1

@@ -12,6 +12,7 @@
     "evidence_work_items",
     "first_component",
     "plan_prefix",
+    "public_issue_budget",
     "required_issue_labels",
     "superseded_interruption"
   ],
@@ -70,6 +71,15 @@
     "plan_prefix": {
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9-]{0,35}$"
+    },
+    "public_issue_budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_open_actionable", "stale_age_seconds"],
+      "properties": {
+        "max_open_actionable": { "const": 1 },
+        "stale_age_seconds": { "const": 604800 }
+      }
     },
     "required_issue_labels": {
       "type": "array",

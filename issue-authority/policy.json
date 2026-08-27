@@ -8,6 +8,30 @@
       "durable-workflow-ops"
     ]
   },
+  "lifecycle": {
+    "audit_interval_seconds": 600,
+    "creation_stale_age_seconds": 604800,
+    "completed_issue_closure_seconds": 900,
+    "execution_state_direction": "trusted-execution-to-github",
+    "max_open_actionable_per_repository": 1,
+    "maintainer_vetting_seconds": 86400,
+    "priority_escalation_seconds": 259200,
+    "projection_actors": [
+      "durable-workflow-ops"
+    ],
+    "projection_event": "public-lifecycle",
+    "approved_state_seconds": 86400,
+    "product_owner_alert_seconds": 604800,
+    "stale_approved_transition_seconds": 259200,
+    "unattended_placeholder_seconds": 1209600,
+    "state_labels": {
+      "awaiting-maintainer-vetting": "status:triage",
+      "approved-queued": "status:ready",
+      "in-progress": "status:in-progress",
+      "blocked": "status:blocked",
+      "completed": "status:done"
+    }
+  },
   "labels": [
     {
       "color": "0969da",
@@ -78,6 +102,11 @@
       "color": "0e8a16",
       "description": "Ready for implementation",
       "name": "status:ready"
+    },
+    {
+      "color": "1d76db",
+      "description": "Approved implementation is actively in progress",
+      "name": "status:in-progress"
     },
     {
       "color": "d93f0b",

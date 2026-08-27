@@ -427,6 +427,7 @@ class BetaContinuityTest(unittest.TestCase):
                         {"name": "authority:github"},
                         {"name": "beta:blocker"},
                         {"name": "completion:evidence-verified"},
+                        {"name": "kind:cross-repository"},
                         {"name": "status:done"},
                     ],
                     "state": "closed",
@@ -466,6 +467,7 @@ class BetaContinuityTest(unittest.TestCase):
                 "authority:github",
                 "beta:blocker",
                 "completion:evidence-required",
+                "kind:release-blocker",
                 "status:ready",
             ],
             "work_id": "future-evidence-required-correction",
@@ -768,6 +770,101 @@ class BetaContinuityTest(unittest.TestCase):
 
         self.assertEqual(1, len(writer.created))
         self.assertEqual(list(ROUTED_BLOCKER_LABELS), writer.created[0]["labels"])
+
+    def test_external_intake_is_exempt_from_the_proactive_creation_budget(self) -> None:
+        class RoutingWriter:
+            def __init__(self) -> None:
+                self.issues = [
+                    {
+                        "body": "External intake.",
+                        "labels": [{"name": "kind:defect"}, {"name": "status:triage"}],
+                        "number": number,
+                        "state": "open",
+                    }
+                    for number in range(1, 4)
+                ]
+                self.requests: list[tuple[str, str, dict[str, object]]] = []
+
+            def list(self, _path: str) -> list[dict[str, object]]:
+                return self.issues
+
+            def request(self, method: str, path: str, payload: dict[str, object]) -> None:
+                self.requests.append((method, path, payload))
+
+        state = {
+            "outcome": "blocked",
+            "selection": {"tag": "beta-continuity-selection/workspace-unavailable-beta-continuity-release-pages"},
+            "blockers": [
+                {
+                    "component": "sdk-python",
+                    "reason": "source manifest has not reached the retained version",
+                    "repository": COMPONENTS["sdk-python"].repository,
+                    "slug": "sdk-python-source-version-0.4.103",
+                    "version": "0.4.103",
+                }
+            ],
+        }
+        writer = RoutingWriter()
+        with tempfile.TemporaryDirectory() as temporary:
+            state_path = Path(temporary) / "state.json"
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            with patch("scripts.beta_continuity.GitHubWriter", return_value=writer):
+                route_blockers(ROOT / "beta-continuity" / "config.json", state_path)
+
+        self.assertEqual("POST", writer.requests[0][0])
+        self.assertEqual(list(ROUTED_BLOCKER_LABELS), writer.requests[0][2]["labels"])
+
+    def test_proactive_blocker_consolidates_when_one_actionable_issue_exists(self) -> None:
+        root = {
+            "body": "Existing release blocker root.",
+            "created_at": "2026-08-20T00:00:00Z",
+            "labels": [
+                {"name": "authority:github"},
+                {"name": "kind:release-blocker"},
+                {"name": "priority:P1"},
+                {"name": "status:ready"},
+            ],
+            "number": 4,
+            "state": "open",
+        }
+
+        class RoutingWriter:
+            def __init__(self) -> None:
+                self.issues = [root]
+                self.requests: list[tuple[str, str, dict[str, object]]] = []
+
+            def list(self, _path: str) -> list[dict[str, object]]:
+                return self.issues
+
+            def request(self, method: str, path: str, payload: dict[str, object]) -> None:
+                self.requests.append((method, path, payload))
+
+        state = {
+            "outcome": "blocked",
+            "selection": {"tag": "beta-continuity-selection/workspace-unavailable-beta-continuity-release-pages"},
+            "blockers": [
+                {
+                    "component": "sdk-python",
+                    "reason": "source manifest has not reached the retained version",
+                    "repository": COMPONENTS["sdk-python"].repository,
+                    "slug": "sdk-python-source-version-0.4.103",
+                    "version": "0.4.103",
+                }
+            ],
+        }
+        writer = RoutingWriter()
+        with tempfile.TemporaryDirectory() as temporary:
+            state_path = Path(temporary) / "state.json"
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            with patch("scripts.beta_continuity.GitHubWriter", return_value=writer):
+                route_blockers(ROOT / "beta-continuity" / "config.json", state_path)
+                route_blockers(ROOT / "beta-continuity" / "config.json", state_path)
+            routed_state = json.loads(state_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(["PATCH"], [request[0] for request in writer.requests])
+        self.assertIn("Additional acceptance criteria", root["body"])
+        self.assertEqual(1, root["body"].count("beta-continuity-consolidated-finding"))
+        self.assertEqual("consolidated", routed_state["routing"][0]["action"])
 
     def test_completed_protected_blocker_is_reopened_and_reactivated(self) -> None:
         marker = (

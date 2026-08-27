@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import unittest
 import urllib.error
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -19,6 +20,7 @@ import yaml
 
 from scripts.cross_repository_lifecycle import (
     EVIDENCE_MARKER,
+    QUALIFICATION_LEDGER_MARKER,
     declared_targets,
     evaluate_lifecycle,
     qualification_targets,
@@ -29,9 +31,11 @@ from scripts.issue_authority import (
     COMPLETION_VERIFIED_LABEL,
     FROZEN_LIFECYCLE_EVIDENCE_MARKER,
     INTAKE_SCHEMA,
+    ISSUE_INTAKE_QUERY,
     OWNER_LABELS,
     PUBLIC_LIFECYCLE_MARKER,
     PUBLIC_RETIREMENT_RECORD_MARKER,
+    PULL_REQUEST_METADATA_QUERY,
     STATUS_LABELS,
     SUPERSEDED_STATUS_LABEL,
     SUPERSESSION_EVIDENCE_MARKER,
@@ -40,18 +44,27 @@ from scripts.issue_authority import (
     AuthorityError,
     GitHubApi,
     GitHubDiscovery,
+    LifecycleAuditError,
     _audit_state_labels,
     _has_trusted_public_retirement,
+    _item_labels,
+    _render_body,
+    _replace_kind_label,
     _write_discovery_outputs,
     _write_evidence,
     activate_prerelease_supersessions,
     apply_backlog,
     assess_issue_intake,
     audit_backlog,
+    build_public_age_audit,
+    discover_public_metadata,
     issue_revision_digest,
     load_contract,
     load_legacy_cross_repository_targets,
+    load_public_lifecycle_projection,
     parse_args,
+    reconcile_public_lifecycle,
+    reconcile_verified_releases_before_intake,
     reconstruct_intake,
     validate_backlog_cross_repository_targets,
     validate_contract,
@@ -225,6 +238,7 @@ class FakeGitHubApi:
         self.pulls: dict[tuple[str, int], dict[str, Any]] = {}
         self.reviews: dict[tuple[str, int], list[dict[str, Any]]] = {}
         self.reachable: set[tuple[str, str, str]] = set()
+        self.contained_commits: set[tuple[str, str, str]] = set()
         self.successful_checks: dict[tuple[str, str], set[str]] = {}
         self.successful_check_runs: dict[tuple[str, str], dict[str, int]] = {}
         self.successful_workflow_runs: set[tuple[str, int, str, str, str | None]] = set()
@@ -237,6 +251,7 @@ class FakeGitHubApi:
         self.comment_updates: list[tuple[str, int, str]] = []
         self.commit_statuses: dict[tuple[str, str], list[dict[str, Any]]] = {}
         self.status_updates: list[tuple[str, str, str]] = []
+        self.mutation_events: list[tuple[str, str, int]] = []
 
     def ensure_labels(
         self,
@@ -331,6 +346,7 @@ class FakeGitHubApi:
         issue["state"] = state
         issue["state_reason"] = state_reason
         self.state_updates.append((repository, number, state, state_reason))
+        self.mutation_events.append(("state", repository, number))
 
     def list_issue_closing_references(
         self,
@@ -365,6 +381,15 @@ class FakeGitHubApi:
     ) -> bool:
         self.reachability_requests.append((repository, commit, branch))
         return (repository, commit, branch) in self.reachable
+
+    def commit_contains(
+        self,
+        _organization: str,
+        repository: str,
+        descendant: str,
+        ancestor: str,
+    ) -> bool:
+        return (repository, descendant, ancestor) in self.contained_commits
 
     def successful_check_names(
         self,
@@ -462,13 +487,52 @@ class FakeGitHubApi:
         number: int,
         marker: str,
         body: str,
-    ) -> None:
+    ) -> bool:
         self.assert_lifecycle_marker(marker, body)
         key = (repository, number)
         if self.comments.get(key) == body:
-            return
+            return False
         self.comments[key] = body
         self.comment_updates.append((repository, number, body))
+        self.mutation_events.append(("comment", repository, number))
+        return True
+
+    def has_managed_lifecycle_comment(
+        self,
+        _organization: str,
+        repository: str,
+        number: int,
+        marker: str | None = None,
+    ) -> bool:
+        bodies = [record["body"] for record in self.list_trusted_issue_comments("", repository, number)]
+        if marker is not None:
+            return any(marker in body for body in bodies)
+        return any(
+            known_marker in body
+            for body in bodies
+            for known_marker in (
+                EVIDENCE_MARKER,
+                FROZEN_LIFECYCLE_EVIDENCE_MARKER,
+                PUBLIC_LIFECYCLE_MARKER,
+                SUPERSESSION_EVIDENCE_MARKER,
+            )
+        )
+
+    def managed_lifecycle_comment_body(
+        self,
+        _organization: str,
+        repository: str,
+        number: int,
+        marker: str,
+    ) -> str | None:
+        bodies = [
+            record["body"]
+            for record in self.list_trusted_issue_comments("", repository, number)
+            if marker in record["body"]
+        ]
+        if len(bodies) > 1:
+            raise AuthorityError("duplicate cross-repository lifecycle evidence")
+        return bodies[0] if bodies else None
 
     def list_commit_statuses(
         self,
@@ -756,14 +820,17 @@ class FakeDiscovery:
         *,
         commit_statuses: dict[tuple[str, str], list[dict[str, Any]]] | None = None,
         public_files: dict[tuple[str, str, str], bytes] | None = None,
+        pull_requests: dict[str, list[dict[str, Any]]] | None = None,
     ) -> None:
         self.policy = policy
         self.issues = issues
         self.commit_statuses = copy.deepcopy(commit_statuses or {})
         self.public_files = copy.deepcopy(public_files or {})
+        self.pull_requests = copy.deepcopy(pull_requests or {})
         self.list_requests: list[str] = []
         self.get_requests: list[tuple[str, int]] = []
         self.file_requests: list[tuple[str, str, str]] = []
+        self.pull_requests_listed: list[str] = []
 
     def list_issues(
         self,
@@ -782,6 +849,10 @@ class FakeDiscovery:
         self.get_requests.append((repository, number))
         issue, timeline = next(record for record in self.issues.get(repository, []) if record[0]["number"] == number)
         return copy.deepcopy(issue), copy.deepcopy(timeline)
+
+    def list_pull_requests(self, _organization: str, repository: str) -> list[dict[str, Any]]:
+        self.pull_requests_listed.append(repository)
+        return copy.deepcopy(self.pull_requests.get(repository, []))
 
     def list_commit_statuses(
         self,
@@ -1093,7 +1164,7 @@ class ContractValidationTest(unittest.TestCase):
         workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "issue-authority.yml").read_text(encoding="utf-8"))
         conditions = {
             job: " ".join(workflow["jobs"][job]["if"].split())
-            for job in ("validate", "intake", "activate", "apply", "audit")
+            for job in ("validate", "release_completion", "intake", "activate", "apply", "audit")
         }
 
         self.assertEqual(
@@ -1101,9 +1172,17 @@ class ContractValidationTest(unittest.TestCase):
             conditions["validate"],
         )
         self.assertEqual(
-            "${{ github.server_url == 'https://github.com' && "
+            "${{ github.ref == 'refs/heads/main' && github.server_url == 'https://github.com' && "
+            "github.event_name == 'repository_dispatch' }}",
+            conditions["release_completion"],
+        )
+        self.assertEqual(
+            "${{ always() && needs.validate.result == 'success' && "
+            "(needs.release_completion.result == 'success' || needs.release_completion.result == 'skipped') && "
+            "github.server_url == 'https://github.com' && "
             "(github.event_name == 'push' || github.event_name == 'schedule' || "
             "github.event_name == 'issues' || "
+            "github.event_name == 'repository_dispatch' || "
             "(github.event_name == 'workflow_dispatch' && inputs.mode != 'activate')) }}",
             conditions["intake"],
         )
@@ -1121,10 +1200,37 @@ class ContractValidationTest(unittest.TestCase):
         self.assertEqual(
             "${{ github.ref == 'refs/heads/main' && github.server_url == 'https://github.com' && "
             "needs.intake.outputs.intake_ready == 'true' && (github.event_name == 'schedule' || "
+            "github.event_name == 'repository_dispatch' || "
             "(github.event_name == 'issues' && needs.intake.outputs.trigger_approved == 'true') || "
             "(github.event_name == 'workflow_dispatch' && inputs.mode == 'audit')) }}",
             conditions["audit"],
         )
+        self.assertEqual(
+            ["public-lifecycle"],
+            workflow[True]["repository_dispatch"]["types"],
+        )
+        projection_step = next(
+            step
+            for step in workflow["jobs"]["audit"]["steps"]
+            if step.get("name") == "Reconcile lifecycle and audit public issue and pull-request age"
+        )
+        self.assertEqual("${{ github.actor }}", projection_step["env"]["PROJECTION_ACTOR"])
+        self.assertEqual(
+            "${{ toJSON(github.event.client_payload.projection) }}",
+            projection_step["env"]["PROJECTION_JSON"],
+        )
+        self.assertIn("--lifecycle-projection public-lifecycle-projection.json", projection_step["run"])
+        self.assertIn('--projection-actor "$PROJECTION_ACTOR"', projection_step["run"])
+        release_job = workflow["jobs"]["release_completion"]
+        self.assertEqual("beta-product-work", release_job["environment"])
+        self.assertEqual({"contents": "read", "issues": "read"}, release_job["permissions"])
+        release_step = next(
+            step
+            for step in release_job["steps"]
+            if step.get("name") == "Close source-bound releases before intake can reserve them"
+        )
+        self.assertEqual("${{ github.actor }}", release_step["env"]["PROJECTION_ACTOR"])
+        self.assertIn("complete-before-intake", release_step["run"])
 
     def test_public_runs_share_workflow_level_concurrency_before_jobs_start(self) -> None:
         workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "issue-authority.yml").read_text(encoding="utf-8"))
@@ -3350,7 +3456,10 @@ class GitHubApiTest(unittest.TestCase):
         client = GitHubApi("writer-token", read_token="job-token")
         comments = [
             {
-                "body": f"{PUBLIC_LIFECYCLE_MARKER}\n{PUBLIC_RETIREMENT_RECORD_MARKER}\n",
+                "body": (
+                    f"{PUBLIC_LIFECYCLE_MARKER}\n"
+                    f"{PUBLIC_RETIREMENT_RECORD_MARKER}\n"
+                ),
                 "id": 10,
                 "user": {"id": 100, "login": "external-contributor"},
             }
@@ -3402,6 +3511,31 @@ class MigrationTest(unittest.TestCase):
         self.client.state_updates.clear()
         self.client.comment_updates.clear()
         self.client.status_updates.clear()
+        self.client.mutation_events.clear()
+
+    def seed_existing_reviewed_backlog(self, backlog: dict[str, Any] | None = None) -> None:
+        """Create a pre-existing reviewed inventory without exercising proactive routing."""
+
+        selected = backlog or self.backlog
+        dependency_urls: dict[str, str] = {}
+        dependency_titles = {item["id"]: item["title"] for item in selected["items"]}
+        for item in selected["items"]:
+            issue = self.client.create_issue(
+                self.policy["organization"],
+                item["repository"],
+                title=item["title"],
+                body=_render_body(
+                    item,
+                    {dependency: dependency_urls[dependency] for dependency in item["depends_on"]},
+                    dependency_titles,
+                ),
+                labels=_item_labels(item),
+                milestone=1,
+            )
+            dependency_urls[item["id"]] = issue["html_url"]
+        self.client.created_issues.clear()
+        apply_backlog(self.policy, selected, self.client)
+        self.clear_mutation_spies()
 
     def assert_no_github_mutations(self) -> None:
         self.assertEqual([], self.client.label_updates)
@@ -3413,15 +3547,15 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual([], self.client.comment_updates)
         self.assertEqual([], self.client.status_updates)
 
-    def test_apply_creates_only_reviewed_items_with_dependencies(self) -> None:
+    def test_apply_creates_at_most_one_reviewed_item_per_repository(self) -> None:
         evidence = apply_backlog(self.policy, self.backlog, self.client)
 
         self.assertEqual("pass", evidence["outcome"])
-        self.assertEqual(4, sum(len(issues) for issues in self.client.issues.values()))
+        self.assertEqual(2, sum(len(issues) for issues in self.client.issues.values()))
         expected_labels = {label["name"] for label in self.policy["labels"]}
         for repository in self.policy["repositories"]:
             self.assertEqual(expected_labels, set(self.client.labels[repository]))
-        for item in self.backlog["items"]:
+        for item in self.backlog["items"][:2]:
             repository, issue = find_work_item(self.client, item["id"])
             self.assertEqual(item["repository"], repository)
             self.assertEqual("open", issue["state"])
@@ -3442,13 +3576,81 @@ class MigrationTest(unittest.TestCase):
                     ),
                 )
 
-        _repository, authorization = find_work_item(self.client, "authorize-2-0-beta")
-        _drill_repository, drill = find_work_item(self.client, "github-only-beta-continuity-drill")
         _release_repository, release = find_work_item(self.client, "release-plan-versioned-changelogs")
-        self.assertIn(drill["html_url"], authorization["body"])
         self.assertNotIn(UNBLOCK_CONTEXT_START, release["body"])
         self.assertNotIn("## Unblock condition", release["body"])
         self.assertEqual({"status:ready"}, label_names(release) & STATUS_LABELS)
+        self.assertEqual(
+            "retained-private-audit",
+            evidence["issues"]["github-only-beta-continuity-drill"]["action"],
+        )
+        self.assertEqual(
+            "retained-private-audit",
+            evidence["issues"]["authorize-2-0-beta"]["action"],
+        )
+
+    def test_apply_suppresses_growth_at_one_and_consolidates_into_the_applicable_root(self) -> None:
+        now = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
+        existing = [
+            {
+                "body": "Existing compatible cross-repository root.",
+                "created_at": (now - timedelta(days=2)).isoformat(),
+                "html_url": "https://github.com/durable-workflow/.github/issues/40",
+                "labels": [
+                    {"name": "authority:github"},
+                    {"name": "beta:compatible"},
+                    {"name": "kind:cross-repository"},
+                    {"name": "priority:P2"},
+                    {"name": "repo:github-control-plane"},
+                    {"name": "status:ready"},
+                ],
+                "milestone": {"number": 1, "title": "2.0 beta"},
+                "number": 40,
+                "state": "open",
+                "title": "Existing root",
+            },
+        ]
+        self.client.issues[".github"].extend(existing)
+
+        evidence = apply_backlog(
+            self.policy,
+            self.backlog,
+            self.client,
+            audit_time=now,
+        )
+
+        consolidated = evidence["issues"]["release-plan-versioned-changelogs"]
+        self.assertEqual("consolidated", consolidated["action"])
+        self.assertEqual("https://github.com/durable-workflow/.github/issues/40", consolidated["url"])
+        self.assertIn(
+            "<!-- durable-workflow-consolidated-finding: release-plan-versioned-changelogs -->",
+            existing[0]["body"],
+        )
+        self.assertIn("Prepare versioned changelogs without guessing release tags", existing[0]["body"])
+        self.assertEqual(
+            "retained-private-audit",
+            evidence["issues"]["github-only-beta-continuity-drill"]["action"],
+        )
+        self.assertEqual(
+            "retained-private-audit",
+            evidence["issues"]["authorize-2-0-beta"]["action"],
+        )
+        self.assertEqual(
+            ["durable-workflow.github.io"],
+            [repository for repository, _number in self.client.created_issues],
+        )
+
+        repeated = audit_backlog(
+            self.policy,
+            self.backlog,
+            self.client,
+            audit_time=now + timedelta(minutes=10),
+        )
+        self.assertEqual("pass", repeated["outcome"])
+        self.assertEqual(
+            "retained-private-audit",
+            repeated["issues"]["authorize-2-0-beta"]["action"],
+        )
 
     def test_apply_advances_the_existing_dependency_free_issue_without_duplication(self) -> None:
         blocked_backlog = copy.deepcopy(self.backlog)
@@ -3466,7 +3668,7 @@ class MigrationTest(unittest.TestCase):
 
         self.assertEqual("transitioned-to-ready", evidence["issues"][blocked_item["id"]]["action"])
         self.assertEqual(issue_number, issue["number"])
-        self.assertEqual(4, sum(len(issues) for issues in self.client.issues.values()))
+        self.assertEqual(2, sum(len(issues) for issues in self.client.issues.values()))
         self.assertEqual({"status:ready"}, label_names(issue) & STATUS_LABELS)
         self.assertEqual(expected_body, issue["body"])
         self.assertNotIn(UNBLOCK_CONTEXT_START, issue["body"])
@@ -3480,7 +3682,7 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual("preserved", replay_evidence["issues"][blocked_item["id"]]["action"])
         self.assertEqual(replacement_count, len(self.client.replacements))
         self.assertEqual(body_update_count, len(self.client.body_updates))
-        self.assertEqual(4, sum(len(issues) for issues in self.client.issues.values()))
+        self.assertEqual(2, sum(len(issues) for issues in self.client.issues.values()))
 
     def test_replay_restores_machine_owned_unblock_context_without_losing_edits(self) -> None:
         mark_release_item_blocked(self.backlog)
@@ -3594,7 +3796,7 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual([], self.client.replacements)
 
     def test_replay_preserves_github_edits_and_closed_state(self) -> None:
-        apply_backlog(self.policy, self.backlog, self.client)
+        self.seed_existing_reviewed_backlog()
         repository, issue = find_work_item(self.client, "github-only-beta-continuity-drill")
         issue["title"] = "Maintainer refined title"
         issue["body"] = issue["body"].replace("## Scope", "## Maintainer rationale\n\nDurable decision.\n\n## Scope")
@@ -3628,10 +3830,10 @@ class MigrationTest(unittest.TestCase):
 
         self.assertIn("authority:conflict", label_names(issue))
         self.assertIn("authority:conflict", label_names(duplicate))
-        self.assertEqual(5, sum(len(issues) for issues in self.client.issues.values()))
+        self.assertEqual(3, sum(len(issues) for issues in self.client.issues.values()))
 
     def test_apply_rejects_distinct_markers_before_any_github_mutation(self) -> None:
-        apply_backlog(self.policy, self.backlog, self.client)
+        self.seed_existing_reviewed_backlog()
         repository, issue = find_work_item(self.client, "release-plan-versioned-changelogs")
         alias_repository, alias = find_work_item(self.client, "authorize-2-0-beta")
         self.assertEqual(repository, alias_repository)
@@ -3658,7 +3860,7 @@ class MigrationTest(unittest.TestCase):
         self.assert_no_github_mutations()
 
     def test_audit_rejects_distinct_markers_before_any_github_mutation(self) -> None:
-        apply_backlog(self.policy, self.backlog, self.client)
+        self.seed_existing_reviewed_backlog()
         repository, issue = find_work_item(self.client, "release-plan-versioned-changelogs")
         alias_repository, alias = find_work_item(self.client, "github-only-beta-continuity-drill")
         self.assertEqual(repository, alias_repository)
@@ -3692,11 +3894,14 @@ class MigrationTest(unittest.TestCase):
             audit_backlog(self.policy, self.backlog, self.client)
 
     def test_explicit_unverified_completion_hold_is_reopened_and_fails_visibly(self) -> None:
-        apply_backlog(self.policy, self.backlog, self.client)
+        self.seed_existing_reviewed_backlog()
         repository, issue = find_work_item(self.client, "github-only-beta-continuity-drill")
         issue["labels"].append({"name": COMPLETION_REQUIRED_LABEL})
         issue["state"] = "closed"
         issue["state_reason"] = "completed"
+        self.client.comments[(repository, issue["number"])] = (
+            f"{PUBLIC_LIFECYCLE_MARKER}\nManaged lifecycle state.\n"
+        )
 
         with self.assertRaisesRegex(
             AuthorityError,
@@ -3729,6 +3934,13 @@ class MigrationTest(unittest.TestCase):
             {
                 "body": f"{PUBLIC_LIFECYCLE_MARKER}\n{PUBLIC_RETIREMENT_RECORD_MARKER}\n",
                 "id": 59,
+                "user": {"id": 7, "login": "durable-workflow-ops"},
+            }
+        ]
+        self.client.trusted_comments[(".github", 60)] = [
+            {
+                "body": f"{PUBLIC_LIFECYCLE_MARKER}\nManaged non-retirement lifecycle.\n",
+                "id": 60,
                 "user": {"id": 7, "login": "durable-workflow-ops"},
             }
         ]
@@ -3856,6 +4068,9 @@ class MigrationTest(unittest.TestCase):
                 "revision": successor_revision,
             }
         }
+        self.client.comments[(".github", 59)] = (
+            f"{SUPERSESSION_EVIDENCE_MARKER}\nManaged supersession lifecycle.\n"
+        )
         self.clear_mutation_spies()
 
         evidence = audit_backlog(
@@ -4105,7 +4320,7 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual([], client.status_updates)
 
     def test_verified_public_completion_evidence_allows_closed_state_to_win(self) -> None:
-        apply_backlog(self.policy, self.backlog, self.client)
+        self.seed_existing_reviewed_backlog()
         _repository, issue = find_work_item(self.client, "github-only-beta-continuity-drill")
         issue["state"] = "closed"
         issue["state_reason"] = "completed"
@@ -4122,7 +4337,7 @@ class MigrationTest(unittest.TestCase):
         self.assert_no_github_mutations()
 
     def test_completion_shaped_prose_does_not_create_an_evidence_hold(self) -> None:
-        apply_backlog(self.policy, self.backlog, self.client)
+        self.seed_existing_reviewed_backlog()
         _repository, issue = find_work_item(self.client, "github-only-beta-continuity-drill")
         issue["body"] = "## Completion\n\n## Delete when\n\n## Acceptance\n\n" + issue["body"]
         issue["state"] = "closed"
@@ -4140,7 +4355,7 @@ class MigrationTest(unittest.TestCase):
         self.assert_no_github_mutations()
 
     def test_removed_completion_hold_is_not_readded_by_default(self) -> None:
-        apply_backlog(self.policy, self.backlog, self.client)
+        self.seed_existing_reviewed_backlog()
         _repository, issue = find_work_item(self.client, "github-only-beta-continuity-drill")
         issue["labels"].append({"name": COMPLETION_REQUIRED_LABEL})
         issue["labels"] = [label for label in issue["labels"] if label["name"] != COMPLETION_REQUIRED_LABEL]
@@ -4153,7 +4368,7 @@ class MigrationTest(unittest.TestCase):
         self.assert_no_github_mutations()
 
     def test_approved_intake_completion_hold_is_restored(self) -> None:
-        apply_backlog(self.policy, self.backlog, self.client)
+        self.seed_existing_reviewed_backlog()
         repository, issue = find_work_item(self.client, "github-only-beta-continuity-drill")
         self.clear_mutation_spies()
 
@@ -4306,6 +4521,9 @@ class MigrationTest(unittest.TestCase):
         ]
         declared = {("waterline", 79): selected}
         frozen_records = {("waterline", 79): frozen}
+        self.client.comments[("waterline", 79)] = (
+            f"{FROZEN_LIFECYCLE_EVIDENCE_MARKER}\nManaged frozen lifecycle.\n"
+        )
         self.clear_mutation_spies()
 
         first = apply_backlog(
@@ -4615,6 +4833,9 @@ class MigrationTest(unittest.TestCase):
         self.client.reachable.add((".github", source_commit, "main"))
         self.client.successful_checks[(".github", source_commit)] = set(target(".github")["required_checks"])
         declared = {(".github", 99): [target(".github"), target("workflow")]}
+        self.client.comments[(".github", 99)] = (
+            f"{EVIDENCE_MARKER}\nManaged cross-repository lifecycle.\n"
+        )
 
         with self.assertRaisesRegex(AuthorityError, "before every declared target landing"):
             audit_backlog(
@@ -4806,6 +5027,9 @@ class MigrationTest(unittest.TestCase):
                 "user": {"id": 7, "login": "durable-workflow-ops"},
             }
         ]
+        self.client.comments[(".github", 99)] = (
+            f"{EVIDENCE_MARKER}\nManaged cross-repository lifecycle.\n"
+        )
         declared = {(".github", 99): selected}
         self.clear_mutation_spies()
 
@@ -4916,7 +5140,7 @@ class MigrationTest(unittest.TestCase):
         )
         self.assertNotIn(source["qualification_run"], source_result["required_check_runs"].values())
 
-    def test_split_completion_record_binds_backticked_workflow_and_both_source_commits(self) -> None:
+    def test_descendant_qualification_advances_item_ledger_without_record_ci_replay(self) -> None:
         fixture = pipeline_completion_fixture()
         targets = qualification_targets(qualification_fixture())
         selected = [targets[record["repository"]] for record in fixture["targets"]]
@@ -4946,6 +5170,9 @@ class MigrationTest(unittest.TestCase):
         )
         install_pipeline_completion_evidence(self.client, fixture, targets)
         self.client.reachable.add((source["repository"], implementation_commit, source["branch"]))
+        self.client.contained_commits.add(
+            (source["repository"], source["commit"], implementation_commit)
+        )
 
         assessment = evaluate_lifecycle(
             self.client,
@@ -4961,6 +5188,71 @@ class MigrationTest(unittest.TestCase):
             target for target in assessment["targets"] if target["repository"] == source["repository"]
         )
         self.assertEqual(implementation_commit, source_result["implementation_commit"])
+        self.assertEqual(source["commit"], source_result["commit"])
+        self.assertEqual(
+            [source["qualification_run"]],
+            [record["run"] for record in source_result["qualification_runs"]],
+        )
+        self.assertEqual(
+            [
+                {
+                    "branch": source["branch"],
+                    "implementation_source": implementation_commit,
+                    "qualified_source": source["commit"],
+                    "qualification_runs": [
+                        {
+                            "name": source["workflow_name"],
+                            "path": source["workflow_path"],
+                            "run": source["qualification_run"],
+                        }
+                    ],
+                    "repository": source["repository"],
+                }
+            ],
+            assessment["_qualification_ledger_advancements"],
+        )
+        rendered = render_evidence(assessment)
+        self.assertIn(f"Completion source: `{source['commit']}`", rendered)
+        self.assertIn(f"cited run `{source['qualification_run']}`", rendered)
+        self.assertIn(QUALIFICATION_LEDGER_MARKER, rendered)
+
+        parent = {
+            "body": "Vetted cross-repository work.",
+            "html_url": "https://github.com/durable-workflow/.github/issues/99",
+            "labels": [
+                {"name": "authority:github"},
+                {"name": "kind:cross-repository"},
+                {"name": "priority:P1"},
+                {"name": "status:in-progress"},
+            ],
+            "milestone": None,
+            "number": 99,
+            "state": "open",
+            "state_reason": None,
+            "title": "Coordinate descendant source qualification",
+        }
+        self.client.issues[".github"].append(parent)
+        self.client.mutation_events.clear()
+
+        failures = _audit_state_labels(
+            self.policy,
+            self.client,
+            self.client.issues,
+            set(),
+            {(".github", 99): selected},
+            None,
+            None,
+            None,
+        )
+
+        self.assertEqual([], failures)
+        self.assertEqual("closed", parent["state"])
+        self.assertEqual({"status:done"}, label_names(parent) & STATUS_LABELS)
+        self.assertIn(QUALIFICATION_LEDGER_MARKER, self.client.comments[(".github", 99)])
+        self.assertLess(
+            self.client.mutation_events.index(("comment", ".github", 99)),
+            self.client.mutation_events.index(("state", ".github", 99)),
+        )
 
         trusted_comment = self.client.trusted_comments[(".github", 99)][0]
         trusted_comment["body"] = fixture["body"].replace(
@@ -4977,6 +5269,29 @@ class MigrationTest(unittest.TestCase):
         )
         self.assertFalse(forged_marker["complete"])
         trusted_comment["body"] = fixture["body"]
+
+        self.client.contained_commits.remove(
+            (source["repository"], source["commit"], implementation_commit)
+        )
+        unrelated_completion_source = evaluate_lifecycle(
+            self.client,
+            "durable-workflow",
+            ".github",
+            {"number": 99},
+            selected,
+            trusted_actors=self.policy["intake"]["trusted_actors"],
+        )
+        self.assertFalse(unrelated_completion_source["complete"])
+        unrelated_by_repository = {
+            target["repository"]: target for target in unrelated_completion_source["targets"]
+        }
+        self.assertEqual(
+            "pending:completion-source-does-not-contain-implementation",
+            unrelated_by_repository[source["repository"]]["state"],
+        )
+        self.client.contained_commits.add(
+            (source["repository"], source["commit"], implementation_commit)
+        )
 
         self.client.reachable.remove((source["repository"], implementation_commit, source["branch"]))
         rejected = evaluate_lifecycle(
@@ -5298,6 +5613,9 @@ class MigrationTest(unittest.TestCase):
         }
         self.client.issues[".github"].append(parent)
         install_pipeline_completion_evidence(self.client, fixture, targets)
+        self.client.comments[(".github", 99)] = (
+            f"{EVIDENCE_MARKER}\nManaged cross-repository lifecycle.\n"
+        )
 
         with self.assertRaisesRegex(
             AuthorityError,
@@ -5917,6 +6235,9 @@ class MigrationTest(unittest.TestCase):
             "title": "Coordinate source landings",
         }
         self.client.issues[".github"].append(parent)
+        self.client.comments[(".github", 99)] = (
+            f"{EVIDENCE_MARKER}\nManaged cross-repository lifecycle.\n"
+        )
 
         with self.assertRaisesRegex(AuthorityError, "without a valid declared target set"):
             audit_backlog(
@@ -5938,6 +6259,784 @@ class MigrationTest(unittest.TestCase):
             audit_backlog(self.policy, self.backlog, self.client)
 
         self.assertIn("authority:conflict", label_names(issue))
+
+
+class PublicLifecycleContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.policy, self.backlog, _policy_schema, _backlog_schema = contract_fixture()
+        self.client = FakeGitHubApi(self.policy)
+        self.now = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
+
+    @staticmethod
+    def metadata(
+        issue: dict[str, Any],
+        *,
+        approved: bool,
+        transition_at: str = "2026-08-26T10:00:00Z",
+    ) -> dict[str, Any]:
+        return {
+            "approved": approved,
+            "approval_reason": "trusted-creation" if approved else "approval-label-absent",
+            "closed_at": None,
+            "created_at": "2026-08-26T09:00:00Z",
+            "label_transition_at": {},
+            "labels": sorted(label_names(issue)),
+            "last_transition_at": transition_at,
+            "number": issue["number"],
+            "repository": ".github",
+            "specialized_lifecycle": False,
+            "state": issue["state"],
+            "type": "issue",
+            "updated_at": "2026-08-26T10:00:00Z",
+            "url": issue["html_url"],
+        }
+
+    def add_issue(self, number: int, labels: list[str], *, body: str = "Public issue") -> dict[str, Any]:
+        issue = intake_issue(author="rmcdaniel", body=body, labels=labels, number=number)
+        self.client.issues[".github"].append(issue)
+        return issue
+
+    def test_writer_boundary_rejects_duplicate_kinds_and_kind_transition_replaces(self) -> None:
+        client = GitHubApi("secret")
+        with self.assertRaisesRegex(AuthorityError, "exactly one kind"):
+            client.replace_issue_labels(
+                "durable-workflow",
+                ".github",
+                7,
+                ["kind:defect", "kind:release-blocker", "status:done"],
+            )
+
+        transitioned = _replace_kind_label(
+            {"authority:github", "kind:defect", "status:ready"},
+            "kind:release-blocker",
+        )
+        self.assertEqual({"kind:release-blocker"}, {label for label in transitioned if label.startswith("kind:")})
+
+    def test_malformed_issue_is_isolated_while_valid_issue_updates(self) -> None:
+        malformed = self.add_issue(
+            1,
+            ["kind:defect", "kind:feature", "status:ready"],
+        )
+        valid = self.add_issue(2, ["kind:defect"])
+        metadata = [self.metadata(malformed, approved=True), self.metadata(valid, approved=True)]
+
+        failures = reconcile_public_lifecycle(
+            self.policy,
+            self.client,
+            metadata,
+            {".github": [malformed, valid]},
+            now=self.now,
+        )
+
+        self.assertEqual(1, len(failures))
+        self.assertIn(".github#1", failures[0])
+        self.assertNotIn((".github", 1), self.client.comments)
+        self.assertIn((".github", 2), self.client.comments)
+        self.assertEqual({"status:ready"}, label_names(valid) & STATUS_LABELS)
+
+    def test_aggregate_audit_closes_valid_completion_despite_duplicate_kind(self) -> None:
+        apply_backlog(self.policy, self.backlog, self.client)
+        _bad_repository, malformed = find_work_item(
+            self.client,
+            "docs-php-conformance-public-authority",
+        )
+        valid = self.add_issue(
+            78,
+            ["authority:github", "kind:defect", "priority:P1", "status:in-progress"],
+        )
+        malformed["labels"].append({"name": "kind:feature"})
+        valid["labels"].append({"name": COMPLETION_VERIFIED_LABEL})
+        metadata = [self.metadata(malformed, approved=True), self.metadata(valid, approved=True)]
+        metadata[0]["repository"] = "durable-workflow.github.io"
+
+        with self.assertRaises(LifecycleAuditError) as raised:
+            audit_backlog(
+                self.policy,
+                self.backlog,
+                self.client,
+                public_metadata=metadata,
+                audit_time=self.now,
+            )
+
+        self.assertEqual("closed", valid["state"])
+        self.assertIn((".github", valid["number"], "closed", "completed"), self.client.state_updates)
+        failures = raised.exception.evidence["age_audit"]["reconciliation_failures"]
+        self.assertTrue(any("durable-workflow.github.io#" in failure for failure in failures))
+        sweep = raised.exception.evidence["issue_sweep"]
+        self.assertEqual(2, sweep["before"]["open_count"])
+        self.assertEqual(1, sweep["after"]["open_count"])
+        self.assertEqual(1, sweep["after"]["closed_count"])
+
+    def test_state_and_public_blocker_replace_one_comment_and_noop_is_quiet(self) -> None:
+        issue = self.add_issue(3, ["kind:defect", "status:ready"])
+        metadata = [self.metadata(issue, approved=True)]
+        inventory = {".github": [issue]}
+
+        self.assertEqual(
+            [],
+            reconcile_public_lifecycle(self.policy, self.client, metadata, inventory, now=self.now),
+        )
+        first = self.client.comments[(".github", 3)]
+        self.assertIn(PUBLIC_LIFECYCLE_MARKER, first)
+        self.assertIn("Approved and queued", first)
+
+        issue["labels"] = [{"name": "kind:defect"}, {"name": "status:blocked"}]
+        issue["body"] = (
+            f"{UNBLOCK_CONTEXT_START}\n## Unblock condition\n\n"
+            f"A public compatibility decision must be recorded.\n{UNBLOCK_CONTEXT_END}"
+        )
+        reconcile_public_lifecycle(
+            self.policy,
+            self.client,
+            metadata,
+            inventory,
+            now=self.now + timedelta(minutes=1),
+        )
+        second = self.client.comments[(".github", 3)]
+        self.assertNotEqual(first, second)
+        self.assertIn("**State:** Blocked", second)
+        self.assertIn("A public compatibility decision must be recorded.", second)
+
+        replacements_before = list(self.client.replacements)
+        comments_before = list(self.client.comment_updates)
+        reconcile_public_lifecycle(
+            self.policy,
+            self.client,
+            metadata,
+            inventory,
+            now=self.now + timedelta(minutes=2),
+        )
+        self.assertEqual(replacements_before, self.client.replacements)
+        self.assertEqual(comments_before, self.client.comment_updates)
+
+    def test_authenticated_projection_converges_execution_states_through_verified_completion(self) -> None:
+        issue = self.add_issue(15, ["authority:github", "kind:defect", "status:ready"])
+        metadata = [self.metadata(issue, approved=True)]
+        inventory = {".github": [issue]}
+        transitions = [
+            ("pending", None, "status:ready", "Approved and queued"),
+            ("claimed", None, "status:in-progress", "In progress"),
+            ("blocked", "dependency-pending", "status:blocked", "Blocked"),
+            ("integrated", "release-evidence-pending", "status:in-progress", "In progress"),
+            ("completed", None, "status:done", "Completed"),
+        ]
+
+        for minute, (state, condition, status, heading) in enumerate(transitions):
+            record = {
+                "completion_evidence": "verified" if state == "completed" else None,
+                "public_condition": condition,
+                "state": state,
+                "transition_at": (self.now + timedelta(minutes=minute)).isoformat(),
+            }
+            failures = reconcile_public_lifecycle(
+                self.policy,
+                self.client,
+                metadata,
+                inventory,
+                lifecycle_projection={(".github", 15): record},
+                now=self.now + timedelta(minutes=minute),
+            )
+            self.assertEqual([], failures)
+            self.assertEqual({status}, label_names(issue) & STATUS_LABELS)
+            self.assertIn(heading, self.client.comments[(".github", 15)])
+            if state == "integrated":
+                projected_comment = self.client.comments[(".github", 15)]
+                reconcile_public_lifecycle(
+                    self.policy,
+                    self.client,
+                    metadata,
+                    inventory,
+                    now=self.now + timedelta(minutes=minute, seconds=30),
+                )
+                self.assertEqual(projected_comment, self.client.comments[(".github", 15)])
+
+        self.assertEqual("closed", issue["state"])
+        self.assertEqual("completed", issue["state_reason"])
+        self.assertIn(COMPLETION_VERIFIED_LABEL, label_names(issue))
+        self.assertIn((".github", 15, "closed", "completed"), self.client.state_updates)
+
+    def test_verified_release_sources_close_completed_implementation(self) -> None:
+        issue = self.add_issue(16, ["authority:github", "kind:defect", "status:in-progress"])
+        metadata = [self.metadata(issue, approved=True)]
+        implementation_source = "a" * 40
+        projection = {
+            (".github", 16): {
+                "completion_evidence": "verified",
+                "implementation_source": implementation_source,
+                "public_condition": None,
+                "state": "completed",
+                "transition_at": self.now.isoformat(),
+                "verified_release": {
+                    "repository": ".github",
+                    "source_shas": ["b" * 40, implementation_source],
+                    "version": "2026.08.26",
+                },
+            }
+        }
+
+        failures = reconcile_public_lifecycle(
+            self.policy,
+            self.client,
+            metadata,
+            {".github": [issue]},
+            lifecycle_projection=projection,
+            now=self.now,
+        )
+
+        self.assertEqual([], failures)
+        self.assertEqual("closed", issue["state"])
+        self.assertEqual({"status:done"}, label_names(issue) & STATUS_LABELS)
+        self.assertIn(COMPLETION_VERIFIED_LABEL, label_names(issue))
+
+    def test_verified_release_closes_before_intake_and_cannot_reserve_a_successor(self) -> None:
+        completed = self.add_issue(
+            16,
+            ["authority:github", "kind:defect", "status:in-progress"],
+        )
+        active = self.add_issue(
+            17,
+            ["authority:github", "kind:defect", "status:ready"],
+        )
+        metadata = [
+            self.metadata(completed, approved=True),
+            self.metadata(active, approved=True),
+        ]
+        implementation_source = "a" * 40
+        projection = {
+            (".github", 16): {
+                "completion_evidence": "verified",
+                "implementation_source": implementation_source,
+                "public_condition": None,
+                "state": "completed",
+                "transition_at": self.now.isoformat(),
+                "verified_release": {
+                    "repository": ".github",
+                    "source_shas": ["b" * 40, implementation_source],
+                    "version": "2026.08.26",
+                },
+            }
+        }
+
+        evidence = reconcile_verified_releases_before_intake(
+            self.policy,
+            self.client,
+            metadata,
+            projection,
+            now=self.now,
+        )
+
+        self.assertEqual("pass", evidence["outcome"])
+        self.assertEqual([".github#16"], evidence["terminal_identities"])
+        self.assertEqual("closed", completed["state"])
+        self.assertEqual({"status:done"}, label_names(completed) & STATUS_LABELS)
+        self.assertIn(COMPLETION_VERIFIED_LABEL, label_names(completed))
+        self.assertIn("Completed", self.client.comments[(".github", 16)])
+
+        discovery = FakeDiscovery(
+            self.policy,
+            {".github": [(completed, []), (active, [])]},
+        )
+        manifest, inventory = reconstruct_intake(
+            self.policy,
+            discovery,
+            pre_intake_release_completions=set(projection),
+        )
+
+        self.assertEqual({17}, {record["number"] for record in manifest["issues"]})
+        self.assertEqual([(".github", 17)], discovery.get_requests)
+        self.assertNotIn(completed, inventory[".github"])
+        terminal_metadata = next(
+            record for record in manifest["public_metadata"] if record["number"] == 16
+        )
+        self.assertTrue(terminal_metadata["specialized_lifecycle"])
+        self.assertFalse(terminal_metadata.get("quarantined", False))
+
+    def test_verified_release_preserves_incomplete_cross_repository_evidence_gate(self) -> None:
+        issue = self.add_issue(
+            17,
+            [
+                "authority:github",
+                COMPLETION_REQUIRED_LABEL,
+                "kind:cross-repository",
+                "status:in-progress",
+            ],
+        )
+        metadata = [self.metadata(issue, approved=True)]
+        projection = {
+            (".github", 17): {
+                "completion_evidence": "verified",
+                "implementation_source": "a" * 40,
+                "public_condition": None,
+                "state": "completed",
+                "transition_at": self.now.isoformat(),
+                "verified_release": {
+                    "repository": ".github",
+                    "source_shas": ["a" * 40],
+                    "version": "2026.08.26",
+                },
+            }
+        }
+
+        failures = reconcile_public_lifecycle(
+            self.policy,
+            self.client,
+            metadata,
+            {".github": [issue]},
+            lifecycle_projection=projection,
+            now=self.now,
+        )
+
+        self.assertEqual(1, len(failures))
+        self.assertIn("waiting on required target evidence", failures[0])
+        self.assertEqual("open", issue["state"])
+        self.assertEqual({"status:in-progress"}, label_names(issue) & STATUS_LABELS)
+
+    def test_current_projection_clears_only_resolved_authority_conflicts(self) -> None:
+        resolved = self.add_issue(
+            18,
+            ["authority:conflict", "authority:github", "kind:defect", "status:in-progress"],
+        )
+        malformed = self.add_issue(
+            19,
+            ["authority:conflict", "authority:github", "kind:defect", "kind:feature", "status:ready"],
+        )
+        projection = {
+            (".github", number): {
+                "completion_evidence": None,
+                "public_condition": "release-evidence-pending",
+                "state": "integrated",
+                "transition_at": self.now.isoformat(),
+            }
+            for number in (18, 19)
+        }
+
+        failures = reconcile_public_lifecycle(
+            self.policy,
+            self.client,
+            [self.metadata(resolved, approved=True), self.metadata(malformed, approved=True)],
+            {".github": [resolved, malformed]},
+            lifecycle_projection=projection,
+            now=self.now,
+        )
+
+        self.assertNotIn("authority:conflict", label_names(resolved))
+        self.assertIn("authority:conflict", label_names(malformed))
+        self.assertEqual(1, len(failures))
+        self.assertIn(".github#19 has malformed kind labels", failures[0])
+
+    def test_trusted_retirement_precedes_historical_targets_while_neighboring_closure_reopens(self) -> None:
+        for item in self.backlog["items"]:
+            if item["kind"] == "cross-repository":
+                item["kind"] = "feature"
+        apply_backlog(self.policy, self.backlog, self.client)
+        retired = self.add_issue(
+            30,
+            ["authority:github", "kind:cross-repository", "priority:P1", "status:in-progress"],
+        )
+        neighboring = self.add_issue(
+            31,
+            ["authority:github", "kind:cross-repository", "priority:P1", "status:in-progress"],
+        )
+        metadata = [self.metadata(retired, approved=True), self.metadata(neighboring, approved=True)]
+        inventory = self.client.issues
+
+        for issue, state, evidence in (
+            (retired, "superseded", None),
+            (neighboring, "completed", "verified"),
+        ):
+            failures = reconcile_public_lifecycle(
+                self.policy,
+                self.client,
+                metadata,
+                inventory,
+                lifecycle_projection={
+                    (".github", int(issue["number"])): {
+                        "completion_evidence": evidence,
+                        "public_condition": None,
+                        "state": state,
+                        "transition_at": self.now.isoformat(),
+                    }
+                },
+                now=self.now,
+            )
+            self.assertEqual([], failures)
+
+        historical_landing = historical_landing_fixture(".github")[0]
+        declared_target = qualification_targets(qualification_fixture())[".github"]
+        neighboring["labels"] = [
+            {"name": SUPERSEDED_STATUS_LABEL if label["name"] == "status:done" else label["name"]}
+            for label in neighboring["labels"]
+        ]
+        self.client.state_updates.clear()
+        self.client.reachability_requests.clear()
+
+        failures = _audit_state_labels(
+            self.policy,
+            self.client,
+            inventory,
+            set(),
+            {(".github", 30): [declared_target]},
+            {(".github", 30): [historical_landing]},
+            None,
+            None,
+        )
+
+        self.assertEqual("closed", retired["state"])
+        self.assertEqual("not_planned", retired["state_reason"])
+        self.assertEqual({SUPERSEDED_STATUS_LABEL}, label_names(retired) & STATUS_LABELS)
+        self.assertNotIn((".github", 30, "open", "reopened"), self.client.state_updates)
+        self.assertEqual([], self.client.reachability_requests)
+        self.assertEqual("open", neighboring["state"])
+        self.assertEqual({"status:triage"}, label_names(neighboring) & STATUS_LABELS)
+        self.assertIn((".github", 31, "open", "reopened"), self.client.state_updates)
+        self.assertTrue(any(".github#31" in failure for failure in failures))
+
+    def test_trusted_retirement_repairs_reopen_and_label_drift_then_is_quiet(self) -> None:
+        retired = self.add_issue(
+            32,
+            ["authority:conflict", "authority:github", "kind:defect", "priority:P1", "status:in-progress"],
+        )
+        metadata = [self.metadata(retired, approved=True)]
+        inventory = {".github": [retired]}
+        projection = {
+            (".github", 32): {
+                "completion_evidence": None,
+                "public_condition": None,
+                "state": "superseded",
+                "transition_at": self.now.isoformat(),
+            }
+        }
+
+        self.assertEqual(
+            [],
+            reconcile_public_lifecycle(
+                self.policy,
+                self.client,
+                metadata,
+                inventory,
+                lifecycle_projection=projection,
+                now=self.now,
+            ),
+        )
+        retirement_comment = self.client.comments[(".github", 32)]
+
+        retired["state"] = "open"
+        retired["state_reason"] = "reopened"
+        retired["labels"] = [
+            {"name": "status:ready" if label["name"] == SUPERSEDED_STATUS_LABEL else label["name"]}
+            for label in retired["labels"]
+            if label["name"] != "authority:github"
+        ]
+        metadata[0]["state"] = "open"
+        metadata[0]["labels"] = sorted(label_names(retired))
+        self.client.state_updates.clear()
+        self.client.replacements.clear()
+        self.client.comment_updates.clear()
+
+        self.assertEqual(
+            [],
+            reconcile_public_lifecycle(
+                self.policy,
+                self.client,
+                metadata,
+                inventory,
+                now=self.now + timedelta(minutes=1),
+            ),
+        )
+        self.assertEqual("closed", retired["state"])
+        self.assertEqual("not_planned", retired["state_reason"])
+        self.assertEqual({SUPERSEDED_STATUS_LABEL}, label_names(retired) & STATUS_LABELS)
+        self.assertNotIn("authority:conflict", label_names(retired))
+        self.assertIn("authority:github", label_names(retired))
+        self.assertEqual(retirement_comment, self.client.comments[(".github", 32)])
+        self.assertEqual([], self.client.comment_updates)
+
+        state_updates = list(self.client.state_updates)
+        replacements = list(self.client.replacements)
+        self.assertEqual(
+            [],
+            reconcile_public_lifecycle(
+                self.policy,
+                self.client,
+                metadata,
+                inventory,
+                now=self.now + timedelta(minutes=2),
+            ),
+        )
+        self.assertEqual(state_updates, self.client.state_updates)
+        self.assertEqual(replacements, self.client.replacements)
+        self.assertEqual([], self.client.comment_updates)
+
+    def test_projection_loader_quarantines_one_bad_identity_and_keeps_valid_state(self) -> None:
+        projection = {
+            "generated_at": self.now.isoformat(),
+            "issues": [
+                {
+                    "number": 16,
+                    "repository": ".github",
+                    "state": "claimed",
+                    "transition_at": (self.now - timedelta(minutes=1)).isoformat(),
+                },
+                {
+                    "number": 17,
+                    "public_condition": "private-host-details",
+                    "repository": ".github",
+                    "state": "blocked",
+                    "transition_at": (self.now - timedelta(minutes=1)).isoformat(),
+                },
+            ],
+            "schema": "durable-workflow.public-lifecycle-projection/v1",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "projection.json"
+            _write_evidence(path, projection)
+            records, failures = load_public_lifecycle_projection(
+                path,
+                self.policy,
+                "durable-workflow-ops",
+            )
+
+        self.assertEqual({(".github", 16)}, set(records))
+        self.assertEqual(1, len(failures))
+        self.assertIn(".github#17", failures[0])
+
+    def test_projection_loader_binds_verified_release_to_implementation_source(self) -> None:
+        implementation_source = "a" * 40
+        projection = {
+            "generated_at": self.now.isoformat(),
+            "issues": [
+                {
+                    "completion_evidence": "verified",
+                    "implementation_source": implementation_source,
+                    "number": 20,
+                    "repository": ".github",
+                    "state": "completed",
+                    "transition_at": (self.now - timedelta(minutes=1)).isoformat(),
+                    "verified_release": {
+                        "repository": ".github",
+                        "source_shas": ["b" * 40, implementation_source],
+                        "version": "2026.08.26",
+                    },
+                },
+                {
+                    "completion_evidence": "verified",
+                    "implementation_source": "c" * 40,
+                    "number": 21,
+                    "repository": ".github",
+                    "state": "completed",
+                    "transition_at": (self.now - timedelta(minutes=1)).isoformat(),
+                    "verified_release": {
+                        "repository": ".github",
+                        "source_shas": ["d" * 40],
+                        "version": "2026.08.26",
+                    },
+                },
+            ],
+            "schema": "durable-workflow.public-lifecycle-projection/v1",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "projection.json"
+            _write_evidence(path, projection)
+            records, failures = load_public_lifecycle_projection(
+                path,
+                self.policy,
+                "durable-workflow-ops",
+            )
+
+        self.assertEqual({(".github", 20)}, set(records))
+        self.assertEqual(implementation_source, records[(".github", 20)]["implementation_source"])
+        self.assertEqual(1, len(failures))
+        self.assertIn("verified release does not contain", failures[0])
+
+    def test_closed_historical_issue_without_managed_marker_is_read_only(self) -> None:
+        apply_backlog(self.policy, self.backlog, self.client)
+        issue = self.add_issue(
+            99,
+            ["authority:github", "kind:defect", "status:ready"],
+        )
+        issue["state"] = "closed"
+        issue["state_reason"] = "completed"
+        metadata = self.metadata(issue, approved=True)
+        metadata["state"] = "closed"
+        replacements_before = list(self.client.replacements)
+        state_updates_before = list(self.client.state_updates)
+        comments_before = dict(self.client.comments)
+
+        audit_backlog(
+            self.policy,
+            self.backlog,
+            self.client,
+            public_metadata=[metadata],
+            audit_time=self.now,
+        )
+
+        self.assertEqual(replacements_before, self.client.replacements)
+        self.assertEqual(state_updates_before, self.client.state_updates)
+        self.assertEqual(comments_before, self.client.comments)
+        self.assertEqual({"status:ready"}, label_names(issue) & STATUS_LABELS)
+
+    def test_unapproved_intake_contributes_only_metadata(self) -> None:
+        issue = intake_issue(labels=["kind:defect"], number=8)
+        discovery = FakeDiscovery(self.policy, {".github": [(issue, [])]})
+
+        manifest, inventory = reconstruct_intake(self.policy, discovery)
+
+        self.assertEqual([], manifest["issues"])
+        self.assertEqual([], discovery.get_requests)
+        self.assertEqual([], inventory[".github"])
+        public = next(record for record in manifest["public_metadata"] if record["type"] == "issue")
+        self.assertFalse(public["approved"])
+        self.assertNotIn("body", public)
+        self.assertNotIn("title", public)
+
+    def test_standalone_age_discovery_never_refetches_issue_prose(self) -> None:
+        unapproved = intake_issue(labels=["kind:defect"], number=12)
+        approved = intake_issue(author="rmcdaniel", labels=["kind:feature"], number=13)
+        pull = {
+            "closed_at": None,
+            "created_at": "2026-08-26T09:00:00Z",
+            "merged_at": None,
+            "number": 14,
+            "repository": ".github",
+            "state": "open",
+            "type": "pull_request",
+            "updated_at": "2026-08-26T10:00:00Z",
+            "url": "https://github.com/durable-workflow/.github/pull/14",
+        }
+        discovery = FakeDiscovery(
+            self.policy,
+            {".github": [(unapproved, []), (approved, [])]},
+            pull_requests={".github": [pull]},
+        )
+
+        metadata = discover_public_metadata(self.policy, discovery)
+
+        self.assertEqual([], discovery.get_requests)
+        self.assertEqual(self.policy["repositories"], discovery.pull_requests_listed)
+        self.assertEqual(2, len([record for record in metadata if record["type"] == "issue"]))
+        self.assertEqual(1, len([record for record in metadata if record["type"] == "pull_request"]))
+        self.assertTrue(all("body" not in record and "title" not in record for record in metadata))
+        self.assertNotRegex(ISSUE_INTAKE_QUERY, r"(?m)^\s+(?:body|title)\s*$")
+        self.assertNotRegex(PULL_REQUEST_METADATA_QUERY, r"(?m)^\s+(?:body|title)\s*$")
+        workflow = yaml.safe_load((ROOT / ".github/workflows/issue-authority.yml").read_text(encoding="utf-8"))
+        job = workflow["jobs"]["metadata-age-audit"]
+        self.assertEqual("read", job["permissions"]["issues"])
+        self.assertEqual("read", job["permissions"]["pull-requests"])
+        self.assertNotIn("BETA_PRODUCT_WORK_TOKEN", json.dumps(job))
+
+    def test_verified_completion_closes_within_scheduled_window(self) -> None:
+        issue = self.add_issue(
+            9,
+            ["authority:github", COMPLETION_VERIFIED_LABEL, "kind:defect", "status:in-progress"],
+        )
+        verified_at = self.now - timedelta(minutes=8)
+        metadata = self.metadata(issue, approved=True, transition_at=verified_at.isoformat())
+        metadata["label_transition_at"] = {COMPLETION_VERIFIED_LABEL: verified_at.isoformat()}
+
+        failures = reconcile_public_lifecycle(
+            self.policy,
+            self.client,
+            [metadata],
+            {".github": [issue]},
+            now=self.now,
+        )
+        audit = build_public_age_audit(self.policy, [metadata], failures, now=self.now)
+
+        self.assertEqual("closed", issue["state"])
+        self.assertIn((".github", 9, "closed", "completed"), self.client.state_updates)
+        self.assertEqual({"status:done"}, label_names(issue) & STATUS_LABELS)
+        self.assertEqual([], audit["summary"]["issues"]["stale_identities"])
+        workflow = yaml.safe_load((ROOT / ".github/workflows/issue-authority.yml").read_text(encoding="utf-8"))
+        self.assertEqual("*/10 * * * *", workflow[True]["schedule"][0]["cron"])
+
+    def test_age_audit_reports_issues_and_pull_requests_separately(self) -> None:
+        issue = self.add_issue(10, ["authority:github", "kind:feature", "status:in-progress"])
+        issue_metadata = self.metadata(
+            issue,
+            approved=True,
+            transition_at=(self.now - timedelta(hours=73)).isoformat(),
+        )
+        pull_metadata = {
+            "closed_at": None,
+            "created_at": (self.now - timedelta(hours=80)).isoformat(),
+            "merged_at": None,
+            "number": 11,
+            "repository": ".github",
+            "state": "open",
+            "type": "pull_request",
+            "updated_at": (self.now - timedelta(hours=74)).isoformat(),
+            "url": "https://github.com/durable-workflow/.github/pull/11",
+        }
+
+        audit = build_public_age_audit(self.policy, [issue_metadata, pull_metadata], [], now=self.now)
+
+        repository = audit["repositories"][".github"]
+        self.assertEqual({"in-progress": 1}, repository["issues"]["counts_by_state"])
+        self.assertEqual({"open": 1}, repository["pull_requests"]["counts_by_state"])
+        self.assertEqual("approved-transition-72h", repository["issues"]["stale_identities"][0]["target"])
+        self.assertEqual([], repository["pull_requests"]["stale_identities"])
+        self.assertEqual(74 * 3600, repository["pull_requests"]["oldest_age_seconds"])
+        self.assertEqual(1, repository["issues"]["age_buckets"]["72h-to-7d"])
+        self.assertEqual(1, repository["pull_requests"]["age_buckets"]["72h-to-7d"])
+
+    def test_pipeline_health_orders_oldest_first_escalates_age_and_exempts_external_intake(self) -> None:
+        ages = [timedelta(days=7, minutes=5), timedelta(days=4), timedelta(days=1)]
+        priorities = ["priority:P2", "priority:P2", "priority:P1"]
+        records: list[dict[str, Any]] = []
+        for number, (age, priority) in enumerate(zip(ages, priorities, strict=True), start=20):
+            issue = self.add_issue(
+                number,
+                ["authority:github", "kind:defect", priority, "status:ready"],
+            )
+            record = self.metadata(issue, approved=True)
+            record["created_at"] = (self.now - age).isoformat()
+            record["last_transition_at"] = (self.now - timedelta(hours=1)).isoformat()
+            records.append(record)
+        external = self.add_issue(23, ["kind:defect", "priority:untriaged", "status:triage"])
+        external_record = self.metadata(external, approved=False)
+        external_record["created_at"] = (self.now - timedelta(days=30)).isoformat()
+        records.append(external_record)
+
+        audit = build_public_age_audit(self.policy, records, [], now=self.now)
+
+        health = audit["pipeline_health"]
+        self.assertEqual([".github#20", ".github#21", ".github#22"], [row["identity"] for row in health["claim_order"]])
+        self.assertTrue(all(row["effective_priority"] == "priority:P1" for row in health["claim_order"]))
+        self.assertEqual(3, audit["repositories"][".github"]["issues"]["actionable_open_count"])
+        self.assertTrue(audit["repositories"][".github"]["issues"]["creation_suppressed"])
+        self.assertEqual(
+            {"identity": ".github#23", "root": ".github#20", "triage_exempt_from_creation_budget": True},
+            health["deduplication_candidates"][0],
+        )
+        self.assertTrue(health["dm_notification"]["required"])
+        self.assertIn(".github", health["over_budget_repositories"])
+
+        later = build_public_age_audit(self.policy, records, [], now=self.now + timedelta(minutes=20))
+        self.assertFalse(later["pipeline_health"]["dm_notification"]["required"])
+        self.assertTrue(
+            any(
+                stale["target"] == "product-owner-alert-7d"
+                for stale in later["summary"]["issues"]["stale_identities"]
+            )
+        )
+
+    def test_pipeline_health_flags_a_14_day_unattended_placeholder(self) -> None:
+        issue = self.add_issue(
+            24,
+            ["authority:github", "kind:feature", "priority:P2", "status:ready"],
+        )
+        record = self.metadata(issue, approved=True)
+        record["created_at"] = (self.now - timedelta(days=14, minutes=5)).isoformat()
+
+        audit = build_public_age_audit(self.policy, [record], [], now=self.now)
+
+        self.assertTrue(
+            any(
+                stale["target"] == "unattended-placeholder-14d"
+                for stale in audit["summary"]["issues"]["stale_identities"]
+            )
+        )
+        self.assertTrue(audit["pipeline_health"]["dm_notification"]["required"])
 
 
 if __name__ == "__main__":
