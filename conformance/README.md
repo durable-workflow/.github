@@ -18,7 +18,7 @@ CLI, PHP SDK, Python SDK, and Rust SDK tuple.
 | --- | --- |
 | Activities | `durable-workflow/server`: `scripts/conformance/activities-published-artifacts.sh` |
 | Child workflows | `durable-workflow/server`: `scripts/conformance/child-workflows-published-artifacts.sh` |
-| Cloud | Private `durable-workflow/cloud` `conformance.yml` workflow using an isolated conformance namespace |
+| Cloud | Private `durable-workflow/cloud`: `scripts/conformance/run-managed-runtime.sh` using an isolated conformance namespace |
 | Heartbeats | `durable-workflow/server`: the PHP, Python, and Rust `heartbeats-*-published-artifacts.sh` runners |
 | Migration | `durable-workflow/server`: `scripts/conformance/migration-published-artifacts.sh` |
 | Namespaces | `durable-workflow/server`: `scripts/conformance/namespaces-published-artifacts.sh` |
