@@ -1,0 +1,27 @@
+{
+  "artifacts_current": true,
+  "official_avro": {
+    "php": {
+      "package": "apache/avro",
+      "version": "1.12.2"
+    },
+    "python": {
+      "package": "fastavro",
+      "version": "1.12.2"
+    },
+    "rust": {
+      "package": "apache-avro",
+      "version": "0.21.0"
+    }
+  },
+  "published_artifacts_exercised": {
+    "cli": true,
+    "sdk-php": true,
+    "sdk-python": true,
+    "sdk-rust": true,
+    "server": true,
+    "waterline": true,
+    "workflow": false
+  },
+  "waterline_assets_current": true
+}
