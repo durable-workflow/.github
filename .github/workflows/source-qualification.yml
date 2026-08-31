@@ -55,6 +55,9 @@ jobs:
           python -m jsonschema -i visual-evidence/policy.json visual-evidence/schema.json
           python -m json.tool regression-corpus/policy-schema.json >/dev/null
           python -m json.tool regression-corpus/evidence-schema.json >/dev/null
+          python -m json.tool conformance/catalog.json >/dev/null
+          python -m json.tool conformance/catalog-schema.json >/dev/null
+          python -m jsonschema -i conformance/catalog.json conformance/catalog-schema.json
           python - <<'PY'
           import json
           from pathlib import Path

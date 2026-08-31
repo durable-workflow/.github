@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/durable-workflow/.github/raw/main/conformance/catalog-schema.json",
+  "title": "Durable Workflow conformance catalog",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "stable_release",
+    "artifact_components",
+    "evidence_policy",
+    "experiments"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schema": { "const": "durable-workflow.conformance.catalog/v1" },
+    "stable_release": { "const": "2.0.0" },
+    "artifact_components": {
+      "type": "array",
+      "minItems": 7,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "evidence_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_tuple_binding",
+        "missing",
+        "stale",
+        "runner_blocked",
+        "ledger"
+      ],
+      "properties": {
+        "artifact_tuple_binding": { "const": "exact" },
+        "missing": { "const": "deny-stable" },
+        "stale": { "const": "deny-stable" },
+        "runner_blocked": { "const": "deny-stable" },
+        "ledger": { "type": "string", "format": "uri" }
+      }
+    },
+    "experiments": {
+      "type": "array",
+      "minItems": 16,
+      "maxItems": 16,
+      "items": { "$ref": "#/$defs/experiment" }
+    }
+  },
+  "$defs": {
+    "runner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "repository", "execution", "command", "result"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+        "repository": { "type": "string", "pattern": "^durable-workflow/" },
+        "execution": {
+          "enum": ["github-actions", "local-docker", "private-github-actions"]
+        },
+        "command": { "type": "string", "minLength": 1 },
+        "result": { "type": "string", "minLength": 1 }
+      }
+    },
+    "experiment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "tier",
+        "owner_repository",
+        "timeout_minutes",
+        "runners",
+        "acceptance"
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+        "title": { "type": "string", "minLength": 1 },
+        "tier": { "const": "release-critical" },
+        "owner_repository": { "type": "string", "pattern": "^durable-workflow/" },
+        "timeout_minutes": { "type": "integer", "minimum": 1, "maximum": 180 },
+        "runners": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/runner" }
+        },
+        "acceptance": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}
