@@ -1,46 +1,60 @@
 # Conformance
 
-`catalog.json` is the public source of truth for the fixed Durable Workflow 2.0
-release-critical experiment tier. It names the experiment, owning repository,
-runner command, execution location, timeout, result artifact, and acceptance
-property.
+This file is the Durable Workflow 2.0 release-critical experiment runbook. It
+is deliberately a checklist, not an orchestration system.
 
-GitHub Actions runs ordinary repeatable checks and any experiment that fits a
-hosted runner. Experiments that need controlled Docker restarts, process loss,
-private managed-runtime access, or other infrastructure behavior run from a
-local isolated checkout using the catalog command. Local execution does not
-create local authority: every run is reported as a
+Ordinary repository CI and release work runs in GitHub Actions. Experiments
+that need Docker restarts, process loss, or private Cloud access run locally by
+a maintainer from the published-artifact command below. Every result is then
+recorded with the GitHub conformance-run issue form so the tuple and outcome are
+visible to everyone.
+
+## Stable 2.0 tier
+
+Run every row against the same exact published Workflow, Waterline, Server,
+CLI, PHP SDK, Python SDK, and Rust SDK tuple.
+
+| Experiment | Published-artifact runner |
+| --- | --- |
+| Activities | `durable-workflow/server`: `scripts/conformance/activities-published-artifacts.sh` |
+| Child workflows | `durable-workflow/server`: `scripts/conformance/child-workflows-published-artifacts.sh` |
+| Cloud | Private `durable-workflow/cloud` `conformance.yml` workflow using an isolated conformance namespace |
+| Heartbeats | `durable-workflow/server`: the PHP, Python, and Rust `heartbeats-*-published-artifacts.sh` runners |
+| Migration | `durable-workflow/server`: `scripts/conformance/migration-published-artifacts.sh` |
+| Namespaces | `durable-workflow/server`: `scripts/conformance/namespaces-published-artifacts.sh` |
+| Polyglot | `durable-workflow/server`: activities, PHP SDK, and Python published-artifact runners, including Rust matrix cells |
+| Replay | `durable-workflow/server`: `scripts/conformance/replay-published-artifacts.sh` |
+| Schedules | `durable-workflow/server`: `scripts/conformance/schedules-published-artifacts.sh` |
+| SDK matrix | `durable-workflow/server`: PHP and Python published-artifact runners; `durable-workflow/sample-app`: `scripts/playground rust` |
+| Search attributes | `durable-workflow/server`: `scripts/conformance/search-attributes-published-artifacts.sh` |
+| Signals and queries | `durable-workflow/server`: `scripts/conformance/signals-queries-published-artifacts.sh` |
+| Timers | `durable-workflow/server`: `scripts/conformance/timers-published-artifacts.sh` |
+| Worker versioning | `durable-workflow/server`: `scripts/conformance/worker-versioning-published-artifacts.sh` |
+| Workflow lifecycle | `durable-workflow/server`: `scripts/conformance/workflow-lifecycle-published-artifacts.sh` |
+| Workflow updates | `durable-workflow/server`: `scripts/conformance/workflow-updates-published-artifacts.sh` |
+
+Each runner documents its required exact-version environment variables and
+result filename in `--help`. Use a unique result directory and isolated Docker
+project for every run.
+
+## Report a run
+
+Open a
 [`kind:conformance-run`](https://github.com/durable-workflow/.github/issues?q=is%3Aissue+label%3Akind%3Aconformance-run)
-GitHub issue with its exact tuple and evidence.
+issue and include:
 
-## Run contract
+- the experiment and outcome;
+- the exact seven-component tuple;
+- the runner repository and full commit SHA;
+- UTC start and finish timestamps;
+- the command with secrets removed; and
+- an immutable GitHub Actions, artifact, release, or commit URL for the
+  structured result.
 
-1. Use only published packages and images from the exact proposed artifact
-   tuple. Check out the runner repository at the source revision bound to that
-   published artifact.
-2. Create an isolated result directory and Docker project. Never reuse a
-   customer namespace or another experiment's database, cache, network, or
-   volume.
-3. Run every runner listed for the experiment. A partial matrix is not a pass.
-4. Preserve the structured result and a bounded sanitized log. Remove
-   credentials, customer identifiers, and private infrastructure details.
-5. Open a conformance-run issue containing the experiment ID, exact seven-part
-   tuple, runner revision, timestamps, command, outcome, and evidence link.
-6. A product failure opens or updates an issue in the owning product repository
-   and links the fix PR, regression fixture, published replacement artifact,
-   and confirming run.
-7. Clean up local resources only after the evidence is available from GitHub.
+Use one of four outcomes: `pass`, `product-fail`, `runner-blocked`, or
+`out-of-scope`. A runner failure is not a product failure, but missing, stale,
+partial, and runner-blocked evidence cannot authorize stable 2.0.
 
-## Outcomes
-
-- `pass`: all catalog runners and acceptance properties passed on the exact
-  tuple.
-- `product-fail`: the experiment ran and exposed incorrect product behavior.
-- `runner-blocked`: the product could not be evaluated because the runner or
-  infrastructure failed. This is not a product failure and is not a pass.
-- `out-of-scope`: the experiment was intentionally not attempted for this
-  release. Release-critical experiments cannot use this outcome for stable
-  authorization.
-
-Missing, stale, partial, and runner-blocked evidence all deny a stable release.
-Historical aggregate pass rate is never release authority.
+When an experiment finds a defect, link the product issue, fix PR, regression
+fixture, replacement published artifact, and confirming run. Historical
+aggregate pass rate is never release authority.

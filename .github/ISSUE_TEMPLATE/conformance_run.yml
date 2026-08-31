@@ -4,29 +4,15 @@ title: "[Conformance] "
 labels:
   - kind:conformance-run
   - authority:github
+  - priority:untriaged
   - status:triage
 body:
-  - type: dropdown
+  - type: input
     id: experiment
     attributes:
       label: Experiment
-      options:
-        - activities
-        - child-workflows
-        - cloud
-        - heartbeats
-        - migration
-        - namespaces
-        - polyglot
-        - replay
-        - schedules
-        - sdk-matrix
-        - search-attributes
-        - signals-queries
-        - timers
-        - worker-versioning
-        - workflow-lifecycle
-        - workflow-updates
+      description: Use the experiment name from conformance/README.md.
+      placeholder: replay
     validations:
       required: true
   - type: dropdown

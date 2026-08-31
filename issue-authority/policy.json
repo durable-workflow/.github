@@ -69,6 +69,11 @@
       "name": "kind:cross-repository"
     },
     {
+      "color": "1d76db",
+      "description": "One exact-tuple conformance experiment result",
+      "name": "kind:conformance-run"
+    },
+    {
       "color": "b60205",
       "description": "Immediate release or data-integrity risk",
       "name": "priority:P0"

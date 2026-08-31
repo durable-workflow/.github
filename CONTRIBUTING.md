@@ -23,9 +23,9 @@ override product judgment, priority, or roadmap.
 
 ## Conformance
 
-The [conformance catalog](conformance/README.md) is the source of truth for the
+The [conformance runbook](conformance/README.md) is the source of truth for the
 fixed 2.0 release-critical experiment tier. GitHub Actions runs suitable cells.
-Infrastructure experiments may run locally from the versioned catalog, but the
+Infrastructure experiments may run locally from the versioned runbook, but the
 exact tuple, runner revision, outcome, and sanitized evidence must be reported
 to the public GitHub run ledger. Machine-only experiment state is not valid
 release evidence.

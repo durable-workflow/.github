@@ -8,7 +8,7 @@ GitHub issues, pull requests, Actions, releases, and retained conformance
 evidence are the complete project record. Contributors do not need access to a
 separate tracker or build coordinator. The working rules are in
 [`CONTRIBUTING.md`](CONTRIBUTING.md), and the fixed 2.0 release-critical
-experiment set is in the [conformance catalog](conformance/README.md).
+experiment set is in the [conformance runbook](conformance/README.md).
 
 ## Release authority
 
