@@ -1,0 +1,48 @@
+{
+  "artifacts": [
+    {
+      "artifact": "server",
+      "source": "published_docker_image",
+      "status": "pass",
+      "version": "2.0.0-rc.69"
+    },
+    {
+      "artifact": "cli",
+      "source": "github_release_asset",
+      "status": "pass",
+      "version": "2.0.0-rc.36"
+    },
+    {
+      "artifact": "sdk-python",
+      "source": "pypi_package",
+      "status": "pass",
+      "version": "2.0.0rc44"
+    },
+    {
+      "artifact": "workflow",
+      "source": "packagist_package",
+      "status": "pass",
+      "version": "2.0.0-rc.55"
+    },
+    {
+      "artifact": "sdk-php",
+      "source": "packagist_package",
+      "status": "pass",
+      "version": "2.0.0-rc.54"
+    },
+    {
+      "artifact": "sdk-rust",
+      "source": "crates_io_package",
+      "status": "pass",
+      "version": "2.0.0-rc.39"
+    },
+    {
+      "artifact": "waterline",
+      "source": "packagist_package",
+      "status": "pass",
+      "version": "2.0.0-rc.35"
+    }
+  ],
+  "local_product_source_checkouts_used": false,
+  "status": "pass"
+}
