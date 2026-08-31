@@ -5,9 +5,9 @@ is deliberately a checklist, not an orchestration system.
 
 Ordinary repository CI and release work runs in GitHub Actions. Experiments
 that need Docker restarts, process loss, or private Cloud access run locally by
-a maintainer from the published-artifact command below. Every result is then
-recorded with the GitHub conformance-run issue form so the tuple and outcome are
-visible to everyone.
+a maintainer from the published-artifact command below. Every result is recorded
+as a concise update on the active release issue so the tuple, outcome, and next
+action remain visible without creating a second backlog.
 
 ## Stable 2.0 tier
 
@@ -39,17 +39,28 @@ project for every run.
 
 ## Report a run
 
-Open a
-[`kind:conformance-run`](https://github.com/durable-workflow/.github/issues?q=is%3Aissue+label%3Akind%3Aconformance-run)
-issue and include:
+Add one comment to the active stable-release issue and update its fixed-tier
+checklist. Include:
 
 - the experiment and outcome;
 - the exact seven-component tuple;
 - the runner repository and full commit SHA;
 - UTC start and finish timestamps;
 - the command with secrets removed; and
-- an immutable GitHub Actions, artifact, release, or commit URL for the
-  structured result.
+- a concise scenario pass/fail summary and links to any product defects or
+  runner corrections found by the run.
+
+Do not commit per-run result payloads, logs, screenshots, or generated evidence
+directories to this repository. The active release issue is the durable release
+record. GitHub Actions may retain bounded-lifetime artifacts when raw output is
+useful for diagnosis; locally executed runs keep raw output only until the issue
+summary has been verified. Stable-release authority depends on the exact tuple,
+runner revision, scenario outcomes, findings, and linked fixes, not permanent
+storage of every raw execution detail.
+
+Do not open and immediately close a separate issue for each run. Open a product
+issue only when the experiment finds an actual product defect. Open a runner
+issue only when the runner itself needs a durable code change.
 
 Use one of four outcomes: `pass`, `product-fail`, `runner-blocked`, or
 `out-of-scope`. A runner failure is not a product failure, but missing, stale,

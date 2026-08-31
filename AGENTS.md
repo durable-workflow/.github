@@ -141,7 +141,8 @@ not post lease heartbeats, raw local logs, or vague status text.
   experiments locally when hosted Actions are unsuitable.
 - Local execution creates no private authority. Report every run to GitHub with
   the experiment, exact tuple, runner commit, timestamps, outcome, and sanitized
-  retained evidence.
+  scenario outcomes and findings. Do not commit generated per-run payloads;
+  temporary diagnostic artifacts must have bounded retention.
 - Distinguish `product-fail` from `runner-blocked`. Neither is a pass.
 - Missing, stale, partial, or runner-blocked evidence cannot authorize stable.
 - Every confirmed replay or codec defect adds the smallest reproducing corpus
