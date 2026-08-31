@@ -7,7 +7,7 @@ Welcome to the Durable Workflow project! This project is dedicated to creating t
 GitHub issues, pull requests, Actions, releases, and retained conformance
 evidence are the complete project record. Contributors do not need access to a
 separate tracker or build coordinator. The working rules are in
-[`CONTRIBUTING.md`](CONTRIBUTING.md), and the fixed 2.0 release-critical
+[`AGENTS.md`](AGENTS.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md), and the fixed 2.0 release-critical
 experiment set is in the [conformance runbook](conformance/README.md).
 
 ## Release authority

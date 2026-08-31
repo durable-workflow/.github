@@ -1,5 +1,8 @@
 # Contributing to Durable Workflow
 
+Agents and automated contributors must read the organization-wide
+[`AGENTS.md`](AGENTS.md) before starting work.
+
 Use the repository's focused tests and public qualification workflow for every
 change. Keep public examples and evidence free of credentials, customer data,
 and private deployment details.
