@@ -1,0 +1,57 @@
+{
+  "artifacts": [
+    {
+      "artifact": "server",
+      "local_product_source_checkouts_used": false,
+      "observed_at": "2026-08-31T16:31:41Z",
+      "source": "docker://durableworkflow/server:2.0.0-rc.69@sha256:92d78e4eaa61667eb02f4f238ba51cce322d832f23914d882e834e38e4e9f753",
+      "status": "pass",
+      "version": "2.0.0-rc.69"
+    },
+    {
+      "artifact": "cli",
+      "local_product_source_checkouts_used": false,
+      "observed_at": "2026-08-31T16:31:44Z",
+      "source": "https://github.com/durable-workflow/cli/releases/download/2.0.0-rc.36/install.sh",
+      "status": "pass",
+      "version": "2.0.0-rc.36"
+    },
+    {
+      "artifact": "sdk-python",
+      "local_product_source_checkouts_used": false,
+      "observed_at": "2026-08-31T16:31:49Z",
+      "source": "https://pypi.org/project/durable-workflow/2.0.0-rc.44/",
+      "status": "pass",
+      "version": "2.0.0-rc.44"
+    },
+    {
+      "artifact": "sdk-rust",
+      "local_product_source_checkouts_used": false,
+      "observed_at": "2026-08-31T16:31:49Z",
+      "source": "https://crates.io/crates/durable-workflow/2.0.0-rc.39",
+      "status": "pass",
+      "version": "2.0.0-rc.39"
+    },
+    {
+      "artifact": "workflow-php",
+      "local_product_source_checkouts_used": false,
+      "observed_at": "2026-08-31T16:31:49Z",
+      "source": "https://packagist.org/packages/durable-workflow/workflow#2.0.0-rc.55",
+      "status": "pass",
+      "version": "2.0.0-rc.55"
+    },
+    {
+      "artifact": "waterline",
+      "local_product_source_checkouts_used": false,
+      "observed_at": "2026-08-31T16:31:49Z",
+      "source": "https://packagist.org/packages/durable-workflow/waterline#2.0.0-rc.35",
+      "status": "pass",
+      "version": "2.0.0-rc.35"
+    }
+  ],
+  "execution_source": "published_server_image_install_probe",
+  "generated_at": "2026-08-31T16:31:49Z",
+  "local_product_source_checkouts_used": false,
+  "schema": "durable-workflow.v2.child-workflow-runtime.artifact-install-evidence",
+  "server_image": "durableworkflow/server@sha256:92d78e4eaa61667eb02f4f238ba51cce322d832f23914d882e834e38e4e9f753"
+}

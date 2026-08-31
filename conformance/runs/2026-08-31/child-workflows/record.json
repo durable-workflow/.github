@@ -1,0 +1,15 @@
+{
+  "artifactVersions": {
+    "cli": "2.0.0-rc.36",
+    "sdk-python": "2.0.0-rc.44",
+    "sdk-rust": "2.0.0-rc.39",
+    "server": "2.0.0-rc.69",
+    "waterline": "2.0.0-rc.35",
+    "workflow": "2.0.0-rc.55"
+  },
+  "experiment": "child-workflows",
+  "findings": [],
+  "outcome": "pass",
+  "resultPath": "/result/child-workflows-result.json",
+  "runnerBlocked": false
+}
