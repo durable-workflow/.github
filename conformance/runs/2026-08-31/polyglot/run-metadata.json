@@ -1,0 +1,22 @@
+{
+  "build_cache_mode": "warm-cache",
+  "experiment": "polyglot",
+  "finished_at": "2026-08-31T17:50:52Z",
+  "frozen_release_tuple": {
+    "cli": "2.0.0-rc.36",
+    "sdk-php": "2.0.0-rc.54",
+    "sdk-python": "2.0.0-rc.44",
+    "sdk-rust": "2.0.0-rc.39",
+    "server": "2.0.0-rc.69",
+    "waterline": "2.0.0-rc.35",
+    "workflow": "2.0.0-rc.55"
+  },
+  "local_product_source_checkouts_used": false,
+  "runner_revision": {
+    "commit": "eb960549b4bf2da769933a386bbe3b510a8f0979",
+    "repository": "durable-workflow/sample-app"
+  },
+  "schema": "durable-workflow.v2.polyglot-conformance.metadata",
+  "server_image": "durableworkflow/server:2.0.0-rc.69@sha256:92d78e4eaa61667eb02f4f238ba51cce322d832f23914d882e834e38e4e9f753",
+  "started_at": "2026-08-31T17:47:19Z"
+}

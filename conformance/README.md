@@ -22,7 +22,7 @@ CLI, PHP SDK, Python SDK, and Rust SDK tuple.
 | Heartbeats | `durable-workflow/server`: the PHP, Python, and Rust `heartbeats-*-published-artifacts.sh` runners |
 | Migration | `durable-workflow/server`: `scripts/conformance/migration-published-artifacts.sh` |
 | Namespaces | `durable-workflow/server`: `scripts/conformance/namespaces-published-artifacts.sh` |
-| Polyglot | `durable-workflow/server`: activities, PHP SDK, and Python published-artifact runners, including Rust matrix cells |
+| Polyglot | `durable-workflow/sample-app`: `scripts/polyglot-validation.sh` |
 | Replay | `durable-workflow/server`: `scripts/conformance/replay-published-artifacts.sh` |
 | Schedules | `durable-workflow/server`: `scripts/conformance/schedules-published-artifacts.sh` |
 | SDK matrix | `durable-workflow/server`: PHP and Python published-artifact runners; `durable-workflow/sample-app`: `scripts/playground rust` |
