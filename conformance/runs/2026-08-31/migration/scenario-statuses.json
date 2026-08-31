@@ -1,0 +1,18 @@
+{
+  "published_artifact_install_only": "pass",
+  "latest_supported_v1_state_setup": "pass",
+  "documented_migration_steps_execute": "pass",
+  "completed_history_preservation_and_replay": "pass",
+  "in_flight_workflow_progress_preserved": "pass",
+  "mid_activity_retry_preserved": "pass",
+  "queue_state_preserved": "pass",
+  "schedule_cross_upgrade_cadence_preserved": "not_applicable",
+  "worker_registration_projection_preserved": "not_applicable",
+  "waterline_operator_visibility_preserved": "pass",
+  "cli_access_to_preupgrade_state": "pass",
+  "new_v2_workflow_start_after_upgrade": "pass",
+  "new_v2_schedule_after_upgrade": "pass",
+  "new_v2_worker_registration_after_upgrade": "pass",
+  "rollback_contract_verified": "pass",
+  "version_skew_refusal": "not_applicable"
+}

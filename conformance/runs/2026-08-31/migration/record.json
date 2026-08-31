@@ -1,0 +1,25 @@
+{
+  "experiment": "migration",
+  "outcome": "pass",
+  "runnerBlocked": false,
+  "classification": "published-v1-to-frozen-v2-migration-proven",
+  "artifactVersions": {
+    "workflow": "2.0.0-rc.55",
+    "waterline": "2.0.0-rc.35",
+    "server": "2.0.0-rc.69",
+    "cli": "2.0.0-rc.36",
+    "sdk-php": "2.0.0-rc.54",
+    "sdk-python": "2.0.0-rc.44",
+    "sdk-rust": "2.0.0-rc.39"
+  },
+  "sourceVersions": {
+    "workflow-v1": "1.0.82",
+    "waterline-v1": "1.0.18",
+    "sample-app-v1": "e769ac5f4147498c652445f517ae724d73afa4de"
+  },
+  "requiredScenarioCount": 16,
+  "passedScenarioCount": 13,
+  "notApplicableScenarioCount": 3,
+  "nonPassScenarios": [],
+  "findings": []
+}
