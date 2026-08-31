@@ -2,7 +2,15 @@
 
 Welcome to the Durable Workflow project! This project is dedicated to creating tools and libraries for developers to build and manage durable, long-running, persistent, distributed workflows.
 
-## Public release control plane
+## GitHub project control plane
+
+GitHub issues, pull requests, Actions, releases, and retained conformance
+evidence are the complete project record. Contributors do not need access to a
+separate tracker or build coordinator. The working rules are in
+[`AGENTS.md`](AGENTS.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md), and the fixed 2.0 release-critical
+experiment set is in the [conformance runbook](conformance/README.md).
+
+## Release authority
 
 The machine-readable [product-train authority](product-train/README.md) maps
 one Durable Workflow 2.0 choice to the exact seven-component tuple, every
@@ -43,10 +51,9 @@ Release evidence binds every experiment to the exact seven-component tuple,
 all required distribution identities, their source identities, and the
 conformance runner revision.
 
-New public product work and the deliberately selected unresolved beta backlog
-use [GitHub issue authority](issue-authority/README.md). Organization issue
-forms capture durable intake context, while a one-way lifecycle audit prevents
-an external mirror from reopening completed GitHub work.
+New product work and the deliberately selected unresolved beta backlog use
+[GitHub issue authority](issue-authority/README.md). Organization issue forms
+capture durable intake context, and GitHub issue state is authoritative.
 
 Confirmed replay and payload-codec defects are also governed by an append-only
 [regression-corpus contract](regression-corpus/README.md). Its repository-local
