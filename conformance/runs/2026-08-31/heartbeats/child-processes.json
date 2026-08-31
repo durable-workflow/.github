@@ -1,0 +1,44 @@
+{
+  "schema": "durable-workflow.v2.heartbeat-runtime.shared-wave-children",
+  "version": 1,
+  "observed_at": "2026-08-31T16:56:58Z",
+  "outcome": "pass",
+  "required_cells": [
+    "php",
+    "python",
+    "rust",
+    "waterline"
+  ],
+  "required_cells_present": true,
+  "all_process_groups_settled": true,
+  "cells": {
+    "php": {
+      "pid": 1981345,
+      "process_group_id": 1981345,
+      "exit_code": 0,
+      "settled": true,
+      "forced_signal": null
+    },
+    "python": {
+      "pid": 1981376,
+      "process_group_id": 1981376,
+      "exit_code": 0,
+      "settled": true,
+      "forced_signal": null
+    },
+    "rust": {
+      "pid": 1981418,
+      "process_group_id": 1981418,
+      "exit_code": 0,
+      "settled": true,
+      "forced_signal": null
+    },
+    "waterline": {
+      "pid": 1981481,
+      "process_group_id": 1981481,
+      "exit_code": 0,
+      "settled": true,
+      "forced_signal": null
+    }
+  }
+}

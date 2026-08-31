@@ -1,0 +1,21 @@
+{
+  "started_at": "2026-08-31T16:53:29Z",
+  "finished_at": "2026-08-31T16:57:04Z",
+  "wall_time_seconds": 215,
+  "maximum_wall_time_seconds": 540,
+  "runner_revisions": {
+    "server": "37aa3abeeadd4aa6d337c55e1a37f0abd206899a",
+    "waterline": "4b4323677feecfd1a4f05069dc3012127a92b821"
+  },
+  "server_image": "durableworkflow/server@sha256:92d78e4eaa61667eb02f4f238ba51cce322d832f23914d882e834e38e4e9f753",
+  "artifact_versions": {
+    "server": "2.0.0-rc.69",
+    "cli": "2.0.0-rc.36",
+    "sdk-php": "2.0.0-rc.54",
+    "sdk-python": "2.0.0-rc.44",
+    "sdk-rust": "2.0.0-rc.39",
+    "workflow": "2.0.0-rc.55",
+    "waterline": "2.0.0-rc.35"
+  },
+  "local_product_source_checkouts_used": false
+}
