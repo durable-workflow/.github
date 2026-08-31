@@ -1,0 +1,76 @@
+{
+  "checked_at": "2026-08-31T16:55:02Z",
+  "composer_preferred_install": "dist",
+  "relevant_packages": {
+    "durable-workflow/sdk": {
+      "version": "2.0.0-rc.54",
+      "dist": {
+        "type": "zip",
+        "url": "https://api.github.com/repos/durable-workflow/sdk-php/zipball/29a60cabf5e185d5735e9a34a1d2c09560cedd6f",
+        "reference": "29a60cabf5e185d5735e9a34a1d2c09560cedd6f",
+        "shasum": ""
+      },
+      "source": {
+        "type": "git",
+        "url": "https://github.com/durable-workflow/sdk-php.git",
+        "reference": "29a60cabf5e185d5735e9a34a1d2c09560cedd6f"
+      }
+    },
+    "durable-workflow/workflow": {
+      "version": "2.0.0-rc.55",
+      "dist": {
+        "type": "zip",
+        "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/720512eefa0a5a97afeb410797cff8803ec76864",
+        "reference": "720512eefa0a5a97afeb410797cff8803ec76864",
+        "shasum": ""
+      },
+      "source": {
+        "type": "git",
+        "url": "https://github.com/durable-workflow/workflow.git",
+        "reference": "720512eefa0a5a97afeb410797cff8803ec76864"
+      }
+    },
+    "durable-workflow/waterline": {
+      "version": "2.0.0-rc.35",
+      "dist": {
+        "type": "zip",
+        "url": "https://api.github.com/repos/durable-workflow/waterline/zipball/4b4323677feecfd1a4f05069dc3012127a92b821",
+        "reference": "4b4323677feecfd1a4f05069dc3012127a92b821",
+        "shasum": ""
+      },
+      "source": {
+        "type": "git",
+        "url": "https://github.com/durable-workflow/waterline.git",
+        "reference": "4b4323677feecfd1a4f05069dc3012127a92b821"
+      }
+    }
+  },
+  "configured_repositories": [],
+  "local_path_repository_present": false,
+  "local_checkout_markers": [],
+  "local_product_source_checkouts_used": false,
+  "php_runtime_alignment": {
+    "server_image": "durableworkflow/server@sha256:92d78e4eaa61667eb02f4f238ba51cce322d832f23914d882e834e38e4e9f753",
+    "server_detected_php": "8.3.33",
+    "composer_image": "composer:2",
+    "composer_detected_php": "8.5.9",
+    "composer_global_platform_configured_php": "8.3.33",
+    "composer_platform_configured_php": "8.3.33",
+    "platform_matches_server": true,
+    "detected_before_dependency_resolution": true
+  },
+  "dependency_resolution_completed": true,
+  "server_runtime_boot": {
+    "server_image": "durableworkflow/server@sha256:92d78e4eaa61667eb02f4f238ba51cce322d832f23914d882e834e38e4e9f753",
+    "detected_php": "8.3.33",
+    "configured_composer_platform_php": "8.3.33",
+    "command": "php artisan --version",
+    "exit_code": 0,
+    "stdout": "Laravel Framework 12.68.0",
+    "stderr": "",
+    "verified_at": "2026-08-31T16:55:04Z",
+    "passed": true
+  },
+  "passed": true,
+  "published_package_sources_passed": true
+}

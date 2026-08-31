@@ -1,0 +1,16 @@
+{
+  "experiment": "heartbeats",
+  "outcome": "pass",
+  "artifactVersions": {
+    "server": "2.0.0-rc.69",
+    "cli": "2.0.0-rc.36",
+    "sdk-php": "2.0.0-rc.54",
+    "sdk-python": "2.0.0-rc.44",
+    "sdk-rust": "2.0.0-rc.39",
+    "workflow": "2.0.0-rc.55",
+    "waterline": "2.0.0-rc.35"
+  },
+  "runnerBlocked": false,
+  "classification": "published-heartbeat-shared-wave-proven",
+  "findings": []
+}

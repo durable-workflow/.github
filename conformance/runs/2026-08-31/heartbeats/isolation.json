@@ -1,0 +1,817 @@
+{
+  "schema": "durable-workflow.v2.heartbeat-runtime.shared-wave-isolation",
+  "version": 1,
+  "wave_run_id": "heartbeat-wave-3adc8c7db2b4",
+  "observed_at": "2026-08-31T16:56:59Z",
+  "outcome": "pass",
+  "observations": {
+    "php": {
+      "namespace": "hb-wave-3adc8c7db2b4-php",
+      "active": {
+        "status": 200,
+        "body": {
+          "workers": [],
+          "stale_after_seconds": 7
+        }
+      },
+      "stale": {
+        "status": 200,
+        "body": {
+          "workers": [
+            {
+              "worker_id": "heartbeat-php-fresh-3197f428a83a",
+              "namespace": "hb-wave-3adc8c7db2b4-php",
+              "task_queue": "hb-php-3197f428a83a",
+              "runtime": "php",
+              "sdk_version": "durable-workflow-php/2.0.0-rc.54",
+              "build_id": null,
+              "supported_workflow_types": [
+                "conformance.heartbeat.php"
+              ],
+              "workflow_definition_fingerprints": [],
+              "workflow_command_contracts": [],
+              "supported_activity_types": [],
+              "capabilities": [
+                "query_tasks",
+                "workflow_updates",
+                "durable_history_replay",
+                "graceful_shutdown",
+                "sticky_execution"
+              ],
+              "capability_manifest": {
+                "worker_sessions": {
+                  "reason": "not_enabled_for_this_worker_registration",
+                  "supported": false,
+                  "minimum_protocol_version": "1.18"
+                },
+                "local_activities": {
+                  "reason": "not_enabled_for_this_worker_registration",
+                  "supported": false,
+                  "minimum_protocol_version": "1.18"
+                },
+                "sticky_execution": {
+                  "supported": true,
+                  "implementation": "bounded_exact_identity_cache",
+                  "minimum_protocol_version": "1.18"
+                }
+              },
+              "max_concurrent_workflow_tasks": 2,
+              "max_concurrent_activity_tasks": 1,
+              "max_concurrent_worker_sessions": 10,
+              "task_slots": {
+                "workflow_available": 2,
+                "activity_available": 1,
+                "session_available": null,
+                "workflow_capacity": 2,
+                "activity_capacity": 1,
+                "session_capacity": 10
+              },
+              "process_metrics": {
+                "process_id": 1,
+                "process_uptime_seconds": 0
+              },
+              "heartbeat_interval_seconds": null,
+              "status": "stale",
+              "last_heartbeat_at": "2026-08-31T16:54:50.000000Z",
+              "registered_at": "2026-08-31T16:54:22.000000Z"
+            },
+            {
+              "worker_id": "heartbeat-php-stale-3197f428a83a",
+              "namespace": "hb-wave-3adc8c7db2b4-php",
+              "task_queue": "hb-php-3197f428a83a",
+              "runtime": "php",
+              "sdk_version": "durable-workflow-php/2.0.0-rc.54",
+              "build_id": null,
+              "supported_workflow_types": [
+                "conformance.heartbeat.php"
+              ],
+              "workflow_definition_fingerprints": [],
+              "workflow_command_contracts": [],
+              "supported_activity_types": [],
+              "capabilities": [
+                "query_tasks",
+                "workflow_updates",
+                "durable_history_replay",
+                "graceful_shutdown",
+                "sticky_execution"
+              ],
+              "capability_manifest": {
+                "worker_sessions": {
+                  "reason": "not_enabled_for_this_worker_registration",
+                  "supported": false,
+                  "minimum_protocol_version": "1.18"
+                },
+                "local_activities": {
+                  "reason": "not_enabled_for_this_worker_registration",
+                  "supported": false,
+                  "minimum_protocol_version": "1.18"
+                },
+                "sticky_execution": {
+                  "supported": true,
+                  "implementation": "bounded_exact_identity_cache",
+                  "minimum_protocol_version": "1.18"
+                }
+              },
+              "max_concurrent_workflow_tasks": 2,
+              "max_concurrent_activity_tasks": 1,
+              "max_concurrent_worker_sessions": 10,
+              "task_slots": {
+                "workflow_available": 2,
+                "activity_available": 1,
+                "session_available": null,
+                "workflow_capacity": 2,
+                "activity_capacity": 1,
+                "session_capacity": 10
+              },
+              "process_metrics": {
+                "process_id": 1,
+                "process_uptime_seconds": 0
+              },
+              "heartbeat_interval_seconds": null,
+              "status": "stale",
+              "last_heartbeat_at": "2026-08-31T16:54:32.000000Z",
+              "registered_at": "2026-08-31T16:54:11.000000Z"
+            }
+          ],
+          "stale_after_seconds": 7
+        }
+      },
+      "workflows": {
+        "status": 200,
+        "body": {
+          "workflows": [
+            {
+              "workflow_id": "hb-php-fresh-after-stale-3197f428a83a",
+              "run_id": "01m1cbx8311a73cxwdr4qazqxp",
+              "workflow_type": "conformance.heartbeat.php",
+              "business_key": null,
+              "status": "completed",
+              "status_bucket": "completed",
+              "task_queue": "hb-php-3197f428a83a",
+              "is_terminal": true,
+              "compatibility": null,
+              "compatibility_status": "compatible",
+              "compatibility_supported_in_fleet": true,
+              "compatibility_fleet_reason": null,
+              "started_at": "2026-08-31T16:54:43.040722Z",
+              "closed_at": "2026-08-31T16:54:45.334750Z",
+              "search_attributes": []
+            },
+            {
+              "workflow_id": "hb-php-initial-3197f428a83a",
+              "run_id": "01m1cbwf1gt1b0dc31wgxns9bj",
+              "workflow_type": "conformance.heartbeat.php",
+              "business_key": null,
+              "status": "completed",
+              "status_bucket": "completed",
+              "task_queue": "hb-php-3197f428a83a",
+              "is_terminal": true,
+              "compatibility": null,
+              "compatibility_status": "compatible",
+              "compatibility_supported_in_fleet": true,
+              "compatibility_fleet_reason": null,
+              "started_at": "2026-08-31T16:54:17.391834Z",
+              "closed_at": "2026-08-31T16:54:18.306393Z",
+              "search_attributes": []
+            }
+          ],
+          "workflow_count": 2,
+          "next_page_token": null,
+          "control_plane": {
+            "schema": "durable-workflow.v2.control-plane-response",
+            "version": 1,
+            "operation": "list",
+            "workflow_id": null,
+            "contract": {
+              "schema": "durable-workflow.v2.control-plane-response.contract",
+              "version": 1,
+              "legacy_field_policy": "reject_non_canonical",
+              "legacy_fields": {
+                "query": "query_name",
+                "signal": "signal_name",
+                "update": "update_name",
+                "wait_policy": "wait_for"
+              },
+              "required_fields": [],
+              "success_fields": []
+            },
+            "workflow_count": 2,
+            "next_page_token": null
+          }
+        }
+      },
+      "worker_ids": [
+        "heartbeat-php-fresh-3197f428a83a",
+        "heartbeat-php-stale-3197f428a83a"
+      ],
+      "task_queues": [
+        "hb-php-3197f428a83a"
+      ],
+      "workflow_ids": [
+        "hb-php-fresh-after-stale-3197f428a83a",
+        "hb-php-initial-3197f428a83a"
+      ],
+      "leaked_worker_ids": [],
+      "leaked_task_queues": [],
+      "leaked_workflow_ids": [],
+      "passed": true
+    },
+    "python": {
+      "namespace": "hb-wave-3adc8c7db2b4-python",
+      "active": {
+        "status": 200,
+        "body": {
+          "workers": [],
+          "stale_after_seconds": 7
+        }
+      },
+      "stale": {
+        "status": 200,
+        "body": {
+          "workers": [
+            {
+              "worker_id": "heartbeat-python-fresh-32938db1d846",
+              "namespace": "hb-wave-3adc8c7db2b4-python",
+              "task_queue": "hb-python-32938db1d846",
+              "runtime": "python",
+              "sdk_version": "durable-workflow-python/2.0.0rc44",
+              "build_id": null,
+              "supported_workflow_types": [
+                "conformance.heartbeat.python"
+              ],
+              "workflow_definition_fingerprints": {
+                "conformance.heartbeat.python": "sha256:8e47b15f9242ea2da763e5c0105a0009643ace865ea5eebd7c0a398f4e37ad6d"
+              },
+              "workflow_command_contracts": [],
+              "supported_activity_types": [],
+              "capabilities": [
+                "memo_upserts",
+                "typed_search_attributes",
+                "durable_selection",
+                "query_tasks",
+                "message_streams"
+              ],
+              "capability_manifest": {
+                "worker_sessions": {
+                  "reason": "python_worker_has_no_typed_session_lifecycle",
+                  "supported": false,
+                  "minimum_protocol_version": "1.18"
+                },
+                "local_activities": {
+                  "reason": "python_worker_does_not_execute_record_local_activity",
+                  "supported": false,
+                  "minimum_protocol_version": "1.18"
+                },
+                "sticky_execution": {
+                  "reason": "python_worker_uses_complete_durable_history_replay",
+                  "supported": false,
+                  "minimum_protocol_version": "1.18"
+                }
+              },
+              "max_concurrent_workflow_tasks": 2,
+              "max_concurrent_activity_tasks": 1,
+              "max_concurrent_worker_sessions": 10,
+              "task_slots": {
+                "workflow_available": 1,
+                "activity_available": 1,
+                "session_available": null,
+                "workflow_capacity": 2,
+                "activity_capacity": 1,
+                "session_capacity": 10
+              },
+              "process_metrics": {
+                "host": "eb49fff6416c",
+                "process_id": 1,
+                "cpu_percent": 5.85,
+                "memory_bytes": 45875200,
+                "process_started_at": "2026-08-31T16:54:37.683Z",
+                "process_uptime_seconds": 30
+              },
+              "heartbeat_interval_seconds": null,
+              "status": "stale",
+              "last_heartbeat_at": "2026-08-31T16:55:07.000000Z",
+              "registered_at": "2026-08-31T16:54:38.000000Z"
+            },
+            {
+              "worker_id": "heartbeat-python-stale-32938db1d846",
+              "namespace": "hb-wave-3adc8c7db2b4-python",
+              "task_queue": "hb-python-32938db1d846",
+              "runtime": "python",
+              "sdk_version": "durable-workflow-python/2.0.0rc44",
+              "build_id": null,
+              "supported_workflow_types": [
+                "conformance.heartbeat.python"
+              ],
+              "workflow_definition_fingerprints": {
+                "conformance.heartbeat.python": "sha256:8e47b15f9242ea2da763e5c0105a0009643ace865ea5eebd7c0a398f4e37ad6d"
+              },
+              "workflow_command_contracts": [],
+              "supported_activity_types": [],
+              "capabilities": [
+                "memo_upserts",
+                "typed_search_attributes",
+                "durable_selection",
+                "query_tasks",
+                "message_streams"
+              ],
+              "capability_manifest": {
+                "worker_sessions": {
+                  "reason": "python_worker_has_no_typed_session_lifecycle",
+                  "supported": false,
+                  "minimum_protocol_version": "1.18"
+                },
+                "local_activities": {
+                  "reason": "python_worker_does_not_execute_record_local_activity",
+                  "supported": false,
+                  "minimum_protocol_version": "1.18"
+                },
+                "sticky_execution": {
+                  "reason": "python_worker_uses_complete_durable_history_replay",
+                  "supported": false,
+                  "minimum_protocol_version": "1.18"
+                }
+              },
+              "max_concurrent_workflow_tasks": 2,
+              "max_concurrent_activity_tasks": 1,
+              "max_concurrent_worker_sessions": 10,
+              "task_slots": {
+                "workflow_available": 1,
+                "activity_available": 1,
+                "session_available": null,
+                "workflow_capacity": 2,
+                "activity_capacity": 1,
+                "session_capacity": 10
+              },
+              "process_metrics": {
+                "host": "c5864e6b586a",
+                "process_id": 1,
+                "cpu_percent": 4.23,
+                "memory_bytes": 46108672,
+                "process_started_at": "2026-08-31T16:54:26.652Z",
+                "process_uptime_seconds": 19
+              },
+              "heartbeat_interval_seconds": null,
+              "status": "stale",
+              "last_heartbeat_at": "2026-08-31T16:54:46.000000Z",
+              "registered_at": "2026-08-31T16:54:26.000000Z"
+            }
+          ],
+          "stale_after_seconds": 7
+        }
+      },
+      "workflows": {
+        "status": 200,
+        "body": {
+          "workflows": [
+            {
+              "workflow_id": "hb-python-fresh-after-stale-32938db1d846",
+              "run_id": "01m1cbxq87z43h0bzk0edb4y9v",
+              "workflow_type": "conformance.heartbeat.python",
+              "business_key": null,
+              "status": "completed",
+              "status_bucket": "completed",
+              "task_queue": "hb-python-32938db1d846",
+              "is_terminal": true,
+              "compatibility": null,
+              "compatibility_status": "compatible",
+              "compatibility_supported_in_fleet": true,
+              "compatibility_fleet_reason": null,
+              "started_at": "2026-08-31T16:54:58.567261Z",
+              "closed_at": "2026-08-31T16:54:59.071458Z",
+              "search_attributes": []
+            },
+            {
+              "workflow_id": "hb-python-initial-32938db1d846",
+              "run_id": "01m1cbwy3fd2nyzaq03sapfc6c",
+              "workflow_type": "conformance.heartbeat.python",
+              "business_key": null,
+              "status": "completed",
+              "status_bucket": "completed",
+              "task_queue": "hb-python-32938db1d846",
+              "is_terminal": true,
+              "compatibility": null,
+              "compatibility_status": "compatible",
+              "compatibility_supported_in_fleet": true,
+              "compatibility_fleet_reason": null,
+              "started_at": "2026-08-31T16:54:32.814897Z",
+              "closed_at": "2026-08-31T16:54:33.344473Z",
+              "search_attributes": []
+            }
+          ],
+          "workflow_count": 2,
+          "next_page_token": null,
+          "control_plane": {
+            "schema": "durable-workflow.v2.control-plane-response",
+            "version": 1,
+            "operation": "list",
+            "workflow_id": null,
+            "contract": {
+              "schema": "durable-workflow.v2.control-plane-response.contract",
+              "version": 1,
+              "legacy_field_policy": "reject_non_canonical",
+              "legacy_fields": {
+                "query": "query_name",
+                "signal": "signal_name",
+                "update": "update_name",
+                "wait_policy": "wait_for"
+              },
+              "required_fields": [],
+              "success_fields": []
+            },
+            "workflow_count": 2,
+            "next_page_token": null
+          }
+        }
+      },
+      "worker_ids": [
+        "heartbeat-python-fresh-32938db1d846",
+        "heartbeat-python-stale-32938db1d846"
+      ],
+      "task_queues": [
+        "hb-python-32938db1d846"
+      ],
+      "workflow_ids": [
+        "hb-python-fresh-after-stale-32938db1d846",
+        "hb-python-initial-32938db1d846"
+      ],
+      "leaked_worker_ids": [],
+      "leaked_task_queues": [],
+      "leaked_workflow_ids": [],
+      "passed": true
+    },
+    "rust": {
+      "namespace": "hb-wave-3adc8c7db2b4-rust",
+      "active": {
+        "status": 200,
+        "body": {
+          "workers": [
+            {
+              "worker_id": "heartbeat-rust-fresh-33935cddcf11",
+              "namespace": "hb-wave-3adc8c7db2b4-rust",
+              "task_queue": "hb-rust-33935cddcf11",
+              "runtime": "rust",
+              "sdk_version": "durable-workflow-rust/2.0.0-rc.39",
+              "build_id": null,
+              "supported_workflow_types": [
+                "conformance.heartbeat.rust"
+              ],
+              "workflow_definition_fingerprints": [],
+              "workflow_command_contracts": [],
+              "supported_activity_types": [],
+              "capabilities": [
+                "condition_wait_occurrence_identity",
+                "durable_selection",
+                "memo_upserts",
+                "typed_search_attributes",
+                "message_streams"
+              ],
+              "capability_manifest": {
+                "worker_sessions": {
+                  "reason": "rust_worker_has_no_typed_session_lifecycle",
+                  "supported": false,
+                  "minimum_protocol_version": "1.18"
+                },
+                "local_activities": {
+                  "reason": "rust_worker_does_not_execute_record_local_activity",
+                  "supported": false,
+                  "minimum_protocol_version": "1.18"
+                },
+                "sticky_execution": {
+                  "reason": "rust_worker_uses_complete_durable_history_replay",
+                  "supported": false,
+                  "minimum_protocol_version": "1.18"
+                }
+              },
+              "max_concurrent_workflow_tasks": 2,
+              "max_concurrent_activity_tasks": 1,
+              "max_concurrent_worker_sessions": 10,
+              "task_slots": {
+                "workflow_available": 2,
+                "activity_available": 1,
+                "session_available": null,
+                "workflow_capacity": 2,
+                "activity_capacity": 1,
+                "session_capacity": 10
+              },
+              "process_metrics": {
+                "process_id": 1,
+                "process_uptime_seconds": 0
+              },
+              "heartbeat_interval_seconds": null,
+              "status": "active",
+              "last_heartbeat_at": "2026-08-31T16:56:56.000000Z",
+              "registered_at": "2026-08-31T16:56:38.000000Z"
+            }
+          ],
+          "stale_after_seconds": 7
+        }
+      },
+      "stale": {
+        "status": 200,
+        "body": {
+          "workers": [
+            {
+              "worker_id": "heartbeat-rust-stale-33935cddcf11",
+              "namespace": "hb-wave-3adc8c7db2b4-rust",
+              "task_queue": "hb-rust-33935cddcf11",
+              "runtime": "rust",
+              "sdk_version": "durable-workflow-rust/2.0.0-rc.39",
+              "build_id": null,
+              "supported_workflow_types": [
+                "conformance.heartbeat.rust"
+              ],
+              "workflow_definition_fingerprints": [],
+              "workflow_command_contracts": [],
+              "supported_activity_types": [],
+              "capabilities": [
+                "condition_wait_occurrence_identity",
+                "durable_selection",
+                "memo_upserts",
+                "typed_search_attributes",
+                "message_streams"
+              ],
+              "capability_manifest": {
+                "worker_sessions": {
+                  "reason": "rust_worker_has_no_typed_session_lifecycle",
+                  "supported": false,
+                  "minimum_protocol_version": "1.18"
+                },
+                "local_activities": {
+                  "reason": "rust_worker_does_not_execute_record_local_activity",
+                  "supported": false,
+                  "minimum_protocol_version": "1.18"
+                },
+                "sticky_execution": {
+                  "reason": "rust_worker_uses_complete_durable_history_replay",
+                  "supported": false,
+                  "minimum_protocol_version": "1.18"
+                }
+              },
+              "max_concurrent_workflow_tasks": 2,
+              "max_concurrent_activity_tasks": 1,
+              "max_concurrent_worker_sessions": 10,
+              "task_slots": {
+                "workflow_available": 2,
+                "activity_available": 1,
+                "session_available": null,
+                "workflow_capacity": 2,
+                "activity_capacity": 1,
+                "session_capacity": 10
+              },
+              "process_metrics": {
+                "process_id": 1,
+                "process_uptime_seconds": 0
+              },
+              "heartbeat_interval_seconds": null,
+              "status": "stale",
+              "last_heartbeat_at": "2026-08-31T16:56:43.000000Z",
+              "registered_at": "2026-08-31T16:56:32.000000Z"
+            }
+          ],
+          "stale_after_seconds": 7
+        }
+      },
+      "workflows": {
+        "status": 200,
+        "body": {
+          "workflows": [
+            {
+              "workflow_id": "hb-rust-fresh-after-stale-33935cddcf11",
+              "run_id": "01m1cc15p8vzz2ttbc4nwn5sbn",
+              "workflow_type": "conformance.heartbeat.rust",
+              "business_key": null,
+              "status": "completed",
+              "status_bucket": "completed",
+              "task_queue": "hb-rust-33935cddcf11",
+              "is_terminal": true,
+              "compatibility": null,
+              "compatibility_status": "compatible",
+              "compatibility_supported_in_fleet": true,
+              "compatibility_fleet_reason": null,
+              "started_at": "2026-08-31T16:56:51.656604Z",
+              "closed_at": "2026-08-31T16:56:51.771453Z",
+              "search_attributes": []
+            },
+            {
+              "workflow_id": "hb-rust-initial-33935cddcf11",
+              "run_id": "01m1cc0nvhjkn68d9xp7jbrbjv",
+              "workflow_type": "conformance.heartbeat.rust",
+              "business_key": null,
+              "status": "completed",
+              "status_bucket": "completed",
+              "task_queue": "hb-rust-33935cddcf11",
+              "is_terminal": true,
+              "compatibility": null,
+              "compatibility_status": "compatible",
+              "compatibility_supported_in_fleet": true,
+              "compatibility_fleet_reason": null,
+              "started_at": "2026-08-31T16:56:35.441132Z",
+              "closed_at": "2026-08-31T16:56:35.657005Z",
+              "search_attributes": []
+            }
+          ],
+          "workflow_count": 2,
+          "next_page_token": null,
+          "control_plane": {
+            "schema": "durable-workflow.v2.control-plane-response",
+            "version": 1,
+            "operation": "list",
+            "workflow_id": null,
+            "contract": {
+              "schema": "durable-workflow.v2.control-plane-response.contract",
+              "version": 1,
+              "legacy_field_policy": "reject_non_canonical",
+              "legacy_fields": {
+                "query": "query_name",
+                "signal": "signal_name",
+                "update": "update_name",
+                "wait_policy": "wait_for"
+              },
+              "required_fields": [],
+              "success_fields": []
+            },
+            "workflow_count": 2,
+            "next_page_token": null
+          }
+        }
+      },
+      "worker_ids": [
+        "heartbeat-rust-fresh-33935cddcf11",
+        "heartbeat-rust-stale-33935cddcf11"
+      ],
+      "task_queues": [
+        "hb-rust-33935cddcf11"
+      ],
+      "workflow_ids": [
+        "hb-rust-fresh-after-stale-33935cddcf11",
+        "hb-rust-initial-33935cddcf11"
+      ],
+      "leaked_worker_ids": [],
+      "leaked_task_queues": [],
+      "leaked_workflow_ids": [],
+      "passed": true
+    },
+    "waterline": {
+      "namespace": "hb-wave-3adc8c7db2b4-waterline",
+      "active": {
+        "status": 200,
+        "body": {
+          "workers": [],
+          "stale_after_seconds": 7
+        }
+      },
+      "stale": {
+        "status": 200,
+        "body": {
+          "workers": [
+            {
+              "worker_id": "waterline-stale-95233571285ef3d2",
+              "namespace": "hb-wave-3adc8c7db2b4-waterline",
+              "task_queue": "waterline-status-3571285ef3d2",
+              "runtime": "php",
+              "sdk_version": "durable-workflow-php/2.0.0-rc.54",
+              "build_id": "waterline-compat-95233571285ef3d2",
+              "supported_workflow_types": [
+                "conformance.waterline.worker-status"
+              ],
+              "workflow_definition_fingerprints": [],
+              "workflow_command_contracts": [],
+              "supported_activity_types": [
+                "conformance.waterline.worker-status.activity"
+              ],
+              "capabilities": [
+                "query_tasks",
+                "workflow_updates",
+                "durable_history_replay",
+                "graceful_shutdown",
+                "message_streams",
+                "memo_upserts",
+                "typed_search_attributes",
+                "durable_selection",
+                "local_activities",
+                "worker_sessions",
+                "sticky_execution"
+              ],
+              "capability_manifest": {
+                "worker_sessions": {
+                  "supported": true,
+                  "implementation": "create_heartbeat_close",
+                  "minimum_protocol_version": "1.18"
+                },
+                "local_activities": {
+                  "supported": true,
+                  "implementation": "record_local_activity",
+                  "minimum_protocol_version": "1.18"
+                },
+                "sticky_execution": {
+                  "supported": true,
+                  "implementation": "bounded_exact_identity_cache",
+                  "minimum_protocol_version": "1.18"
+                }
+              },
+              "max_concurrent_workflow_tasks": 1,
+              "max_concurrent_activity_tasks": 1,
+              "max_concurrent_worker_sessions": 10,
+              "task_slots": {
+                "workflow_available": 1,
+                "activity_available": 1,
+                "session_available": null,
+                "workflow_capacity": 1,
+                "activity_capacity": 1,
+                "session_capacity": 10
+              },
+              "process_metrics": {
+                "process_id": 12,
+                "process_uptime_seconds": 0
+              },
+              "heartbeat_interval_seconds": null,
+              "status": "stale",
+              "last_heartbeat_at": "2026-08-31T16:55:19.000000Z",
+              "registered_at": "2026-08-31T16:55:10.000000Z"
+            }
+          ],
+          "stale_after_seconds": 7
+        }
+      },
+      "workflows": {
+        "status": 200,
+        "body": {
+          "workflows": [
+            {
+              "workflow_id": "waterline-worker-status-after-stale-95233571285ef3d2",
+              "run_id": "01m1cbykpt5rk2nevy3m7x013z",
+              "workflow_type": "conformance.waterline.worker-status",
+              "business_key": null,
+              "status": "completed",
+              "status_bucket": "completed",
+              "task_queue": "waterline-status-3571285ef3d2",
+              "is_terminal": true,
+              "compatibility": "waterline-compat-95233571285ef3d2",
+              "compatibility_status": "no_compatible_worker",
+              "compatibility_supported_in_fleet": false,
+              "compatibility_fleet_reason": "No active worker heartbeat for task queue [waterline-status-3571285ef3d2] advertises compatibility [waterline-compat-95233571285ef3d2].",
+              "started_at": "2026-08-31T16:55:27.706224Z",
+              "closed_at": "2026-08-31T16:55:29.713106Z",
+              "search_attributes": []
+            },
+            {
+              "workflow_id": "waterline-worker-status-initial-95233571285ef3d2",
+              "run_id": "01m1cby5aad45kyqbgzhd4jbff",
+              "workflow_type": "conformance.waterline.worker-status",
+              "business_key": null,
+              "status": "completed",
+              "status_bucket": "completed",
+              "task_queue": "waterline-status-3571285ef3d2",
+              "is_terminal": true,
+              "compatibility": "waterline-compat-95233571285ef3d2",
+              "compatibility_status": "no_compatible_worker",
+              "compatibility_supported_in_fleet": false,
+              "compatibility_fleet_reason": "No active worker heartbeat for task queue [waterline-status-3571285ef3d2] advertises compatibility [waterline-compat-95233571285ef3d2].",
+              "started_at": "2026-08-31T16:55:12.970318Z",
+              "closed_at": "2026-08-31T16:55:14.192284Z",
+              "search_attributes": []
+            }
+          ],
+          "workflow_count": 2,
+          "next_page_token": null,
+          "control_plane": {
+            "schema": "durable-workflow.v2.control-plane-response",
+            "version": 1,
+            "operation": "list",
+            "workflow_id": null,
+            "contract": {
+              "schema": "durable-workflow.v2.control-plane-response.contract",
+              "version": 1,
+              "legacy_field_policy": "reject_non_canonical",
+              "legacy_fields": {
+                "query": "query_name",
+                "signal": "signal_name",
+                "update": "update_name",
+                "wait_policy": "wait_for"
+              },
+              "required_fields": [],
+              "success_fields": []
+            },
+            "workflow_count": 2,
+            "next_page_token": null
+          }
+        }
+      },
+      "worker_ids": [
+        "waterline-stale-95233571285ef3d2"
+      ],
+      "task_queues": [
+        "waterline-status-3571285ef3d2"
+      ],
+      "workflow_ids": [
+        "waterline-worker-status-after-stale-95233571285ef3d2",
+        "waterline-worker-status-initial-95233571285ef3d2"
+      ],
+      "leaked_worker_ids": [],
+      "leaked_task_queues": [],
+      "leaked_workflow_ids": [],
+      "passed": true
+    }
+  },
+  "failures": []
+}
