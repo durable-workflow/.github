@@ -1,1 +1,1 @@
-"""Durable Workflow public control-plane tooling."""
+"""Durable Workflow shared project tooling."""

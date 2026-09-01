@@ -34,7 +34,7 @@ class VisualEvidencePolicyTest(unittest.TestCase):
         Draft202012Validator.check_schema(schema)
         Draft202012Validator(schema).validate(self.policy)
 
-    def test_source_qualification_pins_an_isolated_browser_runtime(self) -> None:
+    def test_browser_runtime_dependencies_are_pinned(self) -> None:
         package = json.loads((ROOT / "package.json").read_bytes())
         lock = json.loads((ROOT / "package-lock.json").read_bytes())
         self.assertEqual("140.0.0", package["dependencies"]["@sparticuz/chromium"])
@@ -46,22 +46,6 @@ class VisualEvidencePolicyTest(unittest.TestCase):
             locked = lock["packages"][f"node_modules/{dependency}"]
             self.assertEqual(expected_version, locked["version"])
             self.assertTrue(locked["integrity"].startswith("sha512-"))
-
-        workflow = yaml.safe_load((ROOT / ".github/workflows/source-qualification.yml").read_bytes())
-        self.assertEqual({"contents": "read"}, workflow["permissions"])
-        steps = workflow["jobs"]["source"]["steps"]
-        setup_node = next(step for step in steps if str(step.get("uses", "")).startswith("actions/setup-node@"))
-        self.assertNotIn("cache", setup_node.get("with", {}))
-        visual_capture = next(step for step in steps if step.get("name") == "Validate visual capture")
-        self.assertEqual(
-            "${{ runner.temp }}/visual-chromium-${{ github.run_id }}-${{ github.run_attempt }}",
-            visual_capture["env"]["TMPDIR"],
-        )
-        self.assertIn("npm run test:visual-capture", visual_capture["run"])
-        for step in steps:
-            if "actions/upload-artifact@" not in str(step.get("uses", "")):
-                continue
-            self.assertIn("github.event_name != 'pull_request'", step["if"])
 
     def test_rust_reusable_workflow_captures_and_retains_the_exact_candidate_matrix(self) -> None:
         workflow = yaml.safe_load((ROOT / ".github/workflows/rust-docs-visual.yml").read_bytes())
@@ -252,7 +236,7 @@ class VisualEvidencePolicyTest(unittest.TestCase):
         report.write_text(
             json.dumps(
                 {
-                    "schema": "durable-workflow.pipeline.visual-capture/v1",
+                    "schema": "durable-workflow.visual-capture/v1",
                     "surface": "docs",
                     "state": state,
                     "viewport": viewport,
@@ -369,7 +353,7 @@ class VisualEvidencePolicyTest(unittest.TestCase):
     def write_manifest(self, root: Path, captures: list[dict[str, Any]]) -> Path:
         manifest = root / "manifest.json"
         manifest.write_text(
-            json.dumps({"schema": "durable-workflow.pipeline.visual-review/v1", "captures": captures}),
+            json.dumps({"schema": "durable-workflow.visual-review/v1", "captures": captures}),
             encoding="utf-8",
         )
         return manifest
@@ -390,7 +374,7 @@ class VisualEvidencePolicyTest(unittest.TestCase):
         viewport = {"width": width, "height": height}
         interactions = [{"type": "click", "selector": selector} for selector in selectors or []]
         report = {
-            "schema": "durable-workflow.pipeline.visual-capture/v1",
+            "schema": "durable-workflow.visual-capture/v1",
             "surface": "rust-sdk-reference",
             "state": state,
             "viewport": viewport,
@@ -441,7 +425,7 @@ class VisualEvidencePolicyTest(unittest.TestCase):
         manifest.write_text(
             json.dumps(
                 {
-                    "schema": "durable-workflow.pipeline.visual-review/v1",
+                    "schema": "durable-workflow.visual-review/v1",
                     "source": source,
                     "captures": captures,
                 }

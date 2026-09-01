@@ -134,7 +134,7 @@ jobs:
             if [ "$width" = 640 ] && [ "$height" = 360 ]; then
               capture_args+=(--full-page)
             fi
-            node visual-controller/scripts/pipeline_visual_capture.mjs \
+            node visual-controller/scripts/visual_capture.mjs \
               --url http://127.0.0.1:4173/ \
               --surface rust-sdk-reference --state "$state" \
               --width "$width" --height "$height" \
