@@ -251,7 +251,7 @@
       ]
     },
     "waterline": {
-      "branch": "v2",
+      "branch": "main",
       "repository": "waterline",
       "workflows": [
         {
@@ -263,7 +263,7 @@
       ]
     },
     "workflow": {
-      "branch": "v2",
+      "branch": "main",
       "repository": "workflow",
       "workflows": [
         {
