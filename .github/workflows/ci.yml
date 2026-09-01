@@ -32,8 +32,10 @@ jobs:
       - name: Test retained shared contracts
         run: >-
           python -m unittest
+          tests.test_qualification_policy
           tests.test_regression_corpus
           tests.test_regression_evidence_schema
+          tests.test_server_codec_counterfactual_schema
           tests.test_visual_evidence
 
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6

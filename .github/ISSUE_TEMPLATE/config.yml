@@ -2,7 +2,7 @@ blank_issues_enabled: false
 contact_links:
   - name: Durable Workflow documentation
     url: https://durable-workflow.com/docs/2.0/
-    about: Read the explicit prerelease documentation before filing product work.
+    about: Read the current documentation before filing product work.
   - name: Public platform conformance
     url: https://durable-workflow.com/docs/2.0/platform-conformance/
     about: Check public artifact contracts and retained compatibility evidence.

@@ -16,16 +16,14 @@ guidance is in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Shared contracts
 
-- [`conformance/`](conformance/) describes the product experiments used to
-  qualify releases and important compatibility changes.
+- [`qualification/`](qualification/) defines the reviewed GitHub Actions and
+  workflow trust policy used by repository CI.
+- [`conformance/`](conformance/) describes product experiments used to qualify
+  releases and important compatibility changes.
 - [`regression-corpus/`](regression-corpus/) defines the shared evidence format
   for replay and payload-codec regressions.
-- [`product-train/`](product-train/) currently supplies the version authority
-  consumed by the documentation site while stable-version discovery is being
-  simplified.
 - [`visual-evidence/`](visual-evidence/) contains the bounded browser-evidence
   contract used by the Rust SDK documentation workflow.
 
-Historical prerelease tags and GitHub Releases remain available as immutable
-launch history. They are not active project state and no scheduled workflow
-advances or repairs them.
+Historical tags and GitHub Releases remain available as immutable release
+history. They are not active project state.
