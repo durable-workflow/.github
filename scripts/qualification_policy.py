@@ -695,10 +695,10 @@ def _verify_action_policy_preflight(
     preflight = jobs.get("action-policy")
     if not isinstance(preflight, dict):
         raise PolicyError(f"{label} has no central action policy preflight job")
+    accepted_conditions = {"", "github.server_url == 'https://github.com'"}
     if (
         preflight.get("name") != "Central action policy preflight"
-        or _condition_without_expression_wrapper(preflight.get("if", ""))
-        != "github.server_url == 'https://github.com'"
+        or _condition_without_expression_wrapper(preflight.get("if", "")) not in accepted_conditions
         or preflight.get("runs-on") != "ubuntu-latest"
         or preflight.get("timeout-minutes") != "5"
         or preflight.get("needs") is not None
@@ -751,13 +751,12 @@ def _verify_action_policy_preflight(
     if not isinstance(condition, str) or "always()" not in _condition_without_expression_wrapper(condition):
         raise PolicyError(f"{label} required check must run after a failed central action policy preflight")
     reviewed_gate = {
-        "if": "${{ github.server_url == 'https://github.com' }}",
         "env": {"ACTION_POLICY_RESULT": "${{ needs.action-policy.result }}"},
         "run": 'test "$ACTION_POLICY_RESULT" = success',
     }
     if not any(
         isinstance(step, dict)
-        and step.get("if") == reviewed_gate["if"]
+        and _condition_without_expression_wrapper(step.get("if", "")) in accepted_conditions
         and step.get("env") == reviewed_gate["env"]
         and _normalized_shell(step.get("run")) == reviewed_gate["run"]
         for step in gate.get("steps") or []
