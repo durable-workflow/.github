@@ -1532,6 +1532,23 @@ jobs:
         with self.assertRaisesRegex(PolicyError, "does not depend on the central action policy"):
             verify_workflow_source("cli", "main", workflow, disconnected)
 
+    def test_action_policy_preflight_may_run_unconditionally(self) -> None:
+        policy = policy_fixture()
+        workflow = policy["targets"]["waterline"]["workflows"][0]
+        source = FakeGitHubClient(policy).bytes(
+            "/repos/durable-workflow/waterline/contents/.github/workflows/php.yml?ref=" + "a" * 40
+        ).decode()
+        source = source.replace(
+            "    if: ${{ github.server_url == 'https://github.com' }}\n",
+            "",
+            1,
+        ).replace(
+            "        if: ${{ github.server_url == 'https://github.com' }}\n",
+            "",
+            1,
+        )
+        verify_workflow_source("waterline", "v2", workflow, source)
+
     def test_each_product_preflight_rejects_an_unapproved_immutable_action_pin(self) -> None:
         policy = policy_fixture()
         source = self.trusted_pull_request_source().replace(CHECKOUT_PIN, "f" * 40)
