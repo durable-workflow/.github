@@ -9,7 +9,7 @@ and private deployment details.
 
 ## Visible work
 
-GitHub is the project control plane. Start substantial work from an issue in the
+GitHub is the project record. Start substantial work from an issue in the
 owning repository and open a draft pull request early. Issues record priority,
 decisions, and blockers; pull requests record implementation, review, checks,
 and merge evidence. Local worktrees and containers are execution environments,
@@ -26,12 +26,11 @@ override product judgment, priority, or roadmap.
 
 ## Conformance
 
-The [conformance runbook](conformance/README.md) is the source of truth for the
-fixed 2.0 release-critical experiment tier. GitHub Actions runs suitable cells.
-Infrastructure experiments may run locally from the versioned runbook, but the
-exact tuple, runner revision, outcome, and sanitized evidence must be reported
-to the public GitHub run ledger. Machine-only experiment state is not valid
-release evidence.
+The [conformance runbook](conformance/README.md) defines the shared product
+experiments. GitHub Actions runs suitable cells. Infrastructure experiments may
+run locally from the versioned runbook, but the exact versions, runner revision,
+outcome, and sanitized findings must be recorded on the owning GitHub issue or
+pull request. Machine-only experiment state is not release evidence.
 
 ## Replay and payload codecs
 

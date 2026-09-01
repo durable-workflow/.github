@@ -45,8 +45,8 @@ function loadChromium() {
   const runtimes = [
     ['playwright-core', '@sparticuz/chromium'],
     [
-      '/opt/pipeline-visual/node_modules/playwright-core',
-      '/opt/pipeline-visual/node_modules/@sparticuz/chromium',
+      '/opt/durable-workflow-visual/node_modules/playwright-core',
+      '/opt/durable-workflow-visual/node_modules/@sparticuz/chromium',
     ],
   ];
   for (const [playwrightModuleName, chromiumModuleName] of runtimes) {
@@ -94,8 +94,10 @@ function isExecutable(candidate) {
 }
 
 async function chromiumExecutable(chromium, chromiumRuntime) {
-  if (process.env.PIPELINE_CHROMIUM_PATH) {
-    if (isExecutable(process.env.PIPELINE_CHROMIUM_PATH)) return process.env.PIPELINE_CHROMIUM_PATH;
+  if (process.env.DURABLE_WORKFLOW_CHROMIUM_PATH) {
+    if (isExecutable(process.env.DURABLE_WORKFLOW_CHROMIUM_PATH)) {
+      return process.env.DURABLE_WORKFLOW_CHROMIUM_PATH;
+    }
     throw new Error('the configured Chromium executable is unavailable');
   }
   const candidates = [
@@ -639,7 +641,7 @@ function installWorkerPersistentConnectionBoundary({ bindingName, captureOrigin,
   const trustedMessagePortStart = MessagePort.prototype.start;
   const markerEntropy = new Uint32Array(4);
   crypto.getRandomValues(markerEntropy);
-  const marker = `pipeline-visual-capture-${[...markerEntropy].join('-')}`;
+  const marker = `durable-workflow-visual-capture-${[...markerEntropy].join('-')}`;
   const relayMarker = `${marker}-relay`;
   const sharedBoundaryRelayPorts = new Set();
   const boundaryArguments = JSON.stringify({ bindingName, captureOrigin });
@@ -863,7 +865,7 @@ function relativeArtifactPath(manifestPath, artifactPath) {
 
 function updateManifest(options, screenshotPath, reportPath, report) {
   const manifestPath = ensureOutputPath(options.manifest);
-  let manifest = { schema: 'durable-workflow.pipeline.visual-review/v1', captures: [] };
+  let manifest = { schema: 'durable-workflow.visual-review/v1', captures: [] };
   if (fs.existsSync(manifestPath)) {
     try {
       manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
@@ -871,7 +873,7 @@ function updateManifest(options, screenshotPath, reportPath, report) {
       fail('existing visual manifest is not valid JSON');
     }
   }
-  if (manifest.schema !== 'durable-workflow.pipeline.visual-review/v1' || !Array.isArray(manifest.captures)) {
+  if (manifest.schema !== 'durable-workflow.visual-review/v1' || !Array.isArray(manifest.captures)) {
     fail('existing visual manifest has an unsupported schema');
   }
   if (options.source && manifest.source && JSON.stringify(manifest.source) !== JSON.stringify(options.source)) {
@@ -1298,7 +1300,7 @@ try {
     reducedMotion: 'reduce',
     serviceWorkers: 'block',
   });
-  const persistentBoundaryBinding = '__pipelineVisualCaptureRejectPersistentConnection';
+  const persistentBoundaryBinding = '__durableWorkflowVisualCaptureRejectPersistentConnection';
   await context.exposeBinding(persistentBoundaryBinding, (_source, connection) => {
     if (connection?.transport === 'webrtc') {
       boundary.reject(rejectedWebRtcDestination(connection.url), 'WebRTC persistent connection');
@@ -1483,7 +1485,7 @@ try {
   }));
 
   const report = {
-    schema: 'durable-workflow.pipeline.visual-capture/v1',
+    schema: 'durable-workflow.visual-capture/v1',
     captured_at: new Date().toISOString(),
     surface: String(options.surface).trim(),
     state: String(options.state || 'default').trim() || 'default',

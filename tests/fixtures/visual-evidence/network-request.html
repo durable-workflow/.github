@@ -21,7 +21,7 @@
       new Worker(URL.createObjectURL(new Blob([workerSource], { type: 'text/javascript' })));
     } else if (kind === 'worker-webtransport-binding-replacement') {
       const workerSource = `
-        globalThis.__pipelineVisualCaptureRejectPersistentConnection = () => Promise.resolve();
+        globalThis.__durableWorkflowVisualCaptureRejectPersistentConnection = () => Promise.resolve();
         try { new WebTransport(${JSON.stringify(target)}); } catch {}
       `;
       new Worker(URL.createObjectURL(new Blob([workerSource], { type: 'text/javascript' })));
@@ -93,7 +93,7 @@
     ) {
       try {
         if (kind === 'webrtc-binding-replacement') {
-          globalThis.__pipelineVisualCaptureRejectPersistentConnection = () => Promise.resolve();
+          globalThis.__durableWorkflowVisualCaptureRejectPersistentConnection = () => Promise.resolve();
         }
         let PeerConnection = RTCPeerConnection;
         if (kind === 'webrtc-constructor-alias') {

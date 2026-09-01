@@ -13,8 +13,8 @@ from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_POLICY = ROOT / "visual-evidence" / "policy.json"
-MANIFEST_SCHEMA = "durable-workflow.pipeline.visual-review/v1"
-REPORT_SCHEMA = "durable-workflow.pipeline.visual-capture/v1"
+MANIFEST_SCHEMA = "durable-workflow.visual-review/v1"
+REPORT_SCHEMA = "durable-workflow.visual-capture/v1"
 
 
 class VisualEvidenceError(RuntimeError):

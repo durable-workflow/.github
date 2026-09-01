@@ -134,8 +134,9 @@ not post lease heartbeats, raw local logs, or vague status text.
 
 ## Conformance
 
-- The public [conformance runbook](conformance/README.md) is the single list of
-  release-critical experiments for stable 2.0.
+- The public [conformance runbook](conformance/README.md) defines the shared
+  product experiments. A release issue identifies which experiments are
+  required for that release or compatibility change.
 - Use only published packages and images from one exact artifact tuple.
 - Run ordinary cells in GitHub Actions. Run Docker failure-mode or private Cloud
   experiments locally when hosted Actions are unsuitable.
@@ -151,27 +152,27 @@ not post lease heartbeats, raw local logs, or vague status text.
 
 ## Releases
 
-- Do not publish stable `2.0.0` without explicit human authorization after the
-  fixed conformance tier passes on the exact proposed tuple.
 - Never move or reuse a published tag. Advance prerelease versions.
 - Workflow and Waterline develop on `v2`; `master` is only for explicitly
   approved 1.x maintenance.
 - Server, CLI, AI, PHP SDK, Python SDK, and Rust SDK develop on `main`.
-- During the synchronized 2.0 train, release repositories publish the exact
-  prerelease declared by source. Sample App, Cloud, and the docs site do not
-  publish versioned packages.
-- A release issue states the proposed tuple, checks, conformance links, and
-  human decision. Do not hide release readiness in local output.
+- Each package repository owns ordinary semantic-version releases and
+  publication through a small repository-local workflow. Sample App, Cloud,
+  and the documentation site do not publish versioned packages.
+- A major release issue states the proposed versions, checks, conformance links,
+  and human decision. Patch and minor releases follow repository policy and
+  semantic versioning without a central cross-repository release controller.
+- Historical 2.0 prerelease plans, candidates, and authorization records are
+  immutable launch history, not current release authority.
 
-## Documentation Priority Before 2.0
+## Documentation After Stable 2.0
 
-- Until stable 2.0 ships, defer non-release-critical docs redesign and repeated
-  screenshot churn. Track deferred work in GitHub.
-- Fix release-blocking correctness, broken links, security, and unusable
-  onboarding when encountered.
-- After stable, make 2.0 the primary docs and search surface, remove prerelease
-  framing, and position Durable Workflow as language-neutral rather than
-  Laravel-only.
+- Keep 2.0 as the primary documentation and search surface.
+- Position Durable Workflow as language-neutral while preserving a clear,
+  first-class Laravel embedded path.
+- Prioritize correct, runnable onboarding and broken-link fixes. Use focused
+  visual checks for changed user journeys instead of repeated site-wide
+  screenshot churn.
 
 ## Human Boundaries
 

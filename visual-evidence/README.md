@@ -38,8 +38,8 @@ manifest, every capture entry, and every report must bind to the same expected
 
 ## Shared capture runtime
 
-`scripts/pipeline_visual_capture.mjs` is the canonical source for the shared
-`pipeline-visual-capture` command. `npm ci` installs an integrity-locked browser
+`scripts/visual_capture.mjs` is the canonical source for the shared visual
+capture command. `npm ci` installs an integrity-locked browser
 driver and Linux Chromium payload with exact package identities. CI extracts
 that payload under a run-specific job temporary directory; pull-request code
 does not receive a writable shared browser or package cache, and browser setup

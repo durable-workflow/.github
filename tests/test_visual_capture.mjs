@@ -15,7 +15,7 @@ import { allowedRepositoryFactsRequest } from '../scripts/visual_capture_boundar
 const execFileAsync = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const fixtureRoot = path.join(root, 'tests', 'fixtures', 'visual-evidence');
-const captureScript = path.join(root, 'scripts', 'pipeline_visual_capture.mjs');
+const captureScript = path.join(root, 'scripts', 'visual_capture.mjs');
 let artifactRoot;
 let server;
 let rejectedServer;
@@ -815,7 +815,7 @@ test('rejects unsafe URLs and preserves sanitized pre-report runtime errors', as
   );
   await assert.rejects(
     capture('missing-browser', {
-      env: { PIPELINE_CHROMIUM_PATH: path.join(artifactRoot, 'missing-chromium') },
+      env: { DURABLE_WORKFLOW_CHROMIUM_PATH: path.join(artifactRoot, 'missing-chromium') },
     }),
     (error) => {
       assert.match(error.message, /visual capture exited before writing its report/);
