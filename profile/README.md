@@ -1,20 +1,46 @@
 # Durable Workflow
 
-[Durable Workflow](https://github.com/durable-workflow/server) is a platform for building, running, and managing long-running workflows across applications, services, and languages. It provides the core primitives for defining workflows, executing activities, tracking progress, handling failures, and coordinating work that must survive process restarts, queue delays, retries, and infrastructure changes.
+**Durable execution for PHP, Python, and Rust.**
 
-A workflow represents a durable business or system process made up of ordered steps, decisions, timers, signals, queries, child workflows, and activities. Activities are the individual units of work executed by workers, services, scripts, agents, or external systems. Together, they let developers break complex processes into clear, reliable, and observable pieces.
+Durable Workflow keeps long-running application code moving through process
+restarts, retries, timers, and human input. Workflows and activities are written
+in ordinary application code while the runtime records history and resumes work
+without repeating completed steps.
 
-Durable Workflow is designed for modern orchestration use cases, including agentic AI workflows, financial operations, data pipelines, microservice coordination, job tracking, user onboarding, scheduled automation, sagas, and other business-critical processes that need durable execution rather than best-effort background jobs.
+[Documentation](https://durable-workflow.com/) |
+[Sample App](https://github.com/durable-workflow/sample-app) |
+[Durable Workflow Cloud](https://cloud.durable-workflow.com/) |
+[Self-hosted Server](https://github.com/durable-workflow/server)
 
-Key capabilities include:
+## Choose how to run
 
-- Simple workflow and activity definitions using declarative application code.
-- Durable execution for long-running processes that need to resume safely after failures.
-- Support for queues, workers, retries, timers, signals, updates, and parallel execution.
-- Tools for starting, monitoring, querying, managing, and repairing workflows.
-- Integration with scalable worker infrastructure for asynchronous and distributed execution.
-- Support for both [application-embedded](https://github.com/durable-workflow/workflow) workflows (Laravel only) and [server-backed](https://github.com/durable-workflow/server) orchestration across languages (PHP, Python and Rust).
-- Operational visibility for workflow history, task queues, worker health, failures, and runtime state.
-- Documentation and ecosystem tooling for building reliable workflow-driven applications.
+| Mode | Best fit | You operate |
+| --- | --- | --- |
+| [Durable Workflow Cloud](https://cloud.durable-workflow.com/) | Managed orchestration for PHP, Python, and Rust applications | Your SDK clients and workers |
+| [Self-hosted Server](https://github.com/durable-workflow/server) | Language-neutral orchestration in your own infrastructure | Server, persistence, Waterline, and SDK workers |
+| [Embedded Laravel](https://durable-workflow.com/docs/2.0/category/embedded/) | Laravel applications that want the runtime inside the application boundary | Your Laravel application, queues, and database |
 
-Durable Workflow helps teams move beyond fragile background jobs by providing a structured, observable, and resilient foundation for complex application workflows.
+## First-party SDKs
+
+| Language | Guide and API reference | Source | Package |
+| --- | --- | --- | --- |
+| PHP | [php.durable-workflow.com](https://php.durable-workflow.com/) | [`sdk-php`](https://github.com/durable-workflow/sdk-php) | [`durable-workflow/sdk`](https://packagist.org/packages/durable-workflow/sdk) |
+| Python | [python.durable-workflow.com](https://python.durable-workflow.com/) | [`sdk-python`](https://github.com/durable-workflow/sdk-python) | [`durable-workflow`](https://pypi.org/project/durable-workflow/) |
+| Rust | [rust.durable-workflow.com](https://rust.durable-workflow.com/) | [`sdk-rust`](https://github.com/durable-workflow/sdk-rust) | [`durable-workflow`](https://crates.io/crates/durable-workflow) |
+
+The SDKs share workflow and activity type names, task queues, namespaces, and a
+portable Avro value protocol. A workflow in one language can dispatch an
+activity to a worker in another.
+
+## Runtime capabilities
+
+- Durable workflows and activities with retries, timeouts, and heartbeats
+- Timers, schedules, signals, queries, and updates
+- Child workflows, sagas, cancellation, and continue-as-new
+- Namespaces, search attributes, memo, and workflow history
+- [Waterline](https://github.com/durable-workflow/waterline) for operational visibility and control
+- [`dw`](https://github.com/durable-workflow/cli) for command-line operation
+
+Start with the [2.0 documentation](https://durable-workflow.com/docs/2.0/) or
+open the [Sample App](https://github.com/durable-workflow/sample-app) for
+runnable embedded and service-mode examples.
