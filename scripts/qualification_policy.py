@@ -37,8 +37,8 @@ EXPECTED_TARGETS = {
     "sdk-python": ("sdk-python", "main"),
     "sdk-rust": ("sdk-rust", "main"),
     "server": ("server", "main"),
-    "waterline": ("waterline", "v2"),
-    "workflow": ("workflow", "v2"),
+    "waterline": ("waterline", "main"),
+    "workflow": ("workflow", "main"),
 }
 EXPECTED_PUBLIC_AUDIT_TARGETS = set(EXPECTED_TARGETS) - {"cloud"}
 GITHUB_API_MAX_ATTEMPTS = 5

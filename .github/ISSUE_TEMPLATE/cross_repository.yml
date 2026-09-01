@@ -43,8 +43,8 @@ body:
       options:
         - durable-workflow/.github@main
         - durable-workflow/ai@main
-        - durable-workflow/workflow@v2
-        - durable-workflow/waterline@v2
+        - durable-workflow/workflow@main
+        - durable-workflow/waterline@main
         - durable-workflow/server@main
         - durable-workflow/cli@main
         - durable-workflow/sdk-php@main

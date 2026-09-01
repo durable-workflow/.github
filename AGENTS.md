@@ -155,9 +155,8 @@ not post lease heartbeats, raw local logs, or vague status text.
 
 - Never move or reuse a published tag. Release new versions according to
   semantic versioning.
-- Workflow and Waterline develop on `v2`; `master` is only for explicitly
-  approved 1.x maintenance until their tracked branch migrations make `main`
-  the stable 2.x branch and `1.x` the maintenance branch.
+- Workflow and Waterline develop on `main`; `1.x` is only for explicitly
+  approved maintenance of the legacy 1.x line.
 - Server, CLI, AI, PHP SDK, Python SDK, and Rust SDK develop on `main`.
 - Each package repository owns ordinary semantic-version releases and
   publication through a small repository-local workflow. Sample App, Cloud,

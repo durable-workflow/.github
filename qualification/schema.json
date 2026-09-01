@@ -95,10 +95,7 @@
       "additionalProperties": false,
       "properties": {
         "branch": {
-          "enum": [
-            "main",
-            "v2"
-          ]
+          "const": "main"
         },
         "repository": {
           "minLength": 1,
