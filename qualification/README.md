@@ -1,25 +1,15 @@
-# Public target qualification
+# GitHub Actions policy
 
-`policy.json` is the machine-readable authority for source qualification before
-a beta candidate can be initiated. Every listed workflow runs from its product
-repository, on its public target branch, and can be rerun directly in GitHub.
+`policy.json` is the reviewed organization policy for GitHub Actions references
+and workflow trust boundaries. Product repositories load it during pull-request
+checks and validate their own checked-out workflow files.
 
-The scheduled qualification audit resolves each target branch to an exact
-commit, requires successful check runs for that commit, and queries GitHub's
-active branch rules. A target is eligible only when its required check contexts
-are enforced with strict status checks. The audit does not use a workspace,
-Forgejo, private databases, or repository mutation credentials.
+The policy binds allowed Action releases to immutable commits and records the
+supported JavaScript runtimes. It also defines the restrictions applied to
+privileged workflows, artifact handoffs, token permissions, caches, containers,
+and pull-request execution.
 
-The policy also owns the immutable commits and readable release labels for
-actions used by public workflows. The audit reads every workflow at the
-resolved target commit, rejects mutable references, and checks action manifests
-against the supported JavaScript runtime set. Container actions use approved
-OCI manifest digests. Action commits, release labels, runtimes, consuming
-workflow paths, permissions, and trust-boundary findings are retained in the
-audit evidence.
-
-The same scanner can qualify any checked-out public repository without GitHub
-credentials:
+Validate any checked-out public repository without GitHub credentials:
 
 ```sh
 python scripts/qualification_policy.py validate \
@@ -27,34 +17,15 @@ python scripts/qualification_policy.py validate \
   --workflow-directory ../server/.github/workflows
 ```
 
-Every governed product target runs that validator from its protected aggregate
-pull-request check. The preflight checks out the candidate without credentials,
-loads the current policy from the protected control-plane branch, and makes the
-aggregate fail closed when any workflow uses an unknown or mutable Action
-reference. Policy validation verifies this wiring as part of the machine-owned
-qualification contract, and the target audit rechecks every publicly auditable
-target, so adding a dependency pin and adding its policy authority cannot drift
-into separate landings.
+Every governed product repository runs this validator in GitHub Actions. It
+fails when a workflow uses an unknown or mutable Action reference or crosses a
+trust boundary that the policy does not allow.
 
-Every workflow must declare read-only or empty top-level token permissions.
-Write access is job-local, pull-request jobs cannot reference environments or
-secrets, and pull-request caches have separate event namespaces and narrow
-dependency paths rather than workspace or home-directory roots. Any job-level
-secrets declaration, including reusable-workflow inheritance and explicit
-maps, is privileged. Privileged manual-dispatch jobs must fail closed outside
-the repository's protected target ref. The scanner rejects
-`pull_request_target`, mutable container images, unreviewed `workflow_run`
-consumers, and privileged artifact consumers without an exact producer and
-digest provenance. Reviewed source-identity and artifact
-digest validators must be the first shell execution after their exact
-policy-declared sequence of immutable setup or download Action steps, including
-each step's complete input map. Each validator's complete shell command and
-arguments are policy-declared and matched exactly. Validator jobs must use the
-policy-declared GitHub-hosted runner without job containers or services, and the
-validators run in the default shell and working directory with only their
-policy-declared environment names effective. Product
-repositories continue to own and run their qualification, documentation deployment,
-publication, and recovery workflows directly.
+Workflows must declare read-only or empty top-level token permissions. Write
+access is job-local, and pull-request jobs cannot use environments, secrets, or
+privileged caches. The scanner rejects `pull_request_target`, mutable container
+images, unreviewed `workflow_run` consumers, and privileged artifact consumers
+without exact producer and digest provenance.
 
-The documentation check covers builds, links, version routing, and generated
-retrieval surfaces. Editorial wording is deliberately outside this policy.
+Product repositories own their tests, documentation deployment, publication,
+and deployment workflows. Editorial wording is outside this policy.

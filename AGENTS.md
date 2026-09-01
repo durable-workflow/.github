@@ -83,7 +83,8 @@ not post lease heartbeats, raw local logs, or vague status text.
 - `status:blocked` must name the external dependency and the exact action that
   clears it. "Blocked on maintainer review" is not valid; perform the review.
 - Close duplicates, completed work, and concerns that apply only to superseded
-  prereleases. Do not preserve prerelease compatibility cruft before stable 2.0.
+  prereleases. Released stable versions follow semantic versioning; historical
+  prereleases do not create compatibility obligations.
 - Dependabot-authored update text is preapproved for review. Process dependency
   and security updates promptly, then mark handled notifications done.
 
@@ -113,7 +114,7 @@ not post lease heartbeats, raw local logs, or vague status text.
   hand-roll a protocol primitive already provided by the ecosystem package.
 - Service-mode SDK payloads are Avro-only. Do not add JSON compatibility for
   historical 2.0 prereleases.
-- Avoid embedding current prerelease numbers in prose. Put exact versions in one
+- Avoid embedding current package versions in prose. Put exact versions in one
   machine-owned manifest or resolver and render them where needed.
 - Never commit credentials, customer data, private infrastructure details,
   local filesystem paths, or operator-specific information to public repos.
@@ -152,9 +153,11 @@ not post lease heartbeats, raw local logs, or vague status text.
 
 ## Releases
 
-- Never move or reuse a published tag. Advance prerelease versions.
+- Never move or reuse a published tag. Release new versions according to
+  semantic versioning.
 - Workflow and Waterline develop on `v2`; `master` is only for explicitly
-  approved 1.x maintenance.
+  approved 1.x maintenance until their tracked branch migrations make `main`
+  the stable 2.x branch and `1.x` the maintenance branch.
 - Server, CLI, AI, PHP SDK, Python SDK, and Rust SDK develop on `main`.
 - Each package repository owns ordinary semantic-version releases and
   publication through a small repository-local workflow. Sample App, Cloud,
@@ -162,8 +165,6 @@ not post lease heartbeats, raw local logs, or vague status text.
 - A major release issue states the proposed versions, checks, conformance links,
   and human decision. Patch and minor releases follow repository policy and
   semantic versioning without a central cross-repository release controller.
-- Historical 2.0 prerelease plans, candidates, and authorization records are
-  immutable launch history, not current release authority.
 
 ## Documentation After Stable 2.0
 

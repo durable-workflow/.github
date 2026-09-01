@@ -38,7 +38,7 @@ body:
     attributes:
       label: Exact version or source identity
       description: Published version, image digest, tag, or full public commit SHA where the defect is present.
-      placeholder: 2.0.0-beta.1 or a 40-character commit SHA
+      placeholder: 2.0.0 or a 40-character commit SHA
     validations:
       required: true
 

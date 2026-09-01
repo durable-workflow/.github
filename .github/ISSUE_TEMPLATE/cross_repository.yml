@@ -11,7 +11,7 @@ body:
     attributes:
       value: |
         Open this in the repository that owns the shared decision, usually `durable-workflow/.github` for organization-level
-        release and recovery contracts. Link focused implementation issues in each affected public repository.
+        product contracts. Link focused implementation issues in each affected public repository.
 
   - type: dropdown
     id: owner
@@ -67,7 +67,7 @@ body:
     id: contract
     attributes:
       label: Shared public contract
-      description: Define exact API, artifact, protocol, release, or recovery behavior and identify its authority.
+      description: Define the exact API, artifact, protocol, release, or operational behavior shared by the repositories.
     validations:
       required: true
 
