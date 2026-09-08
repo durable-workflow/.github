@@ -12,7 +12,7 @@ checked-in fixture locations in `regression-corpus-policy.json`. The validator:
 - rejects duplicate identities and duplicate evidence;
 - prevents existing evidence from being changed, moved, or removed;
 - requires a replay or codec corpus count to grow when guarded implementation
-  behavior changes; and
+  behavior changes, except for the Server review distinction below; and
 - permits an equal count only when the change is unrelated to that category.
 
 Protocol evolution is append-only. A new fixture may name an older fixture in
@@ -41,6 +41,28 @@ python scripts/ci/validate-regression-corpus.py \
 
 The policy and evidence schemas are machine-owned. Contributor prose is not
 tested for exact wording.
+
+## Server Transport And Resource Changes
+
+Server's broad payload-path classifier identifies code that needs review; it
+cannot determine whether a change fixes a wire-format defect. Request-body
+limits, streaming storage, reference retention, and metadata-only reads need
+HTTP, integrity, resource-limit, and recovery tests. Do not add an unrelated wire
+fixture merely to satisfy a count, or claim that rewriting source around a tiny
+fixture proves a large-request memory bound.
+
+When no wire fixture is added, Server reports the affected paths for maintainer
+review without requiring corpus growth or per-file source-instrumented proof.
+The PR must explain why existing wire semantics remain intact and link the
+defect-specific regression: reproduce the original failure, exercise the actual
+changed surface, and verify resource limits and recovery where relevant. Review
+this before merging; a green inventory check alone does not prove the fix.
+
+Confirmed wire-format, type-identity, framing, or codec acceptance defects still
+require the smallest applicable portable fixture. Existing fixtures remain
+immutable and execute in the normal suite. New Server wire fixtures retain the
+counterfactual checks below. This distinction does not relax product tests or
+authorize skipping a failing reproduction.
 
 Server codec regressions use a single counterfactual proof for one defect. Its
 `boundaries` list names each changed pre-existing public boundary, and the
