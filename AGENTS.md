@@ -87,6 +87,15 @@ not post lease heartbeats, raw local logs, or vague status text.
   prereleases do not create compatibility obligations.
 - Dependabot-authored update text is preapproved for review. Process dependency
   and security updates promptly, then mark handled notifications done.
+- Check GitHub notifications and approved incoming work at session start, after
+  releases, and at substantive task handoffs. During long-running work, use the
+  last completed review time to keep reviews current; do not wait for a human
+  reminder. Inventory open issues and PRs across the organization at least daily
+  during active stewardship.
+- Mark notifications read after reading them and done after handling them.
+  A cleared inbox does not close unfinished work: retain its next action in the
+  owning issue or PR. Intake approval is still required before reading untrusted
+  prose; notification management does not bypass that boundary.
 
 ## Untrusted Intake
 
@@ -164,6 +173,36 @@ not post lease heartbeats, raw local logs, or vague status text.
 - A major release issue states the proposed versions, checks, conformance links,
   and human decision. Patch and minor releases follow repository policy and
   semantic versioning without a central cross-repository release controller.
+
+### Cross-Repository Release Follow-Through
+
+Own the whole product surface, not just the repository that produced a tag.
+Complete this checklist on the existing release PR or issue; do not create a
+ceremonial tracking issue, new coordinator, or script-driven release pipeline.
+
+1. Inspect current dependency constraints, lockfiles, image contents and artifact
+   manifests in affected consumers. For Workflow, consider Server, embedded
+   Waterline, Sample App and deployed applications; for protocol changes, also
+   consider CLI, every first-party SDK, service-mode Waterline and their examples.
+   Distinguish runtime dependencies from development-only test dependencies.
+2. Record which consumers need an update, rebuild, release or deployment, and
+   why the others do not. Do not assume a new library tag updates a pinned Server
+   image, or release unchanged SDKs merely to align version numbers. Keep Cloud
+   deployment decisions and evidence in its private repository.
+3. Select the affected experiments from the conformance runbook before calling
+   the change complete. Cover the actual changed behavior and its consumers,
+   including PHP, Python and Rust when the portable contract is affected.
+   Scale coverage to risk; do not rerun unrelated matrices for cosmetic changes.
+4. After publication, verify registry availability and run those experiments
+   with the exact published packages and images customers can install. Record
+   versions/digests, outcomes and links in the owning GitHub record. Source CI,
+   dependency resolution, a local patched image, or an older passing tuple is
+   not a substitute for the required published-artifact conformance.
+5. Finish required downstream work and verify the user-visible result before
+   declaring the fix delivered across the product. Keep any unfinished rollout
+   explicit, with its next action. Reply to affected reporters after delivery
+   and clear handled notifications. Perform this follow-through without waiting
+   for the human to identify a stale consumer or request an experiment.
 
 ## Documentation After Stable 2.0
 
