@@ -24,6 +24,7 @@ CLI, PHP SDK, Python SDK, and Rust SDK tuple.
 | Namespaces | `durable-workflow/server`: `scripts/conformance/namespaces-published-artifacts.sh` |
 | Polyglot | `durable-workflow/sample-app`: `scripts/polyglot-validation.sh` |
 | Replay | `durable-workflow/server`: `scripts/conformance/replay-published-artifacts.sh` |
+| Sagas | `durable-workflow/server`: `scripts/conformance/sagas-published-artifacts.sh` (PHP/Python workflow and compensation matrix) |
 | Schedules | `durable-workflow/server`: `scripts/conformance/schedules-published-artifacts.sh` |
 | SDK matrix | `durable-workflow/server`: PHP and Python published-artifact runners; `durable-workflow/sample-app`: `scripts/playground rust` |
 | Search attributes | `durable-workflow/server`: `scripts/conformance/search-attributes-published-artifacts.sh` |
@@ -52,6 +53,13 @@ PHP/Python/Rust child-workflow coverage. The Rust authored-workflow playground
 also does not prove a cross-language child-workflow direction. Record missing
 Rust parent/child cells as uncovered until an experiment actually runs them
 against the published tuple.
+
+The current
+[saga scenario manifest](https://github.com/durable-workflow/server/blob/main/static/platform-conformance/saga-runtime-scenarios.json)
+and published-artifact runner exercise PHP and Python workflow/compensation
+directions. They do not execute Rust saga or compensation handlers. Record
+those Rust cells as uncovered until a published-artifact experiment runs them;
+installing the Rust crate or passing a Rust playground is not saga evidence.
 
 ## Report a run
 
