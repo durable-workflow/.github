@@ -37,6 +37,22 @@ Each runner documents its required exact-version environment variables and
 result filename in `--help`. Use a unique result directory and isolated Docker
 project for every run.
 
+## Evidence scope
+
+A pinned or successfully installed SDK is not evidence that its worker executed
+an experiment. For each claimed language or cross-language direction, check the
+scenario-level result for the actual caller/parent and worker/child runtime,
+outcome, and history. A tuple-wide `pass` does not fill in an unexecuted cell.
+
+In particular, the current
+[child-workflow scenario manifest](https://github.com/durable-workflow/server/blob/main/static/platform-conformance/child-workflow-runtime-scenarios.json)
+requires a PHP/Python parent-child runtime matrix. Its Rust crate pin verifies
+artifact resolution, not Rust child execution. Do not report that runner as
+PHP/Python/Rust child-workflow coverage. The Rust authored-workflow playground
+also does not prove a cross-language child-workflow direction. Record missing
+Rust parent/child cells as uncovered until an experiment actually runs them
+against the published tuple.
+
 ## Report a run
 
 Add one comment to the active stable-release issue and update its fixed-tier
