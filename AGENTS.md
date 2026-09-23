@@ -66,7 +66,7 @@ but they must not replace these project-wide rules.
 5. Let repository GitHub Actions run the normal repeatable checks. Fix failures
    on the same PR unless the PR itself is fundamentally wrong.
 6. Merge through GitHub after required checks pass. Publish and deploy through
-   repository-owned Actions.
+   the owning repository's protected workflow or documented deployment path.
 7. Close the issue only after its acceptance criteria and user-visible outcome
    are complete. Link the merged PR, published artifact, deployment, or
    conformance result that proves completion.
@@ -137,8 +137,8 @@ not post lease heartbeats, raw local logs, or vague status text.
   cache later consumed by a privileged job.
 - Pin third-party actions to reviewed full commit SHAs.
 - Separate pull-request checks from publication and deployment jobs.
-- Protect package publication, production deployment, and stable release with
-  GitHub environments and the minimum required secrets.
+- When Actions publishes or deploys, protect those jobs with GitHub
+  environments and the minimum required secrets.
 - Do not turn Actions into a central product-work scheduler. A workflow should
   run a clear repository command, retain its evidence, and stop.
 
@@ -218,8 +218,12 @@ ceremonial tracking issue, new coordinator, or script-driven release pipeline.
 - Maintainers own implementation, testing, CI, release steps, deployments,
   evidence, and stale-state cleanup. Do not ask the operator or a contributor to
   perform routine commands as completion evidence.
-- Human approval is reserved for account authorization, credential creation,
-  spending, cash refunds, and stable-release authority.
+- Maintainers own qualified routine stable releases and downstream follow-through;
+  no per-release operator approval is required. Major-release decisions follow
+  the release issue's explicit decision process.
+- Human approval is reserved for new account authorization, credentials or
+  spending without standing delegation, and cash refunds. An existing scoped
+  credential delegation does not require repeated approval for each rotation.
 - When a human-only action is required, state the GitHub URL, exact reason, and
   one concrete requested action. Do not rely on a human to discover blockers by
   scanning repositories or logs.
