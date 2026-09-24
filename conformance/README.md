@@ -24,7 +24,7 @@ CLI, PHP SDK, Python SDK, and Rust SDK tuple.
 | Namespaces | `durable-workflow/server`: `scripts/conformance/namespaces-published-artifacts.sh` |
 | Polyglot | `durable-workflow/sample-app`: `scripts/polyglot-validation.sh` |
 | Replay | `durable-workflow/server`: `scripts/conformance/replay-published-artifacts.sh` |
-| Sagas | `durable-workflow/server`: `scripts/conformance/sagas-published-artifacts.sh` (PHP/Python matrix); `durable-workflow/sample-app`: [`polyglot/sagas/`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/sagas/README.md) (Rust workflow, Rust/PHP/Python compensation) |
+| Sagas | `durable-workflow/server`: `scripts/conformance/sagas-published-artifacts.sh` (PHP/Python matrix); `durable-workflow/sample-app`: [`polyglot/sagas/`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/sagas/README.md) (five Rust-involving workflow/compensation directions) |
 | Schedules | `durable-workflow/server`: `scripts/conformance/schedules-published-artifacts.sh` |
 | SDK matrix | `durable-workflow/server`: PHP and Python published-artifact runners; `durable-workflow/sample-app`: `scripts/playground rust` |
 | Search attributes | `durable-workflow/server`: `scripts/conformance/search-attributes-published-artifacts.sh` |
@@ -62,11 +62,12 @@ The current
 and published-artifact runner exercise PHP and Python workflow/compensation
 directions. They do not execute Rust saga or compensation handlers. The separate
 [Sample App Rust saga experiment](https://github.com/durable-workflow/sample-app/blob/main/polyglot/sagas/README.md)
-executes a Rust workflow with Rust, PHP and Python reverse-order compensation
-against a published local Server, checking persisted scheduled, failed and
-completed activities. Report its outcome and exact tuple separately. It does
-not add Rust scenarios to the Server runner or cover worker restart, duplicate
-delivery, compensation failure, or PHP/Python workflows with Rust compensation.
+executes five Rust-involving directions: Rust workflows with Rust, PHP, or
+Python compensation, and PHP or Python workflows with Rust compensation. It
+checks reverse-order compensation and persisted scheduled, failed, and
+completed activities against a published local Server. Report its outcome and
+exact tuple separately. It does not add Rust scenarios to the Server runner or
+cover worker restart, duplicate delivery, or compensation failure.
 Installing the Rust crate or passing a Rust playground is not saga evidence.
 
 ## Report a run
