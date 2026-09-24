@@ -65,12 +65,13 @@ directions. They do not execute Rust saga or compensation handlers. The separate
 executes five Rust-involving directions: Rust workflows with Rust, PHP, or
 Python compensation, and PHP or Python workflows with Rust compensation. It
 checks reverse-order compensation and persisted scheduled, failed, and
-completed activities against a published local Server. Report its outcome and
-exact tuple separately. Its separate stop/signal/restart check proves one
-Rust-workflow/Rust-compensation cold-replay direction after the first reserve;
-it does not cover every direction or process loss during an activity. These
+completed activities against a published local Server. Its opt-in failure mode
+checks that a failed `undo-second` produces typed `SagaCompensationFailed`,
+preserves both activity failures, and never schedules `undo-first`.
+Report each outcome and exact tuple separately. Its stop/signal/restart check
+covers the five Rust-involving directions after the first reserve. These
 examples do not add Rust scenarios to the Server runner or cover duplicate
-delivery or compensation failure.
+delivery, external side-effect recovery, or process loss during compensation.
 Installing the Rust crate or passing a Rust playground is not saga evidence.
 
 ## Report a run
