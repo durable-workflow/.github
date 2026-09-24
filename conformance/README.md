@@ -24,7 +24,7 @@ CLI, PHP SDK, Python SDK, and Rust SDK tuple.
 | Namespaces | `durable-workflow/server`: `scripts/conformance/namespaces-published-artifacts.sh` |
 | Polyglot | `durable-workflow/sample-app`: `scripts/polyglot-validation.sh` |
 | Replay | `durable-workflow/server`: `scripts/conformance/replay-published-artifacts.sh` |
-| Sagas | `durable-workflow/server`: `scripts/conformance/sagas-published-artifacts.sh` (PHP/Python workflow and compensation matrix) |
+| Sagas | `durable-workflow/server`: `scripts/conformance/sagas-published-artifacts.sh` (PHP/Python matrix); `durable-workflow/sample-app`: [`polyglot/sagas/`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/sagas/README.md) (Rust workflow, Rust/PHP/Python compensation) |
 | Schedules | `durable-workflow/server`: `scripts/conformance/schedules-published-artifacts.sh` |
 | SDK matrix | `durable-workflow/server`: PHP and Python published-artifact runners; `durable-workflow/sample-app`: `scripts/playground rust` |
 | Search attributes | `durable-workflow/server`: `scripts/conformance/search-attributes-published-artifacts.sh` |
@@ -60,9 +60,14 @@ cross-language child-workflow behavior by itself.
 The current
 [saga scenario manifest](https://github.com/durable-workflow/server/blob/main/static/platform-conformance/saga-runtime-scenarios.json)
 and published-artifact runner exercise PHP and Python workflow/compensation
-directions. They do not execute Rust saga or compensation handlers. Record
-those Rust cells as uncovered until a published-artifact experiment runs them;
-installing the Rust crate or passing a Rust playground is not saga evidence.
+directions. They do not execute Rust saga or compensation handlers. The separate
+[Sample App Rust saga experiment](https://github.com/durable-workflow/sample-app/blob/main/polyglot/sagas/README.md)
+executes a Rust workflow with Rust, PHP and Python reverse-order compensation
+against a published local Server, checking persisted scheduled, failed and
+completed activities. Report its outcome and exact tuple separately. It does
+not add Rust scenarios to the Server runner or cover worker restart, duplicate
+delivery, compensation failure, or PHP/Python workflows with Rust compensation.
+Installing the Rust crate or passing a Rust playground is not saga evidence.
 
 ## Report a run
 
