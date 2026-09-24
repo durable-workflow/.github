@@ -66,8 +66,11 @@ executes five Rust-involving directions: Rust workflows with Rust, PHP, or
 Python compensation, and PHP or Python workflows with Rust compensation. It
 checks reverse-order compensation and persisted scheduled, failed, and
 completed activities against a published local Server. Report its outcome and
-exact tuple separately. It does not add Rust scenarios to the Server runner or
-cover worker restart, duplicate delivery, or compensation failure.
+exact tuple separately. Its separate stop/signal/restart check proves one
+Rust-workflow/Rust-compensation cold-replay direction after the first reserve;
+it does not cover every direction or process loss during an activity. These
+examples do not add Rust scenarios to the Server runner or cover duplicate
+delivery or compensation failure.
 Installing the Rust crate or passing a Rust playground is not saga evidence.
 
 ## Report a run
