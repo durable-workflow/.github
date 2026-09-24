@@ -49,10 +49,13 @@ In particular, the current
 [child-workflow scenario manifest](https://github.com/durable-workflow/server/blob/main/static/platform-conformance/child-workflow-runtime-scenarios.json)
 requires a PHP/Python parent-child runtime matrix. Its Rust crate pin verifies
 artifact resolution, not Rust child execution. Do not report that runner as
-PHP/Python/Rust child-workflow coverage. The Rust authored-workflow playground
-also does not prove a cross-language child-workflow direction. Record missing
-Rust parent/child cells as uncovered until an experiment actually runs them
-against the published tuple.
+PHP/Python/Rust child-workflow coverage. The separate
+[Sample App child-workflow matrix](https://github.com/durable-workflow/sample-app/blob/main/polyglot/child-workflows/README.md)
+starts all nine PHP/Python/Rust parent-child directions against a published
+local Server and checks their results and persisted lifecycle events. Report
+its outcome and exact tuple separately; it does not add Rust cells to the
+Server runner. The ordinary Rust authored-workflow playground does not prove
+cross-language child-workflow behavior by itself.
 
 The current
 [saga scenario manifest](https://github.com/durable-workflow/server/blob/main/static/platform-conformance/saga-runtime-scenarios.json)
