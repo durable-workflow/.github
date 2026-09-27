@@ -65,8 +65,11 @@ but they must not replace these project-wide rules.
    repository's existing patterns before introducing an abstraction.
 5. Let repository GitHub Actions run the normal repeatable checks. Fix failures
    on the same PR unless the PR itself is fundamentally wrong.
-6. Merge through GitHub after required checks pass. Publish and deploy through
-   the owning repository's protected workflow or documented deployment path.
+6. Merge through GitHub after required checks pass. Delete the merged pull
+   request's remote head branch when it is no longer needed, and verify it is
+   absent from GitHub. Preserve branches needed for active follow-up, releases,
+   or maintenance. Publish and deploy through the owning repository's protected
+   workflow or documented deployment path.
 7. Close the issue only after its acceptance criteria and user-visible outcome
    are complete. Link the merged PR, published artifact, deployment, or
    conformance result that proves completion.
