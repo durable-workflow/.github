@@ -29,7 +29,7 @@ CLI, PHP SDK, Python SDK, and Rust SDK tuple.
 | SDK matrix | `durable-workflow/server`: PHP and Python published-artifact runners; `durable-workflow/sample-app`: `scripts/playground rust` |
 | Search attributes | `durable-workflow/server`: `scripts/conformance/search-attributes-published-artifacts.sh` |
 | Signals and queries | `durable-workflow/server`: `scripts/conformance/signals-queries-published-artifacts.sh` |
-| Timers | `durable-workflow/server`: `scripts/conformance/timers-published-artifacts.sh` |
+| Timers | `durable-workflow/server`: `scripts/conformance/timers-published-artifacts.sh` (embedded PHP workflow scenarios) |
 | Worker versioning | `durable-workflow/server`: `scripts/conformance/worker-versioning-published-artifacts.sh` |
 | Workflow lifecycle | `durable-workflow/server`: `scripts/conformance/workflow-lifecycle-published-artifacts.sh` |
 | Workflow updates | `durable-workflow/server`: `scripts/conformance/workflow-updates-published-artifacts.sh` |
@@ -86,6 +86,18 @@ then check the published Rust worker's result, linked schedule audit event,
 and workflow history. Report each direction's outcome and exact tuple
 separately; these examples do not add a Rust shard to the Server runner or
 prove cadence, restart, or failure recovery behavior.
+
+The current
+[timer scenario manifest](https://github.com/durable-workflow/server/blob/main/static/platform-conformance/timer-runtime-scenarios.json)
+and published-artifact runner execute timer behavior in the Server image with
+an embedded PHP workflow. The Python SDK artifact pin does not mean a Python
+worker ran these scenarios; the runner does not require the PHP or Rust SDK
+artifacts. Published PHP, Python, and Rust SDKs expose durable timer APIs, but
+their service-mode workflow timer paths are not covered by this runner. Record
+those paths as unexecuted until separate published-artifact evidence checks
+timer completion, replay/restart, cancellation, and history for each relevant
+workflow runtime. A passing embedded timer scenario does not fill those SDK
+cells.
 
 ## Report a run
 
