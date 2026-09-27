@@ -25,7 +25,7 @@ CLI, PHP SDK, Python SDK, and Rust SDK tuple.
 | Polyglot | `durable-workflow/sample-app`: `scripts/polyglot-validation.sh` |
 | Replay | `durable-workflow/server`: `scripts/conformance/replay-published-artifacts.sh` |
 | Sagas | `durable-workflow/server`: `scripts/conformance/sagas-published-artifacts.sh` (PHP/Python matrix); `durable-workflow/sample-app`: [`polyglot/sagas/`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/sagas/README.md) (five Rust-involving workflow/compensation directions) |
-| Schedules | `durable-workflow/server`: `scripts/conformance/schedules-published-artifacts.sh` (PHP/Python matrix); `durable-workflow/sample-app`: [`polyglot/schedules/`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/schedules/README.md) (Python-created schedule, Rust worker) |
+| Schedules | `durable-workflow/server`: `scripts/conformance/schedules-published-artifacts.sh` (PHP/Python matrix); `durable-workflow/sample-app`: [`polyglot/schedules/`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/schedules/README.md) (PHP- and Python-created schedules, Rust worker) |
 | SDK matrix | `durable-workflow/server`: PHP and Python published-artifact runners; `durable-workflow/sample-app`: `scripts/playground rust` |
 | Search attributes | `durable-workflow/server`: `scripts/conformance/search-attributes-published-artifacts.sh` |
 | Signals and queries | `durable-workflow/server`: `scripts/conformance/signals-queries-published-artifacts.sh` |
@@ -80,12 +80,12 @@ and published-artifact runner require PHP/Python schedule creators and workflow
 runtimes, plus the official CLI. They do not execute a schedule that dispatches
 to a Rust worker. The Rust SDK currently has no schedule client API, so a Rust
 schedule-creator cell is not a supported permutation. The separate
-[Sample App schedule experiment](https://github.com/durable-workflow/sample-app/blob/main/polyglot/schedules/README.md)
-creates an automatic interval schedule with the published Python SDK, then
-checks the published Rust worker's result, linked schedule audit event, and
-workflow history. Report that outcome and exact tuple separately; it does not
-add a Rust shard to the Server runner or prove cadence and restart behavior.
-A PHP-created schedule targeting a Rust worker remains an executable gap.
+[Sample App schedule experiments](https://github.com/durable-workflow/sample-app/blob/main/polyglot/schedules/README.md)
+create automatic interval schedules with the published PHP and Python SDKs,
+then check the published Rust worker's result, linked schedule audit event,
+and workflow history. Report each direction's outcome and exact tuple
+separately; these examples do not add a Rust shard to the Server runner or
+prove cadence, restart, or failure recovery behavior.
 
 ## Report a run
 
