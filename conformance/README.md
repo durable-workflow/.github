@@ -38,6 +38,13 @@ Each runner documents its required exact-version environment variables and
 result filename in `--help`. Use a unique result directory and isolated Docker
 project for every run.
 
+## Operator experience
+
+The [self-hosted operator diagnosis drill](operator-diagnosis.md) covers absent
+workers, queue mismatches, expired leases, failed activities, backend interruption
+and storage pressure. It records what an operator can observe and which recovery
+actions work. Report its scope separately from the stable protocol experiments.
+
 ## Evidence scope
 
 A pinned or successfully installed SDK is not evidence that its worker executed
