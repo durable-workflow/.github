@@ -80,6 +80,31 @@ class ReplayEvidenceSchemaTest(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertValid(fixture)
 
+    def test_canonical_step_shape_rejection_can_be_retained_as_replay_evidence(self) -> None:
+        fixture = successful_replay_fixture()
+        del fixture["expected"]
+        fixture["history"].append({
+            "sequence": 2,
+            "event_type": "CancellationScopeOpened",
+            "payload": {
+                "schema": "durable-workflow.cancellation-scope/v1",
+                "sequence": 1,
+                "scope_id": "scope-1",
+                "parent_scope_id": "root",
+                "shield_parent": False,
+            },
+        })
+        for failure_type in (
+            "workflow_history_shape_mismatch",
+            "search_attribute_type_identity_mismatch",
+        ):
+            with self.subTest(failure_type=failure_type):
+                fixture["expected_failure"] = {
+                    "type": failure_type,
+                    "exception": "Workflow\\V2\\Exceptions\\HistoryEventShapeMismatchException",
+                }
+                self.assertValid(fixture)
+
     def test_replay_requires_exactly_one_outcome_form(self) -> None:
         failure = checked_in_fixture("workflow-fiber-malformed-service-response.json")
         both = copy.deepcopy(failure)
