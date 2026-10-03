@@ -251,6 +251,8 @@
             "type": {
               "enum": [
                 "malformed_service_response_envelope",
+                "search_attribute_type_identity_mismatch",
+                "workflow_history_shape_mismatch",
                 "unsupported_payload_codec"
               ]
             },
