@@ -1,0 +1,47 @@
+services:
+  runtime:
+    image: docker.restate.dev/restatedev/restate@sha256:65abc8016d408b8b424f5e492a5da37c24573207e217a3d43242dd8b3fd8dc61
+    user: "1000:1000"
+    init: true
+    command: ["--no-logo"]
+    environment:
+      RESTATE_BASE_DIR: /restate-data
+      RESTATE_ADVERTISED_HOST: restate
+      RESTATE_NODE_NAME: cancellation-comparison
+    tmpfs:
+      - /restate-data:uid=1000,gid=1000,mode=0755
+    networks:
+      default:
+        aliases: [restate]
+    mem_limit: 1024m
+    memswap_limit: 1024m
+    cpus: 2
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:9070/health"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+  sdk:
+    image: python@sha256:02108f5d322dd89f1c9e552442c25acb0543dfdbc455693a5599624f20d9155d
+    user: "1000:1000"
+    init: true
+    working_dir: /experiment
+    command: ["sleep", "3600"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./service.py:/experiment/service.py:ro
+      - ./scenario.py:/experiment/scenario.py:ro
+      - ./requirements.txt:/experiment/requirements.txt:ro
+      - ./evidence:/evidence
+    tmpfs:
+      - /experiment:uid=1000,gid=1000,mode=0755
+    networks:
+      default:
+        aliases: [sdk]
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: 1
+    depends_on:
+      runtime:
+        condition: service_healthy
