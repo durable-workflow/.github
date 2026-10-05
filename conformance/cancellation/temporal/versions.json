@@ -1,0 +1,6 @@
+{
+  "cli": "1.9.1",
+  "server": "1.32.0",
+  "archive": "https://github.com/temporalio/cli/releases/download/v1.9.1/temporal_cli_1.9.1_linux_amd64.tar.gz",
+  "sha256": "09a0326a51db84d02735e53542b9ebd8c4758daf47482a9ab0abce15844e60d5"
+}
