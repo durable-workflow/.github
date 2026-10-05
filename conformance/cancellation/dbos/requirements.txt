@@ -1,0 +1,1 @@
+dbos[aiosqlite]==3.2.0
