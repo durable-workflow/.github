@@ -1,0 +1,38 @@
+services:
+  runtime:
+    image: python@sha256:02108f5d322dd89f1c9e552442c25acb0543dfdbc455693a5599624f20d9155d
+    user: "1000:1000"
+    init: true
+    working_dir: /experiment
+    command: ["python", "start-runtime.py"]
+    environment:
+      USER: qualification
+    volumes:
+      - ./start-runtime.py:/experiment/start-runtime.py:ro
+      - ./versions.json:/experiment/versions.json:ro
+    tmpfs:
+      - /tmp:rw,exec,nosuid,nodev,uid=1000,gid=1000,mode=1777,size=512m
+    networks:
+      default:
+        aliases: [temporal]
+    mem_limit: 1536m
+    memswap_limit: 1536m
+    cpus: 2
+  sdk:
+    image: python@sha256:02108f5d322dd89f1c9e552442c25acb0543dfdbc455693a5599624f20d9155d
+    user: "1000:1000"
+    init: true
+    working_dir: /experiment
+    command: ["sleep", "3600"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ./worker.py:/experiment/worker.py:ro
+      - ./scenario.py:/experiment/scenario.py:ro
+      - ./requirements.txt:/experiment/requirements.txt:ro
+      - ./versions.json:/experiment/versions.json:ro
+      - ./evidence:/evidence
+    mem_limit: 768m
+    memswap_limit: 768m
+    cpus: 2
