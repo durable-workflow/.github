@@ -33,6 +33,7 @@ services:
       - ./service.py:/experiment/service.py:ro
       - ./scenario.py:/experiment/scenario.py:ro
       - ./requirements.txt:/experiment/requirements.txt:ro
+      - ./evidence:/evidence
     tmpfs:
       - /experiment:uid=1000,gid=1000,mode=0755
     networks:

@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 node_modules/
+/conformance/cancellation/*/evidence/
 
 /authoritative-verification.json
 /candidate.json

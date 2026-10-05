@@ -9,7 +9,7 @@ from pathlib import Path
 import restate
 
 logging.basicConfig(level=logging.INFO)
-ROOT = Path('/experiment')
+ROOT = Path('/evidence')
 root = restate.Workflow('CancellationRoot')
 child = restate.Workflow('CancellationChild')
 leaf = restate.Service('CancellationLeaf')

@@ -30,11 +30,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p evidence
+          chmod 0777 evidence
           git rev-parse HEAD > evidence/source.txt
           docker compose -p cancellation-restate up -d --wait
           docker compose -p cancellation-restate exec -T sdk sh -ec '
             python -m venv /tmp/venv
-            /tmp/venv/bin/pip install --no-cache-dir --report /experiment/packages.json -r requirements.txt
+            /tmp/venv/bin/pip install --no-cache-dir --report /evidence/packages.json -r requirements.txt
             /tmp/venv/bin/python scenario.py
             /tmp/venv/bin/python scenario.py duplicate
           ' | tee evidence/run.log
@@ -42,9 +43,6 @@ jobs:
         if: always()
         run: |
           mkdir -p evidence
-          for file in results.jsonl events.jsonl packages.json service.log deployment.json; do
-            docker compose -p cancellation-restate cp "sdk:/experiment/$file" "evidence/$file" || true
-          done
           docker compose -p cancellation-restate logs runtime > evidence/runtime.log
           docker compose -p cancellation-restate down -v --remove-orphans
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

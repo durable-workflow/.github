@@ -22,18 +22,14 @@ Use Docker Compose and a host checkout owned by UID/GID 1000. No host ports are 
 
 ```sh
 cd conformance/cancellation/restate
+mkdir -p evidence
 docker compose -p cancellation-restate up -d --wait
 docker compose -p cancellation-restate exec -T sdk sh -ec '
   python -m venv /tmp/venv
-  /tmp/venv/bin/pip install --no-cache-dir --report /experiment/packages.json -r requirements.txt
+  /tmp/venv/bin/pip install --no-cache-dir --report /evidence/packages.json -r requirements.txt
   /tmp/venv/bin/python scenario.py
   /tmp/venv/bin/python scenario.py duplicate
 '
-mkdir -p evidence
-docker compose -p cancellation-restate cp sdk:/experiment/results.jsonl evidence/results.jsonl
-docker compose -p cancellation-restate cp sdk:/experiment/events.jsonl evidence/events.jsonl
-docker compose -p cancellation-restate cp sdk:/experiment/packages.json evidence/packages.json
-docker compose -p cancellation-restate cp sdk:/experiment/service.log evidence/service.log
 docker compose -p cancellation-restate logs runtime > evidence/runtime.log
 docker compose -p cancellation-restate down -v --remove-orphans
 ```

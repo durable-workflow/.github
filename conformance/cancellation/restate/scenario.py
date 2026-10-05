@@ -9,7 +9,7 @@ from pathlib import Path
 
 import httpx
 
-ROOT = Path('/experiment')
+ROOT = Path('/evidence')
 client = httpx.Client(timeout=5)
 process = None
 service_log = (ROOT / 'service.log').open('a')
