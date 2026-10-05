@@ -1,0 +1,3 @@
+restate-sdk==1.0.5
+Hypercorn==0.18.0
+httpx==0.28.1
