@@ -89,3 +89,37 @@ jobs:
           path: conformance/cancellation/temporal/evidence
           if-no-files-found: error
           retention-days: 90
+  dbos:
+    name: DBOS published behavior
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: conformance/cancellation/dbos
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Run supported cancellation and compensation cases
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          chmod 0777 evidence
+          git rev-parse HEAD > evidence/source.txt
+          sha256sum *.py requirements.txt compose.yml > evidence/source-files.txt
+          docker compose -p cancellation-dbos up -d
+          docker compose -p cancellation-dbos exec -T sdk sh -ec '
+            python -m venv /tmp/venv
+            /tmp/venv/bin/pip install --no-cache-dir --report /evidence/packages.json -r requirements.txt
+            /tmp/venv/bin/python scenario.py
+          ' | tee evidence/run.log
+      - name: Remove the fixture
+        if: always()
+        run: docker compose -p cancellation-dbos down -v --remove-orphans
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: dbos-cancellation-behavior
+          path: conformance/cancellation/dbos/evidence
+          if-no-files-found: error
+          retention-days: 90
