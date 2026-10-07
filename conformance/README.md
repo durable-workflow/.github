@@ -37,7 +37,7 @@ each public experiment.
 | Timers | `durable-workflow/server`: `scripts/conformance/timers-published-artifacts.sh` (embedded PHP); `durable-workflow/sample-app`: `scripts/sdk-timers.sh` (PHP/Python/Rust SDK workers) |
 | Worker versioning | `durable-workflow/server`: `scripts/conformance/worker-versioning-published-artifacts.sh` |
 | Workflow lifecycle | `durable-workflow/server`: `scripts/conformance/workflow-lifecycle-published-artifacts.sh` |
-| Workflow updates | `durable-workflow/server`: `scripts/conformance/workflow-updates-published-artifacts.sh` |
+| Workflow updates | `durable-workflow/server`: `scripts/conformance/workflow-updates-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-updates.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/updates/README.md) (nine live SDK client/handler directions) |
 
 Each runner documents its required exact-version environment variables and
 result filename in `--help`. Use a unique result directory and isolated Docker
