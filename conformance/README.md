@@ -14,6 +14,10 @@ action remain visible without creating a second backlog.
 Run every row against the same exact published Workflow, Waterline, Server,
 CLI, PHP SDK, Python SDK, and Rust SDK tuple.
 
+The [SDK coverage inventory](sdk-coverage.md) identifies actual runtime
+directions, language-specific boundaries and remaining executable gaps for
+each public experiment.
+
 | Experiment | Published-artifact runner |
 | --- | --- |
 | Activities | `durable-workflow/server`: `scripts/conformance/activities-published-artifacts.sh` |
@@ -22,6 +26,7 @@ CLI, PHP SDK, Python SDK, and Rust SDK tuple.
 | Heartbeats | `durable-workflow/server`: the PHP, Python, and Rust `heartbeats-*-published-artifacts.sh` runners |
 | Migration | `durable-workflow/server`: `scripts/conformance/migration-published-artifacts.sh` |
 | Namespaces | `durable-workflow/server`: `scripts/conformance/namespaces-published-artifacts.sh` |
+| Nexus | `durable-workflow/server`: `scripts/conformance/nexus-published-artifacts.sh` (supported PHP/Python caller-service directions) |
 | Polyglot | `durable-workflow/sample-app`: `scripts/polyglot.sh` |
 | Replay | `durable-workflow/server`: `scripts/conformance/replay-published-artifacts.sh` |
 | Sagas | `durable-workflow/server`: `scripts/conformance/sagas-published-artifacts.sh` (PHP/Python matrix); `durable-workflow/sample-app`: [`polyglot/sagas/`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/sagas/README.md) (five Rust-involving workflow/compensation directions) |
@@ -29,7 +34,7 @@ CLI, PHP SDK, Python SDK, and Rust SDK tuple.
 | SDK matrix | `durable-workflow/server`: PHP and Python published-artifact runners; `durable-workflow/sample-app`: `scripts/playground rust` |
 | Search attributes | `durable-workflow/server`: `scripts/conformance/search-attributes-published-artifacts.sh` |
 | Signals and queries | `durable-workflow/server`: `scripts/conformance/signals-queries-published-artifacts.sh` |
-| Timers | `durable-workflow/server`: `scripts/conformance/timers-published-artifacts.sh` (embedded PHP workflow scenarios) |
+| Timers | `durable-workflow/server`: `scripts/conformance/timers-published-artifacts.sh` (embedded PHP); `durable-workflow/sample-app`: `scripts/sdk-timers.sh` (PHP/Python/Rust SDK workers) |
 | Worker versioning | `durable-workflow/server`: `scripts/conformance/worker-versioning-published-artifacts.sh` |
 | Workflow lifecycle | `durable-workflow/server`: `scripts/conformance/workflow-lifecycle-published-artifacts.sh` |
 | Workflow updates | `durable-workflow/server`: `scripts/conformance/workflow-updates-published-artifacts.sh` |
@@ -99,12 +104,14 @@ The current
 and published-artifact runner execute timer behavior in the Server image with
 an embedded PHP workflow. The Python SDK artifact pin does not mean a Python
 worker ran these scenarios; the runner does not require the PHP or Rust SDK
-artifacts. Published PHP, Python, and Rust SDKs expose durable timer APIs, but
-their service-mode workflow timer paths are not covered by this runner. Record
-those paths as unexecuted until separate published-artifact evidence checks
-timer completion, replay/restart, cancellation, and history for each relevant
-workflow runtime. A passing embedded timer scenario does not fill those SDK
-cells.
+artifacts. The separate
+[Sample App SDK timer experiment](https://github.com/durable-workflow/sample-app/blob/main/polyglot/timers/README.md)
+executes actual PHP, Python and Rust timer workflows. It checks completion,
+worker SIGKILL with timer fire during absence and cold replay, Server restart
+across the deadline, and cooperative cancellation followed beyond the original
+timer due time. Each cell checks persisted history and public status. Report
+its twelve scenario outcomes separately. Concurrent timer groups and
+timer-bearing application upgrades remain outside that focused experiment.
 
 ## Report a run
 
