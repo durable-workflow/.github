@@ -21,7 +21,7 @@ each public experiment.
 | Experiment | Published-artifact runner |
 | --- | --- |
 | Activities | `durable-workflow/server`: `scripts/conformance/activities-published-artifacts.sh` |
-| Child workflows | `durable-workflow/server`: `scripts/conformance/child-workflows-published-artifacts.sh` |
+| Child workflows | `durable-workflow/server`: `scripts/conformance/child-workflows-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-children.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/child-workflows/README.md) (nine SDK completion directions, five Rust-involving failure/recovery directions) |
 | Cloud | Private `durable-workflow/cloud`: `scripts/conformance/run-managed-runtime.sh` using an isolated conformance namespace |
 | Heartbeats | `durable-workflow/server`: the PHP, Python, and Rust `heartbeats-*-published-artifacts.sh` runners |
 | Migration | `durable-workflow/server`: `scripts/conformance/migration-published-artifacts.sh` |
@@ -64,9 +64,15 @@ artifact resolution, not Rust child execution. Do not report that runner as
 PHP/Python/Rust child-workflow coverage. The separate
 [Sample App child-workflow matrix](https://github.com/durable-workflow/sample-app/blob/main/polyglot/child-workflows/README.md)
 starts all nine PHP/Python/Rust parent-child directions against a published
-local Server and checks their results and persisted lifecycle events. Report
-its outcome and exact tuple separately; it does not add Rust cells to the
-Server runner. The ordinary Rust authored-workflow playground does not prove
+local Server and checks their results and persisted lifecycle events. Its
+`scripts/sdk-children.sh` command also checks the five Rust-involving directions
+for typed child failure and cold recovery: all three workers are SIGKILLed,
+completion signals are acknowledged during their absence, and replacement
+processes must complete the original parent/child runs once. The command checks
+original child and relationship identities and matches SDK results to durable
+history. Child cancellation needs a separate scenario. Report its outcome and
+exact tuple separately; it does not add Rust cells to the Server runner.
+The ordinary Rust authored-workflow playground does not prove
 cross-language child-workflow behavior by itself.
 
 The current
