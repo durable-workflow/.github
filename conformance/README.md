@@ -32,7 +32,7 @@ each public experiment.
 | Sagas | `durable-workflow/server`: `scripts/conformance/sagas-published-artifacts.sh` (PHP/Python matrix); `durable-workflow/sample-app`: [`polyglot/sagas/`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/sagas/README.md) (five Rust-involving workflow/compensation directions) |
 | Schedules | `durable-workflow/server`: `scripts/conformance/schedules-published-artifacts.sh` (PHP/Python matrix); `durable-workflow/sample-app`: [`polyglot/schedules/`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/schedules/README.md) (PHP- and Python-created schedules, Rust worker) |
 | SDK matrix | `durable-workflow/server`: PHP and Python published-artifact runners; `durable-workflow/sample-app`: `scripts/playground rust` |
-| Search attributes | `durable-workflow/server`: `scripts/conformance/search-attributes-published-artifacts.sh` |
+| Search attributes | `durable-workflow/server`: `scripts/conformance/search-attributes-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-search-attributes.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/search-attributes/README.md) (Rust typed authoring, PHP/Python visibility observers and cold worker replay) |
 | Signals and queries | `durable-workflow/server`: `scripts/conformance/signals-queries-published-artifacts.sh` |
 | Timers | `durable-workflow/server`: `scripts/conformance/timers-published-artifacts.sh` (embedded PHP); `durable-workflow/sample-app`: `scripts/sdk-timers.sh` (PHP/Python/Rust SDK workers) |
 | Worker versioning | `durable-workflow/server`: `scripts/conformance/worker-versioning-published-artifacts.sh` with `DW_RUST_SDK_VERSION` for the managed Rust shard, or [`worker-versioning-rust-host-published-artifacts.sh`](https://github.com/durable-workflow/server/blob/main/scripts/conformance/worker-versioning.md) for its focused isolated stack and four Rust/PHP and Rust/Python build-cohort directions |
@@ -123,6 +123,21 @@ across the deadline, and cooperative cancellation followed beyond the original
 timer due time. Each cell checks persisted history and public status. Report
 its twelve scenario outcomes separately. Concurrent timer groups and
 timer-bearing application upgrades remain outside that focused experiment.
+
+The [Sample App Rust search-attribute experiment](https://github.com/durable-workflow/sample-app/blob/main/polyglot/search-attributes/README.md)
+authors all seven types through the published Rust workflow API. PHP and Python
+clients verify selected-run values and server-side equality, integer/float
+range, boolean, list membership and datetime queries. Values include the
+Server boundary's UTF-8 byte limits, an integer beyond JavaScript's exact range
+and microsecond datetime precision. After physical SIGKILL of the parked Rust
+worker, a signal is acknowledged during its absence. A distinct replacement
+must preserve the original run, typed upsert and signal-wait history, mutate
+and delete once, remove obsolete visibility matches and complete once. Rust
+currently has no search-attribute schema administration, start-time metadata
+or visibility-filter client API. Do not invent Rust client permutations using
+raw HTTP. This separate command does not add a Rust shard to Server's runner
+or qualify Waterline, namespace isolation, load latency, continuation
+inheritance or application-code upgrades.
 
 The [Sample App SDK update experiment](https://github.com/durable-workflow/sample-app/blob/main/polyglot/updates/README.md)
 executes all nine PHP/Python/Rust client-to-handler directions, including
