@@ -43,6 +43,10 @@ Each runner documents its required exact-version environment variables and
 result filename in `--help`. Use a unique result directory and isolated Docker
 project for every run.
 
+Sample App commands resolve their exact tuple with
+`scripts/resolve-current-artifacts.sh`. That resolver requires Node.js in
+addition to the Docker Compose and command-specific tools listed in each example.
+
 ## Operator experience
 
 The [self-hosted operator diagnosis drill](operator-diagnosis.md) covers absent
