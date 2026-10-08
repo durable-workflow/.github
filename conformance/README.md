@@ -113,6 +113,21 @@ timer due time. Each cell checks persisted history and public status. Report
 its twelve scenario outcomes separately. Concurrent timer groups and
 timer-bearing application upgrades remain outside that focused experiment.
 
+The [Sample App SDK update experiment](https://github.com/durable-workflow/sample-app/blob/main/polyglot/updates/README.md)
+executes all nine PHP/Python/Rust client-to-handler directions, including
+increments whose returned intermediate state matches persisted update history.
+Queries inspect accumulated state without adding workflow history. After
+SIGKILL of all three workers, updates accepted during their absence must apply
+once in fresh processes, preserve their original identities and recover the
+prior state. Repeated completed requests must return their original results,
+while queries and final workflow results retain the latest accumulated state.
+The command also checks Rust workflow input and committed signal snapshots,
+typed failure diagnostics and validator capability refusal. PHP and Rust
+handlers reconstruct prior applied updates and apply the current request before
+Server commits its completion. Python uses bound instance methods. Report the
+actual outcomes with the frozen published tuple. Handler external effects and
+additional update ordering races require their own scenarios.
+
 ## Report a run
 
 Add one comment to the active stable-release issue and update its fixed-tier
