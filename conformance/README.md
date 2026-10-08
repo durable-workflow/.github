@@ -139,7 +139,7 @@ Server commits its completion. Python uses bound instance methods. Report the
 actual outcomes with the frozen published tuple. Handler external effects and
 additional update ordering races require their own scenarios.
 
-The focused Server worker-versioning Action runs the six Rust routing/recovery cases
+The focused Server worker-versioning Action runs seven Rust routing/recovery cases
 and all four mixed Rust/PHP and Rust/Python build-cohort directions. For the
 Docker host command, select exact Server/Rust versions and an immutable image,
 then set `DW_WV_MIXED_COHORTS=1`, `DW_PHP_SDK_VERSION` and
@@ -151,6 +151,16 @@ The Rust drain case also checks queued work while its build is drained, normal
 SDK loop exit, visible worker absence after resume and a fresh compatible worker
 recovering the original signal and recorded result. Resume permits routing again,
 but an exited worker still needs to be restarted.
+
+The Rust definition-registration case embeds the actual original and changed
+handler sources using the SDK. It checks precise rejection of changed or missing
+source identity under an active worker ID, preservation of the original
+registration, and public conflict visibility when a new worker ID advertises
+changed code under the same build. That peer must leave the original queued task
+and history untouched. An unchanged cold replacement recovers the original run
+after SIGKILL, while a positive control executes the changed waits and result
+under its own build. Upgrading the Rust crate within a running cohort still needs
+separate qualification.
 
 ## Report a run
 
