@@ -25,7 +25,7 @@ each public experiment.
 | Cloud | Private `durable-workflow/cloud`: `scripts/conformance/run-managed-runtime.sh` using an isolated conformance namespace |
 | Heartbeats | `durable-workflow/server`: the PHP, Python, and Rust `heartbeats-*-published-artifacts.sh` runners |
 | Migration | `durable-workflow/server`: `scripts/conformance/migration-published-artifacts.sh` |
-| Namespaces | `durable-workflow/server`: `scripts/conformance/namespaces-published-artifacts.sh` |
+| Namespaces | `durable-workflow/server`: `scripts/conformance/namespaces-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-namespaces.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/namespaces/README.md) (Rust namespace-bound clients/workers, denied cross-namespace operations and cold recovery) |
 | Nexus | `durable-workflow/server`: `scripts/conformance/nexus-published-artifacts.sh` (supported PHP/Python caller-service directions) |
 | Polyglot | `durable-workflow/sample-app`: `scripts/polyglot.sh` |
 | Replay | `durable-workflow/server`: `scripts/conformance/replay-published-artifacts.sh` |
