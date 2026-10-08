@@ -160,7 +160,17 @@ changed code under the same build. That peer must leave the original queued task
 and history untouched. An unchanged cold replacement recovers the original run
 after SIGKILL, while a positive control executes the changed waits and result
 under its own build. Upgrading the Rust crate within a running cohort still needs
-separate qualification.
+separate qualification through the same focused command: set
+`DW_RUST_SDK_PREVIOUS_VERSION` to an exact distinct registry version. The focused
+Action selects this eighth Rust case by default. Identical application source
+must compile against both registry crates, with checksums and distinct executable
+hashes. The older SDK starts an unversioned run. After worker SIGKILL and a signal
+queued during absence, a fresh newer-SDK worker retains the original source
+identity and run. A second SIGKILL and cold replacement completes it, and the
+older SDK client reads the original result. History prefixes, both signal
+deliveries, one recorded effect and one completion must survive. Qualification
+applies to the selected SDK pair and these durable operations. Application changes
+and adding build IDs to existing histories need separate cases.
 
 ## Report a run
 
