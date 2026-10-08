@@ -35,7 +35,7 @@ each public experiment.
 | Search attributes | `durable-workflow/server`: `scripts/conformance/search-attributes-published-artifacts.sh` |
 | Signals and queries | `durable-workflow/server`: `scripts/conformance/signals-queries-published-artifacts.sh` |
 | Timers | `durable-workflow/server`: `scripts/conformance/timers-published-artifacts.sh` (embedded PHP); `durable-workflow/sample-app`: `scripts/sdk-timers.sh` (PHP/Python/Rust SDK workers) |
-| Worker versioning | `durable-workflow/server`: `scripts/conformance/worker-versioning-published-artifacts.sh` with `DW_RUST_SDK_VERSION` for the managed Rust shard, or [`worker-versioning-rust-host-published-artifacts.sh`](https://github.com/durable-workflow/server/blob/main/scripts/conformance/worker-versioning.md) for its focused isolated stack |
+| Worker versioning | `durable-workflow/server`: `scripts/conformance/worker-versioning-published-artifacts.sh` with `DW_RUST_SDK_VERSION` for the managed Rust shard, or [`worker-versioning-rust-host-published-artifacts.sh`](https://github.com/durable-workflow/server/blob/main/scripts/conformance/worker-versioning.md) for its focused isolated stack and four Rust/PHP and Rust/Python build-cohort directions |
 | Workflow lifecycle | `durable-workflow/server`: `scripts/conformance/workflow-lifecycle-published-artifacts.sh` |
 | Workflow updates | `durable-workflow/server`: `scripts/conformance/workflow-updates-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-updates.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/updates/README.md) (nine live SDK client/handler directions) |
 
@@ -138,6 +138,15 @@ handlers reconstruct prior applied updates and apply the current request before
 Server commits its completion. Python uses bound instance methods. Report the
 actual outcomes with the frozen published tuple. Handler external effects and
 additional update ordering races require their own scenarios.
+
+The focused Server worker-versioning Action runs the five Rust recovery cases
+and all four mixed Rust/PHP and Rust/Python build-cohort directions. For the
+Docker host command, select exact Server/Rust versions and an immutable image,
+then set `DW_WV_MIXED_COHORTS=1`, `DW_PHP_SDK_VERSION` and
+`DW_PYTHON_SDK_VERSION`. Follow the linked Server instructions for prerequisites,
+observations and cleanup. The mixed cases hold the compatible worker while its
+incompatible peer polls, then complete both original runs after promotion.
+Each must retain its build, recorded result and single durable completion.
 
 ## Report a run
 
