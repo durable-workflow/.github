@@ -21,7 +21,7 @@ each public experiment.
 | Experiment | Published-artifact runner |
 | --- | --- |
 | Activities | `durable-workflow/server`: `scripts/conformance/activities-published-artifacts.sh` |
-| Child workflows | `durable-workflow/server`: `scripts/conformance/child-workflows-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-children.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/child-workflows/README.md) (nine SDK completion directions, five Rust-involving failure/recovery directions) |
+| Child workflows | `durable-workflow/server`: `scripts/conformance/child-workflows-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-children.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/child-workflows/README.md) (nine SDK completion directions, five Rust-involving failure/recovery/cancellation directions) |
 | Cloud | Private `durable-workflow/cloud`: `scripts/conformance/run-managed-runtime.sh` using an isolated conformance namespace |
 | Heartbeats | `durable-workflow/server`: the PHP, Python, and Rust `heartbeats-*-published-artifacts.sh` runners |
 | Migration | `durable-workflow/server`: `scripts/conformance/migration-published-artifacts.sh` |
@@ -70,8 +70,13 @@ for typed child failure and cold recovery: all three workers are SIGKILLed,
 completion signals are acknowledged during their absence, and replacement
 processes must complete the original parent/child runs once. The command checks
 original child and relationship identities and matches SDK results to durable
-history. Child cancellation needs a separate scenario. Report its outcome and
-exact tuple separately; it does not add Rust cells to the Server runner.
+history. Five additional Rust-involving cancellation cases use cooperative
+child propagation and wait for child cleanup. Workers are killed during a
+recorded child cleanup timer. Replacement must retain the original delivery,
+timer, lineage and duplicate request identity, finish both runs as Cancelled
+within the original 30-second budget, and produce matching complete API/CLI
+cascade views. Report the executed scenarios and exact tuple separately;
+these results do not add Rust cells to the Server runner.
 The ordinary Rust authored-workflow playground does not prove
 cross-language child-workflow behavior by itself.
 
