@@ -28,7 +28,7 @@ each public experiment.
 | Namespaces | `durable-workflow/server`: `scripts/conformance/namespaces-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-namespaces.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/namespaces/README.md) (Rust namespace-bound clients/workers, denied cross-namespace operations and cold recovery) |
 | Nexus | `durable-workflow/server`: `scripts/conformance/nexus-published-artifacts.sh` (supported PHP/Python caller-service directions) |
 | Polyglot | `durable-workflow/sample-app`: `scripts/polyglot.sh` |
-| Principal attribution | `durable-workflow/server`: `scripts/conformance/principal-attribution-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-namespaces.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/namespaces/README.md) (Rust named and anonymous actors, runtime credential rotation, start/signal/completion/query/failure/terminal-cancellation attribution, forged metadata refusal, cold recovery, CLI JSON/human history and Waterline remote selected-run API); [`scripts/sdk-children.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/child-workflows/README.md) (legacy token requester through Rust-involving cooperative propagation, duplicate requests and cold cleanup replay under forged metadata) |
+| Principal attribution | `durable-workflow/server`: `scripts/conformance/principal-attribution-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-namespaces.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/namespaces/README.md) (Rust named and anonymous actors, runtime credential rotation, start/signal/completion/query/failure/terminal-cancellation attribution, forged metadata refusal, cold recovery, CLI JSON/human history and Waterline remote selected-run API); [`scripts/sdk-children.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/child-workflows/README.md) (legacy, runtime-token and anonymous cooperative requests through actual PHP/Python/Rust clients, duplicate identity and actor preservation, access refusals and cold cleanup replay under forged metadata) |
 | Replay | `durable-workflow/server`: `scripts/conformance/replay-published-artifacts.sh` |
 | Sagas | `durable-workflow/server`: `scripts/conformance/sagas-published-artifacts.sh` (PHP/Python matrix); `durable-workflow/sample-app`: [`polyglot/sagas/`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/sagas/README.md) (five Rust-involving workflow/compensation directions) |
 | Schedules | `durable-workflow/server`: `scripts/conformance/schedules-published-artifacts.sh` (PHP/Python matrix); `durable-workflow/sample-app`: [`polyglot/schedules/`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/schedules/README.md) (PHP- and Python-created schedules, Rust worker) |
@@ -82,6 +82,17 @@ timer, lineage and duplicate request identity, finish both runs as Cancelled
 within the original 30-second budget, and produce matching complete API/CLI
 cascade views. Report the executed scenarios and exact tuple separately;
 these results do not add Rust cells to the Server runner.
+The child command also runs five runtime-token and five anonymous cascades
+through actual PHP, Python and Rust cancellation clients. Runtime operator
+requests retain their original actor when an administrator repeats the request.
+Worker-role cancellation is refused with HTTP 403. Missing authentication is
+refused with HTTP 401, including Python's discovery wrapper around that response.
+The separate auth-disabled phase checks the configured anonymous actor.
+Both families preserve their original request identity, deadline and cleanup
+history through SIGKILL and cold replacement. They require both original runs
+to reach Cancelled within the initial shared 30-second budget. CLI and
+selected-run API inspection cover these cascades. Actual Waterline browser
+rendering remains a separate case.
 The ordinary Rust authored-workflow playground does not prove
 cross-language child-workflow behavior by itself.
 
