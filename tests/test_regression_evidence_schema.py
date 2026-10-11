@@ -7,6 +7,8 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
+from scripts.regression_corpus import CorpusError, _replay_fixture
+
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_ROOT = ROOT / "tests/fixtures/regression-corpus"
 
@@ -104,6 +106,28 @@ class ReplayEvidenceSchemaTest(unittest.TestCase):
                     "exception": "Workflow\\V2\\Exceptions\\HistoryEventShapeMismatchException",
                 }
                 self.assertValid(fixture)
+
+    def test_valid_marker_range_failure_keeps_its_distinct_evidence_family(self) -> None:
+        fixture = checked_in_fixture("version-marker-incompatible-range.json")
+        self.assertValid(fixture)
+        failure_types = self.schema["$defs"]["replay"]["properties"]["expected_failure"][
+            "properties"
+        ]["type"]["enum"]
+        digests = set()
+        for failure_type in failure_types:
+            with self.subTest(failure_type=failure_type):
+                variant = copy.deepcopy(fixture)
+                variant["expected_failure"]["type"] = failure_type
+                self.assertValid(variant)
+                evidence = _replay_fixture(variant, "retained-marker.json", None)
+                digests.add(evidence[0].semantic_digest)
+        self.assertEqual(len(failure_types), len(digests))
+
+        unknown = copy.deepcopy(fixture)
+        unknown["expected_failure"]["type"] = "unknown_failure"
+        self.assertInvalid(unknown)
+        with self.assertRaisesRegex(CorpusError, "expected_failure.type is unsupported"):
+            _replay_fixture(unknown, "retained-marker.json", None)
 
     def test_replay_requires_exactly_one_outcome_form(self) -> None:
         failure = checked_in_fixture("workflow-fiber-malformed-service-response.json")

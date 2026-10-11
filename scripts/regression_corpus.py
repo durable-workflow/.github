@@ -23,6 +23,13 @@ CODEC_SCHEMA = "durable-workflow.codec-regression/v1"
 REPLAY_SCHEMA = "durable-workflow.replay-regression/v1"
 GOLDEN_HISTORY_SCHEMA = "durable-workflow.golden-history.v1"
 MALFORMED_SERVICE_RESPONSE_ENVELOPE = "malformed_service_response_envelope"
+SUPPORTED_REPLAY_FAILURE_TYPES = {
+    MALFORMED_SERVICE_RESPONSE_ENVELOPE,
+    "search_attribute_type_identity_mismatch",
+    "workflow_history_shape_mismatch",
+    "version_marker_incompatible_range",
+    "unsupported_payload_codec",
+}
 SUPPORTED_FORMATS = {
     "avro-value-golden-v1",
     "codec-regression-v1",
@@ -486,7 +493,7 @@ def _replay_fixture(document: Mapping[str, Any], path: str, binding: str | None)
         if set(failure) != {"type", "exception"}:
             raise CorpusError(f"{path}.expected_failure must contain exactly type and exception")
         failure_type = _string(failure["type"], f"{path}.expected_failure.type")
-        if failure_type != MALFORMED_SERVICE_RESPONSE_ENVELOPE:
+        if failure_type not in SUPPORTED_REPLAY_FAILURE_TYPES:
             raise CorpusError(f"{path}.expected_failure.type is unsupported")
         expected_failure = {
             "type": failure_type,
