@@ -133,6 +133,77 @@ not post lease heartbeats, raw local logs, or vague status text.
 - Security findings describe the vulnerable location and credential format,
   never the secret value. Use a GitHub Security Advisory for non-public details.
 
+## Product Craft
+
+These are maintainer-authored writing, design and review defaults. Adapt them
+when the product's audience or established design calls for it, and revise a
+default that causes unnecessary work. Existing safety, API and compatibility
+requirements still apply.
+
+### Writing And Claims
+
+- State the action, result or useful fact directly. Use consistent names for
+  workflows, runs, activities and workers. Replace generic superlatives,
+  theatrical contrasts, repeated signposting and boilerplate conclusions with
+  concrete behavior. Keep uncertainty where it affects the reader's decision.
+- Write natural sentences with familiar words. Prefer periods to long chains
+  of clauses. Avoid em dashes, semicolons and decorative emoji in new product
+  prose. Preserve quotations, identifiers, code syntax and precise technical
+  terms. Formatting and punctuation alone do not establish AI authorship.
+- Publish customer quotes, usage numbers, badges, security claims and
+  performance comparisons only with supporting facts. Clearly label synthetic
+  demos and planned capabilities. A benchmark states the measured workload
+  and conditions needed to interpret its result.
+- Name the actual next action: "Install the PHP SDK", "View run history" or
+  "Create a namespace". Help and FAQ content should answer concrete product
+  questions. Explain a refusal with the affected operation and safe next step.
+
+### Interfaces
+
+- Compose pages around the user's task and actual content. Use the existing
+  product identity and components. Tables, cards, icons, colors and motion
+  should improve navigation, comparison or understanding. Choose examples and
+  visuals that show real Durable Workflow behavior.
+- Every shipped control has a working action or a clear unavailable state and
+  reason. Exercise the changed interaction through its result, including form
+  validation, dialogs, navigation and asynchronous feedback. A successful build
+  or an attached click handler alone does not prove the interaction works.
+- Distinguish empty, loading, failed, stale and unavailable data. Missing
+  telemetry is not zero or healthy. Explain what happened, what happens next
+  and which recovery action is safe. Preserve entered values and useful context
+  after a failed action. Displayed availability follows actual capability and
+  authorization checks.
+- Reflow at widths where content stops working. Check long identifiers,
+  translated labels, narrow and intermediate widths, zoom and every shipped
+  theme. Keep code and wide tables in intentional scroll regions without
+  making the whole page overflow or hiding important content.
+- Use semantic controls, logical keyboard navigation, visible focus and
+  accessible names. Dialogs support dismissal and restore focus. Convey state
+  with text as well as color, and respect reduced-motion preferences. Give
+  touch controls adequate space and comfortably sized targets.
+- Measure contrast against the actual rendered backgrounds. Follow
+  [WCAG contrast guidance](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html):
+  ordinary text needs 4.5:1; the 3:1 large-text exception starts at 18 points
+  regular or 14 points bold, not 18 CSS pixels. Do not round a failing ratio
+  into a pass. Use the standard's component and target-size criteria as well.
+
+### Code And Review
+
+- Comments explain constraints, intent and non-obvious behavior, including
+  lease ownership, replay boundaries, security and compatibility. Remove
+  redundant line narration, decorative banners and vague TODOs in code being
+  changed. Keep useful API documentation, examples, licensing and detailed
+  explanations where the subject needs them.
+- Review the changed customer journey and report the meaningful checks that
+  actually ran. Scale verification to the change. Keep findings in the owning
+  issue or PR; avoid compulsory audit templates, cosmetic rewrites and extra
+  bookkeeping that does not improve the product.
+
+This guidance adapts useful ideas from
+[Anti Slop](https://github.com/miqdadbadjuber/anti-slop/tree/b1cdf87d49b1653293d58424516fd80394008345)
+to Durable Workflow. It does not import the external repository's installation,
+approval workflow or aesthetic restrictions.
+
 ## GitHub Actions Security
 
 - Default workflow permissions to read-only and grant write scopes per job.
