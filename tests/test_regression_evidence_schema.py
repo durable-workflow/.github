@@ -70,6 +70,9 @@ class ReplayEvidenceSchemaTest(unittest.TestCase):
             "embedded consumer replay": checked_in_fixture(
                 "embedded-malformed-service-response.json"
             ),
+            "invalid recorded marker bounds": checked_in_fixture(
+                "version-marker-invalid-recorded-duplicate-range.json"
+            ),
             "json-tagged payload rejection": checked_in_fixture(
                 "json-tagged-payload-codec-rejected.json"
             ),
