@@ -250,6 +250,7 @@
           "properties": {
             "type": {
               "enum": [
+                "activity_retry_policy_mismatch",
                 "malformed_service_response_envelope",
                 "search_attribute_type_identity_mismatch",
                 "workflow_history_shape_mismatch",

@@ -24,6 +24,7 @@ REPLAY_SCHEMA = "durable-workflow.replay-regression/v1"
 GOLDEN_HISTORY_SCHEMA = "durable-workflow.golden-history.v1"
 MALFORMED_SERVICE_RESPONSE_ENVELOPE = "malformed_service_response_envelope"
 SUPPORTED_REPLAY_FAILURE_TYPES = {
+    "activity_retry_policy_mismatch",
     MALFORMED_SERVICE_RESPONSE_ENVELOPE,
     "search_attribute_type_identity_mismatch",
     "workflow_history_shape_mismatch",
