@@ -28,6 +28,7 @@ SUPPORTED_REPLAY_FAILURE_TYPES = {
     "search_attribute_type_identity_mismatch",
     "workflow_history_shape_mismatch",
     "version_marker_incompatible_range",
+    "version_marker_history_range_invalid",
     "unsupported_payload_codec",
 }
 SUPPORTED_FORMATS = {
