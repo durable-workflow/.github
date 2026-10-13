@@ -100,6 +100,7 @@ class ReplayEvidenceSchemaTest(unittest.TestCase):
             },
         })
         for failure_type in (
+            "activity_retry_policy_mismatch",
             "workflow_history_shape_mismatch",
             "search_attribute_type_identity_mismatch",
         ):
