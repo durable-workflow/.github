@@ -138,8 +138,9 @@ class QualificationPolicyTest(unittest.TestCase):
             "      - run: python -m unittest\n      - uses: SonarSource/",
         )
         self.scan(source)
+        leaked = source.replace("python -m unittest", "echo ${{ secrets.SONAR_TOKEN }}")
         with self.assertRaises(PolicyError):
-            self.scan(source.replace("python -m unittest", "echo ${{ secrets.SONAR_TOKEN }}"))
+            self.scan(leaked)
 
     def test_sonar_credential_exception_cannot_execute_project_code_or_accept_forks(self) -> None:
         source = self.sonar_workflow()
@@ -151,6 +152,12 @@ class QualificationPolicyTest(unittest.TestCase):
             source.replace("secrets.SONAR_TOKEN", "secrets.PRODUCTION_TOKEN"),
             source.replace("qualitygate.timeout=300", "qualitygate.timeout=300 -Dsonar.host.url=https://example.com"),
             source.replace("    runs-on:", "    env:\n      TOKEN: ${{ secrets.TOKEN }}\n    runs-on:"),
+            source.replace("    runs-on: ubuntu-latest", "    runs-on: self-hosted"),
+            source.replace("timeout-minutes: 15", "timeout-minutes: 30"),
+            source.replace("      - uses: actions/checkout@", "      - uses: actions/checkout/subdirectory@"),
+            source.replace("      - uses: SonarSource/", "      - id: extra-state\n        uses: SonarSource/"),
+            source.replace("      - uses: actions/checkout@", "      - id: extra-state\n        uses: actions/checkout@"),
+            source.replace("    steps:\n", "    strategy: {}\n    steps:\n"),
         ]
         for changed in mutations:
             with self.subTest(source=changed), self.assertRaises(PolicyError):
