@@ -158,6 +158,9 @@ class QualificationPolicyTest(unittest.TestCase):
             source.replace("      - uses: SonarSource/", "      - id: extra-state\n        uses: SonarSource/"),
             source.replace("      - uses: actions/checkout@", "      - id: extra-state\n        uses: actions/checkout@"),
             source.replace("    steps:\n", "    strategy: {}\n    steps:\n"),
+            source.replace("    runs-on:", "    name: ${{ secrets.DEPLOY_TOKEN }}\n    runs-on:"),
+            source.replace("      - uses: SonarSource/", "      - name: ${{ secrets.DEPLOY_TOKEN }}\n        uses: SonarSource/"),
+            source.replace("      - uses: actions/checkout@", "      - name: ${{ secrets.DEPLOY_TOKEN }}\n        uses: actions/checkout@"),
         ]
         for changed in mutations:
             with self.subTest(source=changed), self.assertRaises(PolicyError):
