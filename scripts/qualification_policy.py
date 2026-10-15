@@ -939,6 +939,12 @@ def _isolated_sonar_job(job: dict[str, Any]) -> bool:
         return False
     if not isinstance(checkout, dict) or not isinstance(scanner, dict):
         return False
+    if (
+        _references_secret_context({key: value for key, value in job.items() if key != "steps"})
+        or _references_secret_context(checkout)
+        or _references_secret_context({key: value for key, value in scanner.items() if key != "env"})
+    ):
+        return False
     if not set(checkout).issubset({"name", "uses", "with"}):
         return False
     reference = _split_action_reference(checkout.get("uses", ""))
