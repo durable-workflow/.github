@@ -1,5 +1,7 @@
 # Durable Workflow
 
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=durable-workflow_.github&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=durable-workflow_.github)
+
 Durable Workflow is a durable execution platform for PHP, Python, and Rust.
 It supports embedded Laravel applications, self-hosted Server deployments, and
 the managed Durable Workflow Cloud runtime.
