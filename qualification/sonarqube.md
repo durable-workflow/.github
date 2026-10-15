@@ -15,10 +15,9 @@ before merging. Do not use `pull_request_target` to bypass this boundary.
 
 Keep `SONAR_TOKEN` in repository Actions secrets and only expose it to the
 scanner step. Disable Automatic Analysis when enabling CI analysis; running
-both methods causes conflicts. The private Cloud repository retains Automatic
-Analysis and GitHub checks while private Actions are disabled. Its settings are
-in `.sonarcloud.properties`; review the exact revision's findings alongside its
-local qualification before merging or deploying.
+both methods causes conflicts. Repositories using Automatic Analysis instead
+configure source/test boundaries in `.sonarcloud.properties`. Review the exact
+revision's findings alongside its normal qualification before merging or deploying.
 
 ## Quality settings
 
@@ -26,6 +25,12 @@ Use the maintained Sonar quality profiles and the built-in Sonar way gate.
 It checks new security, reliability and maintainability ratings, reviewed
 security hotspots, at most 3% duplication and 80% coverage on new code where
 coverage applies. The current Free plan does not permit custom quality gates.
+
+A first main analysis may report **Not Computed**. Configure its new-code
+comparison baseline and analyze again before calling the gate operational.
+The baseline does not resolve existing findings or mean that the overall
+backlog is clean.
+
 Existing repository test/coverage gates remain authoritative. The shared guide's
 own scan imports a genuine coverage report from that job. Product scans currently
 perform static analysis: `sonar.coverage.exclusions` leaves the uncollected
