@@ -26,10 +26,15 @@ Use the maintained Sonar quality profiles and the built-in Sonar way gate.
 It checks new security, reliability and maintainability ratings, reviewed
 security hotspots, at most 3% duplication and 80% coverage on new code where
 coverage applies. The current Free plan does not permit custom quality gates.
-Existing repository test/coverage gates remain authoritative, and genuine
-coverage reports must come from the same qualified source. Missing coverage
-is an integration limitation to resolve, not measured coverage or a reason to
-exclude runtime code. Do not accept findings simply to make a badge green.
+Existing repository test/coverage gates remain authoritative. The shared guide's
+own scan imports a genuine coverage report from that job. Product scans currently
+perform static analysis: `sonar.coverage.exclusions` leaves the uncollected
+coverage metric unmeasured, while runtime code remains included in security,
+reliability, maintainability and duplication analysis. This avoids publishing
+zero coverage for code whose tests ran elsewhere. To add coverage to a scan,
+produce a real report from the same source and replace this metric exclusion
+with its report path. Do not exclude runtime code from analysis or accept
+findings simply to make a badge green.
 
 Tests and qualification fixtures are classified as tests. Generated assets,
 third-party dependencies and temporary build/storage outputs are excluded.
