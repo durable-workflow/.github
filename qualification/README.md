@@ -24,9 +24,11 @@ trust boundary that the policy does not allow.
 Workflows must declare read-only or empty top-level token permissions. Write
 access is job-local, and pull-request jobs cannot use environments, secrets, or
 privileged caches. The sole secret exception is an isolated Sonar analysis job
-on a branch in the same repository: two reviewed actions, a credential-free
-checkout and the official scanner, with the analysis token only on the scanner
-step. It cannot run project commands, add steps, restore caches or run on forks.
+on a branch in the same repository: a credential-free checkout and the official
+scanner, with the analysis token only on the final scanner step. It may produce
+coverage first using trusted repository code and approved actions. Other steps
+cannot reference secrets; existing cache restrictions still apply. Forks do
+not run this job.
 The scanner rejects `pull_request_target`, mutable container
 images, unreviewed `workflow_run` consumers, and privileged artifact consumers
 without exact producer and digest provenance.

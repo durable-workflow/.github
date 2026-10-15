@@ -24,6 +24,14 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Produce source coverage
+        run: |
+          python -m pip install coverage==7.10.7 jsonschema==4.23.0 PyYAML==6.0.2
+          coverage run --source=scripts -m unittest tests.test_qualification_policy tests.test_regression_corpus tests.test_regression_evidence_schema tests.test_server_codec_counterfactual_schema tests.test_visual_evidence
+          coverage xml -o coverage.xml
       - uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9 # v8.3.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

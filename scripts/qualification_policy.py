@@ -932,9 +932,11 @@ def _isolated_sonar_job(job: dict[str, Any]) -> bool:
     if job.get("runs-on") != "ubuntu-latest" or job.get("timeout-minutes") != "15":
         return False
     steps = job.get("steps")
-    if not isinstance(steps, list) or len(steps) != 2:
+    if not isinstance(steps, list) or len(steps) < 2:
         return False
-    checkout, scanner = steps
+    checkout, scanner = steps[0], steps[-1]
+    if any(not isinstance(step, dict) or _references_secret_context(step) for step in steps[1:-1]):
+        return False
     if not isinstance(checkout, dict) or not isinstance(scanner, dict):
         return False
     if not set(checkout).issubset({"name", "uses", "with"}):

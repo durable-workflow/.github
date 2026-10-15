@@ -132,6 +132,15 @@ class QualificationPolicyTest(unittest.TestCase):
     def test_isolated_same_repository_sonar_analysis_is_accepted(self) -> None:
         self.scan(self.sonar_workflow())
 
+    def test_sonar_coverage_preparation_does_not_receive_analysis_credential(self) -> None:
+        source = self.sonar_workflow().replace(
+            "      - uses: SonarSource/",
+            "      - run: python -m unittest\n      - uses: SonarSource/",
+        )
+        self.scan(source)
+        with self.assertRaises(PolicyError):
+            self.scan(source.replace("python -m unittest", "echo ${{ secrets.SONAR_TOKEN }}"))
+
     def test_sonar_credential_exception_cannot_execute_project_code_or_accept_forks(self) -> None:
         source = self.sonar_workflow()
         mutations = [

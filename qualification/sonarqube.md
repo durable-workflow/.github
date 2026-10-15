@@ -15,8 +15,10 @@ before merging. Do not use `pull_request_target` to bypass this boundary.
 
 Keep `SONAR_TOKEN` in repository Actions secrets and only expose it to the
 scanner step. Disable Automatic Analysis when enabling CI analysis; running
-both methods causes conflicts. The private Cloud repository uses its documented
-local qualification path while private Actions are disabled.
+both methods causes conflicts. The private Cloud repository retains Automatic
+Analysis and GitHub checks while private Actions are disabled. Its settings are
+in `.sonarcloud.properties`; review the exact revision's findings alongside its
+local qualification before merging or deploying.
 
 ## Quality settings
 
