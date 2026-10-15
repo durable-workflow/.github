@@ -919,6 +919,41 @@ def _references_secret_context(value: Any) -> bool:
     return False
 
 
+def _isolated_sonar_job(job: dict[str, Any]) -> bool:
+    """Allow the analysis credential on trusted branches without executing project code."""
+    condition = job.get("if")
+    if not isinstance(condition, str) or _condition_without_expression_wrapper(condition) != (
+        "github.event_name != 'pull_request' || "
+        "github.event.pull_request.head.repo.full_name == github.repository"
+    ):
+        return False
+    if not set(job).issubset({"name", "if", "runs-on", "timeout-minutes", "steps"}):
+        return False
+    if job.get("runs-on") != "ubuntu-latest" or job.get("timeout-minutes") != "15":
+        return False
+    steps = job.get("steps")
+    if not isinstance(steps, list) or len(steps) != 2:
+        return False
+    checkout, scanner = steps
+    if not isinstance(checkout, dict) or not isinstance(scanner, dict):
+        return False
+    if not set(checkout).issubset({"name", "uses", "with"}):
+        return False
+    reference = _split_action_reference(checkout.get("uses", ""))
+    if reference is None or reference[0] != "actions/checkout" or reference[1]:
+        return False
+    if checkout.get("with") != {"fetch-depth": "0", "persist-credentials": "false"}:
+        return False
+    if not set(scanner).issubset({"name", "uses", "env", "with"}):
+        return False
+    reference = _split_action_reference(scanner.get("uses", ""))
+    if reference is None or reference[0] != "sonarsource/sonarqube-scan-action" or reference[1]:
+        return False
+    return scanner.get("env") == {"SONAR_TOKEN": "${{ secrets.SONAR_TOKEN }}"} and scanner.get("with") == {
+        "args": "-Dsonar.qualitygate.wait=true -Dsonar.qualitygate.timeout=300",
+    }
+
+
 def _unsafe_cache_path(path: str) -> bool:
     paths = [candidate.strip() for candidate in path.splitlines() if candidate.strip()]
     if not paths:
@@ -1442,7 +1477,7 @@ def _scan_workflow_trust(
             raise PolicyError(f"{label} pull-request job {job_name!r} grants write permissions")
         if pull_request and "environment" in job:
             raise PolicyError(f"{label} pull-request job {job_name!r} requests an environment")
-        if pull_request and ("secrets" in job or _references_secret_context(job)):
+        if pull_request and ("secrets" in job or _references_secret_context(job)) and not _isolated_sonar_job(job):
             raise PolicyError(f"{label} pull-request job {job_name!r} references a secret")
 
         action_steps_by_identity = {id(step): index for index, step in enumerate(job.get("steps") or [])}

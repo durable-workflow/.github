@@ -108,6 +108,45 @@ class QualificationPolicyTest(unittest.TestCase):
         with self.assertRaises(PolicyError):
             self.scan(source)
 
+    def sonar_workflow(self) -> str:
+        checkout, checkout_version = self.approved_action("actions/checkout")
+        scanner, scanner_version = self.approved_action("sonarsource/sonarqube-scan-action")
+        source = workflow(
+            f"""- uses: actions/checkout@{checkout} # {checkout_version}
+  with:
+    fetch-depth: 0
+    persist-credentials: false""",
+            f"""- uses: SonarSource/sonarqube-scan-action@{scanner} # {scanner_version}
+  env:
+    SONAR_TOKEN: ${{{{ secrets.SONAR_TOKEN }}}}
+  with:
+    args: -Dsonar.qualitygate.wait=true -Dsonar.qualitygate.timeout=300""",
+        )
+        return source.replace(
+            "    runs-on: ubuntu-latest\n    timeout-minutes: 5",
+            "    if: github.event_name != 'pull_request' || "
+            "github.event.pull_request.head.repo.full_name == github.repository\n"
+            "    runs-on: ubuntu-latest\n    timeout-minutes: 15",
+        )
+
+    def test_isolated_same_repository_sonar_analysis_is_accepted(self) -> None:
+        self.scan(self.sonar_workflow())
+
+    def test_sonar_credential_exception_cannot_execute_project_code_or_accept_forks(self) -> None:
+        source = self.sonar_workflow()
+        mutations = [
+            source.replace("github.event.pull_request.head.repo.full_name == github.repository", "true"),
+            source + "      - run: ./untrusted-script\n",
+            source.replace("persist-credentials: false", "persist-credentials: true"),
+            source.replace("fetch-depth: 0", "ref: ${{ github.event.pull_request.head.sha }}"),
+            source.replace("secrets.SONAR_TOKEN", "secrets.PRODUCTION_TOKEN"),
+            source.replace("qualitygate.timeout=300", "qualitygate.timeout=300 -Dsonar.host.url=https://example.com"),
+            source.replace("    runs-on:", "    env:\n      TOKEN: ${{ secrets.TOKEN }}\n    runs-on:"),
+        ]
+        for changed in mutations:
+            with self.subTest(source=changed), self.assertRaises(PolicyError):
+                self.scan(changed)
+
     def test_pull_request_cache_rejects_broad_paths(self) -> None:
         commit, version = self.approved_action("actions/cache")
         source = workflow(

@@ -90,6 +90,9 @@
       },
       "softprops/action-gh-release": {
         "3d0d9888cb7fd7b750713d6e236d1fcb99157228": "v3"
+      },
+      "sonarsource/sonarqube-scan-action": {
+        "d209202bc7d53ff1cc128f7f907dac145c9d6ae9": "v8.3.0"
       }
     },
     "supported_javascript_runtimes": [
