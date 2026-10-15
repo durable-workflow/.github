@@ -920,7 +920,7 @@ def _references_secret_context(value: Any) -> bool:
 
 
 def _isolated_sonar_job(job: dict[str, Any]) -> bool:
-    """Allow the analysis credential on trusted branches without executing project code."""
+    """Keep the analysis credential on trusted branches and on the final scanner step."""
     condition = job.get("if")
     if not isinstance(condition, str) or _condition_without_expression_wrapper(condition) != (
         "github.event_name != 'pull_request' || "

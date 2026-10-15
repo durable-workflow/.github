@@ -142,7 +142,7 @@ class QualificationPolicyTest(unittest.TestCase):
         with self.assertRaises(PolicyError):
             self.scan(leaked)
 
-    def test_sonar_credential_exception_cannot_execute_project_code_or_accept_forks(self) -> None:
+    def test_sonar_credential_exception_rejects_forks_and_unsafe_jobs(self) -> None:
         source = self.sonar_workflow()
         mutations = [
             source.replace("github.event.pull_request.head.repo.full_name == github.repository", "true"),
