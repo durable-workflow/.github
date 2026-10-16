@@ -8,6 +8,7 @@ from pathlib import Path
 
 from scripts.qualification_policy import (
     PolicyError,
+    _verify_action_policy_preflight,
     scan_workflow_sources,
     validate_local_action_references,
     validate_policy,
@@ -75,6 +76,53 @@ class QualificationPolicyTest(unittest.TestCase):
         )
         self.assertTrue(actions)
         self.assertTrue(all("@" in action for action in actions))
+
+    def test_policy_preflight_accepts_binary_only_without_relaxing_dependency_command(self) -> None:
+        checkout, _ = self.approved_action("actions/checkout")
+        setup_python, _ = self.approved_action("actions/setup-python")
+        jobs = {
+            "action-policy": {
+                "name": "Central action policy preflight",
+                "runs-on": "ubuntu-latest",
+                "timeout-minutes": "5",
+                "steps": [
+                    {"uses": f"actions/checkout@{checkout}", "with": {"persist-credentials": "false"}},
+                    {
+                        "uses": f"actions/checkout@{checkout}",
+                        "with": {
+                            "repository": "durable-workflow/.github",
+                            "ref": "main",
+                            "path": ".central-action-policy",
+                            "persist-credentials": "false",
+                        },
+                    },
+                    {"uses": f"actions/setup-python@{setup_python}", "with": {"python-version": "3.13"}},
+                    {"run": "python -m pip install PyYAML==6.0.2"},
+                    {"run": "python .central-action-policy/scripts/qualification_policy.py validate "
+                     "--policy .central-action-policy/qualification/policy.json --target ai "
+                     "--workflow-directory .github/workflows"},
+                ],
+            },
+            "gate": {
+                "needs": ["action-policy"],
+                "if": "${{ always() }}",
+                "steps": [{
+                    "env": {"ACTION_POLICY_RESULT": "${{ needs.action-policy.result }}"},
+                    "run": 'test "$ACTION_POLICY_RESULT" = success',
+                }],
+            },
+        }
+        for command in (
+            "python -m pip install PyYAML==6.0.2",
+            "python -m pip install --only-binary :all: PyYAML==6.0.2",
+        ):
+            with self.subTest(command=command):
+                jobs["action-policy"]["steps"][3]["run"] = command
+                _verify_action_policy_preflight("ai", "fixture", jobs, "gate")
+        for suffix in ("==6.0.3", "==6.0.2 --extra-index-url https://example.com", "==6.0.2; echo unsafe"):
+            with self.subTest(suffix=suffix), self.assertRaisesRegex(PolicyError, "reviewed policy dependency"):
+                jobs["action-policy"]["steps"][3]["run"] = "python -m pip install --only-binary :all: PyYAML" + suffix
+                _verify_action_policy_preflight("ai", "fixture", jobs, "gate")
 
     def test_approved_immutable_action_with_version_comment_is_accepted(self) -> None:
         commit, version = self.approved_action("actions/checkout")
