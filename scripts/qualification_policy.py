@@ -732,9 +732,11 @@ def _verify_action_policy_preflight(
         or setup_python.get("with") != {"python-version": "3.13"}
     ):
         raise PolicyError(f"{label} central action policy preflight must use the reviewed Python runtime")
-    if set(install) - {"name", "run"} or _normalized_shell(install.get("run")) != (
-        "python -m pip install PyYAML==6.0.2"
-    ):
+    reviewed_install_commands = {
+        "python -m pip install PyYAML==6.0.2",
+        "python -m pip install --only-binary :all: PyYAML==6.0.2",
+    }
+    if set(install) - {"name", "run"} or _normalized_shell(install.get("run")) not in reviewed_install_commands:
         raise PolicyError(f"{label} central action policy preflight must install the reviewed policy dependency")
     expected_validation = (
         "python .central-action-policy/scripts/qualification_policy.py validate "
