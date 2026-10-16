@@ -921,20 +921,50 @@ def _references_secret_context(value: Any) -> bool:
     return False
 
 
+def _main_sonar_coverage_condition(job: dict[str, Any]) -> bool:
+    condition = job.get("if")
+    return (
+        isinstance(condition, str)
+        and _condition_without_expression_wrapper(condition)
+        == "github.event_name != 'pull_request' && github.ref == 'refs/heads/main'"
+        and job.get("needs") == ["coverage"]
+    )
+
+
+def _sonar_report_download(step: object) -> bool:
+    return (
+        isinstance(step, dict)
+        and set(step).issubset({"name", "uses", "with"})
+        and _is_action_step(step, "actions/download-artifact")
+        and step.get("with") == {
+            "artifact-ids": "${{ needs.coverage.outputs.sonar_artifact_id }}",
+            "path": ".sonar-coverage",
+            "digest-mismatch": "error",
+        }
+    )
+
+
 def _isolated_sonar_job(job: dict[str, Any]) -> bool:
     """Keep the analysis credential on trusted branches and on the final scanner step."""
     condition = job.get("if")
-    if not isinstance(condition, str) or _condition_without_expression_wrapper(condition) != (
-        "github.event_name != 'pull_request' || "
+    report_import = _main_sonar_coverage_condition(job)
+    standalone = (
+        isinstance(condition, str)
+        and _condition_without_expression_wrapper(condition)
+        == "github.event_name != 'pull_request' || "
         "github.event.pull_request.head.repo.full_name == github.repository"
-    ):
+        and job.get("needs") is None
+    )
+    if not standalone and not report_import:
         return False
-    if not set(job).issubset({"name", "if", "runs-on", "timeout-minutes", "steps"}):
+    if not set(job).issubset({"name", "if", "runs-on", "timeout-minutes", "steps", "needs"}):
         return False
     if job.get("runs-on") != "ubuntu-latest" or job.get("timeout-minutes") != "15":
         return False
     steps = job.get("steps")
     if not isinstance(steps, list) or len(steps) < 2:
+        return False
+    if report_import and (len(steps) != 3 or not _sonar_report_download(steps[1])):
         return False
     checkout, scanner = steps[0], steps[-1]
     if any(not isinstance(step, dict) or _references_secret_context(step) for step in steps[1:-1]):
@@ -962,6 +992,41 @@ def _isolated_sonar_job(job: dict[str, Any]) -> bool:
     return scanner.get("env") == {"SONAR_TOKEN": "${{ secrets.SONAR_TOKEN }}"} and scanner.get("with") == {
         "args": "-Dsonar.qualitygate.wait=true -Dsonar.qualitygate.timeout=300",
     }
+
+
+def _sonar_coverage_handoff(jobs: dict[str, Any], job: dict[str, Any], download_index: int) -> bool:
+    """Accept only Clover data from the same build's named coverage producer."""
+    if download_index != 1 or not _main_sonar_coverage_condition(job) or not _isolated_sonar_job(job):
+        return False
+    producer = jobs.get("coverage")
+    if not isinstance(producer, dict):
+        return False
+    outputs = producer.get("outputs")
+    steps = producer.get("steps")
+    if not isinstance(outputs, dict) or outputs.get("sonar_artifact_id") != (
+        "${{ steps.sonar_coverage.outputs.artifact-id }}"
+    ) or not isinstance(steps, list):
+        return False
+    uploads = [step for step in steps if isinstance(step, dict)
+               and step.get("id") == "sonar_coverage"]
+    if len(uploads) != 1:
+        return False
+    upload = uploads[0]
+    if set(upload) - {"id", "name", "uses", "with"} or not _is_action_step(upload, "actions/upload-artifact"):
+        return False
+    settings = upload.get("with")
+    if not isinstance(settings, dict) or set(settings) != {"name", "path", "if-no-files-found", "retention-days"}:
+        return False
+    if settings.get("name") != "sonar-coverage" or settings.get("if-no-files-found") != "error" \
+            or settings.get("retention-days") != "1":
+        return False
+    paths = settings.get("path")
+    if not isinstance(paths, str) or not paths.strip():
+        return False
+    return all(
+        path == "coverage.xml" or re.fullmatch(r"build/[a-zA-Z0-9_/-]+-coverage\.xml", path) is not None
+        for path in (line.strip() for line in paths.splitlines())
+    )
 
 
 def _unsafe_cache_path(path: str) -> bool:
@@ -1520,7 +1585,9 @@ def _scan_workflow_trust(
                     raise PolicyError(
                         f"{label} privileged artifact consumer {job_name!r} has no exact artifact selector"
                     )
-                if not reviewed_workflow_run and not _direct_artifact_handoff(
+                if not reviewed_workflow_run and not _sonar_coverage_handoff(
+                    jobs, job, action_steps_by_identity[id(step)]
+                ) and not _direct_artifact_handoff(
                     document,
                     jobs,
                     job,

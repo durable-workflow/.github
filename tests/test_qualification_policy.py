@@ -214,6 +214,82 @@ class QualificationPolicyTest(unittest.TestCase):
             with self.subTest(source=changed), self.assertRaises(PolicyError):
                 self.scan(changed)
 
+    def coverage_sonar_workflow(self) -> str:
+        upload, upload_version = self.approved_action("actions/upload-artifact")
+        download, download_version = self.approved_action("actions/download-artifact")
+        source = self.sonar_workflow().replace(
+            "  pull_request:\n",
+            "  pull_request:\n  workflow_dispatch:\n",
+        ).replace(
+            "github.event_name != 'pull_request' || "
+            "github.event.pull_request.head.repo.full_name == github.repository",
+            "github.event_name != 'pull_request' && github.ref == 'refs/heads/main'",
+        ).replace(
+            "    runs-on: ubuntu-latest",
+            "    needs: [coverage]\n    runs-on: ubuntu-latest",
+        ).replace(
+            "      - uses: SonarSource/",
+            f"""      - uses: actions/download-artifact@{download} # {download_version}
+        with:
+          artifact-ids: ${{{{ needs.coverage.outputs.sonar_artifact_id }}}}
+          path: .sonar-coverage
+          digest-mismatch: error
+      - uses: SonarSource/""",
+        )
+        return source.replace("jobs:\n", f"""jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sonar_artifact_id: ${{{{ steps.sonar_coverage.outputs.artifact-id }}}}
+    steps:
+      - uses: actions/upload-artifact@{upload} # {upload_version}
+        id: sonar_coverage
+        with:
+          name: sonar-coverage
+          path: |
+            coverage.xml
+            build/feature-coverage/mysql-shard-0-coverage.xml
+          if-no-files-found: error
+          retention-days: 1
+""", 1)
+
+    def test_main_sonar_import_accepts_the_same_run_report_producer(self) -> None:
+        evidence = self.scan(self.coverage_sonar_workflow())
+        self.assertEqual(["test"], evidence[".github/workflows/test.yml"]["privileged_jobs"])
+
+    def test_sonar_report_import_requires_bound_artifacts_and_isolated_data(self) -> None:
+        source = self.coverage_sonar_workflow()
+        mutations = [
+            source.replace("needs: [coverage]", "needs: [other]"),
+            source.replace("steps.sonar_coverage.outputs.artifact-id", "steps.other.outputs.artifact-id"),
+            source.replace("id: sonar_coverage", "id: other"),
+            source.replace("path: .sonar-coverage", "path: ."),
+            source.replace("path: .sonar-coverage", "path: ../outside"),
+            source.replace("digest-mismatch: error", "digest-mismatch: warn"),
+            source.replace("retention-days: 1", "retention-days: 90"),
+            source.replace("if-no-files-found: error", "if-no-files-found: ignore"),
+            source.replace("name: sonar-coverage", "name: unrelated"),
+            source.replace("build/feature-coverage/mysql-shard-0-coverage.xml", "build/../other-coverage.xml"),
+            source.replace("build/feature-coverage/mysql-shard-0-coverage.xml", "build/script.php"),
+            source.replace("          path: .sonar-coverage", "          run-id: 123\n          path: .sonar-coverage"),
+            source.replace("      - uses: SonarSource/", "      - run: ./report-script\n      - uses: SonarSource/"),
+        ]
+        for changed in mutations:
+            with self.subTest(source=changed), self.assertRaises(PolicyError):
+                self.scan(changed)
+
+    def test_sonar_report_import_preserves_the_main_branch_credential_boundary(self) -> None:
+        source = self.coverage_sonar_workflow()
+        for changed in (
+            source.replace("refs/heads/main", "refs/heads/other"),
+            source.replace("github.event_name != 'pull_request'", "true"),
+            source.replace(" && github.ref == 'refs/heads/main'", ""),
+            source.replace("secrets.SONAR_TOKEN", "secrets.OTHER_TOKEN"),
+        ):
+            with self.subTest(source=changed), self.assertRaises(PolicyError):
+                self.scan(changed)
+
     def test_pull_request_cache_rejects_broad_paths(self) -> None:
         commit, version = self.approved_action("actions/cache")
         source = workflow(

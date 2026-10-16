@@ -7,8 +7,9 @@ project gate. Private projects remain private.
 ## CI and credentials
 
 `sonar-project.properties` owns source/test classification and exclusions.
-`sonar.yml` scans main pushes and same-repository pull requests using the
-reviewed official scanner. The job waits for the quality gate and fails on a
+The reviewed official scanner analyzes main pushes and same-repository pull
+requests. Repositories may keep static analysis in `sonar.yml` or connect
+existing coverage through their test workflow. The job waits for the quality gate and fails on a
 failed analysis or gate. Forks receive no Sonar credential. Their ordinary
 checks still run; maintainers review and analyze changes on a trusted branch
 before merging. Do not use `pull_request_target` to bypass this boundary.
@@ -40,6 +41,23 @@ zero coverage for code whose tests ran elsewhere. To add coverage to a scan,
 produce a real report from the same source and replace this metric exclusion
 with its report path. Do not exclude runtime code from analysis or accept
 findings simply to make a badge green.
+
+### Existing coverage reports
+
+Maintainer default: reuse reports from the existing test workflow rather than
+running another test suite for Sonar. A separate main-only scanner job may
+download Clover XML from that run's `coverage` producer. Bind the download to
+the upload's immutable artifact ID, use the reviewed action's digest checks,
+and extract into `.sonar-coverage`, outside the checked-out source. The report
+upload contains only the declared XML files and expires after one day. These
+transport choices are revisable maintainer defaults.
+
+The scanner job runs only for protected main, has no test commands or cache,
+and receives `SONAR_TOKEN` only on its final scanner step. Same-run report
+transport needs no extra GitHub token or cross-run lookup. Keep every functional
+test and coverage threshold required. If a pull-request build does not produce
+coverage, retain its explicit unmeasured configuration; never reuse main's
+report for a different revision.
 
 Tests and qualification fixtures are classified as tests. Generated assets,
 third-party dependencies and temporary build/storage outputs are excluded.
