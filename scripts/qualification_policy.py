@@ -1019,7 +1019,10 @@ def _sonar_coverage_handoff(jobs: dict[str, Any], job: dict[str, Any], download_
                and step.get("id") == "sonar_coverage"]
     if len(uploads) != 1:
         return False
-    upload = uploads[0]
+    return _sonar_report_upload(uploads[0])
+
+
+def _sonar_report_upload(upload: dict[str, Any]) -> bool:
     if set(upload) - {"id", "name", "uses", "with"} or not _is_action_step(upload, "actions/upload-artifact"):
         return False
     settings = upload.get("with")
