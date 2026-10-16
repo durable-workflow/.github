@@ -34,7 +34,7 @@ The baseline does not resolve existing findings or mean that the overall
 backlog is clean.
 
 Existing repository test/coverage gates remain authoritative. The shared guide's
-own scan imports a genuine coverage report from that job. Product scans currently
+own scan imports a genuine coverage report from that job. Scans without reports
 perform static analysis: `sonar.coverage.exclusions` leaves the uncollected
 coverage metric unmeasured, while runtime code remains included in security,
 reliability, maintainability and duplication analysis. This avoids publishing
