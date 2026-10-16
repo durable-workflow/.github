@@ -989,9 +989,17 @@ def _isolated_sonar_job(job: dict[str, Any]) -> bool:
     reference = _split_action_reference(scanner.get("uses", ""))
     if reference is None or reference[0] != "sonarsource/sonarqube-scan-action" or reference[1]:
         return False
-    return scanner.get("env") == {"SONAR_TOKEN": "${{ secrets.SONAR_TOKEN }}"} and scanner.get("with") == {
-        "args": "-Dsonar.qualitygate.wait=true -Dsonar.qualitygate.timeout=300",
-    }
+    arguments = "-Dsonar.qualitygate.wait=true -Dsonar.qualitygate.timeout=300"
+    allowed_arguments = {arguments}
+    if standalone:
+        allowed_arguments.add(arguments + " -Dsonar.coverage.exclusions=**/*")
+    settings = scanner.get("with")
+    return (
+        scanner.get("env") == {"SONAR_TOKEN": "${{ secrets.SONAR_TOKEN }}"}
+        and isinstance(settings, dict) and set(settings) == {"args"}
+        and isinstance(settings.get("args"), str)
+        and settings.get("args") in allowed_arguments
+    )
 
 
 def _sonar_coverage_handoff(jobs: dict[str, Any], job: dict[str, Any], download_index: int) -> bool:

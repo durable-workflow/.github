@@ -209,6 +209,7 @@ class QualificationPolicyTest(unittest.TestCase):
             source.replace("    runs-on:", "    name: ${{ secrets.DEPLOY_TOKEN }}\n    runs-on:"),
             source.replace("      - uses: SonarSource/", "      - name: ${{ secrets.DEPLOY_TOKEN }}\n        uses: SonarSource/"),
             source.replace("      - uses: actions/checkout@", "      - name: ${{ secrets.DEPLOY_TOKEN }}\n        uses: actions/checkout@"),
+            source.replace("args: -Dsonar.qualitygate.wait=true -Dsonar.qualitygate.timeout=300", "args: []"),
         ]
         for changed in mutations:
             with self.subTest(source=changed), self.assertRaises(PolicyError):
@@ -257,6 +258,19 @@ class QualificationPolicyTest(unittest.TestCase):
     def test_main_sonar_import_accepts_the_same_run_report_producer(self) -> None:
         evidence = self.scan(self.coverage_sonar_workflow())
         self.assertEqual(["test"], evidence[".github/workflows/test.yml"]["privileged_jobs"])
+
+    def test_standalone_scan_can_leave_missing_coverage_unmeasured(self) -> None:
+        source = self.sonar_workflow().replace(
+            "-Dsonar.qualitygate.timeout=300",
+            "-Dsonar.qualitygate.timeout=300 -Dsonar.coverage.exclusions=**/*",
+        )
+        self.scan(source)
+        measured = self.coverage_sonar_workflow().replace(
+            "-Dsonar.qualitygate.timeout=300",
+            "-Dsonar.qualitygate.timeout=300 -Dsonar.coverage.exclusions=**/*",
+        )
+        with self.assertRaises(PolicyError):
+            self.scan(measured)
 
     def test_sonar_report_import_requires_bound_artifacts_and_isolated_data(self) -> None:
         source = self.coverage_sonar_workflow()

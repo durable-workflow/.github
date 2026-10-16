@@ -9,7 +9,8 @@ project gate. Private projects remain private.
 `sonar-project.properties` owns source/test classification and exclusions.
 The reviewed official scanner analyzes main pushes and same-repository pull
 requests. Repositories may keep static analysis in `sonar.yml` or connect
-existing coverage through their test workflow. The job waits for the quality gate and fails on a
+existing coverage through their test workflow. The job waits for the quality
+gate and fails on a
 failed analysis or gate. Forks receive no Sonar credential. Their ordinary
 checks still run; maintainers review and analyze changes on a trusted branch
 before merging. Do not use `pull_request_target` to bypass this boundary.
@@ -58,6 +59,10 @@ transport needs no extra GitHub token or cross-run lookup. Keep every functional
 test and coverage threshold required. If a pull-request build does not produce
 coverage, retain its explicit unmeasured configuration; never reuse main's
 report for a different revision.
+
+When project properties declare the real coverage paths, a standalone static
+scan may override only that metric with `-Dsonar.coverage.exclusions=**/*`.
+The job that imports reports uses the measured configuration instead.
 
 Tests and qualification fixtures are classified as tests. Generated assets,
 third-party dependencies and temporary build/storage outputs are excluded.
