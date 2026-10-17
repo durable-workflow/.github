@@ -21,6 +21,18 @@ both methods causes conflicts. Repositories using Automatic Analysis instead
 configure source/test boundaries in `.sonarcloud.properties`. Review the exact
 revision's findings alongside its normal qualification before merging or deploying.
 
+Maintainer default: require **SonarCloud Code Analysis** from the official
+SonarQube Cloud GitHub App alongside the existing functional merge checks.
+Bind the check to that App, and preserve the other required checks and their
+strictness. Fork contributions still follow the trusted-branch process above.
+
+Inspect effective branch rules as well as classic branch protection when
+verifying this setting. A required check can be supplied by a repository
+ruleset and be absent from the classic protection endpoint. Use the App's
+unique check name; main-coverage and PR-static jobs can share display names.
+This is a revisable maintainer default, not a replacement for source review
+or release qualification.
+
 ## Quality settings
 
 Use the maintained Sonar quality profiles and the built-in Sonar way gate.
