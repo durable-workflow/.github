@@ -38,6 +38,7 @@ jobs:
           tests.test_regression_evidence_schema
           tests.test_server_codec_counterfactual_schema
           tests.test_visual_evidence
+          tests.test_temporal_runtime
 
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
