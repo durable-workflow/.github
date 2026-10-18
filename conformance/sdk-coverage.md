@@ -54,7 +54,7 @@ Their SDK installation lists do not widen that scope.
 | Worker versioning: Server `worker-versioning-published-artifacts.sh` and `worker-versioning-rust-host-published-artifacts.sh` | PHP/Python protocol-client build cohorts and mixed pinning, plus Python no-compatible-worker, replay and adversarial shards. Managed Rust SDK workers execute registration, pinning, promotion, incompatible refusal, cache eviction, SIGKILL/cold replay and drain/resume with queued work and recovery diagnostics. Source-bound handlers exercise changed/missing-definition refusal, divergent peer conflicts, unchanged recovery and a changed-build positive control. Selecting `DW_RUST_SDK_PREVIOUS_VERSION` compiles identical application sources against two published registry crates and preserves an original unversioned run through the upgrade and another SIGKILL, including the older client's result, both signals and one recorded effect/completion. The focused command also executes all four Rust/PHP and Rust/Python build-cohort directions with actual SDK workers and durable results. | The crate upgrade covers the selected version pair and signal/side-effect history. Changed application code, other durable operations and adding build IDs to existing unversioned histories need their own upgrade cases. Mixed build routing does not establish interchangeable cross-language histories or a shared build identity. |
 | Namespaces: Server `namespaces-published-artifacts.sh` and Sample App `sdk-namespaces.sh` | Server authorization/routing, PHP and Python SDK paths, CLI and Waterline namespace surfaces. Actual Rust clients/workers execute remote activities in two namespaces sharing queue/type names, use separate namespace-bound role credentials, reject wrong-role/cross-namespace reads, signals, starts, registrations and polls, and retain original runs/activity attempts/signal waits after SIGKILL and replacement. The published Server's cross-namespace workflow-ID reservation also rejects duplicate IDs explicitly. | Rust namespace selection and execution are covered through real SDK requests. Namespace CRUD remains the published Server API and PHP/Python/CLI surface. This does not establish namespace deletion/retention during active Rust work or Rust SDK namespace-administration methods. |
 | Search attributes: Server `search-attributes-published-artifacts.sh`; Sample App `scripts/sdk-search-attributes.sh` | Server's PHP SDK, Waterline and PHP/Python codec shards, or supplied host matrix evidence. Sample App separately runs published Rust workflow-side authoring of all seven typed values, PHP/Python selected-run and filtered-list observers, worker SIGKILL, an acknowledged signal during absence and cold replay of original upsert/wait identities before one mutation, deletion and completion. | Rust has typed workflow updates, but no schema-administration, start-time search-attribute or visibility-filter client API. Those observers use supported PHP/Python clients. The focused command does not establish Rust Waterline coverage, namespace isolation, load latency, continuation inheritance or application-code upgrades. Supplied evidence must come from a real worker run. |
-| Nexus: Server `nexus-published-artifacts.sh` | Installed PHP/Python clients execute all four admission directions. Actual PHP/Python caller workflow workers also execute all four caller/service directions in same and cross namespaces, with terminal results, handled typed service failures, direct target cancellation, caller SIGKILL/replacement and MySQL interruption during a pending timer. The [focused workflow](#run-the-published-nexus-caller-cases) checks original caller/call/target identities, immutable deadlines and one terminal delivery. Client admissions and direct handler probes retain their separate evidence. | Cancellation of the waiting caller and propagation to its target, external result recovery, embedded execution and the complete Nexus scenario manifest remain separate qualification. Handled service failures do not prove uncaught caller failure. Rust is outside the current SDK API scope. |
+| Nexus: Server `nexus-published-artifacts.sh` | Installed PHP/Python clients execute all four admission directions. Actual PHP/Python caller workflow workers execute all four caller/service directions in same and cross namespaces, with terminal results, handled typed failures, direct target cancellation, waiting-caller cancellation propagation, caller SIGKILL/replacement and MySQL interruption. The [focused workflow](#run-the-published-nexus-caller-cases) also checks oversized argument/result recovery and authored worker-role refusal before target dispatch. Original caller/call/target identities, deadlines and one terminal delivery remain required. | The complete scenario manifest retains its own coverage requirements. Handled service failures do not prove uncaught caller failure. Embedded applications use the separate [installed-package recipe](https://github.com/durable-workflow/workflow/blob/main/examples/embedded-http/qualification/nexus.md). Native Server qualification is separate, and Rust has no current Nexus SDK API. |
 | 1.x → 2.x migration: Server `migration-published-artifacts.sh` | Supported 1.x PHP artifacts and their durable state, target PHP/Python and operator surfaces. | Rust has no 1.x source artifact to migrate. Rust starting against the migrated target is a meaningful post-migration case. SDK upgrades within 2.x/3.x are separate from this engine migration. |
 | Compatibility skew: Server `skew-published-artifacts.sh` | CLI, PHP/Python SDK, Waterline and worker protocol pairings. | Add Rust's supported and refused protocol pairings. A major SDK package number is not itself a worker protocol compatibility boundary. |
 | Principal attribution: Server `principal-attribution-published-artifacts.sh`; Sample App `scripts/sdk-namespaces.sh` and `scripts/sdk-children.sh` | Server covers named/anonymous/raw HTTP actors, PHP/Python clients, worker completion/failure, CLI and Waterline. Sample App separately executes real Rust starts, signals, remote activities and workflow completions with namespace-bound operator and worker credentials. A disposable gateway injects the published principal contract's forged body fields and headers into actual SDK requests. During worker absence, all four credentials are rotated through the Server API. Duplicate rotations preserve their timestamp, real Rust calls refuse the old credentials, and new credentials complete the original runs with the same authenticated subjects. Successful request receipts and original-run histories retain start/signal/completion actors through worker SIGKILL and cold replacement. Selected-run queries distinguish Server's authenticated response principal from a forged application-result principal and leave history unchanged. Additional Rust workflows fail with the worker actor or receive terminal cancellation with the operator actor after a declared wait, preserving their original runs and one terminal boundary. A final isolated phase requires token-driver refusal before explicitly recreating the disposable frontend with the `none` driver. Actual credential-free Rust callers and worker then execute activity/workflow completion, signals, queries, authored failure and terminal cancellation with server/anonymous actors and the same forged metadata matrix. Published native CLI JSON and human tables inspect every original terminal run. Published Waterline uses its read-only remote backend to inspect the same selected runs, statuses, complete timelines and command actors. Both views must match preserved Server histories without mutating them. | The Rust case covers named and anonymous actors, runtime credential rotation and start/signal/completion/query/failure/terminal-cancellation attribution, plus CLI and Waterline API visibility of actual Rust runs. Activity execution identities are checked separately, while internal events may have explicit null principals. The separate child runner checks legacy, runtime-token and anonymous requesters through actual PHP/Python/Rust cancellation clients, Rust-involving cooperative propagation, duplicate identity and original actor preservation, committed delivery and cold cleanup recovery under forged metadata. It also requires actual worker-role 403 and unauthenticated 401 refusals. The same command also checks 45 connected published Waterline browser views across those five directions and three access modes, preserving the original requester and complete cascade after cold cleanup recovery. The anonymous phase qualifies auth-disabled self-hosting, not anonymous Cloud access or namespace isolation without authentication. Credential administration uses the Server API. Transport injection does not add a custom-header SDK API, and the query observer does not add a Rust raw-response API. |
@@ -72,11 +72,15 @@ uses its declared frozen published tuple. Run it through GitHub Actions:
 gh workflow run published-nexus-sdk-callers.yml --repo durable-workflow/server --ref main
 ```
 
-Record the resulting run ID and runner commit. Inspect its
-`nexus-sdk-callers-RUN_ID-ATTEMPT` artifact, including `pins.json`, the individual
-probe reports and the complete suite's exit code. A passing focused workflow
-does not make every scenario in `nexus-conformance-result.json` a pass. Missing
-cells keep their recorded `not_covered` outcome.
+Record the resulting run ID and runner commit. Review the execution step's
+scenario assertions and the bounded `Nexus SDK outcomes` notices. Its
+`nexus-sdk-callers-RUN_ID-ATTEMPT` artifact retains `pins.json`, `outcomes.json`,
+bounded external/authorization reports and the complete suite's exit code for
+one day. It does not retain every probe's raw output. Maintainers may remove
+completed reports after recording verified outcomes in the owning issue.
+A passing focused workflow does not make every scenario in
+`nexus-conformance-result.json` a pass. Missing cells keep their recorded
+`not_covered` outcome.
 
 The authored callers wait for terminal service history and preserve their
 original namespace, run, call, target and operation sequence. Each of the four
@@ -84,8 +88,9 @@ PHP/Python caller/service directions runs in both same and cross namespaces.
 Failure cases catch the service's typed exception at the original call and
 complete with a handled error result. Cancellation cases request cooperative
 cancellation of the linked target directly, then deliver its cancelled outcome
-to the waiting caller. They do not request cancellation of the caller or prove
-propagation from caller to target.
+to the waiting caller. Separate waiting-caller cases request cancellation of
+the caller and require propagation to its linked target, preserving the
+original request, call and deadline.
 
 The recovery probes kill the original caller process and use a distinct
 replacement to finish the same run. A separate probe kills and restarts MySQL
@@ -94,11 +99,23 @@ identity and deadline, the expected service result, one terminal delivery and
 clean replacement exits within the original budget. Backend readiness fails
 during the outage and recovers after restart.
 
-Keep the broader completion requirements in
-[Workflow #753](https://github.com/durable-workflow/workflow/issues/753).
-External payload recovery, embedded callers and waiting-caller cancellation
-need their own executed evidence. Native Server support is also qualified
-separately from this PHP Server workflow.
+The external-payload cases send arguments and results larger than 4 MiB,
+kill the waiting caller and finish the original call in a new process. Require
+exact hashes, integer type, explicit null and Unicode, owner-namespace HTTP 200
+with exact bytes, and unrelated-namespace HTTP 404. The PHP observer uses a
+128 MiB limit and records its peak. Each original keeps its thirty-second budget.
+Authored worker-only callers must receive the typed permission failure before
+target dispatch, with no acceptance timestamp or linked target. A read-only
+audit checks the actual stored principal roles.
+
+Embedded execution has a separate
+[normally installed Core qualification](https://github.com/durable-workflow/workflow/blob/main/examples/embedded-http/qualification/nexus.md)
+using real database-queue processes. API/browser/CLI inspection uses the
+[published service-catalog consumer](https://github.com/durable-workflow/waterline/blob/main/.github/workflows/published-service-catalog.yml).
+These paths do not share a runtime acceptance result with the SDK workflow.
+[Workflow #753](https://github.com/durable-workflow/workflow/issues/753#issuecomment-6247569474)
+records the published-artifact and consumer acceptance. Each new affected tuple
+needs its own execution. Native Server support remains separately qualified.
 
 ## Run and interpret a cell
 
