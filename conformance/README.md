@@ -128,8 +128,12 @@ prove cadence, restart, or failure recovery behavior.
 
 The current
 [timer scenario manifest](https://github.com/durable-workflow/server/blob/main/static/platform-conformance/timer-runtime-scenarios.json)
-and published-artifact runner execute timer behavior in the Server image with
-an embedded PHP workflow. The Python SDK artifact pin does not mean a Python
+and published-artifact runner use PHP-hosted protocol probes and the package's
+timer queue jobs inside the Server image. The concurrent-deadline probe submits
+timer commands directly, sorts their recorded deadlines, then drives each timer
+job in that order before polling its continuation. It checks those controlled
+transitions, rather than independently observing ordinary scheduler ordering or
+SDK-authored concurrent waits. The Python SDK artifact pin does not mean a Python
 worker ran these scenarios; the runner does not require the PHP or Rust SDK
 artifacts. The separate
 [Sample App SDK timer experiment](https://github.com/durable-workflow/sample-app/blob/main/polyglot/timers/README.md)
@@ -139,6 +143,11 @@ across the deadline, and cooperative cancellation followed beyond the original
 timer due time. Each cell checks persisted history and public status. Report
 its twelve scenario outcomes separately. Concurrent timer groups and
 timer-bearing application upgrades remain outside that focused experiment.
+The concurrent SDK case requires PHP, Python and Rust workflows to author
+multiple timers within each original run and resume through their normal
+workers. Preserve the scheduled identities/deadlines, observe real firing and
+resumption, and refuse early or duplicate fires and duplicate completion.
+Separate workflows with one timer each do not exercise that within-run group.
 
 The [Sample App Rust search-attribute experiment](https://github.com/durable-workflow/sample-app/blob/main/polyglot/search-attributes/README.md)
 authors all seven types through the published Rust workflow API. PHP and Python
