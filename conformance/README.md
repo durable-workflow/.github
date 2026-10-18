@@ -139,15 +139,18 @@ artifacts. The separate
 [Sample App SDK timer experiment](https://github.com/durable-workflow/sample-app/blob/main/polyglot/timers/README.md)
 executes actual PHP, Python and Rust timer workflows. It checks completion,
 worker SIGKILL with timer fire during absence and cold replay, Server restart
-across the deadline, and cooperative cancellation followed beyond the original
-timer due time. Each cell checks persisted history and public status. Report
-its twelve scenario outcomes separately. Concurrent timer groups and
-timer-bearing application upgrades remain outside that focused experiment.
-The concurrent SDK case requires PHP, Python and Rust workflows to author
-multiple timers within each original run and resume through their normal
-workers. Preserve the scheduled identities/deadlines, observe real firing and
-resumption, and refuse early or duplicate fires and duplicate completion.
-Separate workflows with one timer each do not exercise that within-run group.
+across the deadline, cooperative cancellation followed beyond the original
+timer due time, and three concurrent deadlines in each SDK's original run.
+Report its fifteen scenario outcomes separately.
+
+The concurrent cells use ordinary SDK all/parallel barriers and the Server's
+queue worker. They preserve every scheduled identity/deadline and the common
+barrier metadata through actual firing, reject early or duplicate fires, and
+require one workflow completion after all three members resolve. Firing order
+is recorded; a separate parent resume for each barrier member is not required.
+The existing interruption/cancellation cells retain their single timer.
+Concurrent interruption/cancellation and timer-bearing application upgrades
+still need their own SDK scenarios.
 
 The [Sample App Rust search-attribute experiment](https://github.com/durable-workflow/sample-app/blob/main/polyglot/search-attributes/README.md)
 authors all seven types through the published Rust workflow API. PHP and Python
