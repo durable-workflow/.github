@@ -172,9 +172,29 @@ the different class leaves the original unclaimed after its timers fire, then
 a cold original-class worker completes it without rebinding history. Fresh runs
 use the new class. This preserves the published definition fence, rather than
 authorizing incompatible class adoption. SDK package upgrades, build-ID rollouts
-and other class-evolution mechanisms need separate qualification. Revision one
-already records its marker; adding versioning to an unversioned history, other
-application changes and nested cancellation scopes need separate scenarios.
+and other class-evolution mechanisms need separate qualification. These forty
+cases start from code that already records its version marker.
+
+Use the separate [version-introduction command](https://github.com/durable-workflow/sample-app/blob/main/polyglot/timers/README.md#introduce-versioning-into-an-existing-history)
+to cover an existing unversioned history:
+
+```bash
+SDK_TIMERS_COMPOSE_PROJECT_NAME=sample-app-unversioned-timers \
+  scripts/sdk-timers.sh --unversioned-upgrades
+```
+
+Run it from the same prepared Sample App checkout with its resolved published
+tuple. Report its twelve originals separately: old and fresh single/concurrent
+runs in PHP, Python and Rust. Revision one schedules timers without a version
+command. Cold revision-two workers introduce `getVersion(change, -1, 2)` or the
+language equivalent under the same registered wrapper. Old runs must resolve
+legacy `-1` without inserting a marker or rebasing their original command
+sequences. Fresh runs must record version `2`, minimum `-1` and maximum `2`
+before scheduling the new timer branch. Preserve the complete original prefix,
+every timer/barrier identity and deadline, typed results and one completion.
+Registration ownership, readiness and automatic cleanup follow the main timer
+recipe. SDK package upgrades, other durable operations, further application
+changes and nested cancellation scopes remain separate qualifications.
 
 The [Sample App Rust search-attribute experiment](https://github.com/durable-workflow/sample-app/blob/main/polyglot/search-attributes/README.md)
 authors all seven types through the published Rust workflow API. PHP and Python
