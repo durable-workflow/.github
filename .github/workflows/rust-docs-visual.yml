@@ -82,7 +82,7 @@ jobs:
 
       - name: Install pinned visual capture runtime
         if: steps.classify.outputs.required == 'true'
-        run: npm ci --prefix visual-controller
+        run: npm ci --ignore-scripts --prefix visual-controller
 
       - name: Build candidate API reference
         if: steps.classify.outputs.required == 'true'
