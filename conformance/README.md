@@ -196,6 +196,28 @@ Registration ownership, readiness and automatic cleanup follow the main timer
 recipe. SDK package upgrades, other durable operations, further application
 changes and nested cancellation scopes remain separate qualifications.
 
+Use the separate [SDK-package command](https://github.com/durable-workflow/sample-app/blob/main/polyglot/timers/README.md#upgrade-sdk-packages-with-pending-timers)
+to test pending timer histories across selected published package versions:
+
+```bash
+SDK_TIMERS_COMPOSE_PROJECT_NAME=sample-app-sdk-package-timers \
+  scripts/sdk-timers.sh --sdk-upgrades
+```
+
+Report its twelve originals separately from both commands above: six old-package
+single/concurrent originals replayed by cold current-package workers, plus six
+fresh current-package controls across PHP, Python and Rust. Previous versions
+come from the recipe's baseline manifest and targets from the existing qualified
+tuple. Build both generations before admission and check installed package
+identities plus the actual registered SDK versions. Application source and
+registered types stay unchanged. Every original timer must fire while the old
+workers are absent, then complete once with its original prefix, run, timer and
+barrier identities, sequences, deadlines and typed result. Preserve Python's
+recorded class binding. Do not introduce a version marker. Record actual old/new
+package versions; a relabelled current image is not an upgrade. Other operations,
+combined application/package changes, build routing and incompatible class
+adoption remain separate qualifications.
+
 The [Sample App Rust search-attribute experiment](https://github.com/durable-workflow/sample-app/blob/main/polyglot/search-attributes/README.md)
 authors all seven types through the published Rust workflow API. PHP and Python
 clients verify selected-run values and server-side equality, integer/float
