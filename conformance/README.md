@@ -142,7 +142,11 @@ worker SIGKILL with timer fire during absence and cold replay, Server restart
 across the deadline, cooperative cancellation followed beyond the original
 timer due time, and three concurrent deadlines in each SDK's original run.
 The interruption and cancellation cases run with both single timers and
-concurrent groups. Report its twenty-four scenario outcomes separately.
+concurrent groups. It also replaces compatible business helpers while single/group
+timers are pending, then checks fresh version-two runs in every SDK. Python has
+four additional class-identity originals for refusal, restoration and fresh
+replacement. Report the forty outcomes separately: PHP twelve, Python sixteen
+and Rust twelve.
 
 The concurrent cells use ordinary SDK all/parallel barriers and the Server's
 queue worker. They preserve every scheduled identity/deadline and the common
@@ -155,8 +159,22 @@ completion. Concurrent Server restart crosses all original deadlines before
 any fire. Concurrent cancellation requires three matching cancellations and
 no fire or completion beyond the last original deadline. Resolved members keep
 the original barrier metadata and scalar types, including nested group paths.
-Timer-bearing application upgrades and nested cancellation scopes still need
-their own SDK scenarios.
+Application revision one records a version-one decision and the original timer
+durations. Fresh replacement workers register revision two, which must replay
+that same original decision, complete history prefix and timers before one
+completion. Fresh runs then select version two and use the changed durations.
+Both authored helpers ship in the scenario workers; the command chooses the
+helper before process startup while keeping the registered wrapper unchanged.
+The runner stops the old processes, retires only captured owned registrations
+with zero lease recovery, and waits for the actual new roster before admission.
+Python's separate class cases require a worker-sourced definition fingerprint:
+the different class leaves the original unclaimed after its timers fire, then
+a cold original-class worker completes it without rebinding history. Fresh runs
+use the new class. This preserves the published definition fence, rather than
+authorizing incompatible class adoption. SDK package upgrades, build-ID rollouts
+and other class-evolution mechanisms need separate qualification. Revision one
+already records its marker; adding versioning to an unversioned history, other
+application changes and nested cancellation scopes need separate scenarios.
 
 The [Sample App Rust search-attribute experiment](https://github.com/durable-workflow/sample-app/blob/main/polyglot/search-attributes/README.md)
 authors all seven types through the published Rust workflow API. PHP and Python
