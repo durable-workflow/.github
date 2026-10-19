@@ -46,7 +46,7 @@ jobs:
           cache: npm
 
       - name: Install Node dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Test browser evidence boundary
         run: npm run test:visual-capture
