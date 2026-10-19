@@ -44,3 +44,7 @@ activity to a worker in another.
 Start with the [2.0 documentation](https://durable-workflow.com/docs/2.0/) or
 open the [Sample App](https://github.com/durable-workflow/sample-app) for
 runnable embedded and service-mode examples.
+
+## Maintainer
+
+Durable Workflow is created and maintained by Richard McDaniel (@rmcdaniel), who is also responsible for security maintenance, vulnerability triage, and security fixes across the project.
