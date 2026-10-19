@@ -218,6 +218,28 @@ package versions; a relabelled current image is not an upgrade. Other operations
 combined application/package changes, build routing and incompatible class
 adoption remain separate qualifications.
 
+Use the separate [combined SDK and application command](https://github.com/durable-workflow/sample-app/blob/main/polyglot/timers/README.md#upgrade-sdk-packages-and-application-logic-together)
+to change the selected SDK package and versioned timer helper together:
+
+```bash
+SDK_TIMERS_COMPOSE_PROJECT_NAME=sample-app-sdk-application-timers \
+  scripts/sdk-timers.sh --sdk-application-upgrades
+```
+
+Report another twelve originals separately: six old-package single/concurrent
+runs and six fresh controls across PHP, Python and Rust. Revision one records
+version `1` with bounds `1..1`. After its timers fire during worker absence,
+cold current-package workers run the revision-two helper against the same
+originals. Require the original marker and bounds, complete history prefix,
+timer/barrier identities, command sequences, deadlines and one completion.
+Fresh current-package runs must select version `2` with bounds `1..2` and the
+new timer durations. Check actual installed packages and worker identities for
+both generations, plus typed results and Python's recorded definition binding.
+Both helpers are bundled under unchanged registered wrappers and selected
+before startup. This qualifies the selected package pairs and helper changes;
+other durable operations, build routing and incompatible class adoption need
+their own cases.
+
 The [Sample App Rust search-attribute experiment](https://github.com/durable-workflow/sample-app/blob/main/polyglot/search-attributes/README.md)
 authors all seven types through the published Rust workflow API. PHP and Python
 clients verify selected-run values and server-side equality, integer/float
