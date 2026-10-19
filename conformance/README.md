@@ -141,16 +141,22 @@ executes actual PHP, Python and Rust timer workflows. It checks completion,
 worker SIGKILL with timer fire during absence and cold replay, Server restart
 across the deadline, cooperative cancellation followed beyond the original
 timer due time, and three concurrent deadlines in each SDK's original run.
-Report its fifteen scenario outcomes separately.
+The interruption and cancellation cases run with both single timers and
+concurrent groups. Report its twenty-four scenario outcomes separately.
 
 The concurrent cells use ordinary SDK all/parallel barriers and the Server's
 queue worker. They preserve every scheduled identity/deadline and the common
 barrier metadata through actual firing, reject early or duplicate fires, and
 require one workflow completion after all three members resolve. Firing order
 is recorded; a separate parent resume for each barrier member is not required.
-The existing interruption/cancellation cells retain their single timer.
-Concurrent interruption/cancellation and timer-bearing application upgrades
-still need their own SDK scenarios.
+The existing single-timer cases retain their own outcomes. Concurrent recovery
+requires every member to fire while workers are absent, then one cold-replayed
+completion. Concurrent Server restart crosses all original deadlines before
+any fire. Concurrent cancellation requires three matching cancellations and
+no fire or completion beyond the last original deadline. Resolved members keep
+the original barrier metadata and scalar types, including nested group paths.
+Timer-bearing application upgrades and nested cancellation scopes still need
+their own SDK scenarios.
 
 The [Sample App Rust search-attribute experiment](https://github.com/durable-workflow/sample-app/blob/main/polyglot/search-attributes/README.md)
 authors all seven types through the published Rust workflow API. PHP and Python
