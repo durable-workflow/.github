@@ -240,6 +240,34 @@ before startup. This qualifies the selected package pairs and helper changes;
 other durable operations, build routing and incompatible class adoption need
 their own cases.
 
+Use the separate [pending activity SDK/application command](https://github.com/durable-workflow/sample-app/blob/main/polyglot/activities/README.md#pending-activities-across-sdk-and-application-upgrades)
+for work scheduled before both package and business-helper replacement:
+
+```bash
+SDK_ACTIVITY_UPGRADES_COMPOSE_PROJECT_NAME=sample-app-activity-upgrades \
+  scripts/sdk-activity-upgrades.sh
+```
+
+Run from the prepared Sample App checkout with its published tuple resolved.
+Report eighteen originals separately: nine previous-package workflows with a
+genuinely unstarted activity, then nine fresh current-package controls covering
+every PHP/Python/Rust workflow/activity direction. Build and verify both package
+generations before admission. Old helpers record version `1` with bounds `1..1`
+and the original activity policy; cold current workers use revision-two helpers
+and execute that same pending work. Fresh controls select version `2`, bounds
+`1..2` and the new policy.
+
+Require the complete original history prefix, original run and activity/attempt
+identities, command sequences, full retry list/timeouts and exact typed activity
+and workflow results. Activities execute once on the selected current package,
+after worker replacement and inside the original total budget. Python's
+registered wrapper and recorded definition remain unchanged. Keep the command's
+pending/result observer bounds and automatic project/image cleanup. This covers
+the selected pending-activity package/helper pairs; incompatible class adoption,
+build routing, other durable operations and application side-effect recovery
+retain their separate gates. Record the actual packages, runner SHA, Server
+digest and all eighteen outcomes in the owning audit.
+
 The [Sample App Rust search-attribute experiment](https://github.com/durable-workflow/sample-app/blob/main/polyglot/search-attributes/README.md)
 authors all seven types through the published Rust workflow API. PHP and Python
 clients verify selected-run values and server-side equality, integer/float
