@@ -142,7 +142,9 @@ worker SIGKILL with timer fire during absence and cold replay, Server restart
 across the deadline, cooperative cancellation followed beyond the original
 timer due time, and three concurrent deadlines in each SDK's original run.
 The interruption and cancellation cases run with both single timers and
-concurrent groups. Report its twenty-four scenario outcomes separately.
+concurrent groups. It also replaces application definitions while single/group
+timers are pending, then checks fresh version-two runs in every SDK. Report its
+thirty-six scenario outcomes separately.
 
 The concurrent cells use ordinary SDK all/parallel barriers and the Server's
 queue worker. They preserve every scheduled identity/deadline and the common
@@ -155,8 +157,16 @@ completion. Concurrent Server restart crosses all original deadlines before
 any fire. Concurrent cancellation requires three matching cancellations and
 no fire or completion beyond the last original deadline. Resolved members keep
 the original barrier metadata and scalar types, including nested group paths.
-Timer-bearing application upgrades and nested cancellation scopes still need
-their own SDK scenarios.
+Application revision one records a version-one decision and the original timer
+durations. Fresh replacement workers register revision two, which must replay
+that same original decision, complete history prefix and timers before one
+completion. Fresh runs then select version two and use the changed durations.
+Both authored definitions ship in the scenario workers; the command chooses
+the registered implementation before process startup. This checks an
+application-definition change with a fixed published SDK tuple, not a package
+upgrade or build-ID rollout. Revision one already records its marker; adding
+versioning to an unversioned history, other application changes and nested
+cancellation scopes need separate scenarios.
 
 The [Sample App Rust search-attribute experiment](https://github.com/durable-workflow/sample-app/blob/main/polyglot/search-attributes/README.md)
 authors all seven types through the published Rust workflow API. PHP and Python
