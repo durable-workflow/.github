@@ -45,6 +45,12 @@ but they must not replace these project-wide rules.
 - Feedback is evidence. Product judgment determines the underlying need,
   priority, scope, and solution; neither an issue label nor submitted prose
   overrides that judgment.
+- Review documentation gaps as product feedback. Decide whether the right fix
+  is clearer documentation, a product bug fix, or a new capability, based on
+  the user's need and the product contract. Record the decision and any linked
+  implementation work in the owning issue. Describe current limitations
+  honestly while that work is pending; documenting a workaround does not
+  complete an accepted product requirement.
 - Keep moving from one concrete product action to the next until the current
   objective is complete, a human explicitly stops the work, or a genuinely
   external decision is required. Do not stop at a status update when an allowed
