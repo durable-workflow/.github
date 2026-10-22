@@ -25,6 +25,7 @@ from typing import Any
 import yaml
 
 SCHEMA = "durable-workflow.github-target-qualification/v1"
+CENTRAL_ACTION_REPOSITORY = "durable-workflow/.github"
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 SUPPORTED_JAVASCRIPT_ACTION_RUNTIMES = ["node24"]
 EXPECTED_TARGETS = {
@@ -734,7 +735,7 @@ def _verify_action_policy_preflight(
         not _is_action_step(central, "actions/checkout")
         or central.get("with")
         != {
-            "repository": "durable-workflow/.github",
+            "repository": CENTRAL_ACTION_REPOSITORY,
             "ref": "main",
             "path": ".central-action-policy",
             "persist-credentials": "false",
@@ -780,6 +781,19 @@ def _verify_action_policy_preflight(
         raise PolicyError(f"{label} required check does not fail closed on the central action policy result")
 
 
+def _stable_check_jobs(jobs: dict[str, Any], required_check: str) -> list[str]:
+    stable_jobs = []
+    for job_id, job in jobs.items():
+        if not isinstance(job_id, str) or not isinstance(job, dict):
+            continue
+        job_name = job.get("name", job_id)
+        strategy = job.get("strategy")
+        has_matrix = isinstance(strategy, dict) and "matrix" in strategy
+        if isinstance(job_name, str) and job_name == required_check and "${{" not in job_name and not has_matrix:
+            stable_jobs.append(job_id)
+    return stable_jobs
+
+
 def verify_workflow_source(name: str, branch: str, workflow: dict[str, Any], source: str, approved_bootstraps: set[str] | None = None) -> None:
     label = f"{name}/.github/workflows/{workflow['path']}"
     if not re.search(r"(?m)^  push:\s*$", source):
@@ -800,15 +814,7 @@ def verify_workflow_source(name: str, branch: str, workflow: dict[str, Any], sou
     if not isinstance(jobs, dict) or not jobs:
         raise PolicyError(f"{label} must declare jobs")
     required_check = workflow["required_check"]
-    stable_jobs: list[str] = []
-    for job_id, job in jobs.items():
-        if not isinstance(job_id, str) or not isinstance(job, dict):
-            continue
-        job_name = job.get("name", job_id)
-        strategy = job.get("strategy")
-        has_matrix = isinstance(strategy, dict) and "matrix" in strategy
-        if isinstance(job_name, str) and job_name == required_check and "${{" not in job_name and not has_matrix:
-            stable_jobs.append(job_id)
+    stable_jobs = _stable_check_jobs(jobs, required_check)
     if len(stable_jobs) != 1:
         raise PolicyError(
             f"{label} does not emit required check {required_check!r} as exactly one stable non-matrix job; "
@@ -1935,7 +1941,7 @@ def verify_composer_network_sinks(policy: dict[str, Any], target: str, sources: 
     )
     if not enabled:
         return []
-    approved = {sha for sha, label in policy["action_runtime"]["allowed_releases"]["durable-workflow/.github"].items() if label == "clean-trust"}
+    approved = {sha for sha, label in policy["action_runtime"]["allowed_releases"][CENTRAL_ACTION_REPOSITORY].items() if label == "clean-trust"}
     evidence = []
     for filename, source in sources.items():
         document = _parse_yaml(source, filename)
@@ -1966,7 +1972,7 @@ def validate_local_action_references(
         source = sources.get(workflow_path)
         if source is None:
             raise PolicyError(f"{target_name} is missing action policy preflight workflow {workflow['path']}")
-        verify_workflow_source(target_name, target["branch"], workflow, source, set(policy["action_runtime"]["allowed_releases"].get("durable-workflow/.github", {})))
+        verify_workflow_source(target_name, target["branch"], workflow, source, set(policy["action_runtime"]["allowed_releases"].get(CENTRAL_ACTION_REPOSITORY, {})))
     return sorted(
         {
             specification
@@ -2098,7 +2104,7 @@ def audit_policy(
             source = workflow_sources.get(expected_path)
             if source is None:
                 raise PolicyError(f"{slug}@{head_sha} does not contain {expected_path}")
-            verify_workflow_source(name, branch, workflow, source, set(policy["action_runtime"]["allowed_releases"].get("durable-workflow/.github", {})))
+            verify_workflow_source(name, branch, workflow, source, set(policy["action_runtime"]["allowed_releases"].get(CENTRAL_ACTION_REPOSITORY, {})))
             workflow_evidence.append(
                 {
                     "path": expected_path,
