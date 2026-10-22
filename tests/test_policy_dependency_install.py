@@ -26,7 +26,7 @@ class PolicyDependencyInstallTest(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.directory = Path(self.temporary.name)
         self.environment = dict(os.environ)
-        for name in ("PYTHONPATH", "PIP_EXTRA_INDEX_URL", "PIP_TRUSTED_HOST"):
+        for name in ("PYTHONPATH", "PYTHONSAFEPATH", "PIP_EXTRA_INDEX_URL", "PIP_TRUSTED_HOST"):
             self.environment.pop(name, None)
         self.environment.update({
             "PIP_CONFIG_FILE": os.devnull,
