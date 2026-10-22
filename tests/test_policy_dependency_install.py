@@ -46,7 +46,8 @@ class PolicyDependencyInstallTest(unittest.TestCase):
     def test_actual_installer_ignores_both_working_directory_shadows(self):
         for kind in ("module", "package"):
             with self.subTest(shadow=kind):
-                self.pip(["uninstall", "--yes", "PyYAML"])
+                removed = self.pip(["uninstall", "--yes", "PyYAML"])
+                self.assertEqual(0, removed.returncode, removed.stdout + removed.stderr)
                 directory = self.directory / kind
                 directory.mkdir()
                 lock = directory / RELATIVE_REQUIREMENTS
@@ -66,7 +67,7 @@ class PolicyDependencyInstallTest(unittest.TestCase):
                 self.assertEqual(0, installed.returncode, installed.stdout + installed.stderr)
                 self.assertFalse(marker.exists())
                 loaded = subprocess.run(
-                    [sys.executable, "-I", "-c", "import yaml; assert yaml.__version__ == '6.0.2'; assert yaml.__with_libyaml__"],
+                    [sys.executable, "-I", "-c", "import sys,yaml; from pathlib import Path; assert yaml.__version__ == '6.0.2'; assert yaml.__with_libyaml__; assert Path(yaml.__file__).is_relative_to(sys.prefix)"],
                     cwd=directory, env=self.environment, capture_output=True, text=True, timeout=10,
                 )
                 self.assertEqual(0, loaded.returncode, loaded.stderr)
