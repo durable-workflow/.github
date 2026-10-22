@@ -11,6 +11,7 @@ import http.client
 import json
 import os
 import re
+import shlex
 import sys
 import time
 import urllib.error
@@ -24,6 +25,7 @@ from typing import Any
 import yaml
 
 SCHEMA = "durable-workflow.github-target-qualification/v1"
+CENTRAL_ACTION_REPOSITORY = "durable-workflow/.github"
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 SUPPORTED_JAVASCRIPT_ACTION_RUNTIMES = ["node24"]
 EXPECTED_TARGETS = {
@@ -691,6 +693,7 @@ def _verify_action_policy_preflight(
     label: str,
     jobs: dict[str, Any],
     gate_job_name: str,
+    approved_bootstraps: set[str] | None = None,
 ) -> None:
     preflight = jobs.get("action-policy")
     if not isinstance(preflight, dict):
@@ -710,11 +713,13 @@ def _verify_action_policy_preflight(
     steps = preflight.get("steps")
     if isinstance(steps, list) and len(steps) == 6:
         bootstrap = steps[3]
+        revisions = approved_bootstraps if approved_bootstraps is not None else {"ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10"}
+        references = {"durable-workflow/.github/.github/actions/bootstrap-patched-pip@" + sha for sha in revisions}
         if (
             not isinstance(bootstrap, dict)
             or set(bootstrap) - {"name", "uses"}
             or bootstrap.get("uses")
-            != "durable-workflow/.github/.github/actions/bootstrap-patched-pip@ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10"
+            not in references
         ):
             raise PolicyError(f"{label} central action policy preflight has an unreviewed pip bootstrap")
         steps = steps[:3] + steps[4:]
@@ -730,7 +735,7 @@ def _verify_action_policy_preflight(
         not _is_action_step(central, "actions/checkout")
         or central.get("with")
         != {
-            "repository": "durable-workflow/.github",
+            "repository": CENTRAL_ACTION_REPOSITORY,
             "ref": "main",
             "path": ".central-action-policy",
             "persist-credentials": "false",
@@ -776,7 +781,20 @@ def _verify_action_policy_preflight(
         raise PolicyError(f"{label} required check does not fail closed on the central action policy result")
 
 
-def verify_workflow_source(name: str, branch: str, workflow: dict[str, Any], source: str) -> None:
+def _stable_check_jobs(jobs: dict[str, Any], required_check: str) -> list[str]:
+    stable_jobs = []
+    for job_id, job in jobs.items():
+        if not isinstance(job_id, str) or not isinstance(job, dict):
+            continue
+        job_name = job.get("name", job_id)
+        strategy = job.get("strategy")
+        has_matrix = isinstance(strategy, dict) and "matrix" in strategy
+        if isinstance(job_name, str) and job_name == required_check and "${{" not in job_name and not has_matrix:
+            stable_jobs.append(job_id)
+    return stable_jobs
+
+
+def verify_workflow_source(name: str, branch: str, workflow: dict[str, Any], source: str, approved_bootstraps: set[str] | None = None) -> None:
     label = f"{name}/.github/workflows/{workflow['path']}"
     if not re.search(r"(?m)^  push:\s*$", source):
         raise PolicyError(f"{label} does not run automatically on target pushes")
@@ -796,22 +814,14 @@ def verify_workflow_source(name: str, branch: str, workflow: dict[str, Any], sou
     if not isinstance(jobs, dict) or not jobs:
         raise PolicyError(f"{label} must declare jobs")
     required_check = workflow["required_check"]
-    stable_jobs: list[str] = []
-    for job_id, job in jobs.items():
-        if not isinstance(job_id, str) or not isinstance(job, dict):
-            continue
-        job_name = job.get("name", job_id)
-        strategy = job.get("strategy")
-        has_matrix = isinstance(strategy, dict) and "matrix" in strategy
-        if isinstance(job_name, str) and job_name == required_check and "${{" not in job_name and not has_matrix:
-            stable_jobs.append(job_id)
+    stable_jobs = _stable_check_jobs(jobs, required_check)
     if len(stable_jobs) != 1:
         raise PolicyError(
             f"{label} does not emit required check {required_check!r} as exactly one stable non-matrix job; "
             f"matching jobs={stable_jobs}"
         )
     if workflow.get("action_policy_preflight") is True:
-        _verify_action_policy_preflight(name, label, jobs, stable_jobs[0])
+        _verify_action_policy_preflight(name, label, jobs, stable_jobs[0], approved_bootstraps)
 
 
 def _parse_yaml(source: str, label: str) -> Any:
@@ -1843,6 +1853,142 @@ def audit_action_releases(
     return evidence
 
 
+COMPOSER_LOCAL_COMMANDS = {"about", "help", "list"}
+TRUST_ACTION_PREFIX = "durable-workflow/.github/.github/actions/"
+COMPOSER_TRUST_FIELDS = {"SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "GIT_SSL_CAPATH", "GIT_SSL_NO_VERIFY", "COMPOSER_CAFILE", "COMPOSER_CAPATH", "COMPOSER_DISABLE_TLS", "COMPOSER", "COMPOSER_HOME", "DW_CI_CA_SHA256", "PIP_CERT", "REQUESTS_CA_BUNDLE"}
+
+
+def _composer_subcommand_needs_network(arguments: list[str]) -> bool:
+    remaining = iter(arguments)
+    for argument in remaining:
+        if re.fullmatch(r"[;&|()]+", argument):
+            break
+        if argument in {"--version", "-V", "--help", "-h"}:
+            return False
+        if argument in {"--working-dir", "--directory", "-d"}:
+            next(remaining, None)
+        elif not argument.startswith("-"):
+            return argument not in COMPOSER_LOCAL_COMMANDS
+    return False
+
+
+def _composer_network_commands(source: str) -> bool:
+    source = source.replace("\\\n", "")
+    try:
+        lexer = shlex.shlex(source, posix=True, punctuation_chars=";&|()\n")
+        lexer.whitespace = " \t\r"
+        lexer.whitespace_split = True
+        tokens = [token.replace("\n", ";") for token in lexer]
+    except ValueError:
+        return re.search(r"\bcomposer(?:\.phar|\.exe|\.bat)?\b", source) is not None
+    for index, token in enumerate(tokens):
+        if re.match(r"^[A-Za-z_]\w*=", token, flags=re.ASCII):
+            continue
+        executable = Path(token.replace("\\", "/")).name
+        if index and tokens[index - 1] in {"-v", "which", "type"}:
+            continue
+        if executable in {"composer", "composer.phar", "composer.exe", "composer.bat"} and _composer_subcommand_needs_network(tokens[index + 1:]):
+            return True
+    return False
+
+
+def _is_composer_shell_helper(path: Path, contents: str) -> bool:
+    return path.suffix in {"", ".sh", ".bash", ".ksh", ".zsh"} or re.match(r"^#![^\n]*\b(?:bash|sh|dash|ksh|zsh)\b", contents) is not None
+
+
+def _composer_step_source(source: str, root: Path, visited: set[Path] | None = None) -> str:
+    contents = [source]
+    visited = set() if visited is None else visited
+    for name in re.findall(r"(?:\./)?(?:scripts|\.github)/[A-Za-z0-9_./-]+", source):
+        path = (root / name).resolve()
+        if not path.is_relative_to(root.resolve()):
+            raise PolicyError("Composer source contract must not read outside the candidate repository")
+        if path.is_file() and path not in visited:
+            visited.add(path)
+            helper = path.read_text(encoding="utf-8")
+            if _is_composer_shell_helper(path, helper):
+                contents.append(_composer_step_source(helper, root, visited))
+    return "\n".join(contents)
+
+
+def _composer_trust_modified(source: str) -> bool:
+    fields = "|".join(sorted(COMPOSER_TRUST_FIELDS))
+    assignment = r"\b(?:" + fields + r")\b[\"']?\s*(?::?=)|\bunset\s+[^\n]*(?:" + fields + ")"
+    configuration = r"\bcomposer\b[^;\n]*\bconfig\b[^;\n]*\b(?:cafile|capath|disable-tls|secure-http)\b"
+    return re.search(assignment, source) is not None or re.search(configuration, source) is not None
+
+
+def _reviewed_composer_action(uses: str, action: str, approved: set[str], local: bool) -> bool:
+    prefix = TRUST_ACTION_PREFIX + action + "@"
+    return (local and uses == "./.github/actions/" + action) or (uses.startswith(prefix) and uses[len(prefix):] in approved)
+
+
+def _advance_composer_trust(step: dict[str, Any], state: tuple[bool, bool, bool], approved: set[str], local: bool) -> tuple[bool, bool, bool]:
+    clean, checked, setup_safe = state
+    uses = step.get("uses", "")
+    unconditional = not step.get("if") and str(step.get("continue-on-error", "false")) == "false"
+    if _reviewed_composer_action(uses, "bootstrap-patched-pip", approved, local):
+        clients = {value.strip() for value in step.get("with", {}).get("clients", "pip").split(",")}
+        clean = unconditional and {"composer", "curl", "git"} <= clients
+        checked = False
+    elif uses.startswith("shivammathur/setup-php@"):
+        tools = {value.strip() for value in step.get("with", {}).get("tools", "").split(",")}
+        setup_safe = clean and unconditional and "composer:2.10.3" in tools
+        checked = False
+    elif _reviewed_composer_action(uses, "verify-composer-trust", approved, local):
+        checked = clean and setup_safe and unconditional
+    else:
+        # Verification authorizes only the next request step. Any intervening
+        # action or shell step can change paths, configuration or GITHUB_ENV.
+        checked = False
+    return clean, checked, setup_safe
+
+
+def _require_composer_request_trust(step: dict[str, Any], state: tuple[bool, bool, bool], label: str, source: str) -> None:
+    clean, checked, _ = state
+    if not clean or not checked:
+        raise PolicyError(f"{label} Composer requests lack the reviewed clean bootstrap and live verifier")
+    if re.search(r"(?:always|failure|cancelled)\s*\(", step.get("if", "")):
+        raise PolicyError(f"{label} Composer requests may run after trust refusal")
+    overrides = set(step.get("env") or {}) & COMPOSER_TRUST_FIELDS
+    if overrides:
+        raise PolicyError(f"{label} overrides Composer trust after verification")
+    if _composer_trust_modified(source):
+        raise PolicyError(f"{label} changes Composer trust inside its request step or helper")
+
+
+def _composer_job_sinks(job: dict[str, Any], root: Path, approved: set[str], local: bool, label: str) -> list[str]:
+    if set(job.get("env") or {}) & COMPOSER_TRUST_FIELDS:
+        raise PolicyError(f"{label} declares unverified job-level Composer trust overrides")
+    evidence = []
+    state = (False, False, False)
+    for index, step in enumerate(job.get("steps") or []):
+        step_label = f"{label}:step-{index + 1}"
+        expanded = _composer_step_source(step.get("run", ""), root)
+        if _composer_network_commands(expanded):
+            _require_composer_request_trust(step, state, step_label, expanded)
+            evidence.append(step_label)
+        state = _advance_composer_trust(step, state, approved, local)
+    return evidence
+
+
+def verify_composer_network_sinks(policy: dict[str, Any], target: str, sources: dict[str, str], root: Path) -> list[str]:
+    enabled = policy["targets"][target].get("composer_trust_required", False) or any(
+        ".github/actions/verify-composer-trust" in source for source in sources.values()
+    )
+    if not enabled:
+        return []
+    approved = {sha for sha, label in policy["action_runtime"]["allowed_releases"][CENTRAL_ACTION_REPOSITORY].items() if label == "clean-trust"}
+    evidence = []
+    for filename, source in sources.items():
+        document = _parse_yaml(source, filename)
+        if set(document.get("env") or {}) & COMPOSER_TRUST_FIELDS:
+            raise PolicyError(f"{filename} declares unverified workflow-level Composer trust overrides")
+        for job_name, job in (document.get("jobs") or {}).items():
+            evidence.extend(_composer_job_sinks(job, root, approved, target == "github-control-plane", f"{filename}:{job_name}"))
+    return evidence
+
+
 def validate_local_action_references(
     policy: dict[str, Any], directory: Path, target_name: str = "github-control-plane"
 ) -> list[str]:
@@ -1850,6 +1996,7 @@ def validate_local_action_references(
         path.as_posix(): path.read_text(encoding="utf-8") for path in sorted(directory.glob("*.y*ml")) if path.is_file()
     }
     evidence = scan_workflow_sources(policy, target_name, sources)
+    verify_composer_network_sinks(policy, target_name, sources, directory.parent.parent)
     target = policy["targets"][target_name]
     for workflow in target["workflows"]:
         if workflow.get("action_policy_preflight") is not True:
@@ -1858,7 +2005,7 @@ def validate_local_action_references(
         source = sources.get(workflow_path)
         if source is None:
             raise PolicyError(f"{target_name} is missing action policy preflight workflow {workflow['path']}")
-        verify_workflow_source(target_name, target["branch"], workflow, source)
+        verify_workflow_source(target_name, target["branch"], workflow, source, set(policy["action_runtime"]["allowed_releases"].get(CENTRAL_ACTION_REPOSITORY, {})))
     return sorted(
         {
             specification
@@ -1990,7 +2137,7 @@ def audit_policy(
             source = workflow_sources.get(expected_path)
             if source is None:
                 raise PolicyError(f"{slug}@{head_sha} does not contain {expected_path}")
-            verify_workflow_source(name, branch, workflow, source)
+            verify_workflow_source(name, branch, workflow, source, set(policy["action_runtime"]["allowed_releases"].get(CENTRAL_ACTION_REPOSITORY, {})))
             workflow_evidence.append(
                 {
                     "path": expected_path,

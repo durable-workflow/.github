@@ -132,6 +132,10 @@ class QualificationPolicyTest(unittest.TestCase):
         }
         steps.insert(3, bootstrap)
         _verify_action_policy_preflight("ai", "fixture", jobs, "gate")
+        for revision, label in self.policy["action_runtime"]["allowed_releases"]["durable-workflow/.github"].items():
+            if label == "clean-trust":
+                steps[3] = {**bootstrap, "uses": bootstrap["uses"].rsplit("@", 1)[0] + "@" + revision}
+                _verify_action_policy_preflight("ai", "fixture", jobs, "gate", {revision})
         for change in (
             {**bootstrap, "uses": bootstrap["uses"].replace("ff93e15", "0000000")},
             {**bootstrap, "if": "false"},

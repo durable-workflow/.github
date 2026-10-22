@@ -1,5 +1,20 @@
 name: Bootstrap patched pip trust
-description: Install the Python-provided hash-pinned pip release that distrusts the compromised eMudhra chain.
+description: Authenticate patched pip and export its verified clean CA bundle for subsequent CI requests.
+inputs:
+  clients:
+    description: Comma-separated Linux CI clients invoked by later steps (pip, python, composer, curl, git, npm, cargo).
+    default: pip
+
+outputs:
+  ca-file:
+    description: Absolute path of the verified public CA bundle.
+    value: ${{ steps.trust.outputs.ca-file }}
+  ca-directory:
+    description: Empty directory excluding additional OpenSSL/Git/Composer roots.
+    value: ${{ steps.trust.outputs.ca-directory }}
+  ca-sha256:
+    description: SHA-256 of the verified CA bundle.
+    value: ${{ steps.trust.outputs.ca-sha256 }}
 
 runs:
   using: composite
@@ -11,13 +26,9 @@ runs:
         python -I -m pip --isolated --disable-pip-version-check install --no-deps --upgrade \
           "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
         test "$(python -I -c 'import pip; print(pip.__version__)')" = 26.2.2
-        bundle="$(python -I -c 'from pip._vendor import certifi; print(certifi.where())')"
-        subjects="$(openssl crl2pkcs7 -nocrl -certfile "$bundle" | openssl pkcs7 -print_certs -noout)"
-        for blocked_subject in \
-          'CN=AAA Certificate Services' \
-          'CN=emSign ECC Root CA - G3'; do
-          if grep -Fq "$blocked_subject" <<<"$subjects"; then
-            echo "blocked eMudhra trust path remains in pip: $blocked_subject" >&2
-            exit 1
-          fi
-        done
+    - name: Verify and export the effective CI trust bundle
+      id: trust
+      shell: bash
+      env:
+        TRUST_CLIENTS: ${{ inputs.clients }}
+      run: python -I "$GITHUB_ACTION_PATH/export-trust.py"

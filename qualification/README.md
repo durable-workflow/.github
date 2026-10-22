@@ -35,3 +35,63 @@ without exact producer and digest provenance.
 
 Product repositories own their tests, documentation deployment, publication,
 and deployment workflows. Editorial wording is outside this policy.
+
+## Clean trust for dependency requests
+
+Linux jobs that fetch Composer dependencies use this order after checkout:
+
+```yaml
+- uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+  with:
+    python-version: '3.13'
+- uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7 # clean-trust
+  with:
+    clients: pip,python,composer,curl,git
+- uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+  with:
+    php-version: '8.3'
+    tools: composer:2.10.3
+- uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7 # clean-trust
+- run: composer install --prefer-dist --no-interaction
+```
+
+The bootstrap authenticates the pip wheel by SHA-256 before exporting its
+verified CA bundle. It selects both a file and an empty directory because pip's
+default truststore can otherwise add roots from the operating system even when
+`PIP_CERT` points to a clean file. An offline localhost regression checks that
+counterfactual with the actual pip process.
+
+The live verifier loads the installed Composer PHAR without executing project
+plugins. It checks Composer's version, selected file and directory, configuration,
+bundle hash, parsed certificates and enabled TLS before the next dependency
+request. Use its `working-directory` input when the project is in a subdirectory.
+It reports trust identities without dumping configuration or credentials.
+
+Select only the clients a job uses. `npm` and `cargo` add their own package-client
+overrides. The action does not make raw Node's compiled-in store safe, and it
+does not use additive `NODE_EXTRA_CA_CERTS`. Node runtimes and native Windows
+certificate backends need their own qualified release or trust configuration.
+The pinned action download and hosted runner bootstrap remain a trust boundary.
+
+The real npm and Cargo controls use a synthetic blocked root on localhost. They
+check that the raw/additive configuration reaches the test registry and that
+the exported trust refuses before an HTTP request. Cargo uses
+`CARGO_HTTP_CAINFO` together with the common file and empty directory. The
+bootstrap does not set `CARGO_HTTP_PROXY_CAINFO`: Cargo 1.86 refuses that setting
+when its proxy is not configured. Unused Go overrides are not advertised.
+
+For migrated targets, `composer_trust_required` makes the normal validator scan
+every job in every workflow, including referenced repository shell helpers. A
+Composer command requires the reviewed bootstrap and fixed Composer setup, with
+an unconditional live verifier immediately before its request step. Only explicit
+version/help/list/about operations are treated as local. New subcommands and
+script aliases require verification by default. Literal shell helpers, including
+extensionless and nested helpers, are inspected for requests and trust mutations.
+Python/PHP test data is not interpreted as shell code.
+
+Unknown pins, omitted jobs, ignored guards, intervening steps and trust overrides
+fail. The check covers authored literal Composer calls and repository shell
+helpers. It is not a shell sandbox, a multi-language program analyzer or a claim
+about third-party actions' internal requests. Maintainers still review dynamic
+request paths and their actual configuration. Enable the target setting after
+migrating all its request paths so partial rollouts remain visible.

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit colors="true" failOnWarning="true" cacheDirectory="/tmp/durable-workflow-phpunit-cache">
+  <testsuites>
+    <testsuite name="Composer trust"><directory>tests/php</directory></testsuite>
+  </testsuites>
+  <source><include><file>.github/actions/verify-composer-trust/verify.php</file></include></source>
+</phpunit>

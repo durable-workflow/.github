@@ -27,6 +27,25 @@ jobs:
           python-version: "3.13"
 
       - uses: ./.github/actions/bootstrap-patched-pip # local
+        with:
+          clients: pip,python,composer,curl,git,npm,cargo
+
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: '8.3'
+          tools: composer:2.10.3, phpunit:11.5.57
+          coverage: none
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.22.1
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@4d407b29186a635f0cc27475ef0bc0ae605a8866 # 1.86.0
+        with:
+          toolchain: 1.86.0
+
+      - uses: ./.github/actions/verify-composer-trust # local
 
       - name: Install Python test dependencies
         run: >-
@@ -41,11 +60,13 @@ jobs:
           tests.test_server_codec_counterfactual_schema
           tests.test_visual_evidence
           tests.test_temporal_runtime
+          tests.test_ci_trust
+          tests.test_pip_effective_trust
+          tests.test_cli_effective_trust
+          tests.test_composer_trust_contract
 
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
-        with:
-          node-version: 24.22.1
-          cache: npm
+      - name: Test actual Composer trust selection
+        run: COMPOSER_BINARY="$(command -v composer)" phpunit --configuration phpunit-composer-trust.xml --do-not-cache-result
 
       - name: Install Node dependencies
         run: npm ci --ignore-scripts

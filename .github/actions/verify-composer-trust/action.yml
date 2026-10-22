@@ -1,0 +1,14 @@
+name: Verify Composer effective trust
+description: Refuse dependency requests unless Composer uses the authenticated CI bundle.
+inputs:
+  working-directory:
+    description: Project directory whose Composer configuration will be inspected without plugins.
+    default: .
+runs:
+  using: composite
+  steps:
+    - name: Verify actual Composer version and selected trust paths
+      shell: bash
+      env:
+        TRUST_PROJECT_DIRECTORY: ${{ inputs.working-directory }}
+      run: php "$GITHUB_ACTION_PATH/verify.php" "$(command -v composer)" "$TRUST_PROJECT_DIRECTORY"
