@@ -73,6 +73,7 @@
         "4d407b29186a635f0cc27475ef0bc0ae605a8866": "1.86.0"
       },
       "durable-workflow/.github": {
+        "4414f6fcdbb8cca75dac1358db5af9aadd8c65f6": "clean-trust",
         "ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10": "patched-pip"
       },
       "helm/chart-testing-action": {
@@ -185,6 +186,7 @@
     },
     "github-control-plane": {
       "branch": "main",
+      "composer_trust_required": true,
       "repository": ".github",
       "workflows": [
         {

@@ -104,6 +104,9 @@
         "public_audit": {
           "type": "boolean"
         },
+        "composer_trust_required": {
+          "type": "boolean"
+        },
         "workflows": {
           "items": {
             "$ref": "#/$defs/workflow"

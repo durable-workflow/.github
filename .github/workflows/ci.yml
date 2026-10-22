@@ -28,7 +28,7 @@ jobs:
 
       - uses: ./.github/actions/bootstrap-patched-pip # local
         with:
-          clients: pip,python,composer,curl,git
+          clients: pip,python,composer,curl,git,npm
 
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
         with:
@@ -52,6 +52,8 @@ jobs:
           tests.test_visual_evidence
           tests.test_temporal_runtime
           tests.test_ci_trust
+          tests.test_pip_effective_trust
+          tests.test_composer_trust_contract
 
       - name: Test actual Composer trust selection
         run: COMPOSER_BINARY="$(command -v composer)" phpunit --configuration phpunit-composer-trust.xml --do-not-cache-result
