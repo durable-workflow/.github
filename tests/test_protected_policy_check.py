@@ -139,8 +139,9 @@ class GitHubReadClientTest(unittest.TestCase):
 
     def test_transport_timeout_is_a_refusal_without_echoing_credentials(self):
         self.curl.timeout = True
+        client = self.client("synthetic_read_token")
         with self.assertRaises(InputRefused) as error:
-            self.read(self.client("synthetic_read_token"))
+            self.read(client)
         self.assertNotIn("synthetic_read_token", str(error.exception))
 
     def test_total_deadline_and_request_count_do_not_start_another_transfer(self):
