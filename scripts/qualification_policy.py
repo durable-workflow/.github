@@ -1882,7 +1882,7 @@ def _composer_network_commands(source: str) -> bool:
     except ValueError:
         return re.search(r"\bcomposer(?:\.phar|\.exe|\.bat)?\b", source) is not None
     for index, token in enumerate(tokens):
-        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token):
+        if re.match(r"^[A-Za-z_]\w*=", token, flags=re.ASCII):
             continue
         executable = Path(token.replace("\\", "/")).name
         if index and tokens[index - 1] in {"-v", "which", "type"}:

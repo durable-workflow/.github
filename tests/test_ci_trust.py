@@ -135,7 +135,7 @@ class CleanBundleTest(unittest.TestCase):
         variables = trust.export_bundle(self.clean, self.directory, self.env_file, self.output_file, ("npm", "cargo"))
         self.assertEqual(variables["SSL_CERT_FILE"], variables["NPM_CONFIG_CAFILE"])
         self.assertEqual(variables["SSL_CERT_FILE"], variables["CARGO_HTTP_CAINFO"])
-        self.assertEqual(variables["SSL_CERT_FILE"], variables["CARGO_HTTP_PROXY_CAINFO"])
+        self.assertNotIn("CARGO_HTTP_PROXY_CAINFO", variables)
         self.assertNotIn("NODE_EXTRA_CA_CERTS", variables)
 
     def test_main_uses_the_authenticated_pip_distribution(self):

@@ -20,7 +20,7 @@ CLIENT_VARIABLES = {
     "pip": ("PIP_CERT",), "python": ("REQUESTS_CA_BUNDLE",),
     "composer": ("COMPOSER_CAFILE",), "curl": ("CURL_CA_BUNDLE",),
     "git": ("GIT_SSL_CAINFO",), "npm": ("NPM_CONFIG_CAFILE",),
-    "cargo": ("CARGO_HTTP_CAINFO", "CARGO_HTTP_PROXY_CAINFO"),
+    "cargo": ("CARGO_HTTP_CAINFO",),
 }
 
 

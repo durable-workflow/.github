@@ -73,6 +73,13 @@ does not use additive `NODE_EXTRA_CA_CERTS`. Node runtimes and native Windows
 certificate backends need their own qualified release or trust configuration.
 The pinned action download and hosted runner bootstrap remain a trust boundary.
 
+The real npm and Cargo controls use a synthetic blocked root on localhost. They
+check that the raw/additive configuration reaches the test registry and that
+the exported trust refuses before an HTTP request. Cargo uses
+`CARGO_HTTP_CAINFO` together with the common file and empty directory. The
+bootstrap does not set `CARGO_HTTP_PROXY_CAINFO`: Cargo 1.86 refuses that setting
+when its proxy is not configured. Unused Go overrides are not advertised.
+
 For migrated targets, `composer_trust_required` makes the normal validator scan
 every job in every workflow, including referenced repository shell helpers. A
 Composer command requires the reviewed bootstrap and fixed Composer setup, with
