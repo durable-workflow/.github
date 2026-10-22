@@ -35,6 +35,7 @@ jobs:
           docker compose -p cancellation-restate up -d --wait
           docker compose -p cancellation-restate exec -T sdk sh -ec '
             python -m venv /tmp/venv
+            /tmp/venv/bin/pip install --disable-pip-version-check --no-deps --upgrade "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
             /tmp/venv/bin/pip install --no-cache-dir --report /evidence/packages.json -r requirements.txt
             /tmp/venv/bin/python scenario.py
             /tmp/venv/bin/python scenario.py duplicate
@@ -73,6 +74,7 @@ jobs:
           docker compose -p cancellation-temporal up -d
           docker compose -p cancellation-temporal exec -T sdk sh -ec '
             python -m venv /tmp/venv
+            /tmp/venv/bin/pip install --disable-pip-version-check --no-deps --upgrade "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
             /tmp/venv/bin/pip install --no-cache-dir --report /evidence/packages.json -r requirements.txt
             /tmp/venv/bin/python scenario.py
           ' | tee evidence/run.log
@@ -110,6 +112,7 @@ jobs:
           docker compose -p cancellation-dbos up -d
           docker compose -p cancellation-dbos exec -T sdk sh -ec '
             python -m venv /tmp/venv
+            /tmp/venv/bin/pip install --disable-pip-version-check --no-deps --upgrade "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
             /tmp/venv/bin/pip install --no-cache-dir --report /evidence/packages.json -r requirements.txt
             /tmp/venv/bin/python scenario.py
           ' | tee evidence/run.log

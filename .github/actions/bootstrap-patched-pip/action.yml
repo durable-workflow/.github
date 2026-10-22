@@ -1,0 +1,23 @@
+name: Bootstrap patched pip trust
+description: Install the Python-provided hash-pinned pip release that distrusts the compromised eMudhra chain.
+
+runs:
+  using: composite
+  steps:
+    - name: Install and verify pip 26.2.2
+      shell: bash
+      run: |
+        set -euo pipefail
+        python -I -m pip --isolated --disable-pip-version-check install --no-deps --upgrade \
+          "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
+        test "$(python -I -c 'import pip; print(pip.__version__)')" = 26.2.2
+        bundle="$(python -I -c 'from pip._vendor import certifi; print(certifi.where())')"
+        subjects="$(openssl crl2pkcs7 -nocrl -certfile "$bundle" | openssl pkcs7 -print_certs -noout)"
+        for blocked_subject in \
+          'CN=AAA Certificate Services' \
+          'CN=emSign ECC Root CA - G3'; do
+          if grep -Fq "$blocked_subject" <<<"$subjects"; then
+            echo "blocked eMudhra trust path remains in pip: $blocked_subject" >&2
+            exit 1
+          fi
+        done

@@ -26,6 +26,8 @@ jobs:
         with:
           python-version: "3.13"
 
+      - uses: ./.github/actions/bootstrap-patched-pip # local
+
       - name: Install Python test dependencies
         run: >-
           python -m pip install --only-binary :all: jsonschema==4.23.0 PyYAML==6.0.2
@@ -42,7 +44,7 @@ jobs:
 
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 24
+          node-version: 24.22.1
           cache: npm
 
       - name: Install Node dependencies
