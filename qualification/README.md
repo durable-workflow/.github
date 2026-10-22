@@ -44,14 +44,14 @@ Linux jobs that fetch Composer dependencies use this order after checkout:
 - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
   with:
     python-version: '3.13'
-- uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@4414f6fcdbb8cca75dac1358db5af9aadd8c65f6 # clean-trust
+- uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7 # clean-trust
   with:
     clients: pip,python,composer,curl,git
 - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
   with:
     php-version: '8.3'
     tools: composer:2.10.3
-- uses: durable-workflow/.github/.github/actions/verify-composer-trust@4414f6fcdbb8cca75dac1358db5af9aadd8c65f6 # clean-trust
+- uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7 # clean-trust
 - run: composer install --prefer-dist --no-interaction
 ```
 
