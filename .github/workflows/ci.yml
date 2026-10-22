@@ -89,6 +89,7 @@ jobs:
           tests.test_qualification_policy
           tests.test_protected_policy_inputs
           tests.test_protected_policy_check
+          tests.test_protected_policy_issue
           tests.test_regression_corpus
           tests.test_regression_evidence_schema
           tests.test_server_codec_counterfactual_schema

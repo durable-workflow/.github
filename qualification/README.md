@@ -106,6 +106,45 @@ controlled job remains a component test. Protected base execution, the App
 issuer, immediate identity recheck, environment-denial tests and issuer-bound
 repository rules still require separate live acceptance before enforcement.
 
+### Prepared App issuer component
+
+`scripts/protected_policy_issue.py` prepares the checks-only issuer for that
+same public pilot. It runs the validator itself rather than accepting a
+candidate-supplied report. The read-only `GITHUB_TOKEN` and separate
+`POLICY_CHECKS_TOKEN` installation token have different roles; the issuer never
+accepts or reads an App signing key. `POLICY_GATE_APP_ID` must name the reviewed
+installation's App. The App must have Checks write and implicit Metadata read
+only, installed solely on the pilot repository.
+
+The intended protected caller uses:
+
+```sh
+python -I scripts/protected_policy_issue.py \
+  --pull-request "$POLICY_PULL_REQUEST" --base-sha "$POLICY_BASE_SHA" \
+  --expected-head "$POLICY_HEAD_SHA"
+```
+
+It checks the protected-main workflow context and exact event head, validates
+bounded candidate data, creates one incomplete Check Run, and verifies the
+returned check name, original head and App ID. Only then does it re-read the
+protected main and complete PR identity immediately before completing that
+same check successfully. Read and write credentials use stdin, with explicit
+reviewed TLS roots and the existing transfer/time/JSON bounds. The App client
+has no arbitrary endpoint or repository input. Refusal exits nonzero and never
+reports success; a check already created may remain incomplete. A later head
+cannot inherit an earlier head's successful check.
+
+Caller environment markers are defense in depth, not proof of secret denial.
+The workflow binding, immutable trusted-source selection, Environment branch
+restriction, narrow policy exception, actual App installation and issuer-bound
+branch rule still need separate review and live acceptance. The current policy
+continues to forbid every `pull_request_target` workflow. No workflow is enabled
+by this component. Its constructed-response tests prove the code paths only,
+not GitHub's live Environment or merge enforcement.
+
+The transport uses GitHub's [create and update Check Run API](https://docs.github.com/en/rest/checks/runs)
+and checks the documented [workflow environment variables](https://docs.github.com/en/actions/reference/workflows-and-actions/variables).
+
 ## Clean trust for dependency requests
 
 Linux jobs that fetch Composer dependencies use this order after checkout:

@@ -115,6 +115,14 @@ class GitHubReadClient:
     def __call__(self, path: str) -> Any:
         if ENDPOINT.fullmatch(path) is None or any(part in {".", ".."} for part in path.split("/")):
             raise InputRefused("The policy reader permits only exact GitHub metadata/blob endpoints")
+        return self._request_json(path, method="GET", expected_status=b"200")
+
+    def _request_json(self, path: str, *, method: str, expected_status: bytes, body=None) -> Any:
+        """Bound the transport used by the reader and the fixed-endpoint issuer.
+
+        This is internal transport, not a candidate-controlled request API.
+        Each caller restricts its own endpoints and allowed operations.
+        """
         remaining = self.deadline - self.clock()
         if remaining <= 0 or self.requests >= MAX_REQUESTS:
             raise InputRefused("The policy API time or request bound is exhausted")
@@ -122,6 +130,16 @@ class GitHubReadClient:
         timeout = min(REQUEST_SECONDS, remaining)
         with tempfile.TemporaryDirectory(prefix="policy-response-") as temporary:
             response = Path(temporary) / "body.json"
+            data_arguments = []
+            if body is not None:
+                data = json.dumps(body, sort_keys=True, allow_nan=False).encode()
+                if len(data) > 16 * 1024:
+                    raise InputRefused("The policy check request exceeds its byte bound")
+                payload = Path(temporary) / "request.json"
+                with payload.open("xb") as handle:
+                    payload.chmod(0o600)
+                    handle.write(data)
+                data_arguments = ["--header", "Content-Type: application/json", "--data-binary", "@" + str(payload)]
             with (Path(temporary) / "curl-error").open("wb") as errors:
                 command = [
                     "/usr/bin/curl", "--disable", "--silent", "--show-error", "--fail",
@@ -130,6 +148,7 @@ class GitHubReadClient:
                     "--max-filesize", str(MAX_RESPONSE_BYTES), "--cacert", self.bundle,
                     "--capath", self.directory, "--header", "Accept: application/vnd.github+json",
                     "--header", "Accept-Encoding: identity", "--header", "X-GitHub-Api-Version: 2022-11-28",
+                    "--request", method, *data_arguments,
                     "--config", "-", "--output", str(response), "--write-out", "%{http_code}",
                     "--url", "https://api.github.com" + path,
                 ]
@@ -137,10 +156,10 @@ class GitHubReadClient:
                     result = self.run(command, input=self.config.encode(), stdout=subprocess.PIPE,
                                       stderr=errors, timeout=timeout, check=False)
                 except (OSError, subprocess.TimeoutExpired) as error:
-                    raise InputRefused("The bounded GitHub read did not complete") from error
-            if result.returncode or result.stdout != b"200":
+                    raise InputRefused("The bounded GitHub request did not complete") from error
+            if result.returncode or result.stdout != expected_status:
                 status = result.stdout.decode("ascii", errors="replace")[:3]
-                raise InputRefused(f"GitHub read refused: curl exit {result.returncode}, HTTP {status}")
+                raise InputRefused(f"GitHub request refused: curl exit {result.returncode}, HTTP {status}")
             if self.clock() >= self.deadline:
                 raise InputRefused("The total policy API deadline expired")
             if not response.is_file() or response.stat().st_size > MAX_RESPONSE_BYTES:
