@@ -124,6 +124,27 @@ class QualificationPolicyTest(unittest.TestCase):
                 jobs["action-policy"]["steps"][3]["run"] = "python -m pip install --only-binary :all: PyYAML" + suffix
                 _verify_action_policy_preflight("ai", "fixture", jobs, "gate")
 
+        steps = jobs["action-policy"]["steps"]
+        steps[3]["run"] = "python -m pip install PyYAML==6.0.2"
+        bootstrap = {
+            "name": "Bootstrap patched pip trust",
+            "uses": "durable-workflow/.github/.github/actions/bootstrap-patched-pip@ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10",
+        }
+        steps.insert(3, bootstrap)
+        _verify_action_policy_preflight("ai", "fixture", jobs, "gate")
+        for change in (
+            {**bootstrap, "uses": bootstrap["uses"].replace("ff93e15", "0000000")},
+            {**bootstrap, "if": "false"},
+            {"run": "python -m pip install --upgrade pip"},
+        ):
+            with self.subTest(bootstrap=change), self.assertRaisesRegex(PolicyError, "unreviewed pip bootstrap"):
+                steps[3] = change
+                _verify_action_policy_preflight("ai", "fixture", jobs, "gate")
+        steps[3] = bootstrap
+        steps[3], steps[4] = steps[4], steps[3]
+        with self.assertRaisesRegex(PolicyError, "unreviewed pip bootstrap"):
+            _verify_action_policy_preflight("ai", "fixture", jobs, "gate")
+
     def test_approved_immutable_action_with_version_comment_is_accepted(self) -> None:
         commit, version = self.approved_action("actions/checkout")
         evidence = self.scan(workflow(f"- uses: actions/checkout@{commit} # {version}"))

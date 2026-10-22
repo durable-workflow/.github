@@ -708,6 +708,16 @@ def _verify_action_policy_preflight(
         raise PolicyError(f"{label} central action policy preflight job is not the reviewed read-only shape")
 
     steps = preflight.get("steps")
+    if isinstance(steps, list) and len(steps) == 6:
+        bootstrap = steps[3]
+        if (
+            not isinstance(bootstrap, dict)
+            or set(bootstrap) - {"name", "uses"}
+            or bootstrap.get("uses")
+            != "durable-workflow/.github/.github/actions/bootstrap-patched-pip@ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10"
+        ):
+            raise PolicyError(f"{label} central action policy preflight has an unreviewed pip bootstrap")
+        steps = steps[:3] + steps[4:]
     if not isinstance(steps, list) or len(steps) != 5 or not all(isinstance(step, dict) for step in steps):
         raise PolicyError(f"{label} central action policy preflight must contain the five reviewed steps")
     candidate, central, setup_python, install, validate = steps
