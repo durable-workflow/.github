@@ -8,6 +8,8 @@ from pathlib import Path
 
 from scripts.qualification_policy import (
     PolicyError,
+    LOCKED_POLICY_BOOTSTRAP_REVISION,
+    LOCKED_POLICY_INSTALL_COMMAND,
     _verify_action_policy_preflight,
     scan_workflow_sources,
     validate_local_action_references,
@@ -77,7 +79,7 @@ class QualificationPolicyTest(unittest.TestCase):
         self.assertTrue(actions)
         self.assertTrue(all("@" in action for action in actions))
 
-    def test_policy_preflight_accepts_binary_only_without_relaxing_dependency_command(self) -> None:
+    def preflight_jobs(self, target: str = "ai") -> dict:
         checkout, _ = self.approved_action("actions/checkout")
         setup_python, _ = self.approved_action("actions/setup-python")
         jobs = {
@@ -99,7 +101,7 @@ class QualificationPolicyTest(unittest.TestCase):
                     {"uses": f"actions/setup-python@{setup_python}", "with": {"python-version": "3.13"}},
                     {"run": "python -m pip install PyYAML==6.0.2"},
                     {"run": "python .central-action-policy/scripts/qualification_policy.py validate "
-                     "--policy .central-action-policy/qualification/policy.json --target ai "
+                     f"--policy .central-action-policy/qualification/policy.json --target {target} "
                      "--workflow-directory .github/workflows"},
                 ],
             },
@@ -112,9 +114,15 @@ class QualificationPolicyTest(unittest.TestCase):
                 }],
             },
         }
+        return jobs
+
+    def test_policy_preflight_accepts_binary_only_without_relaxing_dependency_command(self) -> None:
+        jobs = self.preflight_jobs()
         for command in (
             "python -m pip install PyYAML==6.0.2",
             "python -m pip install --only-binary :all: PyYAML==6.0.2",
+            "python -I -m pip install PyYAML==6.0.2",
+            "python -I -m pip install --only-binary :all: PyYAML==6.0.2",
         ):
             with self.subTest(command=command):
                 jobs["action-policy"]["steps"][3]["run"] = command
@@ -148,6 +156,39 @@ class QualificationPolicyTest(unittest.TestCase):
         steps[3], steps[4] = steps[4], steps[3]
         with self.assertRaisesRegex(PolicyError, "unreviewed pip bootstrap"):
             _verify_action_policy_preflight("ai", "fixture", jobs, "gate")
+
+    def test_server_requires_the_isolated_hash_locked_policy_install(self) -> None:
+        jobs = self.preflight_jobs("server")
+        steps = jobs["action-policy"]["steps"]
+        steps.insert(3, {"uses": "durable-workflow/.github/.github/actions/bootstrap-patched-pip@" + LOCKED_POLICY_BOOTSTRAP_REVISION})
+        steps[4]["run"] = LOCKED_POLICY_INSTALL_COMMAND
+        revisions = {LOCKED_POLICY_BOOTSTRAP_REVISION}
+        _verify_action_policy_preflight("server", "fixture", jobs, "gate", revisions, True)
+        for flag in ("-I ", "--require-hashes ", "--only-binary=:all: ", "--no-deps "):
+            changed = copy.deepcopy(jobs)
+            changed["action-policy"]["steps"][4]["run"] = LOCKED_POLICY_INSTALL_COMMAND.replace(flag, "")
+            with self.subTest(removed=flag), self.assertRaisesRegex(PolicyError, "reviewed policy dependency"):
+                _verify_action_policy_preflight("server", "fixture", changed, "gate", revisions, True)
+        for command in (
+            LOCKED_POLICY_INSTALL_COMMAND.replace("qualification/requirements.lock", "requirements.lock"),
+            LOCKED_POLICY_INSTALL_COMMAND.replace(".central-action-policy/", ""),
+            LOCKED_POLICY_INSTALL_COMMAND + " --extra-index-url https://example.com",
+            LOCKED_POLICY_INSTALL_COMMAND + " --trusted-host example.com",
+            "python -m pip install PyYAML==6.0.2",
+        ):
+            changed = copy.deepcopy(jobs)
+            changed["action-policy"]["steps"][4]["run"] = command
+            with self.subTest(command=command), self.assertRaisesRegex(PolicyError, "reviewed policy dependency"):
+                _verify_action_policy_preflight("server", "fixture", changed, "gate", revisions, True)
+        changed = copy.deepcopy(jobs)
+        changed["action-policy"]["steps"].pop(3)
+        with self.assertRaisesRegex(PolicyError, "locked-policy pip bootstrap"):
+            _verify_action_policy_preflight("server", "fixture", changed, "gate", revisions, True)
+        changed = copy.deepcopy(jobs)
+        changed["action-policy"]["steps"][3]["uses"] = steps[3]["uses"].replace(LOCKED_POLICY_BOOTSTRAP_REVISION, "75587fc33ff40c34f32ef777293dad56bb6f48c7")
+        with self.assertRaisesRegex(PolicyError, "locked-policy pip bootstrap"):
+            _verify_action_policy_preflight("server", "fixture", changed, "gate", revisions | {"75587fc33ff40c34f32ef777293dad56bb6f48c7"}, True)
+        self.assertTrue(self.policy["targets"]["server"]["workflows"][0]["locked_policy_dependency_required"])
 
     def test_approved_immutable_action_with_version_comment_is_accepted(self) -> None:
         commit, version = self.approved_action("actions/checkout")

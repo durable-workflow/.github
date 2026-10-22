@@ -28,6 +28,11 @@ SCHEMA = "durable-workflow.github-target-qualification/v1"
 CENTRAL_ACTION_REPOSITORY = "durable-workflow/.github"
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 SUPPORTED_JAVASCRIPT_ACTION_RUNTIMES = ["node24"]
+LOCKED_POLICY_BOOTSTRAP_REVISION = "fea245682582d0620054e8547a5f3c968f9ef0f0"
+LOCKED_POLICY_INSTALL_COMMAND = (
+    "python -I -m pip install --require-hashes --only-binary=:all: --no-deps "
+    "-r .central-action-policy/qualification/requirements.lock"
+)
 EXPECTED_TARGETS = {
     "ai": ("ai", "main"),
     "cli": ("cli", "main"),
@@ -694,6 +699,7 @@ def _verify_action_policy_preflight(
     jobs: dict[str, Any],
     gate_job_name: str,
     approved_bootstraps: set[str] | None = None,
+    locked_dependency_required: bool = False,
 ) -> None:
     preflight = jobs.get("action-policy")
     if not isinstance(preflight, dict):
@@ -711,6 +717,8 @@ def _verify_action_policy_preflight(
         raise PolicyError(f"{label} central action policy preflight job is not the reviewed read-only shape")
 
     steps = preflight.get("steps")
+    if locked_dependency_required and (not isinstance(steps, list) or len(steps) != 6):
+        raise PolicyError(f"{label} central action policy preflight requires the locked-policy pip bootstrap")
     if isinstance(steps, list) and len(steps) == 6:
         bootstrap = steps[3]
         revisions = approved_bootstraps if approved_bootstraps is not None else {"ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10"}
@@ -722,6 +730,8 @@ def _verify_action_policy_preflight(
             not in references
         ):
             raise PolicyError(f"{label} central action policy preflight has an unreviewed pip bootstrap")
+        if locked_dependency_required and not bootstrap["uses"].endswith("@" + LOCKED_POLICY_BOOTSTRAP_REVISION):
+            raise PolicyError(f"{label} central action policy preflight requires the locked-policy pip bootstrap")
         steps = steps[:3] + steps[4:]
     if not isinstance(steps, list) or len(steps) != 5 or not all(isinstance(step, dict) for step in steps):
         raise PolicyError(f"{label} central action policy preflight must contain the five reviewed steps")
@@ -750,7 +760,12 @@ def _verify_action_policy_preflight(
     reviewed_install_commands = {
         "python -m pip install PyYAML==6.0.2",
         "python -m pip install --only-binary :all: PyYAML==6.0.2",
+        "python -I -m pip install PyYAML==6.0.2",
+        "python -I -m pip install --only-binary :all: PyYAML==6.0.2",
+        LOCKED_POLICY_INSTALL_COMMAND,
     }
+    if locked_dependency_required:
+        reviewed_install_commands = {LOCKED_POLICY_INSTALL_COMMAND}
     if set(install) - {"name", "run"} or _normalized_shell(install.get("run")) not in reviewed_install_commands:
         raise PolicyError(f"{label} central action policy preflight must install the reviewed policy dependency")
     expected_validation = (
@@ -821,7 +836,10 @@ def verify_workflow_source(name: str, branch: str, workflow: dict[str, Any], sou
             f"matching jobs={stable_jobs}"
         )
     if workflow.get("action_policy_preflight") is True:
-        _verify_action_policy_preflight(name, label, jobs, stable_jobs[0], approved_bootstraps)
+        _verify_action_policy_preflight(
+            name, label, jobs, stable_jobs[0], approved_bootstraps,
+            workflow.get("locked_policy_dependency_required", False),
+        )
 
 
 def _parse_yaml(source: str, label: str) -> Any:

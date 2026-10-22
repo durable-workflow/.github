@@ -15,11 +15,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  policy-dependencies:
+    name: Locked policy wheels (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Create a disposable policy-client venv
+        run: |
+          python -I -m venv "$RUNNER_TEMP/policy-venv"
+          printf '%s\n' "$RUNNER_TEMP/policy-venv/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/bootstrap-patched-pip # local
+      - name: Prove isolated installation and wheel integrity
+        run: python -I tests/test_policy_dependency_install.py
+
   contracts:
     name: Shared contract tests
+    needs: [policy-dependencies]
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Require both native policy-wheel controls
+        env:
+          POLICY_RESULT: ${{ needs.policy-dependencies.result }}
+        run: test "$POLICY_RESULT" = success
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -49,7 +78,7 @@ jobs:
 
       - name: Install Python test dependencies
         run: >-
-          python -m pip install --only-binary :all: jsonschema==4.23.0 PyYAML==6.0.2
+          python -I -m pip install --only-binary :all: jsonschema==4.23.0 PyYAML==6.0.2
 
       - name: Test retained shared contracts
         run: >-
