@@ -103,7 +103,48 @@ class ComposerNetworkContractTest(unittest.TestCase):
                 self.assertEqual(1, len(self.check([*self.steps[:3], {"run": command}])))
 
     def test_local_only_commands_and_quoted_examples_are_not_network_requests(self):
-        self.assertEqual([], self.check([{"run": "composer --version\ncomposer validate\necho 'composer install'"}]))
+        self.assertEqual([], self.check([{"run": "composer --version\ncomposer help\ncomposer list\necho 'composer install'\nCOMPOSER_BINARY=$(command -v composer) phpunit"}]))
+
+    def test_unknown_and_other_composer_commands_require_a_fresh_guard(self):
+        for command in ("remove vendor/package", "reinstall vendor/package", "search package", "self-update", "diagnose", "show --all", "custom-script", "validate"):
+            with self.subTest(command=command), self.assertRaises(PolicyError):
+                self.check([{"run": "composer " + command}])
+            self.assertEqual(1, len(self.check([*self.steps[:3], {"run": "composer " + command}])))
+
+    def test_opaque_actions_and_other_steps_expire_verification(self):
+        for intervening in ({"uses": "actions/cache@" + "c" * 40}, {"run": "pwd"}, self.steps[-1]):
+            with self.subTest(intervening=intervening), self.assertRaises(PolicyError):
+                self.check([*self.steps[:3], intervening, self.steps[-1]])
+        self.assertEqual(2, len(self.check([*self.steps, self.steps[2], self.steps[-1]])))
+
+    def test_helper_trust_mutations_cannot_inherit_a_previous_live_check(self):
+        (self.root / "scripts").mkdir()
+        (self.root / "scripts/build.sh").write_text("export COMPOSER_CAFILE=/unverified\ncomposer install\n")
+        with self.assertRaisesRegex(PolicyError, "changes Composer trust"):
+            self.check([*self.steps[:3], {"run": "scripts/build.sh"}])
+        with self.assertRaisesRegex(PolicyError, "changes Composer trust"):
+            self.check([*self.steps[:3], {"run": "composer config disable-tls true\ncomposer install"}])
+
+    def test_extensionless_and_nested_repository_helpers_are_inspected(self):
+        (self.root / "scripts").mkdir()
+        (self.root / "scripts/build").write_text("#!/bin/sh\nscripts/inner\n")
+        (self.root / "scripts/inner").write_text("#!/bin/sh\ncomposer install\n")
+        with self.assertRaises(PolicyError):
+            self.check([{"run": "scripts/build"}])
+        self.assertEqual(1, len(self.check([*self.steps[:3], {"run": "scripts/build"}])))
+
+    def test_job_and_workflow_overrides_cannot_bypass_the_step_guards(self):
+        with self.assertRaisesRegex(PolicyError, "job-level"):
+            self.check(jobs={"test": {"env": {"GIT_SSL_NO_VERIFY": "1"}, "steps": self.steps}})
+        source = yaml.safe_dump({"env": {"COMPOSER_CAFILE": "/unverified"}, "jobs": {"test": {"steps": self.steps}}})
+        with self.assertRaisesRegex(PolicyError, "workflow-level"):
+            verify_composer_network_sinks(self.policy, "fixture", {"ci.yml": source}, self.root)
+
+    def test_environment_arguments_and_non_shell_fixture_sources_are_not_composer_invocations(self):
+        self.assertEqual([], self.check([{"run": "docker run --env COMPOSER_HOME=/tmp/composer image composer --version"}]))
+        (self.root / "scripts").mkdir()
+        (self.root / "scripts/fixtures.py").write_text("example = 'composer remove vendor/package'\n")
+        self.assertEqual([], self.check([{"run": "python scripts/fixtures.py"}]))
 
 
 if __name__ == "__main__":

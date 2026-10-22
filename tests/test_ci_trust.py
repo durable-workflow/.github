@@ -126,6 +126,8 @@ class CleanBundleTest(unittest.TestCase):
         self.assertNotIn("CARGO_HTTP_CAINFO", variables)
         with self.assertRaisesRegex(ValueError, "supported CI trust clients"):
             trust.export_bundle(self.clean, self.directory, self.env_file, self.output_file, ("unknown",))
+        with self.assertRaisesRegex(ValueError, "supported CI trust clients"):
+            trust.export_bundle(self.clean, self.directory, self.env_file, self.output_file, ("go",))
         with self.assertRaises(ValueError):
             trust.export_bundle(self.clean, self.directory, self.env_file, self.output_file, ())
 

@@ -75,9 +75,16 @@ The pinned action download and hosted runner bootstrap remain a trust boundary.
 
 For migrated targets, `composer_trust_required` makes the normal validator scan
 every job in every workflow, including referenced repository shell helpers. A
-Composer network command requires the reviewed bootstrap, fixed Composer setup
-and unconditional live verifier in order. Unknown pins, omitted jobs, ignored
-guards and later trust overrides fail. The check covers the repository's authored
-request paths. It is not a shell sandbox or a claim about third-party actions'
-internal requests. Enable the target setting after migrating all its request
-paths so partial rollouts remain visible.
+Composer command requires the reviewed bootstrap and fixed Composer setup, with
+an unconditional live verifier immediately before its request step. Only explicit
+version/help/list/about operations are treated as local. New subcommands and
+script aliases require verification by default. Literal shell helpers, including
+extensionless and nested helpers, are inspected for requests and trust mutations.
+Python/PHP test data is not interpreted as shell code.
+
+Unknown pins, omitted jobs, ignored guards, intervening steps and trust overrides
+fail. The check covers authored literal Composer calls and repository shell
+helpers. It is not a shell sandbox, a multi-language program analyzer or a claim
+about third-party actions' internal requests. Maintainers still review dynamic
+request paths and their actual configuration. Enable the target setting after
+migrating all its request paths so partial rollouts remain visible.

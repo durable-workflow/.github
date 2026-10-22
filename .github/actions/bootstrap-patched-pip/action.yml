@@ -2,7 +2,7 @@ name: Bootstrap patched pip trust
 description: Authenticate patched pip and export its verified clean CA bundle for subsequent CI requests.
 inputs:
   clients:
-    description: Comma-separated clients invoked by later steps (pip, python, composer, curl, git, npm, cargo, go).
+    description: Comma-separated Linux CI clients invoked by later steps (pip, python, composer, curl, git, npm, cargo).
     default: pip
 
 outputs:

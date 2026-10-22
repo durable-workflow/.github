@@ -1853,50 +1853,69 @@ def audit_action_releases(
     return evidence
 
 
-COMPOSER_NETWORK_COMMANDS = {"install", "update", "require", "audit", "create-project", "outdated", "global"}
+COMPOSER_LOCAL_COMMANDS = {"about", "help", "list"}
 TRUST_ACTION_PREFIX = "durable-workflow/.github/.github/actions/"
-COMPOSER_TRUST_FIELDS = {"SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "GIT_SSL_CAPATH", "GIT_SSL_NO_VERIFY", "COMPOSER_CAFILE", "COMPOSER_CAPATH", "COMPOSER_DISABLE_TLS"}
+COMPOSER_TRUST_FIELDS = {"SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "GIT_SSL_CAPATH", "GIT_SSL_NO_VERIFY", "COMPOSER_CAFILE", "COMPOSER_CAPATH", "COMPOSER_DISABLE_TLS", "COMPOSER", "COMPOSER_HOME", "DW_CI_CA_SHA256", "PIP_CERT", "REQUESTS_CA_BUNDLE"}
 
 
 def _composer_subcommand_needs_network(arguments: list[str]) -> bool:
     remaining = iter(arguments)
     for argument in remaining:
+        if re.fullmatch(r"[;&|()]+", argument):
+            break
+        if argument in {"--version", "-V", "--help", "-h"}:
+            return False
         if argument in {"--working-dir", "--directory", "-d"}:
             next(remaining, None)
         elif not argument.startswith("-"):
-            return argument in COMPOSER_NETWORK_COMMANDS
+            return argument not in COMPOSER_LOCAL_COMMANDS
     return False
 
 
 def _composer_network_commands(source: str) -> bool:
     source = source.replace("\\\n", "")
     try:
-        lexer = shlex.shlex(source, posix=True, punctuation_chars=";&|()")
+        lexer = shlex.shlex(source, posix=True, punctuation_chars=";&|()\n")
+        lexer.whitespace = " \t\r"
         lexer.whitespace_split = True
-        tokens = list(lexer)
+        tokens = [token.replace("\n", ";") for token in lexer]
     except ValueError:
-        return re.search(r"\bcomposer\s+(?:install|update|require|audit|create-project|outdated|global)\b", source) is not None
+        return re.search(r"\bcomposer(?:\.phar|\.exe|\.bat)?\b", source) is not None
     for index, token in enumerate(tokens):
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token):
+            continue
         executable = Path(token.replace("\\", "/")).name
+        if index and tokens[index - 1] in {"-v", "which", "type"}:
+            continue
         if executable in {"composer", "composer.phar", "composer.exe", "composer.bat"} and _composer_subcommand_needs_network(tokens[index + 1:]):
             return True
     return False
 
 
-def _composer_step_has_requests(step: dict[str, Any], root: Path, visited: set[Path] | None = None) -> bool:
-    source = step.get("run", "")
-    if _composer_network_commands(source):
-        return True
+def _is_composer_shell_helper(path: Path, contents: str) -> bool:
+    return path.suffix in {"", ".sh", ".bash", ".ksh", ".zsh"} or re.match(r"^#![^\n]*\b(?:bash|sh|dash|ksh|zsh)\b", contents) is not None
+
+
+def _composer_step_source(source: str, root: Path, visited: set[Path] | None = None) -> str:
+    contents = [source]
     visited = set() if visited is None else visited
-    for name in re.findall(r"(?:\./)?(?:scripts|\.github)/[A-Za-z0-9_./-]+\.sh\b", source):
+    for name in re.findall(r"(?:\./)?(?:scripts|\.github)/[A-Za-z0-9_./-]+", source):
         path = (root / name).resolve()
         if not path.is_relative_to(root.resolve()):
             raise PolicyError("Composer source contract must not read outside the candidate repository")
         if path.is_file() and path not in visited:
             visited.add(path)
-            if _composer_step_has_requests({"run": path.read_text(encoding="utf-8")}, root, visited):
-                return True
-    return False
+            helper = path.read_text(encoding="utf-8")
+            if _is_composer_shell_helper(path, helper):
+                contents.append(_composer_step_source(helper, root, visited))
+    return "\n".join(contents)
+
+
+def _composer_trust_modified(source: str) -> bool:
+    fields = "|".join(sorted(COMPOSER_TRUST_FIELDS))
+    assignment = r"\b(?:" + fields + r")\b[\"']?\s*(?::?=)|\bunset\s+[^\n]*(?:" + fields + ")"
+    configuration = r"\bcomposer\b[^;\n]*\bconfig\b[^;\n]*\b(?:cafile|capath|disable-tls|secure-http)\b"
+    return re.search(assignment, source) is not None or re.search(configuration, source) is not None
 
 
 def _reviewed_composer_action(uses: str, action: str, approved: set[str], local: bool) -> bool:
@@ -1918,13 +1937,14 @@ def _advance_composer_trust(step: dict[str, Any], state: tuple[bool, bool, bool]
         checked = False
     elif _reviewed_composer_action(uses, "verify-composer-trust", approved, local):
         checked = clean and setup_safe and unconditional
-    fields = "|".join(sorted(COMPOSER_TRUST_FIELDS))
-    if re.search(r"(?:" + fields + r")\s*=|\bunset\s+[^\n]*(?:" + fields + ")", step.get("run", "")):
+    else:
+        # Verification authorizes only the next request step. Any intervening
+        # action or shell step can change paths, configuration or GITHUB_ENV.
         checked = False
     return clean, checked, setup_safe
 
 
-def _require_composer_request_trust(step: dict[str, Any], state: tuple[bool, bool, bool], label: str) -> None:
+def _require_composer_request_trust(step: dict[str, Any], state: tuple[bool, bool, bool], label: str, source: str) -> None:
     clean, checked, _ = state
     if not clean or not checked:
         raise PolicyError(f"{label} Composer requests lack the reviewed clean bootstrap and live verifier")
@@ -1933,6 +1953,23 @@ def _require_composer_request_trust(step: dict[str, Any], state: tuple[bool, boo
     overrides = set(step.get("env") or {}) & COMPOSER_TRUST_FIELDS
     if overrides:
         raise PolicyError(f"{label} overrides Composer trust after verification")
+    if _composer_trust_modified(source):
+        raise PolicyError(f"{label} changes Composer trust inside its request step or helper")
+
+
+def _composer_job_sinks(job: dict[str, Any], root: Path, approved: set[str], local: bool, label: str) -> list[str]:
+    if set(job.get("env") or {}) & COMPOSER_TRUST_FIELDS:
+        raise PolicyError(f"{label} declares unverified job-level Composer trust overrides")
+    evidence = []
+    state = (False, False, False)
+    for index, step in enumerate(job.get("steps") or []):
+        step_label = f"{label}:step-{index + 1}"
+        expanded = _composer_step_source(step.get("run", ""), root)
+        if _composer_network_commands(expanded):
+            _require_composer_request_trust(step, state, step_label, expanded)
+            evidence.append(step_label)
+        state = _advance_composer_trust(step, state, approved, local)
+    return evidence
 
 
 def verify_composer_network_sinks(policy: dict[str, Any], target: str, sources: dict[str, str], root: Path) -> list[str]:
@@ -1945,14 +1982,10 @@ def verify_composer_network_sinks(policy: dict[str, Any], target: str, sources: 
     evidence = []
     for filename, source in sources.items():
         document = _parse_yaml(source, filename)
+        if set(document.get("env") or {}) & COMPOSER_TRUST_FIELDS:
+            raise PolicyError(f"{filename} declares unverified workflow-level Composer trust overrides")
         for job_name, job in (document.get("jobs") or {}).items():
-            state = (False, False, False)
-            for index, step in enumerate(job.get("steps") or []):
-                label = f"{filename}:{job_name}:step-{index + 1}"
-                state = _advance_composer_trust(step, state, approved, target == "github-control-plane")
-                if _composer_step_has_requests(step, root):
-                    _require_composer_request_trust(step, state, label)
-                    evidence.append(label)
+            evidence.extend(_composer_job_sinks(job, root, approved, target == "github-control-plane", f"{filename}:{job_name}"))
     return evidence
 
 
