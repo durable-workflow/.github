@@ -51,7 +51,7 @@ jobs:
       - name: Produce source coverage
         run: |
           python -I -m pip install --only-binary :all: coverage==7.10.7 jsonschema==4.23.0 PyYAML==6.0.2
-          coverage run --source=scripts,conformance/cancellation/temporal,.github/actions/bootstrap-patched-pip -m unittest tests.test_qualification_policy tests.test_protected_policy_inputs tests.test_regression_corpus tests.test_regression_evidence_schema tests.test_server_codec_counterfactual_schema tests.test_visual_evidence tests.test_temporal_runtime tests.test_ci_trust tests.test_pip_effective_trust tests.test_cli_effective_trust tests.test_composer_trust_contract
+          coverage run --source=scripts,conformance/cancellation/temporal,.github/actions/bootstrap-patched-pip -m unittest tests.test_qualification_policy tests.test_protected_policy_inputs tests.test_protected_policy_check tests.test_regression_corpus tests.test_regression_evidence_schema tests.test_server_codec_counterfactual_schema tests.test_visual_evidence tests.test_temporal_runtime tests.test_ci_trust tests.test_pip_effective_trust tests.test_cli_effective_trust tests.test_composer_trust_contract
           coverage xml -o coverage.xml
       - uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9 # v8.3.0
         env:

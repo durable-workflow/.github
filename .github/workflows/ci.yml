@@ -40,6 +40,9 @@ jobs:
 
   contracts:
     name: Shared contract tests
+    permissions:
+      contents: read
+      pull-requests: read
     needs: [policy-dependencies]
     if: always()
     runs-on: ubuntu-latest
@@ -85,6 +88,7 @@ jobs:
           python -m unittest
           tests.test_qualification_policy
           tests.test_protected_policy_inputs
+          tests.test_protected_policy_check
           tests.test_regression_corpus
           tests.test_regression_evidence_schema
           tests.test_server_codec_counterfactual_schema
@@ -94,6 +98,18 @@ jobs:
           tests.test_pip_effective_trust
           tests.test_cli_effective_trust
           tests.test_composer_trust_contract
+
+      - name: Exercise the read-only policy client on this public PR
+        if: github.event_name == 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          POLICY_PULL_REQUEST: ${{ github.event.pull_request.number }}
+          POLICY_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python -I scripts/protected_policy_check.py \
+            --pull-request "$POLICY_PULL_REQUEST" --base-sha "$POLICY_BASE_SHA" \
+            > "$RUNNER_TEMP/protected-policy-read.json"
+          cat "$RUNNER_TEMP/protected-policy-read.json"
 
       - name: Test actual Composer trust selection
         run: COMPOSER_BINARY="$(command -v composer)" phpunit --configuration phpunit-composer-trust.xml --do-not-cache-result
