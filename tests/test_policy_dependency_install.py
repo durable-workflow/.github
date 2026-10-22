@@ -38,7 +38,8 @@ class PolicyDependencyInstallTest(unittest.TestCase):
 
     def pip(self, arguments, directory=None, isolated=True):
         return subprocess.run(
-            [sys.executable, *(["-I"] if isolated else []), "-m", "pip", *arguments],
+            [sys.executable, *(["-I"] if isolated else []), "-m", "pip",
+             *(["--isolated"] if isolated else []), *arguments],
             cwd=directory or self.directory, env=self.environment,
             capture_output=True, text=True, timeout=60,
         )

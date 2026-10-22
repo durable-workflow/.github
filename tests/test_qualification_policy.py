@@ -164,7 +164,7 @@ class QualificationPolicyTest(unittest.TestCase):
         steps[4]["run"] = LOCKED_POLICY_INSTALL_COMMAND
         revisions = {LOCKED_POLICY_BOOTSTRAP_REVISION}
         _verify_action_policy_preflight("server", "fixture", jobs, "gate", revisions, True)
-        for flag in ("-I ", "--require-hashes ", "--only-binary=:all: ", "--no-deps "):
+        for flag in ("-I ", "--isolated ", "--require-hashes ", "--only-binary=:all: ", "--no-deps "):
             changed = copy.deepcopy(jobs)
             changed["action-policy"]["steps"][4]["run"] = LOCKED_POLICY_INSTALL_COMMAND.replace(flag, "")
             with self.subTest(removed=flag), self.assertRaisesRegex(PolicyError, "reviewed policy dependency"):

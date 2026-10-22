@@ -30,7 +30,7 @@ COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 SUPPORTED_JAVASCRIPT_ACTION_RUNTIMES = ["node24"]
 LOCKED_POLICY_BOOTSTRAP_REVISION = "fea245682582d0620054e8547a5f3c968f9ef0f0"
 LOCKED_POLICY_INSTALL_COMMAND = (
-    "python -I -m pip install --require-hashes --only-binary=:all: --no-deps "
+    "python -I -m pip --isolated install --require-hashes --only-binary=:all: --no-deps "
     "-r .central-action-policy/qualification/requirements.lock"
 )
 EXPECTED_TARGETS = {

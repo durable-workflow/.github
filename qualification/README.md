@@ -42,17 +42,19 @@ Server's policy preflight requires action revision
 `fea245682582d0620054e8547a5f3c968f9ef0f0` and exactly:
 
 ```sh
-python -I -m pip install --require-hashes --only-binary=:all: --no-deps -r .central-action-policy/qualification/requirements.lock
+python -I -m pip --isolated install --require-hashes --only-binary=:all: --no-deps -r .central-action-policy/qualification/requirements.lock
 ```
 
-The protected central checkout supplies the lock. It permits only the reviewed
+The reviewed central checkout supplies the lock. It permits only the reviewed
 PyYAML 6.0.2 CPython 3.13 glibc Linux wheels for amd64 and arm64. Native CI checks
 both wheel installations, a tampered hash, and working-directory `pip.py` and
 `pip/` shadows. Missing isolation/integrity/binary/no-dependency flags, another
 requirements path, extra options, a missing bootstrap or an older bootstrap
 revision fail the Server contract. The same command is available for staged
 adoption in other targets. Their legacy forms remain explicit migration work,
-not evidence of the locked-policy contract.
+not evidence of the locked-policy contract. This source check does not establish
+an independent protected execution boundary; that gate requires its own issuer
+and repository-rule acceptance.
 
 ## Clean trust for dependency requests
 
