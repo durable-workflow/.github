@@ -56,6 +56,23 @@ not evidence of the locked-policy contract. This source check does not establish
 an independent protected execution boundary; that gate requires its own issuer
 and repository-rule acceptance.
 
+### Protected gate input layer
+
+`scripts/protected_policy_inputs.py` captures an open public pull request against
+the expected repository ID and exact `main` commit. It reads the candidate's
+exact commit/tree identities and regular workflow blobs, plus literal referenced
+helper blobs needed by the existing Composer inspection. Paths, file counts,
+individual sizes, total bytes and encoding are bounded. Symlinks, submodules,
+truncated trees and a changed PR identity refuse. Materialized files are data
+with mode `0600`; candidate commands are never executed by this layer.
+
+The caller must supply a bounded read-only GitHub API client from protected
+source, keep candidate data outside the interpreter's import path, and call
+`require_current` again immediately before issuing a result. This module does
+not create a Check Run, grant merge authority, configure an Environment or prove
+an issuer binding. Those live integration requirements remain open. Private
+repositories are explicitly refused until their separate gate is qualified.
+
 ## Clean trust for dependency requests
 
 Linux jobs that fetch Composer dependencies use this order after checkout:
