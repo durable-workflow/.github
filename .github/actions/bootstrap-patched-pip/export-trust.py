@@ -47,6 +47,16 @@ def inspect_bundle(path: Path) -> tuple[bytes, int]:
     return contents, len(certificates)
 
 
+def write_bundle(bundle: Path, contents: bytes) -> None:
+    if bundle.exists():
+        if bundle.read_bytes() != contents:
+            raise ValueError("Existing CI trust bundle has unexpected contents")
+        return
+    with bundle.open("xb") as handle:
+        handle.write(contents)
+    bundle.chmod(0o444)
+
+
 def export_bundle(source: Path, runner_temp: Path, env_file: Path, output_file: Path, clients=("pip",)) -> dict:
     if not clients or set(clients) - CLIENT_VARIABLES.keys():
         raise ValueError("Select only supported CI trust clients")
@@ -64,13 +74,7 @@ def export_bundle(source: Path, runner_temp: Path, env_file: Path, output_file: 
     empty_directory.mkdir(exist_ok=True)
     if any(empty_directory.iterdir()):
         raise ValueError("The additional-root directory must be empty")
-    if bundle.exists():
-        if bundle.read_bytes() != contents:
-            raise ValueError("Existing CI trust bundle has unexpected contents")
-    else:
-        with bundle.open("xb") as handle:
-            handle.write(contents)
-        bundle.chmod(0o444)
+    write_bundle(bundle, contents)
     variables = {"SSL_CERT_FILE": str(bundle), "SSL_CERT_DIR": str(empty_directory)}
     for client in clients:
         variables.update({name: str(bundle) for name in CLIENT_VARIABLES[client]})
