@@ -216,6 +216,27 @@ class ProtectedPolicyIssuerTest(unittest.TestCase):
             self.issuer.complete({"head_sha": "d" * 40})
         self.assertEqual(1, len(self.curl.calls))
 
+    def test_cli_refuses_noncanonical_app_ids_before_creating_an_issuer(self):
+        environment = {
+            **ProtectedIssuerCallerTest("runTest").environment(),
+            "CURL_CA_BUNDLE": str(self.bundle), "SSL_CERT_DIR": str(self.roots),
+            "DW_CI_CA_SHA256": self.digest, "GITHUB_TOKEN": "synthetic_read_token",
+            "POLICY_CHECKS_TOKEN": "synthetic_app_token",
+        }
+        args = ["issuer", "--pull-request", "7", "--base-sha", BASE, "--expected-head", HEAD]
+        for app_id in ("12٢", "１２", "١", "0", "01", "1" * 20):
+            output = io.StringIO()
+            with self.subTest(app_id=app_id), patch.object(sys, "argv", args):
+                with patch.dict(os.environ, {**environment, "POLICY_GATE_APP_ID": app_id}, clear=True):
+                    with patch.object(issue, "GitHubReadClient"), patch.object(issue, "CheckRunIssuer") as issuer:
+                        with contextlib.redirect_stderr(output):
+                            self.assertEqual(1, issue.main())
+                    issuer.assert_not_called()
+            self.assertEqual(
+                "A canonical positive App ID is required",
+                json.loads(output.getvalue())["policy_refused"],
+            )
+
     def test_valid_cli_wires_separate_clients_to_one_total_deadline(self):
         environment = {
             **ProtectedIssuerCallerTest("runTest").environment(),
@@ -254,10 +275,12 @@ class ProtectedIssuerCallerTest(unittest.TestCase):
     def test_each_missing_or_wrong_context_field_refuses(self):
         environment = self.environment()
         for name in environment:
+            wrong = {**environment, name: "wrong"}
+            missing = {key: value for key, value in environment.items() if key != name}
             with self.subTest(name=name), self.assertRaises(InputRefused):
-                issue.require_protected_execution({**environment, name: "wrong"}, BASE)
+                issue.require_protected_execution(wrong, BASE)
             with self.subTest(missing=name), self.assertRaises(InputRefused):
-                issue.require_protected_execution({key: value for key, value in environment.items() if key != name}, BASE)
+                issue.require_protected_execution(missing, BASE)
 
     def test_nonmain_execution_fails_before_credentials_or_clients(self):
         args = ["issuer", "--pull-request", "7", "--base-sha", BASE, "--expected-head", HEAD]

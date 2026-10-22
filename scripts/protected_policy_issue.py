@@ -131,7 +131,7 @@ def main() -> int:
         digest = os.environ["DW_CI_CA_SHA256"]
         read = GitHubReadClient(bundle, directory, digest, os.environ["GITHUB_TOKEN"])
         app_id = os.environ["POLICY_GATE_APP_ID"]
-        if re.fullmatch(r"[1-9][0-9]{0,18}", app_id) is None:
+        if re.fullmatch(r"[1-9]\d{0,18}", app_id, flags=re.ASCII) is None:
             raise InputRefused("A canonical positive App ID is required")
         issuer = CheckRunIssuer(
             bundle, directory, digest, os.environ["POLICY_CHECKS_TOKEN"],
