@@ -254,6 +254,7 @@
     },
     "sdk-rust": {
       "branch": "main",
+      "composer_trust_required": true,
       "repository": "sdk-rust",
       "workflows": [
         {
