@@ -8,8 +8,11 @@ exporter-guide delivery remain separate from publishing this list.
 Rust's recorder and optional Prometheus adapter have an
 [installed-package receipt](https://github.com/durable-workflow/sdk-rust/pull/131#issuecomment-6364178456)
 and [exporter guides in all eight locales](https://github.com/durable-workflow/durable-workflow.github.io/issues/388#issuecomment-6364644418).
-PHP implementation and the remaining Python publication, SDK tests and guide
-work stay open in [#233](https://github.com/durable-workflow/.github/issues/233).
+Python's recorder correction and Prometheus adapter have a
+[normal registry-installed receipt](https://github.com/durable-workflow/sdk-python/pull/213#issuecomment-6368689818)
+and a published [metrics and exporter reference](https://python.durable-workflow.com/reference/metrics/).
+PHP implementation, emitted worker-task controls, installed acceptance and
+exporter guidance stay open in [#233](https://github.com/durable-workflow/.github/issues/233).
 One SDK's delivery does not establish another SDK's adoption.
 
 Consumers should pin the contract's Git commit. SDK tests load that one list
@@ -84,12 +87,12 @@ own cardinality and privacy review.
 
 The pinned Python reference predates normalization of update-validation task
 and worker-session routes and retains literal IDs there. Those values are not
-approved tag shapes. The [source correction and locally packaged installed
-qualification](https://github.com/durable-workflow/sdk-python/pull/210#issuecomment-6363804584)
-are delivered separately; normal registry publication and registry-installed
-acceptance remain tracked in #233. The JSON records the inspected metric names,
-instruments and tag keys. It does not certify bounded values or cross-SDK
-adoption. Additional operations need explicit normalization and outcome review.
+approved tag shapes. The correction has separate
+[published-package and normal registry-installed acceptance](https://github.com/durable-workflow/sdk-python/pull/213#issuecomment-6368689818).
+Use that receipt and the installed package's guide when qualifying consumers.
+The JSON retains its original reference and records the inspected metric names,
+instruments and tag keys. It does not certify bounded values or cross-SDK adoption.
+Additional operations need explicit normalization and outcome review.
 
 ## Export and compatibility
 
@@ -126,5 +129,5 @@ this check with an assertion that the tag key is merely named `route`.
 
 Use installed-package checks for the published adapters and examples. Record
 each SDK's package and guide results on #233, preserving the completed Rust
-receipts and the other SDKs' remaining work. Source inspection and this
+and Python receipts and PHP's remaining work. Source inspection and this
 contract's tests do not provide that runtime evidence.
