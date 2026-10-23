@@ -806,6 +806,7 @@ def _verify_action_policy_preflight(
     if not any(
         isinstance(step, dict)
         and _condition_without_expression_wrapper(step.get("if", "")) in accepted_conditions
+        and step.get("continue-on-error") in (None, False, "false")
         and step.get("env") == reviewed_gate["env"]
         and _normalized_shell(step.get("run")) == reviewed_gate["run"]
         and _uses_reviewed_run_shell(workflow_document or {}, gate, step)
