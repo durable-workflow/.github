@@ -222,6 +222,33 @@ class ComposerNetworkContractTest(unittest.TestCase):
             self.check([{"run": "bash scripts/request.py"}])
         self.assertEqual(1, len(self.check([*self.steps[:3], {"run": "bash scripts/request.py"}])))
 
+    def test_relative_helpers_refuse_custom_shell_context(self):
+        self.relative_helper_fixture()
+        for scope in ("step", "job", "workflow"):
+            step = {"run": "scripts/request.sh"}
+            job = {"steps": [step]}
+            shell = "bash -c 'cd alternate; bash {0}' ignored"
+            defaults = {"run": {"shell": shell}}
+            workflow_defaults = None
+            if scope == "step":
+                step["shell"] = shell
+            elif scope == "job":
+                job["defaults"] = defaults
+            else:
+                workflow_defaults = defaults
+            with self.subTest(scope=scope), self.assertRaisesRegex(PolicyError, "reviewed shell"):
+                self.check(jobs={"test": job}, defaults=workflow_defaults)
+
+    def test_helper_shell_uses_the_most_specific_safe_setting(self):
+        self.relative_helper_fixture()
+        for shell in ("bash", "sh"):
+            step = {"run": "scripts/request.sh", "shell": shell}
+            job = {"steps": [step], "defaults": {"run": {"shell": "bash -c true {0}"}}}
+            self.assertEqual([], self.check(jobs={"test": job}))
+            del step["shell"]
+            job["defaults"]["run"]["shell"] = shell
+            self.assertEqual([], self.check(jobs={"test": job}, defaults={"run": {"shell": "bash -c true {0}"}}))
+
     def test_job_and_workflow_overrides_cannot_bypass_the_step_guards(self):
         with self.assertRaisesRegex(PolicyError, "job-level"):
             self.check(jobs={"test": {"env": {"GIT_SSL_NO_VERIFY": "1"}, "steps": self.steps}})
