@@ -21,15 +21,15 @@ each public experiment.
 | Experiment | Published-artifact runner |
 | --- | --- |
 | Activities | `durable-workflow/server`: `scripts/conformance/activities-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-activity-recovery.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/activities/README.md) (all nine PHP/Python/Rust SDK directions with retry, worker loss, total deadline expiry, retry exhaustion, application progress heartbeat expiry and stale claim refusal); its separate `--external-effects` mode checks idempotent downstream recovery after activity-worker SIGKILL in all nine directions |
-| Child workflows | `durable-workflow/server`: `scripts/conformance/child-workflows-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-children.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/child-workflows/README.md) (nine SDK completion directions, five Rust-involving failure/recovery/cancellation directions) |
+| Child workflows | `durable-workflow/server`: image-bundled `scripts/conformance/child-workflows-published-artifacts.sh` ([execution context](#run-the-server-child-workflow-probe)); `durable-workflow/sample-app`: [`scripts/sdk-children.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/child-workflows/README.md) (nine SDK completion directions, five Rust-involving failure/recovery/cancellation directions) |
 | Cloud | Private `durable-workflow/cloud`: `scripts/conformance/run-managed-runtime.sh` using an isolated conformance namespace |
 | Heartbeats | `durable-workflow/server`: the PHP, Python, and Rust `heartbeats-*-published-artifacts.sh` runners |
-| Migration | `durable-workflow/server`: `scripts/conformance/migration-published-artifacts.sh` |
+| Migration | `durable-workflow/server`: `scripts/conformance/migration-published-artifacts.sh` composes host-run evidence or executes a supplied foundation command plan; [interpret its required evidence](sdk-coverage.md#interpret-replay-skew-and-migration-evidence) |
 | Namespaces | `durable-workflow/server`: `scripts/conformance/namespaces-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-namespaces.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/namespaces/README.md) (Rust namespace-bound clients/workers, denied cross-namespace operations and cold recovery) |
 | Nexus | `durable-workflow/server`: `scripts/conformance/nexus-published-artifacts.sh`; [published caller workflow](sdk-coverage.md#run-the-published-nexus-caller-cases) (PHP/Python terminal results, handled and uncaught typed failure, target/caller cancellation, cold/backend recovery, external payloads and authored authorization refusals); [Rust SDK profiles and installed-release evidence](sdk-coverage.md#run-and-interpret-rust-nexus-cases) with a separate tuple; separate embedded and API/browser/CLI consumers |
 | Polyglot | `durable-workflow/sample-app`: `scripts/polyglot.sh` |
 | Principal attribution | `durable-workflow/server`: `scripts/conformance/principal-attribution-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-namespaces.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/namespaces/README.md) (Rust named and anonymous actors, runtime credential rotation, start/signal/completion/query/failure/terminal-cancellation attribution, forged metadata refusal, cold recovery, CLI JSON/human history and Waterline remote selected-run API); [`scripts/sdk-children.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/child-workflows/README.md) (legacy, runtime-token and anonymous cooperative requests through actual PHP/Python/Rust clients, duplicate identity and actor preservation, access refusals and cold cleanup replay under forged metadata) |
-| Replay | `durable-workflow/server`: `scripts/conformance/replay-published-artifacts.sh` |
+| Replay | `durable-workflow/server`: `scripts/conformance/replay-published-artifacts.sh`; [distinguish fixture replay from worker replacement](sdk-coverage.md#interpret-replay-skew-and-migration-evidence) |
 | Sagas | `durable-workflow/server`: `scripts/conformance/sagas-published-artifacts.sh` (PHP/Python matrix); `durable-workflow/sample-app`: [`polyglot/sagas/`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/sagas/README.md) (five Rust-involving workflow/compensation directions) |
 | Schedules | `durable-workflow/server`: `scripts/conformance/schedules-published-artifacts.sh` (PHP/Python matrix); `durable-workflow/sample-app`: [`polyglot/schedules/`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/schedules/README.md) (PHP- and Python-created schedules, Rust worker) |
 | SDK matrix | `durable-workflow/server`: PHP and Python published-artifact runners; `durable-workflow/sample-app`: `scripts/playground rust` |
@@ -40,9 +40,10 @@ each public experiment.
 | Workflow lifecycle | `durable-workflow/server`: `scripts/conformance/workflow-lifecycle-host-published-artifacts.sh` (Docker host wrapper for the published-image result runner) |
 | Workflow updates | `durable-workflow/server`: `scripts/conformance/workflow-updates-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-updates.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/updates/README.md) (nine live SDK client/handler directions) |
 
-Each runner documents its required exact-version environment variables and
-result filename in `--help`. Use a unique result directory and isolated Docker
-project for every run.
+Review each runner's exact-version environment variables and result filename
+in `--help`, together with its execution context below or in the owning
+instructions. Use a unique result directory and isolated Docker project for
+every run.
 
 Sample App commands resolve their exact tuple with
 `scripts/resolve-current-artifacts.sh`. That resolver requires Node.js in
@@ -88,9 +89,10 @@ outcome, and history. A tuple-wide `pass` does not fill in an unexecuted cell.
 
 In particular, the current
 [child-workflow scenario manifest](https://github.com/durable-workflow/server/blob/main/static/platform-conformance/child-workflow-runtime-scenarios.json)
-requires a PHP/Python parent-child runtime matrix. Its Rust crate pin verifies
-artifact resolution, not Rust child execution. Do not report that runner as
-PHP/Python/Rust child-workflow coverage. The separate
+requires four parent-child directions between the PHP Workflow package and the
+Python SDK. Its PHP actor uses `WorkflowFiberRunner`, rather than the PHP
+service SDK Worker. Its Rust crate pin verifies artifact resolution, not Rust
+child execution. Do not report that runner as a three-service-SDK matrix. The separate
 [Sample App child-workflow matrix](https://github.com/durable-workflow/sample-app/blob/main/polyglot/child-workflows/README.md)
 starts all nine PHP/Python/Rust parent-child directions against a published
 local Server and checks their results and persisted lifecycle events. Its
@@ -364,6 +366,31 @@ older SDK client reads the original result. History prefixes, both signal
 deliveries, one recorded effect and one completion must survive. Qualification
 applies to the selected SDK pair and these durable operations. Application changes
 and adding build IDs to existing histories need separate cases.
+
+## Run the Server child workflow probe
+
+The Server child runner is an image-bundled probe. Its
+[execution guard](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/child-workflows-published-artifacts.sh#L137-L146)
+requires source-free `/app` with PHP, `vendor/autoload.php` and `artisan`.
+Running the script from a Server checkout skips the full runtime matrix.
+
+Use the selected published image's bundled script and probes. Record the
+immutable image digest and the actual bundled probe identity, since a current
+checkout does not establish which implementation an older image contains.
+Select the exact artifact versions listed in its `--help`.
+`DW_WORKFLOW_PHP_VERSION` must match the image's installed Workflow package.
+The artifact probe checks that version in `vendor/composer/installed.json`;
+it does not replace the bundled package. It installs the selected Python SDK
+and CLI, and checks the remaining artifact references. The runtime probe creates
+its own SQLite scratch database and drives the bundled Server through PHP
+Workflow-package and Python SDK adapters. This does not qualify external
+backend recovery or PHP service-SDK Worker execution.
+
+Inspect `child-workflows-result.json` and its `outcome`, `runtime_matrix`,
+`scenario_results`, artifact-install and full-matrix evidence. A passing result
+requires the artifact checks and every required scenario. A skipped probe or
+successful shell exit is insufficient. The separate Sample App host command
+below exercises service SDK workers and browser views.
 
 ## Run the child workflow and browser cases
 
