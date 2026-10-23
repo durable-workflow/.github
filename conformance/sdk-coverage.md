@@ -74,9 +74,71 @@ Their SDK installation lists do not widen that scope.
 | Compatibility skew: Server `skew-published-artifacts.sh` | CLI, Python SDK, PHP SDK worker and Waterline protocol negotiation/refusal under one exact selected artifact tuple. Older, future and outside-window protocol shapes come from the Server’s advertised authority. | These protocol cases do not install historical or future SDK packages. Add Rust’s supported and refused protocol pairings, and retain separate installed-package compatibility evidence. A major SDK package number is not itself a worker protocol boundary. [Interpret the results](#interpret-replay-skew-and-migration-evidence). |
 | Principal attribution: Server `principal-attribution-published-artifacts.sh`; Sample App `scripts/sdk-namespaces.sh` and `scripts/sdk-children.sh` | Server covers named/anonymous/raw HTTP actors, PHP/Python clients, worker completion/failure, CLI and Waterline. Sample App separately executes real Rust starts, signals, remote activities and workflow completions with namespace-bound operator and worker credentials. A disposable gateway injects the published principal contract's forged body fields and headers into actual SDK requests. During worker absence, all four credentials are rotated through the Server API. Duplicate rotations preserve their timestamp, real Rust calls refuse the old credentials, and new credentials complete the original runs with the same authenticated subjects. Successful request receipts and original-run histories retain start/signal/completion actors through worker SIGKILL and cold replacement. Selected-run queries distinguish Server's authenticated response principal from a forged application-result principal and leave history unchanged. Additional Rust workflows fail with the worker actor or receive terminal cancellation with the operator actor after a declared wait, preserving their original runs and one terminal boundary. A final isolated phase requires token-driver refusal before explicitly recreating the disposable frontend with the `none` driver. Actual credential-free Rust callers and worker then execute activity/workflow completion, signals, queries, authored failure and terminal cancellation with server/anonymous actors and the same forged metadata matrix. Published native CLI JSON and human tables inspect every original terminal run. Published Waterline uses its read-only remote backend to inspect the same selected runs, statuses, complete timelines and command actors. Both views must match preserved Server histories without mutating them. | The Rust case covers named and anonymous actors, runtime credential rotation and start/signal/completion/query/failure/terminal-cancellation attribution, plus CLI and Waterline API visibility of actual Rust runs. Activity execution identities are checked separately, while internal events may have explicit null principals. The separate child runner checks legacy, runtime-token and anonymous requesters through actual PHP/Python/Rust cancellation clients, Rust-involving cooperative propagation, duplicate identity and original actor preservation, committed delivery and cold cleanup recovery under forged metadata. It also requires actual worker-role 403 and unauthenticated 401 refusals. The same command also checks 45 connected published Waterline browser views across those five directions and three access modes, preserving the original requester and complete cascade after cold cleanup recovery. The anonymous phase qualifies auth-disabled self-hosting, not anonymous Cloud access or namespace isolation without authentication. Credential administration uses the Server API. Transport injection does not add a custom-header SDK API, and the query observer does not add a Rust raw-response API. |
 | Cooperative cancellation and worker affinity: SDK integration suites, public qualification records and the timer command above | Source integration tests exist in every SDK. Published local-activity/session and mixed-cancellation qualifications are distinct release evidence. Python 2.5.0 and Rust 3.4.0 provide opt-in bounded sticky history with Server 2.5.10, covering paged warm reuse, entry/byte limits, expiry, build refusal and SIGKILL/replacement cold replay. Rust also checks cached canonical cancellation and cleanup on a cold successor. Exact installed-package and tuple evidence is recorded in [.github #124](https://github.com/durable-workflow/.github/issues/124). | Keep installed-package proof separate from source CI. Sticky history does not retain live workflow objects or session resources. Older affinity manifest expectations must not override the tested tuple's capabilities. |
-| Failover and diagnosis: Server `single-region-failover-published-artifacts.sh`, `agent-operability-published-artifacts.sh`; [operator diagnosis drill](operator-diagnosis.md) | Published container/backend failover and public API/CLI/Waterline operator paths. | Backend recovery success is not three-language workflow continuity. Include affected workers and pending work when that is the customer claim. Embedded Laravel injection/testing remains a PHP framework-specific case. |
+| Backend failover: Server `single-region-failover-published-artifacts.sh` | A Python HTTP driver registers, polls and completes workflow tasks directly across cross-node completion, API-node loss, database/Redis interruption, worker lease loss and scheduler restart. Its registration declares `runtime: python`. | That field does not establish Python SDK Worker execution. SDK-authored workflow continuity, pending durable operations and external effects require their own worker/runtime evidence. [Host prerequisites and results](#run-the-backend-failover-rehearsal). |
+| MCP operator loop: Server `agent-operability-published-artifacts.sh` | Validates retained Sample App metadata or drives an explicitly configured MCP endpoint through discover, guarded operating choice, run, diagnose and repair stages. | Record which evidence source actually ran. The script requires existing metadata or an isolated app endpoint and does not provision the app. SDK-worker recovery and the separate six-case diagnosis drill retain their own qualification. [Inputs and result interpretation](#run-the-mcp-operator-loop). |
+| Self-hosted operator diagnosis: [six-case drill](operator-diagnosis.md) | Documented CLI, Server API and Waterline diagnosis/recovery instructions with explicit original-run tracking. Published command syntax and source dispatch have been checked. | Actual staged faults, recovery and original-run outcomes need their own recorded execution. Embedded Laravel injection/testing remains a PHP framework-specific case. |
 | Managed Cloud | Private Cloud repository's isolated qualification | Keep account, provisioning, provider chaos and commercial qualification private. Public SDK protocol coverage does not establish managed-plan capacity or Cloud recovery. |
 
+
+## Run the backend failover rehearsal
+
+Use a Server checkout with Bash, Python 3 and Docker Compose v2. Set
+`DW_SERVER_IMAGE` to the selected exact public Server image. The wrapper pulls
+that image and its selected MySQL, Redis and Nginx dependencies, resolves their
+repository digests and rejects Compose builds and source mounts. Review
+`--help` for supporting-image, connection and port overrides.
+
+Choose an unused project when overriding `DW_FAILOVER_PROJECT`. The default
+name includes the run context and process ID. From the Server repository root:
+
+```sh
+result_dir="$(mktemp -d "${TMPDIR:-/tmp}/dw-failover.XXXXXX")"
+bash scripts/conformance/single-region-failover-published-artifacts.sh \
+  --result-dir "$result_dir"
+```
+
+Read `single-region-failover-result.json`, its `outcome`, `runner_blocked`,
+`phase_outcomes` and `phase_evidence`, together with the resolved image digests.
+The [driver supplies worker-protocol HTTP commands itself](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/single-region-failover-published-artifacts.py#L788-L879).
+Its Python runtime declaration identifies that probe, rather than an installed
+SDK worker or authored three-language workload.
+
+Default cleanup calls Compose down with volumes for the selected project.
+`--keep-stack` retains the stack for inspection. Retire that same stack after
+review, and remove this run's disposable results after recording the sanitized
+outcomes. Backend recovery alone does not qualify SDK workflow continuity.
+
+## Run the MCP operator loop
+
+Use a Server checkout with Bash and Python 3. Set the exact artifact versions
+and Sample App ref listed in the runner's `--help`. Prepare actual recorded
+Sample App conformance metadata, or an isolated Sample App MCP endpoint. The
+runner does not start or provision that application.
+
+For the recorded-metadata path, clear the live endpoint override and supply
+the metadata file:
+
+```sh
+result_dir="$(mktemp -d "${TMPDIR:-/tmp}/dw-operator-loop.XXXXXX")"
+DW_AGENT_OPERABILITY_MCP_URL= \
+DW_AGENT_OPERABILITY_SAMPLE_APP_METADATA_PATH=/path/to/recorded-metadata.json \
+  bash scripts/conformance/agent-operability-published-artifacts.sh \
+    --result-dir "$result_dir"
+```
+
+[Usable metadata takes precedence](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/agent-operability-published-artifacts.sh#L794-L807).
+With no usable metadata and `DW_AGENT_OPERABILITY_MCP_URL` set, the runner
+calls MCP tools to start a synthetic diagnostic workflow, observe its failure,
+diagnose it, request repair and read history. Run that mode against an isolated
+app prepared for this experiment. Missing inputs produce a coverage finding.
+
+Read `agent-operability-result.json`, including `evidence_source`,
+`scenario_results` and `findings`. All five loop stages and the artifact-policy
+checks must pass. The change stage records a guarded operating choice.
+Recorded metadata, a live MCP loop, SDK-worker recovery and the
+[six-case operator diagnosis drill](operator-diagnosis.md) require their own
+identified evidence. Record the source and outcome before retiring this run's
+results and any app resources created for it.
 
 ## Interpret replay, skew and migration evidence
 

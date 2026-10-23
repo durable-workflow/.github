@@ -21,6 +21,7 @@ each public experiment.
 | Experiment | Published-artifact runner |
 | --- | --- |
 | Activities | `durable-workflow/server`: `scripts/conformance/activities-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-activity-recovery.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/activities/README.md) (all nine PHP/Python/Rust SDK directions with retry, worker loss, total deadline expiry, retry exhaustion, application progress heartbeat expiry and stale claim refusal); its separate `--external-effects` mode checks idempotent downstream recovery after activity-worker SIGKILL in all nine directions |
+| Agent operability | `durable-workflow/server`: `scripts/conformance/agent-operability-published-artifacts.sh` ([recorded metadata or isolated MCP loop](sdk-coverage.md#run-the-mcp-operator-loop)) |
 | Child workflows | `durable-workflow/server`: image-bundled `scripts/conformance/child-workflows-published-artifacts.sh` ([execution context](#run-the-server-child-workflow-probe)); `durable-workflow/sample-app`: [`scripts/sdk-children.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/child-workflows/README.md) (nine SDK completion directions, five Rust-involving failure/recovery/cancellation directions) |
 | Cloud | Private `durable-workflow/cloud`: `scripts/conformance/run-managed-runtime.sh` using an isolated conformance namespace |
 | Heartbeats | `durable-workflow/server`: the PHP, Python, and Rust `heartbeats-*-published-artifacts.sh` runners |
@@ -35,6 +36,7 @@ each public experiment.
 | SDK matrix | `durable-workflow/server`: PHP and Python published-artifact runners; `durable-workflow/sample-app`: `scripts/playground rust` |
 | Search attributes | `durable-workflow/server`: `scripts/conformance/search-attributes-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-search-attributes.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/search-attributes/README.md) (Rust typed authoring, PHP/Python visibility observers and cold worker replay) |
 | Signals and queries | `durable-workflow/server`: `scripts/conformance/signals-queries-published-artifacts.sh`; [read its full and focused result records](sdk-coverage.md#read-signals-and-queries-outcomes) before claiming a passing matrix |
+| Single-region failover | `durable-workflow/server`: `scripts/conformance/single-region-failover-published-artifacts.sh` ([Docker host prerequisites and HTTP-driver scope](sdk-coverage.md#run-the-backend-failover-rehearsal)) |
 | Timers | `durable-workflow/server`: `scripts/conformance/timers-published-artifacts.sh` (embedded PHP); `durable-workflow/sample-app`: `scripts/sdk-timers.sh` (PHP/Python/Rust SDK workers) |
 | Worker versioning | `durable-workflow/server`: `scripts/conformance/worker-versioning-published-artifacts.sh` with `DW_RUST_SDK_VERSION` for the managed Rust shard, or [`worker-versioning-rust-host-published-artifacts.sh`](https://github.com/durable-workflow/server/blob/main/scripts/conformance/worker-versioning.md) for its focused isolated stack and four Rust/PHP and Rust/Python build-cohort directions |
 | Workflow lifecycle | `durable-workflow/server`: `scripts/conformance/workflow-lifecycle-host-published-artifacts.sh` (Docker host wrapper for the published-image result runner) |
@@ -42,8 +44,8 @@ each public experiment.
 
 Review each runner's exact-version environment variables and result filename
 in `--help`, together with its execution context below or in the owning
-instructions. Use a unique result directory and isolated Docker project for
-every run.
+instructions. Use a unique result directory and an unused Docker project for
+each stack.
 
 Sample App commands resolve their exact tuple with
 `scripts/resolve-current-artifacts.sh`. That resolver requires Node.js in
