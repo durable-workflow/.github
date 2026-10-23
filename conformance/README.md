@@ -306,10 +306,14 @@ Server boundary's UTF-8 byte limits, an integer beyond JavaScript's exact range
 and microsecond datetime precision. After physical SIGKILL of the parked Rust
 worker, a signal is acknowledged during its absence. A distinct replacement
 must preserve the original run, typed upsert and signal-wait history, mutate
-and delete once, remove obsolete visibility matches and complete once. Rust
-currently has no search-attribute schema administration, start-time metadata
-or visibility-filter client API. Do not invent Rust client permutations using
-raw HTTP. This separate command does not add a Rust shard to Server's runner
+and delete once, remove obsolete visibility matches and complete once. The
+recorded Sample App cohort uses Rust 4.1.0 and PHP/Python metadata observers.
+Published Rust 4.6.0 separately adds a visibility-filter list API and lazy
+history/list iteration, with its own Server 2.11.0 receipt. See the
+[client API and evidence scope](sdk-coverage.md#read-complete-histories-and-lists).
+Dedicated schema-administration and start-time metadata APIs remain absent in
+4.6.0. Those client results do not retroactively qualify the Sample App tuple.
+This separate command does not add a Rust shard to Server's runner
 or qualify Waterline, namespace isolation, load latency, continuation
 inheritance or application-code upgrades.
 
