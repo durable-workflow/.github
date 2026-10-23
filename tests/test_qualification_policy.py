@@ -295,11 +295,12 @@ class QualificationPolicyTest(unittest.TestCase):
 
         self.assertEqual({first, second}, set(_workflow_action_references(source, "real aliases")))
 
-    def test_recursive_yaml_alias_cannot_hide_a_later_action_reference(self) -> None:
+    def test_recursive_yaml_alias_keeps_the_existing_parser_refusal(self) -> None:
         reference = "actions/checkout@" + self.approved_action("actions/checkout")[0]
         source = f"cycle: &cycle [*cycle]\nstep: {{uses: {reference}}}\n"
 
-        self.assertEqual([reference], _workflow_action_references(source, "recursive alias"))
+        with self.assertRaisesRegex(PolicyError, "recursive node"):
+            _workflow_action_references(source, "recursive alias")
 
     def test_preceding_policy_still_refuses_the_protected_workflow(self) -> None:
         self.policy["workflow_trust"]["pull_request_target_exceptions"] = []

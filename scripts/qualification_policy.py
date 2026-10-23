@@ -861,7 +861,7 @@ def _workflow_action_references(source: str, label: str) -> list[str]:
     pending = [document]
     visited: set[int] = set()
 
-    # Shared and recursive YAML aliases must not multiply traversal work.
+    # Shared YAML aliases must not multiply traversal work.
     while pending:
         node = pending.pop()
         if not isinstance(node, (dict, list)) or id(node) in visited:
