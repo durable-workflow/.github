@@ -141,6 +141,16 @@ evidence and remove owned scratch files after recording the outcome. Neither
 language's entry point qualifies the other SDKs or replaces the direction-specific
 experiments above.
 
+Sample App's `scripts/playground rust` runs one caller-owned workflow/activity
+journey. It scaffolds missing files, preserves existing source and uses a local
+published Server by default. Read its effective contract, completed result and
+journey evidence. This is a starter journey, with separate scope from a full SDK
+parity suite. Choose an unused `PLAYGROUND_COMPOSE_PROJECT` and owned source and
+evidence paths. The worker is terminated after the journey, but local services
+remain unless `PLAYGROUND_CLEANUP=1` is set. Alternatively, run
+`scripts/playground down rust` with the same project setting to remove that
+project's services and volumes. Caller-owned source and evidence remain.
+
 ## Run the backend failover rehearsal
 
 Use a Server checkout with Bash, Python 3 and Docker Compose v2. Set
