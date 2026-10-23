@@ -267,6 +267,7 @@ class ProtectedIssuerCallerTest(unittest.TestCase):
             "GITHUB_REPOSITORY_ID": str(issue.PILOT_REPOSITORY_ID), "GITHUB_REF": "refs/heads/main",
             "GITHUB_SHA": BASE, "GITHUB_EVENT_NAME": "pull_request_target",
             "GITHUB_WORKFLOW_REF": issue.WORKFLOW_REF,
+            "GITHUB_WORKFLOW_SHA": BASE,
         }
 
     def test_protected_caller_context_matches(self):

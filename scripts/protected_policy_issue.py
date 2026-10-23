@@ -36,6 +36,7 @@ def require_protected_execution(environment, base_sha: str) -> None:
         "GITHUB_REPOSITORY_ID": str(PILOT_REPOSITORY_ID), "GITHUB_REF": "refs/heads/main",
         "GITHUB_SHA": checked_sha(base_sha), "GITHUB_EVENT_NAME": "pull_request_target",
         "GITHUB_WORKFLOW_REF": WORKFLOW_REF,
+        "GITHUB_WORKFLOW_SHA": base_sha,
     }
     if any(environment.get(name) != value for name, value in expected.items()):
         raise InputRefused("The issuer requires the reviewed protected-main workflow context")

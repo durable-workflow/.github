@@ -7,6 +7,7 @@ import argparse
 import contextlib
 import email.utils
 import errno
+import hashlib
 import http.client
 import json
 import os
@@ -33,6 +34,11 @@ LOCKED_POLICY_INSTALL_COMMAND = (
     "python -I -m pip --isolated install --require-hashes --only-binary=:all: --no-deps "
     "-r .central-action-policy/qualification/requirements.lock"
 )
+PROTECTED_POLICY_EXCEPTION = {
+    "target": "github-control-plane",
+    "path": ".github/workflows/protected-policy.yml",
+    "sha256": "642d204ea939ca5eba7ef51be9e4ae56a35177413caabe849315086d3d9d2d31",
+}
 EXPECTED_TARGETS = {
     "ai": ("ai", "main"),
     "cli": ("cli", "main"),
@@ -448,7 +454,7 @@ def validate_policy(policy: dict[str, Any]) -> None:
         "pull_request_target_exceptions",
     }:
         raise PolicyError("qualification policy must declare the complete workflow trust contract")
-    if workflow_trust["pull_request_target_exceptions"] != []:
+    if workflow_trust["pull_request_target_exceptions"] not in ([], [PROTECTED_POLICY_EXCEPTION]):
         raise PolicyError("pull_request_target exceptions require a separately reviewed policy revision")
     artifact_handoffs = workflow_trust["privileged_artifact_handoffs"]
     if not isinstance(artifact_handoffs, dict) or set(artifact_handoffs) != {
@@ -1514,6 +1520,17 @@ def _direct_artifact_handoff(
     )
 
 
+def _reviewed_policy_workflow(
+    policy: dict[str, Any], target_name: str, workflow_path: str, source: str,
+) -> bool:
+    return (
+        policy["workflow_trust"]["pull_request_target_exceptions"] == [PROTECTED_POLICY_EXCEPTION]
+        and target_name == PROTECTED_POLICY_EXCEPTION["target"]
+        and Path(workflow_path).parts[-3:] == Path(PROTECTED_POLICY_EXCEPTION["path"]).parts
+        and hashlib.sha256(source.encode("utf-8")).hexdigest() == PROTECTED_POLICY_EXCEPTION["sha256"]
+    )
+
+
 def _scan_workflow_trust(
     policy: dict[str, Any],
     target_name: str,
@@ -1527,7 +1544,7 @@ def _scan_workflow_trust(
     triggers = document.get("on")
     if not isinstance(triggers, dict):
         raise PolicyError(f"{label} must declare explicit workflow triggers")
-    if "pull_request_target" in triggers:
+    if "pull_request_target" in triggers and not _reviewed_policy_workflow(policy, target_name, workflow_path, source):
         raise PolicyError(f"{label} uses forbidden pull_request_target execution")
 
     top_writes = _permissions_with_write(document.get("permissions"), f"{label} top-level")

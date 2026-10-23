@@ -216,6 +216,58 @@ class QualificationPolicyTest(unittest.TestCase):
         with self.assertRaisesRegex(PolicyError, "pull_request_target"):
             self.scan(workflow("- run: true", trigger="pull_request_target"))
 
+    def protected_workflow(self) -> str:
+        return (ROOT / ".github/workflows/protected-policy.yml").read_text(encoding="utf-8")
+
+    def test_only_exact_reviewed_protected_workflow_is_allowed(self) -> None:
+        sources = {".github/workflows/protected-policy.yml": self.protected_workflow()}
+        report = scan_workflow_sources(self.policy, "github-control-plane", sources)
+        self.assertIn(".github/workflows/protected-policy.yml", report)
+
+    def test_preceding_policy_still_refuses_the_protected_workflow(self) -> None:
+        self.policy["workflow_trust"]["pull_request_target_exceptions"] = []
+        sources = {".github/workflows/protected-policy.yml": self.protected_workflow()}
+        with self.assertRaisesRegex(PolicyError, "pull_request_target"):
+            scan_workflow_sources(self.policy, "github-control-plane", sources)
+
+    def test_same_workflow_cannot_gain_authority_at_another_path_or_repository(self) -> None:
+        source = self.protected_workflow()
+        for target, path in (
+            ("github-control-plane", ".github/workflows/copied.yml"),
+            ("server", ".github/workflows/protected-policy.yml"),
+        ):
+            sources = {path: source}
+            with self.subTest(target=target, path=path), self.assertRaisesRegex(PolicyError, "pull_request_target"):
+                scan_workflow_sources(self.policy, target, sources)
+
+    def test_protected_source_mutations_cannot_use_the_exception(self) -> None:
+        source = self.protected_workflow()
+        for before, after in (
+            ("ref: ${{ github.sha }}", "ref: ${{ github.event.pull_request.head.sha }}"),
+            ("environment: protected-policy-gate", "environment: production"),
+            ("permission-checks: write", "permission-contents: write"),
+            ("repositories: .github", "repositories: cloud"),
+            ("NODE_OPTIONS: --use-openssl-ca", "NODE_OPTIONS: --use-bundled-ca"),
+            ('--expected-head "$POLICY_HEAD_SHA"', '--expected-head "a"'),
+        ):
+            changed = source.replace(before, after)
+            self.assertNotEqual(source, changed)
+            sources = {".github/workflows/protected-policy.yml": changed}
+            with self.subTest(before=before), self.assertRaisesRegex(PolicyError, "pull_request_target"):
+                scan_workflow_sources(self.policy, "github-control-plane", sources)
+
+    def test_modified_or_additional_exceptions_require_another_review(self) -> None:
+        original = self.policy["workflow_trust"]["pull_request_target_exceptions"][0]
+        for changed in (
+            [{**original, "target": "server"}],
+            [{**original, "path": ".github/workflows/copied.yml"}],
+            [{**original, "sha256": "0" * 64}],
+            [original, original],
+        ):
+            self.policy["workflow_trust"]["pull_request_target_exceptions"] = changed
+            with self.subTest(changed=changed), self.assertRaisesRegex(PolicyError, "separately reviewed"):
+                validate_policy(self.policy)
+
     def test_pull_request_jobs_cannot_use_environments_or_secrets(self) -> None:
         source = workflow("- run: echo ${{ secrets.TOKEN }}")
         source = source.replace("    runs-on: ubuntu-latest", "    runs-on: ubuntu-latest\n    environment: production")

@@ -29,7 +29,8 @@ scanner, with the analysis token only on the final scanner step. It may produce
 coverage first using trusted repository code and approved actions. Other steps
 cannot reference secrets; existing cache restrictions still apply. Forks do
 not run this job.
-The scanner rejects `pull_request_target`, mutable container
+The scanner rejects `pull_request_target` outside the single content-bound
+public pilot described below, mutable container
 images, unreviewed `workflow_run` consumers, and privileged artifact consumers
 without exact producer and digest provenance.
 
@@ -135,12 +136,29 @@ reports success; a check already created may remain incomplete. A later head
 cannot inherit an earlier head's successful check.
 
 Caller environment markers are defense in depth, not proof of secret denial.
-The workflow binding, immutable trusted-source selection, Environment branch
-restriction, narrow policy exception, actual App installation and issuer-bound
-branch rule still need separate review and live acceptance. The current policy
-continues to forbid every `pull_request_target` workflow. No workflow is enabled
-by this component. Its constructed-response tests prove the code paths only,
-not GitHub's live Environment or merge enforcement.
+The prepared workflow checks out `github.sha` from protected main, verifies
+both the workflow SHA and actual checkout match it, installs the hash-locked
+parser, then uses the pinned official App-token action. Its token is restricted
+to Checks write on the one public pilot. The key is an Environment secret and
+never enters the reader/issuer program. The token action selects only the
+verified OpenSSL CA file and empty additional-root directory; bundled, extra
+and additional system roots are excluded for that credentialed Node step.
+
+The policy permits this one exact UTF-8 workflow SHA-256, target and path.
+Another path/repository, changed checkout/permission/credential handling,
+different content or additional exception refuses. Updating that root requires
+another explicit source review. All other `pull_request_target` workflows
+remain forbidden. This does not validate arbitrary changes to central policy
+code; root-of-trust changes still require independent maintainer/Security review.
+
+This bootstrap revision is prepared source, not a live enforcement claim. It
+cannot authorize its own adoption. Security must accept the exact source;
+the account holder must establish the App and key; and the live pilot must
+prove Environment denial, wrong-issuer nonqualification, candidate nonexecution,
+stale-head refusal and a safe successful check before the required-check rule
+is bound to that App. The known Environment configuration alone is not proof.
+No App key, live write or private-repository adoption is exercised by the
+constructed-response tests. Existing Server/publication holds remain.
 
 The transport uses GitHub's [create and update Check Run API](https://docs.github.com/en/rest/checks/runs)
 and checks the documented [workflow environment variables](https://docs.github.com/en/actions/reference/workflows-and-actions/variables).
