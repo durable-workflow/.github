@@ -8,7 +8,9 @@ Publishing this list does not establish that an SDK emits it.
 
 Consumers should pin the contract's Git commit. SDK tests load that one list
 and compare observations from their actual client and worker recorder hooks.
-Do not maintain a second language-specific list of metric names and labels.
+Offline tests may vendor its exact JSON bytes with the upstream commit and
+SHA-256 recorded and verified. Update that copy from the shared contract,
+without a second hand-maintained language-specific vocabulary.
 The reference commit identifies the inspected implementation, not a required
 package version or release qualification.
 
