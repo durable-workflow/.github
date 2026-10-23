@@ -2027,8 +2027,10 @@ def verify_composer_network_sinks(policy: dict[str, Any], target: str, sources: 
 def validate_local_action_references(
     policy: dict[str, Any], directory: Path, target_name: str = "github-control-plane"
 ) -> list[str]:
+    # The reviewed workflow exception hashes Git blob bytes. Text-mode reads
+    # normalize line endings and would admit unreviewed byte variants.
     sources = {
-        path.as_posix(): path.read_text(encoding="utf-8") for path in sorted(directory.glob("*.y*ml")) if path.is_file()
+        path.as_posix(): path.read_bytes().decode("utf-8") for path in sorted(directory.glob("*.y*ml")) if path.is_file()
     }
     evidence = scan_workflow_sources(policy, target_name, sources)
     verify_composer_network_sinks(policy, target_name, sources, directory.parent.parent)

@@ -246,6 +246,15 @@ class QualificationPolicyTest(unittest.TestCase):
                 with self.assertRaisesRegex(PolicyError, "pull_request_target"):
                     validate_local_action_references(self.policy, directory)
 
+    def test_ordinary_local_workflows_keep_supported_line_endings(self) -> None:
+        source = workflow("- run: true").encode("utf-8")
+        for ending in (b"\n", b"\r\n", b"\r"):
+            with self.subTest(ending=ending), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                (directory / "ci.yml").write_bytes(source.replace(b"\n", ending))
+
+                validate_local_action_references(self.policy, directory)
+
     def test_preceding_policy_still_refuses_the_protected_workflow(self) -> None:
         self.policy["workflow_trust"]["pull_request_target_exceptions"] = []
         sources = {".github/workflows/protected-policy.yml": self.protected_workflow()}
