@@ -34,6 +34,13 @@ LOCKED_POLICY_INSTALL_COMMAND = (
     "python -I -m pip --isolated install --require-hashes --only-binary=:all: --no-deps "
     "-r .central-action-policy/qualification/requirements.lock"
 )
+# Complete caller-supplied environment for the reviewed preflight. Startup
+# settings below are approved only as literal empty clears, never as hooks.
+PREFLIGHT_CI_ENVIRONMENT = {
+    "CI", "CARGO_TERM_COLOR", "RUST_BACKTRACE", "PYTHONUNBUFFERED",
+    "PYTHONDONTWRITEBYTECODE", "PYTHONUTF8", "FORCE_COLOR", "NO_COLOR",
+}
+PREFLIGHT_CLEAR_STARTUP_ENVIRONMENT = {"BASH_ENV", "ENV", "LD_PRELOAD", "NODE_OPTIONS"}
 PROTECTED_POLICY_EXCEPTION = {
     "target": "github-control-plane",
     "path": ".github/workflows/protected-policy.yml",
@@ -699,6 +706,17 @@ def _is_action_step(step: object, repository: str) -> bool:
     )
 
 
+def _reviewed_preflight_action_options(step: object) -> bool:
+    return (
+        isinstance(step, dict)
+        and not set(step) - {"name", "id", "uses", "with", "env", "if", "continue-on-error"}
+        and isinstance(step.get("if", ""), str)
+        and _condition_without_expression_wrapper(step.get("if", ""))
+        in {"", "github.server_url == 'https://github.com'"}
+        and step.get("continue-on-error") in (None, False, "false")
+    )
+
+
 def _verify_action_policy_preflight(
     target_name: str,
     label: str,
@@ -711,15 +729,14 @@ def _verify_action_policy_preflight(
     preflight = jobs.get("action-policy")
     if not isinstance(preflight, dict):
         raise PolicyError(f"{label} has no central action policy preflight job")
+    workflow_context = workflow_document or {}
+    _verify_preflight_execution_context(workflow_context, preflight, label)
     accepted_conditions = {"", "github.server_url == 'https://github.com'"}
     if (
         preflight.get("name") != "Central action policy preflight"
         or _condition_without_expression_wrapper(preflight.get("if", "")) not in accepted_conditions
         or preflight.get("runs-on") != "ubuntu-latest"
         or preflight.get("timeout-minutes") != "5"
-        or preflight.get("needs") is not None
-        or preflight.get("permissions") is not None
-        or preflight.get("env") is not None
     ):
         raise PolicyError(f"{label} central action policy preflight job is not the reviewed read-only shape")
 
@@ -731,8 +748,8 @@ def _verify_action_policy_preflight(
         revisions = approved_bootstraps if approved_bootstraps is not None else {"ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10"}
         references = {"durable-workflow/.github/.github/actions/bootstrap-patched-pip@" + sha for sha in revisions}
         if (
-            not isinstance(bootstrap, dict)
-            or set(bootstrap) - {"name", "uses"}
+            not _reviewed_preflight_action_options(bootstrap)
+            or "with" in bootstrap
             or bootstrap.get("uses")
             not in references
         ):
@@ -745,11 +762,13 @@ def _verify_action_policy_preflight(
     candidate, central, setup_python, install, validate = steps
     if (
         not _is_action_step(candidate, "actions/checkout")
+        or not _reviewed_preflight_action_options(candidate)
         or candidate.get("with") != {"persist-credentials": "false"}
     ):
         raise PolicyError(f"{label} central action policy preflight must check out credential-free candidate source")
     if (
         not _is_action_step(central, "actions/checkout")
+        or not _reviewed_preflight_action_options(central)
         or central.get("with")
         != {
             "repository": CENTRAL_ACTION_REPOSITORY,
@@ -761,6 +780,7 @@ def _verify_action_policy_preflight(
         raise PolicyError(f"{label} central action policy preflight must use protected central policy source")
     if (
         not _is_action_step(setup_python, "actions/setup-python")
+        or not _reviewed_preflight_action_options(setup_python)
         or setup_python.get("with") != {"python-version": "3.13"}
     ):
         raise PolicyError(f"{label} central action policy preflight must use the reviewed Python runtime")
@@ -773,22 +793,22 @@ def _verify_action_policy_preflight(
     }
     if locked_dependency_required:
         reviewed_install_commands = {LOCKED_POLICY_INSTALL_COMMAND}
-    if set(install) - {"name", "run", "working-directory", "shell"} or _normalized_shell(install.get("run")) not in reviewed_install_commands:
+    if set(install) - {"name", "run", "working-directory", "shell", "env"} or _normalized_shell(install.get("run")) not in reviewed_install_commands:
         raise PolicyError(f"{label} central action policy preflight must install the reviewed policy dependency")
     expected_validation = (
         "python .central-action-policy/scripts/qualification_policy.py validate "
         f"--policy .central-action-policy/qualification/policy.json --target {target_name} "
         "--workflow-directory .github/workflows"
     )
-    if set(validate) - {"name", "run", "working-directory", "shell"} or _normalized_shell(validate.get("run")) != expected_validation:
+    if set(validate) - {"name", "run", "working-directory", "shell", "env"} or _normalized_shell(validate.get("run")) != expected_validation:
         raise PolicyError(f"{label} central action policy preflight does not invoke the reviewed validator")
     if not all(
-        _runs_at_workspace_root(workflow_document or {}, preflight, step)
+        _runs_at_workspace_root(workflow_context, preflight, step)
         for step in (install, validate)
     ):
         raise PolicyError(f"{label} central action policy install and validator must run from the workspace root")
     if not all(
-        _uses_reviewed_run_shell(workflow_document or {}, preflight, step)
+        _uses_reviewed_run_shell(workflow_context, preflight, step)
         for step in (install, validate)
     ):
         raise PolicyError(f"{label} central action policy install and validator require a reviewed shell")
@@ -809,7 +829,7 @@ def _verify_action_policy_preflight(
         and step.get("continue-on-error") in (None, False, "false")
         and step.get("env") == reviewed_gate["env"]
         and _normalized_shell(step.get("run")) == reviewed_gate["run"]
-        and _uses_reviewed_run_shell(workflow_document or {}, gate, step)
+        and _uses_reviewed_run_shell(workflow_context, gate, step)
         for step in gate.get("steps") or []
     ):
         raise PolicyError(f"{label} required check does not fail closed on the central action policy result")
@@ -1318,6 +1338,48 @@ def _uses_only_allowed_environment(
         if not isinstance(environment, dict) or not set(environment).issubset(allowed_names):
             return False
     return True
+
+
+def _preflight_environment_is_reviewed(
+    workflow: Mapping[str, Any], job: Mapping[str, Any], step: Mapping[str, Any]
+) -> bool:
+    scopes = (workflow, job, step)
+    allowed = list(PREFLIGHT_CI_ENVIRONMENT | PREFLIGHT_CLEAR_STARTUP_ENVIRONMENT)
+    if not _uses_only_allowed_environment(scopes, allowed):
+        return False
+    for scope in scopes:
+        environment = scope.get("env") or {}
+        if not all(
+            value == "" if key in PREFLIGHT_CLEAR_STARTUP_ENVIRONMENT
+            else isinstance(value, (str, bool, int, float))
+            for key, value in environment.items()
+        ):
+            return False
+    return True
+
+
+def _verify_preflight_execution_context(
+    workflow: Mapping[str, Any], job: Mapping[str, Any], label: str
+) -> None:
+    allowed = {"name", "if", "runs-on", "timeout-minutes", "steps", "defaults", "env"}
+    if set(job) - allowed:
+        raise PolicyError(f"{label} central action policy preflight job is not the reviewed read-only shape")
+    for scope in (workflow, job):
+        defaults = scope.get("defaults")
+        if defaults is None:
+            continue
+        if not isinstance(defaults, dict) or set(defaults) - {"run"}:
+            raise PolicyError(f"{label} central action policy preflight has unreviewed defaults")
+        run = defaults.get("run", {})
+        if not isinstance(run, dict) or set(run) - {"shell", "working-directory"}:
+            raise PolicyError(f"{label} central action policy preflight has unreviewed run defaults")
+    steps = job.get("steps")
+    if (
+        isinstance(steps, list)
+        and all(isinstance(step, dict) for step in steps)
+        and not all(_preflight_environment_is_reviewed(workflow, job, step) for step in steps)
+    ):
+        raise PolicyError(f"{label} central action policy preflight environment is not reviewed")
 
 
 def _trusted_validator_action_step(step: object, expected_step: object) -> bool:
