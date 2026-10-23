@@ -108,6 +108,50 @@ execution and physical process loss distinct. A successful lifecycle job belongs
 to its recorded tuple and executed cells. Unexecuted cells and newer artifact
 tuples remain unqualified.
 
+## Read signals and queries outcomes
+
+The Server [signals/query runner](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/signals-queries-published-artifacts.sh#L4)
+documents its published artifact inputs, optional probes and result directory:
+
+```sh
+bash scripts/conformance/signals-queries-published-artifacts.sh --help
+```
+
+Run that command from the Server checkout. Freeze the published tuple and runner
+revision before executing probes. A configured CLI binary or Python executable
+alone does not prove installation from the published artifact.
+
+The full runner declares these SDK client-to-worker directions, with additional
+CLI checks. They are signal/query directions, separate from workflow-to-activity
+directions:
+
+| Worker runtime | SDK clients |
+| --- | --- |
+| PHP | PHP, Python, Rust |
+| Python | PHP, Python, Rust |
+| Rust | PHP, Python, Rust |
+
+Inspect `signals-queries-result.json`: its `outcome`, `runtime_matrix`,
+`scenario_results` and `executed_distribution_identities` identify the result
+and consumed artifacts. The runner [requires nineteen scenarios](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/signals-queries-published-artifacts.sh#L17046),
+including replay, terminal behavior, adversarial errors and Waterline visibility.
+Each scenario has its own executed scope. Declaring all nine client/worker
+directions does not repeat every adversarial or recovery case in every direction.
+
+The command [writes a structured record](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/signals-queries-published-artifacts.sh#L18506)
+even when the result is `non_passing` or `non_passing_runner_blocked`. A normal
+process exit alone is insufficient evidence of conformance. Preserve failures,
+`unsupported`, `not_covered` and runner blockers. Disabling a probe contributes
+no execution evidence; installing its SDK does not replace the missing scenario.
+
+`--focus=php-worker-cli-signal` produces a separate
+`signals-queries-php-cli-signal-result.json` with
+`broad_property_claimed: false` and `broad_confirmation_required: true`. This
+[focused mode disables](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/signals-queries-published-artifacts.sh#L140)
+the adversarial, replay/terminal, Rust and Waterline probes. Its result cannot
+qualify the full matrix or a different artifact tuple. Keep the retained JSON
+records with the owning run's evidence; leave unexecuted cells unqualified.
+
 ## Read complete histories and lists
 
 PHP `workflowHistory` and Python `get_history` return one page. Their workflow
