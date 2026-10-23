@@ -18,9 +18,12 @@ work belong to [the experiment audit](https://github.com/durable-workflow/.githu
 - Schedule creation follows the installed client's API. PHP and Python can
   create schedules targeting any of the three workflow languages. The Rust
   SDK currently has no schedule creation API. Do not invent a Rust creator.
-- Nexus follows advertised support in the exact tuple. The current PHP/Python
-  caller and service APIs give four meaningful directions. Rust has no Nexus
-  API. A raw HTTP call from a Rust test process would not prove SDK support.
+- Nexus follows advertised support in the exact tuple. The frozen Server
+  experiment executes four PHP/Python caller/service directions. Rust also
+  supports authored `WorkflowContext::call_nexus_service` calls and has a
+  separate five-direction fixture and installed-release acceptance. Keep those
+  runners and artifact tuples distinct. A raw HTTP call from a Rust test
+  process would not prove authored SDK execution.
 - Rust supports update handlers and clients but refuses synchronous pre-accept
   update validators. Exercise ordinary Rust updates and its explicit capability
   refusal. PHP/Python validator execution has its own supported directions.
@@ -58,7 +61,8 @@ Their SDK installation lists do not widen that scope.
 | Worker versioning: Server `worker-versioning-published-artifacts.sh` and `worker-versioning-rust-host-published-artifacts.sh` | PHP/Python protocol-client build cohorts and mixed pinning, plus Python no-compatible-worker, replay and adversarial shards. Managed Rust SDK workers execute registration, pinning, promotion, incompatible refusal, cache eviction, SIGKILL/cold replay and drain/resume with queued work and recovery diagnostics. Source-bound handlers exercise changed/missing-definition refusal, divergent peer conflicts, unchanged recovery and a changed-build positive control. Selecting `DW_RUST_SDK_PREVIOUS_VERSION` compiles identical application sources against two published registry crates and preserves an original unversioned run through the upgrade and another SIGKILL, including the older client's result, both signals and one recorded effect/completion. The focused command also executes all four Rust/PHP and Rust/Python build-cohort directions with actual SDK workers and durable results. | The crate upgrade covers the selected version pair and signal/side-effect history. Changed application code, other durable operations and adding build IDs to existing unversioned histories need their own upgrade cases. Mixed build routing does not establish interchangeable cross-language histories or a shared build identity. |
 | Namespaces: Server `namespaces-published-artifacts.sh` and Sample App `sdk-namespaces.sh` | Server authorization/routing, PHP and Python SDK paths, CLI and Waterline namespace surfaces. Actual Rust clients/workers execute remote activities in two namespaces sharing queue/type names, use separate namespace-bound role credentials, reject wrong-role/cross-namespace reads, signals, starts, registrations and polls, and retain original runs/activity attempts/signal waits after SIGKILL and replacement. The published Server's cross-namespace workflow-ID reservation also rejects duplicate IDs explicitly. | Rust namespace selection and execution are covered through real SDK requests. Namespace CRUD remains the published Server API and PHP/Python/CLI surface. This does not establish namespace deletion/retention during active Rust work or Rust SDK namespace-administration methods. |
 | Search attributes: Server `search-attributes-published-artifacts.sh`; Sample App `scripts/sdk-search-attributes.sh` | Server's PHP SDK, Waterline and PHP/Python codec shards, or supplied host matrix evidence. Sample App separately runs published Rust workflow-side authoring of all seven typed values, PHP/Python selected-run and filtered-list observers, worker SIGKILL, an acknowledged signal during absence and cold replay of original upsert/wait identities before one mutation, deletion and completion. | Rust has typed workflow updates, but no schema-administration, start-time search-attribute or visibility-filter client API. Those observers use supported PHP/Python clients. The focused command does not establish Rust Waterline coverage, namespace isolation, load latency, continuation inheritance or application-code upgrades. Supplied evidence must come from a real worker run. |
-| Nexus: Server `nexus-published-artifacts.sh` | Installed PHP/Python clients execute all four admission directions. Actual PHP/Python caller workflow workers execute all four caller/service directions in same and cross namespaces, with terminal results, handled and uncaught typed failures, direct target cancellation, waiting-caller cancellation propagation, caller SIGKILL/replacement and MySQL interruption. Uncaught cases require the original remote failure, one call failure and one failed caller workflow in eight distinct originals. The [focused workflow](#run-the-published-nexus-caller-cases) also checks oversized argument/result recovery and authored worker-role refusal before target dispatch. Original caller/call/target identities, deadlines and one terminal delivery remain required. | The complete scenario manifest retains its own coverage requirements. Its legacy invocable-carrier cells remain separate from workflow-run bindings and retain `not_covered` until their execution lane is qualified. Embedded applications use the separate [installed-package recipe](https://github.com/durable-workflow/workflow/blob/main/examples/embedded-http/qualification/nexus.md). Native Server qualification is separate, and Rust has no current Nexus SDK API. |
+| Frozen Server Nexus: `nexus-published-artifacts.sh` | Installed PHP/Python clients execute all four admission directions. Actual PHP/Python caller workflow workers execute all four caller/service directions in same and cross namespaces, with terminal results, handled and uncaught typed failures, direct target cancellation, waiting-caller cancellation propagation, caller SIGKILL/replacement and MySQL interruption. Uncaught cases require the original remote failure, one call failure and one failed caller workflow in eight distinct originals. The [focused workflow](#run-the-published-nexus-caller-cases) also checks oversized argument/result recovery and authored worker-role refusal before target dispatch. Original caller/call/target identities, deadlines and one terminal delivery remain required. | The complete scenario manifest retains its own coverage requirements. Its legacy invocable-carrier cells remain separate from workflow-run bindings and retain `not_covered` until their execution lane is qualified. Embedded applications use the separate [installed-package recipe](https://github.com/durable-workflow/workflow/blob/main/examples/embedded-http/qualification/nexus.md). Rust SDK and native Server qualification are separate. |
+| Rust-involving Nexus: Rust SDK `tests/nexus/run.sh` and `examples/nexus_cooperation.rs` | Five authored caller/target directions: Rust/PHP, PHP/Rust, Rust/Rust, Rust/Python and Python/Rust. The [SDK fixture](#run-and-interpret-rust-nexus-cases) defines cooperative cancellation and cold target replacement, typed outcomes, cross-namespace isolation, explicit admission/wait modes, lost command acknowledgements and separate catalog browser inspection. Its ordinary preparation builds the Rust checkout. The [installed-release receipt](https://github.com/durable-workflow/sdk-rust/issues/86#issuecomment-6303358379) separately records 72 selected HTTP originals from a normally downloaded crate: six cancellation/cold-target, forty typed cross-namespace outcomes, twenty lost acknowledgements and six selected admission cases. | That installed result belongs to its recorded published tuple and actor. It does not qualify every source admission cell, the current package tuple, native Server or catalog browser rendering. Do not combine it with the frozen Server's four directions to claim one nine-direction tuple. |
 | 1.x → 2.x migration: Server `migration-published-artifacts.sh` | Supported 1.x PHP artifacts and their durable state, target PHP/Python and operator surfaces. | Rust has no 1.x source artifact to migrate. Rust starting against the migrated target is a meaningful post-migration case. SDK upgrades within 2.x/3.x are separate from this engine migration. |
 | Compatibility skew: Server `skew-published-artifacts.sh` | CLI, PHP/Python SDK, Waterline and worker protocol pairings. | Add Rust's supported and refused protocol pairings. A major SDK package number is not itself a worker protocol compatibility boundary. |
 | Principal attribution: Server `principal-attribution-published-artifacts.sh`; Sample App `scripts/sdk-namespaces.sh` and `scripts/sdk-children.sh` | Server covers named/anonymous/raw HTTP actors, PHP/Python clients, worker completion/failure, CLI and Waterline. Sample App separately executes real Rust starts, signals, remote activities and workflow completions with namespace-bound operator and worker credentials. A disposable gateway injects the published principal contract's forged body fields and headers into actual SDK requests. During worker absence, all four credentials are rotated through the Server API. Duplicate rotations preserve their timestamp, real Rust calls refuse the old credentials, and new credentials complete the original runs with the same authenticated subjects. Successful request receipts and original-run histories retain start/signal/completion actors through worker SIGKILL and cold replacement. Selected-run queries distinguish Server's authenticated response principal from a forged application-result principal and leave history unchanged. Additional Rust workflows fail with the worker actor or receive terminal cancellation with the operator actor after a declared wait, preserving their original runs and one terminal boundary. A final isolated phase requires token-driver refusal before explicitly recreating the disposable frontend with the `none` driver. Actual credential-free Rust callers and worker then execute activity/workflow completion, signals, queries, authored failure and terminal cancellation with server/anonymous actors and the same forged metadata matrix. Published native CLI JSON and human tables inspect every original terminal run. Published Waterline uses its read-only remote backend to inspect the same selected runs, statuses, complete timelines and command actors. Both views must match preserved Server histories without mutating them. | The Rust case covers named and anonymous actors, runtime credential rotation and start/signal/completion/query/failure/terminal-cancellation attribution, plus CLI and Waterline API visibility of actual Rust runs. Activity execution identities are checked separately, while internal events may have explicit null principals. The separate child runner checks legacy, runtime-token and anonymous requesters through actual PHP/Python/Rust cancellation clients, Rust-involving cooperative propagation, duplicate identity and original actor preservation, committed delivery and cold cleanup recovery under forged metadata. It also requires actual worker-role 403 and unauthenticated 401 refusals. The same command also checks 45 connected published Waterline browser views across those five directions and three access modes, preserving the original requester and complete cascade after cold cleanup recovery. The anonymous phase qualifies auth-disabled self-hosting, not anonymous Cloud access or namespace isolation without authentication. Credential administration uses the Server API. Transport injection does not add a custom-header SDK API, and the query observer does not add a Rust raw-response API. |
@@ -126,6 +130,48 @@ These paths do not share a runtime acceptance result with the SDK workflow.
 [Workflow #753](https://github.com/durable-workflow/workflow/issues/753#issuecomment-6247569474)
 records the published-artifact and consumer acceptance. Each new affected tuple
 needs its own execution. Native Server support remains separately qualified.
+
+## Run and interpret Rust Nexus cases
+
+Follow the Rust SDK's [Nexus HTTP qualification instructions](https://github.com/durable-workflow/sdk-rust/blob/main/tests/nexus/README.md)
+for dependencies, the disposable state directory and isolated Compose backend.
+The documented preparation builds `examples/nexus_cooperation.rs` from the
+checkout. These are source qualification commands, not automatic
+registry-installed acceptance:
+
+```sh
+bash tests/nexus/run.sh
+bash tests/nexus/run.sh cross-outcomes
+bash tests/nexus/run.sh acknowledgement
+bash tests/nexus/run.sh admission
+bash tests/nexus/run.sh cross-namespace
+```
+
+Choose a fresh backend and case identities for each selected profile as the
+owning instructions require. The default profile checks cancellation across
+the five Rust-involving directions plus a killed/cold Rust target.
+`cross-outcomes` covers those five directions, both namespace directions and
+success, typed failure, external values and missing operations. The
+acknowledgement profile loses an actual recorded completion response across
+all four namespace pairs, then requires cold replay of the original call.
+Admission profiles exercise their declared ordinary/cold sync/async waiting
+cells. A bounded selection is not the full admission matrix.
+
+For installed acceptance, build the actor from the normally downloaded crate
+example without a path dependency or source override. Record the registry
+checksum, embedded source, actor identity, counterparts, image digest and each
+executed profile. [Rust SDK #86](https://github.com/durable-workflow/sdk-rust/issues/86)
+and its installed receipt distinguish the selected 72 originals from the
+larger source admission cohort and retain earlier failed outcomes. That receipt
+does not qualify a new tuple or the optional `catalog` browser profile.
+
+Preserve the original call, target, histories and separate cleanup/service
+deadlines. Lost-acknowledgement evidence must positively identify the original
+physical task and attempt as completed before and after retirement. An
+aggregate repair count cannot prove which task was recovered. Retire the
+selected Compose backend and fixture state after recording sanitized results,
+including after failure. Do not change the frozen Server lane to make these
+separate results look like one experiment.
 
 ## Run and interpret a cell
 
