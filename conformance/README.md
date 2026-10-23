@@ -90,9 +90,15 @@ refused with HTTP 401, including Python's discovery wrapper around that response
 The separate auth-disabled phase checks the configured anonymous actor.
 Both families preserve their original request identity, deadline and cleanup
 history through SIGKILL and cold replacement. They require both original runs
-to reach Cancelled within the initial shared 30-second budget. CLI and
-selected-run API inspection cover these cascades. Actual Waterline browser
-rendering remains a separate case.
+to reach Cancelled within the initial shared 30-second budget. The same command
+checks CLI and selected-run API inspection, then opens the published Waterline
+image in Chromium after each cancellation batch converges. Its 45 connected
+views cover parent desktop/mobile and child desktop for all five directions
+through legacy-token, runtime-token and anonymous access. The actual HTTP
+responses and rendered request, requester, deadline, delivery, recovery and
+completed cleanup must match the original SDK/Server evidence. Browser checks
+reject unhandled errors and horizontal overflow. Browser time is outside the
+original cleanup budget.
 The ordinary Rust authored-workflow playground does not prove
 cross-language child-workflow behavior by itself.
 
@@ -330,6 +336,43 @@ older SDK client reads the original result. History prefixes, both signal
 deliveries, one recorded effect and one completion must survive. Qualification
 applies to the selected SDK pair and these durable operations. Application changes
 and adding build IDs to existing histories need separate cases.
+
+## Run the child workflow and browser cases
+
+Use a prepared Sample App checkout with Docker Compose, Node.js 24, npm and the
+command's shell tools. Review `scripts/sdk-children.sh --help` and the linked
+[child-workflow instructions](https://github.com/durable-workflow/sample-app/blob/main/polyglot/child-workflows/README.md).
+From its repository root, install the locked browser tooling as the owning
+[CI workflow](https://github.com/durable-workflow/sample-app/blob/main/.github/workflows/sdk-children.yml)
+does:
+
+```bash
+npm ci --ignore-scripts
+./node_modules/.bin/playwright install --with-deps chromium
+scripts/playground doctor
+while IFS= read -r assignment; do export "$assignment"; done \
+  < <(scripts/resolve-current-artifacts.sh)
+SDK_CHILDREN_COMPOSE_PROJECT_NAME=sample-app-sdk-children \
+  SDK_CHILDREN_RESULT_DIR=/path/to/disposable/results \
+  scripts/sdk-children.sh
+```
+
+Choose an unused project name and a disposable result directory. The command
+refuses a project with existing containers. It records the runner revision,
+published tuple, image identities, original histories, request receipts,
+worker-loss evidence and browser responses, screenshots and rendered text.
+Require 15 browser views per access mode and report their outcomes separately
+from the nine successful parent/child directions and the failure/recovery cases.
+The exit trap removes the task stack, volumes, fixture images and temporary
+proof directory on success or failure. The selected result directory remains
+for review. Record sanitized findings in the owning issue, then remove those
+results. Hosted runs retain them for 30 days. After an external interruption,
+follow the owning instructions to remove only the same project and its printed
+proof directory.
+
+These checks cover cooperative cancellation with wait-for-child cleanup.
+Process loss during an external side effect, direct child TRY_CANCEL/ABANDON
+requests and parent close after normal completion still need separate cases.
 
 ## Report a run
 
