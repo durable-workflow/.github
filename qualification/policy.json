@@ -149,6 +149,7 @@
     },
     "cli": {
       "branch": "main",
+      "composer_trust_required": true,
       "repository": "cli",
       "workflows": [
         {
