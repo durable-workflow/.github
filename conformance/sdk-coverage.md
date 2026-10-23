@@ -97,6 +97,11 @@ Its `worker_restart_during_cancellation` case [starts a replacement while the or
 inside one probe process. That checks replacement before original settlement;
 SIGKILL and cold-process recovery need their own case.
 
+The manifest's `workflow_retry_backoff_or_refusal` probe [checks explicit refusal
+of an unsupported workflow-level retry policy](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/workflow-lifecycle-published-artifacts.sh#L1359-L1401).
+That outcome establishes the refusal contract. Activity retry execution belongs
+to the separate activity scenarios above.
+
 Read each retained scenario's status, installed artifact identity and observed
 outputs. Keep constructed client responses, typed result inspection, live worker
 execution and physical process loss distinct. A successful lifecycle job belongs
