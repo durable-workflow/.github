@@ -858,20 +858,25 @@ def _parse_yaml(source: str, label: str) -> Any:
 def _workflow_action_references(source: str, label: str) -> list[str]:
     document = _parse_yaml(source, label)
     references: list[str] = []
+    pending = [document]
+    visited: set[int] = set()
 
-    def visit(node: Any) -> None:
-        if isinstance(node, dict):
-            for key, value in node.items():
-                if key == "uses":
-                    if not isinstance(value, str):
-                        raise PolicyError(f"{label} has a non-string action reference")
-                    references.append(value)
-                visit(value)
-        elif isinstance(node, list):
-            for value in node:
-                visit(value)
+    # Shared and recursive YAML aliases must not multiply traversal work.
+    while pending:
+        node = pending.pop()
+        if not isinstance(node, (dict, list)) or id(node) in visited:
+            continue
+        visited.add(id(node))
+        if isinstance(node, list):
+            pending.extend(reversed(node))
+            continue
+        if "uses" in node:
+            reference = node["uses"]
+            if not isinstance(reference, str):
+                raise PolicyError(f"{label} has a non-string action reference")
+            references.append(reference)
+        pending.extend(reversed(list(node.values())))
 
-    visit(document)
     return references
 
 
