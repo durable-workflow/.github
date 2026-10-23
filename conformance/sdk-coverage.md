@@ -49,6 +49,7 @@ Their SDK installation lists do not widen that scope.
 
 | Experiment and existing entry point | Executed language scope | Remaining portable behavior to qualify |
 | --- | --- | --- |
+| SDK parity: Server `php-sdk-published-artifacts.sh` and `python-published-artifacts.sh` | PHP installs the selected service SDK and runs separate client and managed Worker processes against a prepared Server. Python installs its SDK, CLI and companion packages and provisions an isolated Server stack. Each writes its own structured evidence. | These are separate language-specific entry points, not all nine remote-activity directions. PHP definition validation is an offline package check. Python's standalone result does not satisfy its separate managed-runtime evidence requirement. [Commands, results and cleanup](#run-the-sdk-parity-entry-points). |
 | Remote activity external effects: Sample App `scripts/sdk-activity-recovery.sh --external-effects` | All nine PHP/Python/Rust workflow/activity directions commit an operation to an isolated downstream HTTP service before activity-worker SIGKILL. A distinct replacement retries with the original operation key, immutable input and total deadline. Require one business effect, two delivery receipts tied to the actual attempt identities, the original effect identity, stale completion refusal, unchanged history and one workflow completion. Separate service tests exercise concurrent duplicates, conflicting inputs and physical downstream restart over the same SQLite ledger. | This fixture requires application idempotency supplied by the downstream service. It does not establish exactly-once effects for arbitrary external systems or cover compensation, child or update-handler side effects. |
 | Authoring, inputs/results and remote activities: Sample App `scripts/polyglot.sh`, full matrix in `polyglot/README.md`, `scripts/sdk-activity-recovery.sh`; Server `activities-published-artifacts.sh` | Featured PHP → Python → Rust journey and the full nine-direction successful activity matrix are separate commands. The recovery command executes retryable first-attempt failure, activity-worker SIGKILL, total deadline expiry across attempts, exhaustion of two retryable failures and application progress heartbeat expiry in all nine PHP/Python/Rust workflow/activity directions. It checks actual SDK claims, the original run/execution/total deadline, distinct attempts, recorded backoff, stale completion refusal while the retry is active and unchanged history. The progress case verifies typed details, liveness beyond the initial heartbeat deadline, a heartbeat retry with the same live worker, preserved expired progress and obsolete heartbeat refusal. Successful cases have one durable result/completion. Failed cases retain the actual terminal activity cause in one workflow failure, reject results after closure and admit no third attempt or successful result. Server's activity manifest primarily uses embedded PHP/Python cells, with a focused PHP SDK heartbeat-renewal shard. | The focused cases cover two attempts, start-to-close and heartbeat timeout retries, total deadline expiry, retry exhaustion and application progress in every supported workflow/activity language direction. Recovery of an external side effect requires a separate application idempotency or downstream fencing fixture. |
 | Child workflows: Server `child-workflows-published-artifacts.sh`; Sample App `scripts/sdk-children.sh` and `polyglot/child-workflows/` | Server's four PHP Workflow-package/Python SDK parent-child directions, using the image-bundled probe described in the [runbook](README.md#run-the-server-child-workflow-probe). Sample App runs all nine PHP/Python/Rust SDK completion directions and the five Rust-involving typed failure, cold worker-recovery and cooperative cancellation directions. Separate five-case runtime-token and anonymous cancellation families execute actual PHP/Python/Rust cancellation clients, operator/administrator duplicate actor preservation and worker/missing-authentication refusals. Cancellation uses wait-for-child cleanup, worker SIGKILL during a recorded cleanup timer, original delivery/timer replay, immutable duplicate identity/deadline and complete matching API/CLI cascade views. The same command inspects the published Waterline image through 45 connected Chromium views: parent desktop/mobile and child desktop across all five cancellation directions and three access modes. Actual HTTP responses and rendered request, requester, deadline, delivery, recovery and completed cleanup must match the original SDK/Server evidence, with no browser errors or horizontal overflow. Browser time is outside the cleanup deadline measurement. | Process loss during an external side effect, direct child TRY_CANCEL/ABANDON requests, parent close after normal completion require separate scenarios. Keep the Server runner's PHP/Python cells and Sample App's SDK cells distinct. |
@@ -79,6 +80,66 @@ Their SDK installation lists do not widen that scope.
 | Self-hosted operator diagnosis: [six-case drill](operator-diagnosis.md) | Documented CLI, Server API and Waterline diagnosis/recovery instructions with explicit original-run tracking. Published command syntax and source dispatch have been checked. | Actual staged faults, recovery and original-run outcomes need their own recorded execution. Embedded Laravel injection/testing remains a PHP framework-specific case. |
 | Managed Cloud | Private Cloud repository's isolated qualification | Keep account, provisioning, provider chaos and commercial qualification private. Public SDK protocol coverage does not establish managed-plan capacity or Cloud recovery. |
 
+
+## Run the SDK parity entry points
+
+Use a Server checkout so the runners can load their adjacent evidence helpers.
+Keep each language's result and artifact identities separate.
+
+For PHP, prepare an isolated Server endpoint first. The host needs Bash, PHP,
+Composer, Node and Python 3. Set `DW_PHP_SDK_VERSION`, `DW_SERVER_VERSION`,
+`DW_SERVER_IMAGE` and `DW_PHP_SDK_CONFORMANCE_SERVER_URL` to the selected
+published SDK and exact Server image/version. Set the documented control and
+worker credential variables for that isolated endpoint. The runner installs the
+SDK into a disposable Composer project; it does not provision the Server.
+
+```bash
+result_dir="$(mktemp -d "${TMPDIR:-/tmp}/dw-php-sdk.XXXXXX")"
+bash scripts/conformance/php-sdk-published-artifacts.sh \
+  --scope lifecycle --result-dir "$result_dir"
+```
+
+The other scopes are `namespace` and `search-attributes`. Read
+`php-sdk-conformance-result.json`, `php-sdk-lifecycle-evidence.json`, the selected
+scope's assertions and `executed-distribution-identities.json`. Failure paths
+can write a non-passing result and exit zero. A successful shell exit does not
+qualify the SDK. `--validate-definitions` installs the selected package and checks
+handler definitions without Server execution; keep that result separate.
+Lifecycle restart uses TERM and a new worker process, rather than physical
+SIGKILL. The exit trap terminates its captured worker. It retains results,
+the Composer project/cache and the separately prepared Server. Review the
+evidence, then remove only those owned scratch files and retire the isolated
+Server through its owning setup.
+
+For Python, the host needs Bash, Python 3 with venv support, curl and Docker
+Compose. Set the exact `DW_SERVER_IMAGE`, `DW_SERVER_VERSION`,
+`DW_PYTHON_SDK_VERSION`, `DW_CLI_VERSION`, `DW_WORKFLOW_PHP_VERSION` and
+`DW_WATERLINE_VERSION` for the selected public artifacts. Without explicit
+versions, the resolver can select newer registry releases. The runner creates
+its own stack, SDK environment and CLI installation.
+
+```bash
+result_dir="$(mktemp -d "${TMPDIR:-/tmp}/dw-python-sdk.XXXXXX")"
+bash scripts/conformance/python-published-artifacts.sh --result-dir "$result_dir"
+```
+
+Retain `pins.json`, `executed-distribution-identities.json`,
+`python-host-evidence.json`, `python-conformance-result.json`,
+`python-conformance-evaluation.json` and `python-conformance-record.json`.
+The installed SDK composes and evaluates the result. Require the actual
+evaluation to pass. Its standalone external-payload subresult and separate
+isolated managed-runtime evidence remain distinct. Missing managed evidence
+leaves that capability/scenario `not_covered`; it does not become an overall
+pass because the standalone subresult passed. Managed account and operational
+qualification stay private.
+
+Python's exit trap attempts namespace deletion and removes its Compose stack
+and volumes. It retains the scratch root on failure or explicit file retention.
+`--keep-run-root` keeps files, not the running stack. Successful runs remove
+the scratch root only when results were written outside it. Review retained
+evidence and remove owned scratch files after recording the outcome. Neither
+language's entry point qualifies the other SDKs or replaces the direction-specific
+experiments above.
 
 ## Run the backend failover rehearsal
 
