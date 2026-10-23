@@ -67,6 +67,10 @@ bash scripts/conformance/workflow-lifecycle-host-published-artifacts.sh \
 The wrapper removes its containers and network on normal exit or a handled
 interrupt. Retain the result directory for the owning issue's evidence, then
 remove that directory after recording the sanitized outcome.
+Anonymous MySQL/Redis data volumes currently survive that container cleanup.
+The [cleanup implementation gap](https://github.com/durable-workflow/.github/issues/122#issuecomment-6361991895)
+remains open. Container and network removal alone does not establish complete
+fixture cleanup.
 
 ## Operator experience
 
