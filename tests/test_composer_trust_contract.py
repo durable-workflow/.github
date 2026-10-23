@@ -28,9 +28,12 @@ class ComposerNetworkContractTest(unittest.TestCase):
             {"run": "composer install --prefer-dist"},
         ]
 
-    def check(self, steps=None, jobs=None):
+    def check(self, steps=None, jobs=None, defaults=None):
         jobs = jobs or {"test": {"steps": self.steps if steps is None else steps}}
-        source = yaml.safe_dump({"jobs": jobs})
+        document = {"jobs": jobs}
+        if defaults is not None:
+            document["defaults"] = defaults
+        source = yaml.safe_dump(document)
         return verify_composer_network_sinks(self.policy, "fixture", {"ci.yml": source}, self.root)
 
     def test_reviewed_order_is_enumerated(self):
@@ -132,6 +135,119 @@ class ComposerNetworkContractTest(unittest.TestCase):
         with self.assertRaises(PolicyError):
             self.check([{"run": "scripts/build"}])
         self.assertEqual(1, len(self.check([*self.steps[:3], {"run": "scripts/build"}])))
+
+    def relative_helper_fixture(self):
+        (self.root / "scripts").mkdir()
+        (self.root / "scripts/request.sh").write_text("#!/bin/sh\nprintf done\n")
+        (self.root / "alternate/scripts").mkdir(parents=True)
+        (self.root / "alternate/scripts/request.sh").write_text("#!/bin/sh\ncomposer install\n")
+
+    def test_relative_helpers_cannot_be_redirected_by_run_directories(self):
+        self.relative_helper_fixture()
+        for scope in ("step", "job", "workflow"):
+            step = {"run": "scripts/request.sh"}
+            job = {"steps": [step]}
+            defaults = {"run": {"working-directory": "alternate"}}
+            workflow_defaults = None
+            if scope == "step":
+                step["working-directory"] = "alternate"
+            elif scope == "job":
+                job["defaults"] = defaults
+            else:
+                workflow_defaults = defaults
+            with self.subTest(scope=scope), self.assertRaisesRegex(PolicyError, "workspace root"):
+                self.check(jobs={"test": job}, defaults=workflow_defaults)
+
+    def test_relative_helpers_refuse_directory_changes_in_shell_source(self):
+        self.relative_helper_fixture()
+        for command in (
+            "cd alternate\nscripts/request.sh",
+            "pushd alternate; scripts/request.sh",
+            "builtin cd alternate && scripts/request.sh",
+            "bash -c 'cd alternate; scripts/request.sh'",
+        ):
+            with self.subTest(command=command), self.assertRaisesRegex(PolicyError, "workspace root"):
+                self.check([{"run": command}])
+        (self.root / "scripts/outer.sh").write_text("cd alternate\nscripts/request.sh\n")
+        with self.assertRaisesRegex(PolicyError, "workspace root"):
+            self.check([{"run": "scripts/outer.sh"}])
+
+    def test_explicit_workspace_roots_keep_guarded_helper_requests(self):
+        (self.root / "scripts").mkdir()
+        (self.root / "scripts/request.sh").write_text("composer install\n")
+        for directory in (".", "./", "${{ github.workspace }}", "${{github.workspace}}/."):
+            for scope in ("step", "job", "workflow"):
+                step = {"run": "scripts/request.sh"}
+                job = {"steps": [*self.steps[:3], step]}
+                defaults = {"run": {"working-directory": directory}}
+                workflow_defaults = None
+                if scope == "step":
+                    step["working-directory"] = directory
+                elif scope == "job":
+                    job["defaults"] = defaults
+                else:
+                    workflow_defaults = defaults
+                with self.subTest(scope=scope, directory=directory):
+                    self.assertEqual(1, len(self.check(jobs={"test": job}, defaults=workflow_defaults)))
+
+    def test_helper_directory_uses_the_most_specific_run_setting(self):
+        self.relative_helper_fixture()
+        step = {"run": "scripts/request.sh", "working-directory": "."}
+        job = {"steps": [step], "defaults": {"run": {"working-directory": "alternate"}}}
+        self.assertEqual([], self.check(jobs={"test": job}))
+        del step["working-directory"]
+        job["defaults"]["run"]["working-directory"] = "${{ github.workspace }}"
+        self.assertEqual([], self.check(jobs={"test": job}, defaults={"run": {"working-directory": "alternate"}}))
+
+    def test_non_helper_commands_keep_their_existing_directory_behavior(self):
+        self.assertEqual([], self.check([{"run": "cargo test", "working-directory": "alternate"}]))
+        self.assertEqual([], self.check([{"run": "cd alternate\ncargo test"}]))
+
+    def test_non_shell_programs_keep_their_existing_directory_behavior(self):
+        for command in ("python3 scripts/check.py", "python -I scripts/check.py", "node scripts/check.mjs", "php scripts/check.php"):
+            with self.subTest(command=command):
+                self.assertEqual([], self.check([{"run": command, "working-directory": "alternate"}]))
+        with self.assertRaisesRegex(PolicyError, "workspace root"):
+            self.check([{"run": "python3 scripts/check.py; scripts/request.sh", "working-directory": "alternate"}])
+        for command in ("custom-python3 scripts/request.sh", "scripts/python3 scripts/request.sh"):
+            with self.subTest(command=command), self.assertRaisesRegex(PolicyError, "workspace root"):
+                self.check([{"run": command, "working-directory": "alternate"}])
+
+    def test_shell_invocation_keeps_helper_inspection_despite_its_extension(self):
+        (self.root / "scripts").mkdir()
+        (self.root / "scripts/request.py").write_text("composer install\n")
+        with self.assertRaisesRegex(PolicyError, "workspace root"):
+            self.check([{"run": "bash scripts/request.py", "working-directory": "alternate"}])
+        with self.assertRaisesRegex(PolicyError, "lack the reviewed"):
+            self.check([{"run": "bash scripts/request.py"}])
+        self.assertEqual(1, len(self.check([*self.steps[:3], {"run": "bash scripts/request.py"}])))
+
+    def test_relative_helpers_refuse_custom_shell_context(self):
+        self.relative_helper_fixture()
+        for scope in ("step", "job", "workflow"):
+            step = {"run": "scripts/request.sh"}
+            job = {"steps": [step]}
+            shell = "bash -c 'cd alternate; bash {0}' ignored"
+            defaults = {"run": {"shell": shell}}
+            workflow_defaults = None
+            if scope == "step":
+                step["shell"] = shell
+            elif scope == "job":
+                job["defaults"] = defaults
+            else:
+                workflow_defaults = defaults
+            with self.subTest(scope=scope), self.assertRaisesRegex(PolicyError, "reviewed shell"):
+                self.check(jobs={"test": job}, defaults=workflow_defaults)
+
+    def test_helper_shell_uses_the_most_specific_safe_setting(self):
+        self.relative_helper_fixture()
+        for shell in ("bash", "sh"):
+            step = {"run": "scripts/request.sh", "shell": shell}
+            job = {"steps": [step], "defaults": {"run": {"shell": "bash -c true {0}"}}}
+            self.assertEqual([], self.check(jobs={"test": job}))
+            del step["shell"]
+            job["defaults"]["run"]["shell"] = shell
+            self.assertEqual([], self.check(jobs={"test": job}, defaults={"run": {"shell": "bash -c true {0}"}}))
 
     def test_job_and_workflow_overrides_cannot_bypass_the_step_guards(self):
         with self.assertRaisesRegex(PolicyError, "job-level"):

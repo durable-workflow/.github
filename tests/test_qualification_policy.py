@@ -5,13 +5,22 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+import yaml
 
 from scripts.qualification_policy import (
     PolicyError,
+    LOCKED_POLICY_BOOTSTRAP_REVISION,
+    LOCKED_POLICY_INSTALL_COMMAND,
+    _workflow_action_references,
+    _references_secret_context,
+    _string_values,
     _verify_action_policy_preflight,
     scan_workflow_sources,
     validate_local_action_references,
     validate_policy,
+    verify_workflow_source,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -77,7 +86,7 @@ class QualificationPolicyTest(unittest.TestCase):
         self.assertTrue(actions)
         self.assertTrue(all("@" in action for action in actions))
 
-    def test_policy_preflight_accepts_binary_only_without_relaxing_dependency_command(self) -> None:
+    def preflight_jobs(self, target: str = "ai") -> dict:
         checkout, _ = self.approved_action("actions/checkout")
         setup_python, _ = self.approved_action("actions/setup-python")
         jobs = {
@@ -99,7 +108,7 @@ class QualificationPolicyTest(unittest.TestCase):
                     {"uses": f"actions/setup-python@{setup_python}", "with": {"python-version": "3.13"}},
                     {"run": "python -m pip install PyYAML==6.0.2"},
                     {"run": "python .central-action-policy/scripts/qualification_policy.py validate "
-                     "--policy .central-action-policy/qualification/policy.json --target ai "
+                     f"--policy .central-action-policy/qualification/policy.json --target {target} "
                      "--workflow-directory .github/workflows"},
                 ],
             },
@@ -112,9 +121,15 @@ class QualificationPolicyTest(unittest.TestCase):
                 }],
             },
         }
+        return jobs
+
+    def test_policy_preflight_accepts_binary_only_without_relaxing_dependency_command(self) -> None:
+        jobs = self.preflight_jobs()
         for command in (
             "python -m pip install PyYAML==6.0.2",
             "python -m pip install --only-binary :all: PyYAML==6.0.2",
+            "python -I -m pip install PyYAML==6.0.2",
+            "python -I -m pip install --only-binary :all: PyYAML==6.0.2",
         ):
             with self.subTest(command=command):
                 jobs["action-policy"]["steps"][3]["run"] = command
@@ -149,6 +164,258 @@ class QualificationPolicyTest(unittest.TestCase):
         with self.assertRaisesRegex(PolicyError, "unreviewed pip bootstrap"):
             _verify_action_policy_preflight("ai", "fixture", jobs, "gate")
 
+    def test_server_requires_the_isolated_hash_locked_policy_install(self) -> None:
+        jobs = self.preflight_jobs("server")
+        steps = jobs["action-policy"]["steps"]
+        steps.insert(3, {"uses": "durable-workflow/.github/.github/actions/bootstrap-patched-pip@" + LOCKED_POLICY_BOOTSTRAP_REVISION})
+        steps[4]["run"] = LOCKED_POLICY_INSTALL_COMMAND
+        revisions = {LOCKED_POLICY_BOOTSTRAP_REVISION}
+        _verify_action_policy_preflight("server", "fixture", jobs, "gate", revisions, True)
+        for flag in ("-I ", "--isolated ", "--require-hashes ", "--only-binary=:all: ", "--no-deps "):
+            changed = copy.deepcopy(jobs)
+            changed["action-policy"]["steps"][4]["run"] = LOCKED_POLICY_INSTALL_COMMAND.replace(flag, "")
+            with self.subTest(removed=flag), self.assertRaisesRegex(PolicyError, "reviewed policy dependency"):
+                _verify_action_policy_preflight("server", "fixture", changed, "gate", revisions, True)
+        for command in (
+            LOCKED_POLICY_INSTALL_COMMAND.replace("qualification/requirements.lock", "requirements.lock"),
+            LOCKED_POLICY_INSTALL_COMMAND.replace(".central-action-policy/", ""),
+            LOCKED_POLICY_INSTALL_COMMAND + " --extra-index-url https://example.com",
+            LOCKED_POLICY_INSTALL_COMMAND + " --trusted-host example.com",
+            "python -m pip install PyYAML==6.0.2",
+        ):
+            changed = copy.deepcopy(jobs)
+            changed["action-policy"]["steps"][4]["run"] = command
+            with self.subTest(command=command), self.assertRaisesRegex(PolicyError, "reviewed policy dependency"):
+                _verify_action_policy_preflight("server", "fixture", changed, "gate", revisions, True)
+        changed = copy.deepcopy(jobs)
+        changed["action-policy"]["steps"].pop(3)
+        with self.assertRaisesRegex(PolicyError, "locked-policy pip bootstrap"):
+            _verify_action_policy_preflight("server", "fixture", changed, "gate", revisions, True)
+        changed = copy.deepcopy(jobs)
+        changed["action-policy"]["steps"][3]["uses"] = steps[3]["uses"].replace(LOCKED_POLICY_BOOTSTRAP_REVISION, "75587fc33ff40c34f32ef777293dad56bb6f48c7")
+        with self.assertRaisesRegex(PolicyError, "locked-policy pip bootstrap"):
+            _verify_action_policy_preflight("server", "fixture", changed, "gate", revisions | {"75587fc33ff40c34f32ef777293dad56bb6f48c7"}, True)
+        self.assertTrue(self.policy["targets"]["server"]["workflows"][0]["locked_policy_dependency_required"])
+
+    def locked_preflight_jobs(self) -> dict:
+        jobs = self.preflight_jobs("server")
+        jobs["action-policy"]["steps"].insert(3, {
+            "uses": "durable-workflow/.github/.github/actions/bootstrap-patched-pip@" + LOCKED_POLICY_BOOTSTRAP_REVISION,
+        })
+        jobs["action-policy"]["steps"][4]["run"] = LOCKED_POLICY_INSTALL_COMMAND
+        jobs["gate"]["name"] = "PHPUnit feature suite"
+        return jobs
+
+    def verify_server_preflight(self, jobs: dict, defaults: dict | None = None) -> None:
+        document = {"jobs": jobs}
+        if defaults is not None:
+            document["defaults"] = defaults
+        source = "on:\n  push:\n    branches: [main]\n  pull_request:\n  workflow_dispatch:\n"
+        source += yaml.safe_dump(document, sort_keys=False)
+        verify_workflow_source(
+            "server", "main", self.policy["targets"]["server"]["workflows"][0],
+            source, {LOCKED_POLICY_BOOTSTRAP_REVISION},
+        )
+
+    def test_preflight_refuses_redirected_install_and_validator_directories(self) -> None:
+        for directory in ("alternate", "../other", "${{ github.workspace }}/alternate", "${{ inputs.directory }}", "$GITHUB_WORKSPACE", None):
+            for scope in ("workflow", "job", "install", "validate"):
+                jobs = self.locked_preflight_jobs()
+                defaults = {"run": {"working-directory": directory}}
+                workflow_defaults = None
+                if scope == "workflow":
+                    workflow_defaults = defaults
+                elif scope == "job":
+                    jobs["action-policy"]["defaults"] = defaults
+                else:
+                    index = 4 if scope == "install" else 5
+                    jobs["action-policy"]["steps"][index]["working-directory"] = directory
+                with self.subTest(scope=scope, directory=directory), self.assertRaisesRegex(PolicyError, "workspace root"):
+                    self.verify_server_preflight(jobs, workflow_defaults)
+
+    def test_preflight_accepts_explicit_workspace_root_directories(self) -> None:
+        for directory in (".", "./", "${{ github.workspace }}", "${{github.workspace}}/.", "${{ github.workspace }}/"):
+            for scope in ("workflow", "job", "step"):
+                jobs = self.locked_preflight_jobs()
+                defaults = {"run": {"working-directory": directory}}
+                workflow_defaults = None
+                if scope == "workflow":
+                    workflow_defaults = defaults
+                elif scope == "job":
+                    jobs["action-policy"]["defaults"] = defaults
+                else:
+                    for step in jobs["action-policy"]["steps"][4:]:
+                        step["working-directory"] = directory
+                with self.subTest(scope=scope, directory=directory):
+                    self.verify_server_preflight(jobs, workflow_defaults)
+
+    def test_preflight_directory_uses_the_most_specific_run_setting(self) -> None:
+        jobs = self.locked_preflight_jobs()
+        jobs["action-policy"]["defaults"] = {"run": {"working-directory": "."}}
+        self.verify_server_preflight(jobs, {"run": {"working-directory": "alternate"}})
+        jobs["action-policy"]["defaults"]["run"]["working-directory"] = "alternate"
+        for step in jobs["action-policy"]["steps"][4:]:
+            step["working-directory"] = "${{ github.workspace }}"
+        self.verify_server_preflight(jobs)
+        del jobs["action-policy"]["steps"][5]["working-directory"]
+        with self.assertRaisesRegex(PolicyError, "workspace root"):
+            self.verify_server_preflight(jobs)
+
+    def test_preflight_refuses_inherited_custom_shells(self) -> None:
+        for scope in ("workflow", "job"):
+            jobs = self.locked_preflight_jobs()
+            defaults = {"run": {"shell": "bash -c true {0}"}}
+            workflow_defaults = defaults if scope == "workflow" else None
+            if scope == "job":
+                jobs["action-policy"]["defaults"] = defaults
+            with self.subTest(scope=scope), self.assertRaisesRegex(PolicyError, "reviewed shell"):
+                self.verify_server_preflight(jobs, workflow_defaults)
+
+    def test_preflight_refuses_custom_dynamic_and_non_shell_invocation(self) -> None:
+        for shell in ("bash {0}", "${{ inputs.shell }}", "python", "", None):
+            for index in (4, 5):
+                jobs = self.locked_preflight_jobs()
+                jobs["action-policy"]["steps"][index]["shell"] = shell
+                with self.subTest(shell=shell, index=index), self.assertRaisesRegex(PolicyError, "reviewed shell"):
+                    self.verify_server_preflight(jobs)
+
+    def test_preflight_accepts_default_and_builtin_safe_shells(self) -> None:
+        self.verify_server_preflight(self.locked_preflight_jobs())
+        for shell in ("bash", "sh"):
+            for scope in ("workflow", "job", "step"):
+                jobs = self.locked_preflight_jobs()
+                defaults = {"run": {"shell": shell}}
+                workflow_defaults = defaults if scope == "workflow" else None
+                if scope == "job":
+                    jobs["action-policy"]["defaults"] = defaults
+                elif scope == "step":
+                    for step in jobs["action-policy"]["steps"][4:]:
+                        step["shell"] = shell
+                with self.subTest(shell=shell, scope=scope):
+                    self.verify_server_preflight(jobs, workflow_defaults)
+
+    def test_preflight_shell_uses_the_most_specific_safe_setting(self) -> None:
+        jobs = self.locked_preflight_jobs()
+        jobs["action-policy"]["defaults"] = {"run": {"shell": "bash"}}
+        jobs["gate"]["defaults"] = {"run": {"shell": "sh"}}
+        self.verify_server_preflight(jobs, {"run": {"shell": "bash -c true {0}"}})
+        jobs["action-policy"]["defaults"]["run"]["shell"] = "bash -c true {0}"
+        for step in jobs["action-policy"]["steps"][4:]:
+            step["shell"] = "sh"
+        self.verify_server_preflight(jobs)
+        del jobs["action-policy"]["steps"][5]["shell"]
+        with self.assertRaisesRegex(PolicyError, "reviewed shell"):
+            self.verify_server_preflight(jobs)
+
+    def test_preflight_result_gate_cannot_inherit_a_custom_shell(self) -> None:
+        jobs = self.locked_preflight_jobs()
+        jobs["gate"]["defaults"] = {"run": {"shell": "bash -c true {0}"}}
+        with self.assertRaisesRegex(PolicyError, "fail closed"):
+            self.verify_server_preflight(jobs)
+        jobs["gate"]["steps"][0]["shell"] = "bash"
+        self.verify_server_preflight(jobs)
+
+    def test_preflight_result_gate_cannot_ignore_its_failure(self) -> None:
+        jobs = self.locked_preflight_jobs()
+        self.verify_server_preflight(jobs)
+        for ignored in (False, "false"):
+            jobs["gate"]["steps"][0]["continue-on-error"] = ignored
+            with self.subTest(ignored=ignored):
+                self.verify_server_preflight(jobs)
+        for ignored in (True, "true", "${{ inputs.ignore }}", "${{ false }}"):
+            jobs["gate"]["steps"][0]["continue-on-error"] = ignored
+            with self.subTest(ignored=ignored), self.assertRaisesRegex(PolicyError, "fail closed"):
+                self.verify_server_preflight(jobs)
+
+    def verify_preflight_context(self, jobs: dict, workflow_document: dict | None = None) -> None:
+        _verify_action_policy_preflight(
+            "server", "source-only context fixture", jobs, "gate",
+            {LOCKED_POLICY_BOOTSTRAP_REVISION}, True, workflow_document,
+        )
+
+    def test_preflight_job_rejects_unreviewed_execution_fields(self) -> None:
+        for key, value in (
+            ("container", "ubuntu:24.04"),
+            ("services", {"sidecar": {"image": "busybox:latest"}}),
+            ("strategy", {"matrix": {"candidate": ["one"]}}),
+            ("environment", "unreviewed"),
+            ("continue-on-error", True),
+            ("concurrency", "unreviewed"),
+            ("outputs", {"value": "unreviewed"}),
+        ):
+            jobs = self.locked_preflight_jobs()
+            jobs["action-policy"][key] = value
+            with self.subTest(key=key), self.assertRaisesRegex(PolicyError, "reviewed read-only shape"):
+                self.verify_preflight_context(jobs)
+
+    def test_preflight_actions_cannot_skip_or_change_the_reviewed_context(self) -> None:
+        for index in range(4):
+            for key, value in (("if", "false"), ("if", False), ("continue-on-error", True), ("working-directory", "alternate")):
+                jobs = self.locked_preflight_jobs()
+                jobs["action-policy"]["steps"][index][key] = value
+                with self.subTest(index=index, key=key, value=value), self.assertRaises(PolicyError):
+                    self.verify_preflight_context(jobs)
+
+    def test_preflight_startup_bindings_are_data_only_and_refused(self) -> None:
+        for name in ("BASH_ENV", "ENV", "LD_PRELOAD", "NODE_OPTIONS", "PYTHONPATH", "PATH", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_PARAMETERS", "UNREVIEWED_SETTING"):
+            jobs = self.locked_preflight_jobs()
+            document = {"env": {name: "candidate-controlled-placeholder"}}
+            with self.subTest(name=name), self.assertRaisesRegex(PolicyError, "environment"):
+                self.verify_preflight_context(jobs, document)
+
+    def test_preflight_step_startup_bindings_refuse_without_running_them(self) -> None:
+        for index in range(6):
+            jobs = self.locked_preflight_jobs()
+            jobs["action-policy"]["steps"][index]["env"] = {"LD_PRELOAD": "candidate-controlled-placeholder"}
+            with self.subTest(index=index), self.assertRaisesRegex(PolicyError, "environment"):
+                self.verify_preflight_context(jobs)
+
+    def test_preflight_preserves_reviewed_diagnostics_and_literal_clears(self) -> None:
+        jobs = self.locked_preflight_jobs()
+        document = {"env": {"CI": "true", "CARGO_TERM_COLOR": "always", "RUST_BACKTRACE": "1"}}
+        jobs["action-policy"]["env"] = {"PYTHONUNBUFFERED": "1"}
+        for index, step in enumerate(jobs["action-policy"]["steps"]):
+            step["env"] = {"FORCE_COLOR": "1"}
+            if index < 4:
+                step["id"] = f"reviewed_{index}"
+                step["if"] = "${{ github.server_url == 'https://github.com' }}"
+                step["continue-on-error"] = "false"
+        self.verify_preflight_context(jobs, document)
+        clears = {name: "" for name in ("BASH_ENV", "ENV", "LD_PRELOAD", "NODE_OPTIONS")}
+        self.verify_preflight_context(self.locked_preflight_jobs(), {"env": clears})
+        jobs = self.locked_preflight_jobs()
+        jobs["action-policy"]["env"] = clears
+        self.verify_preflight_context(jobs)
+
+    def test_preflight_environment_is_closed_including_shadowed_bindings(self) -> None:
+        jobs = self.locked_preflight_jobs()
+        jobs["action-policy"]["env"] = {"BASH_ENV": ""}
+        for document in (
+            {"env": {"BASH_ENV": "candidate-controlled-placeholder"}},
+            {"env": {"NODE_OPTIONS": "${{ inputs.options }}"}},
+            {"env": {"GIT_CONFIG_COUNT": ""}},
+            {"env": {"CI": ["not a scalar"]}},
+            {"env": "not a mapping"},
+        ):
+            with self.subTest(document=document), self.assertRaisesRegex(PolicyError, "environment"):
+                self.verify_preflight_context(jobs, document)
+
+    def test_preflight_defaults_reject_unknown_execution_settings(self) -> None:
+        for scope in ("workflow", "job"):
+            jobs = self.locked_preflight_jobs()
+            defaults = {"run": {"unreviewed": "value"}}
+            document = {"defaults": defaults} if scope == "workflow" else None
+            if scope == "job":
+                jobs["action-policy"]["defaults"] = defaults
+            with self.subTest(scope=scope), self.assertRaisesRegex(PolicyError, "defaults"):
+                self.verify_preflight_context(jobs, document)
+        self.verify_preflight_context(self.locked_preflight_jobs(), {"defaults": {"run": {}}})
+
+    def test_preflight_shape_does_not_close_unrelated_test_jobs(self) -> None:
+        jobs = self.locked_preflight_jobs()
+        jobs["other"] = {"container": "ubuntu:24.04", "env": {"BASH_ENV": "other-job-placeholder"}}
+        self.verify_preflight_context(jobs)
+
     def test_approved_immutable_action_with_version_comment_is_accepted(self) -> None:
         commit, version = self.approved_action("actions/checkout")
         evidence = self.scan(workflow(f"- uses: actions/checkout@{commit} # {version}"))
@@ -174,6 +441,187 @@ class QualificationPolicyTest(unittest.TestCase):
     def test_pull_request_target_is_rejected(self) -> None:
         with self.assertRaisesRegex(PolicyError, "pull_request_target"):
             self.scan(workflow("- run: true", trigger="pull_request_target"))
+
+    def protected_workflow(self) -> str:
+        return (ROOT / ".github/workflows/protected-policy.yml").read_text(encoding="utf-8")
+
+    def test_only_exact_reviewed_protected_workflow_is_allowed(self) -> None:
+        sources = {".github/workflows/protected-policy.yml": self.protected_workflow()}
+        report = scan_workflow_sources(self.policy, "github-control-plane", sources)
+        self.assertIn(".github/workflows/protected-policy.yml", report)
+
+    def test_local_reviewed_workflow_keeps_its_original_lf_bytes(self) -> None:
+        source = (ROOT / ".github/workflows/protected-policy.yml").read_bytes()
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / ".github/workflows"
+            directory.mkdir(parents=True)
+            (directory / "protected-policy.yml").write_bytes(source)
+
+            validate_local_action_references(self.policy, directory)
+
+    def test_local_workflow_line_endings_cannot_reuse_the_reviewed_hash(self) -> None:
+        source = (ROOT / ".github/workflows/protected-policy.yml").read_bytes()
+        for ending in (b"\r\n", b"\r"):
+            changed = source.replace(b"\n", ending)
+            self.assertNotEqual(source, changed)
+            with self.subTest(ending=ending), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary) / ".github/workflows"
+                directory.mkdir(parents=True)
+                (directory / "protected-policy.yml").write_bytes(changed)
+
+                with self.assertRaisesRegex(PolicyError, "pull_request_target"):
+                    validate_local_action_references(self.policy, directory)
+
+    def test_ordinary_local_workflows_keep_supported_line_endings(self) -> None:
+        source = workflow("- run: true").encode("utf-8")
+        for ending in (b"\n", b"\r\n", b"\r"):
+            with self.subTest(ending=ending), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                (directory / "ci.yml").write_bytes(source.replace(b"\n", ending))
+
+                validate_local_action_references(self.policy, directory)
+
+    def test_shared_yaml_nodes_do_not_multiply_action_reference_work(self) -> None:
+        visits = 0
+
+        class CountedMapping(dict):
+            def touch(self):
+                nonlocal visits
+                visits += 1
+                if visits > 64:
+                    raise AssertionError("Alias traversal exceeded the fixture's work budget")
+
+            def items(self):
+                self.touch()
+                return super().items()
+
+            def values(self):
+                self.touch()
+                return super().values()
+
+        reference = "actions/checkout@" + self.approved_action("actions/checkout")[0]
+        document = CountedMapping({"uses": reference})
+        for _ in range(14):
+            document = CountedMapping({"nested": [document, document]})
+
+        with patch("scripts.qualification_policy._parse_yaml", return_value=document):
+            self.assertEqual([reference], _workflow_action_references("", "shared graph"))
+
+    def test_real_yaml_aliases_keep_all_distinct_action_references(self) -> None:
+        first = "actions/checkout@" + self.approved_action("actions/checkout")[0]
+        second = "actions/setup-python@" + self.approved_action("actions/setup-python")[0]
+        source = f"shared: &shared [{{uses: {first}}}, {{uses: {second}}}]\n"
+        previous = "shared"
+        for index in range(8):
+            name = f"level{index}"
+            source += f"{name}: &{name} [*{previous}, *{previous}]\n"
+            previous = name
+
+        self.assertEqual({first, second}, set(_workflow_action_references(source, "real aliases")))
+
+    def test_recursive_yaml_alias_keeps_the_existing_parser_refusal(self) -> None:
+        reference = "actions/checkout@" + self.approved_action("actions/checkout")[0]
+        source = f"cycle: &cycle [*cycle]\nstep: {{uses: {reference}}}\n"
+
+        with self.assertRaisesRegex(PolicyError, "recursive node"):
+            _workflow_action_references(source, "recursive alias")
+
+    def test_secret_context_shared_graph_has_bounded_full_scan_work(self) -> None:
+        visits = 0
+
+        class CountedMapping(dict):
+            def values(self):
+                nonlocal visits
+                visits += 1
+                if visits > 64:
+                    raise AssertionError("Secret-context alias traversal exceeded the fixture work budget")
+                return super().values()
+
+        shared = CountedMapping({"value": "ordinary text"})
+        for _ in range(14):
+            shared = CountedMapping({"nested": [shared, shared]})
+        document = {
+            "on": {"pull_request": None},
+            "permissions": {"contents": "read"},
+            "shared": shared,
+            "jobs": {"test": {"runs-on": "ubuntu-latest", "steps": [{"run": "true"}]}},
+        }
+        with patch("scripts.qualification_policy._parse_yaml", return_value=document):
+            self.scan("")
+        self.assertLessEqual(visits, 64)
+
+    def test_shared_alias_scan_keeps_secret_refusals_and_distinct_actions(self) -> None:
+        first, first_version = self.approved_action("actions/checkout")
+        second, second_version = self.approved_action("actions/setup-python")
+        graph = "leaf: &leaf [ordinary text]\n"
+        previous = "leaf"
+        for index in range(8):
+            name = f"level{index}"
+            graph += f"{name}: &{name} [*{previous}, *{previous}]\n"
+            previous = name
+        source = graph + workflow(
+            f"- uses: actions/checkout@{first} # {first_version}",
+            f"- uses: actions/setup-python@{second} # {second_version}",
+        )
+        evidence = self.scan(source)[".github/workflows/test.yml"]
+        self.assertEqual(2, len(evidence["external_actions"]))
+        with self.assertRaisesRegex(PolicyError, "references a secret"):
+            self.scan("late: ${{ secrets.EXAMPLE }}\n" + source)
+        shared_secret_source = source.replace("ordinary text", '"${{ secrets.EXAMPLE }}"')
+        with self.assertRaisesRegex(PolicyError, "references a secret"):
+            self.scan(shared_secret_source)
+        self.assertTrue(_references_secret_context({"nested": ["safe", "${{ secrets.EXAMPLE }}"]}))
+        self.assertFalse(_references_secret_context({"nested": ["plain secrets.EXAMPLE"]}))
+
+    def test_string_values_preserve_order_for_ordinary_yaml_trees(self) -> None:
+        self.assertEqual(
+            ["first", "second", "third"],
+            _string_values({"a": ["first", ["second"]], "b": {"c": "third"}}),
+        )
+
+    def test_preceding_policy_still_refuses_the_protected_workflow(self) -> None:
+        self.policy["workflow_trust"]["pull_request_target_exceptions"] = []
+        sources = {".github/workflows/protected-policy.yml": self.protected_workflow()}
+        with self.assertRaisesRegex(PolicyError, "pull_request_target"):
+            scan_workflow_sources(self.policy, "github-control-plane", sources)
+
+    def test_same_workflow_cannot_gain_authority_at_another_path_or_repository(self) -> None:
+        source = self.protected_workflow()
+        for target, path in (
+            ("github-control-plane", ".github/workflows/copied.yml"),
+            ("server", ".github/workflows/protected-policy.yml"),
+        ):
+            sources = {path: source}
+            with self.subTest(target=target, path=path), self.assertRaisesRegex(PolicyError, "pull_request_target"):
+                scan_workflow_sources(self.policy, target, sources)
+
+    def test_protected_source_mutations_cannot_use_the_exception(self) -> None:
+        source = self.protected_workflow()
+        for before, after in (
+            ("ref: ${{ github.sha }}", "ref: ${{ github.event.pull_request.head.sha }}"),
+            ("environment: protected-policy-gate", "environment: production"),
+            ("permission-checks: write", "permission-contents: write"),
+            ("repositories: .github", "repositories: cloud"),
+            ("NODE_OPTIONS: --use-openssl-ca", "NODE_OPTIONS: --use-bundled-ca"),
+            ('--expected-head "$POLICY_HEAD_SHA"', '--expected-head "a"'),
+        ):
+            changed = source.replace(before, after)
+            self.assertNotEqual(source, changed)
+            sources = {".github/workflows/protected-policy.yml": changed}
+            with self.subTest(before=before), self.assertRaisesRegex(PolicyError, "pull_request_target"):
+                scan_workflow_sources(self.policy, "github-control-plane", sources)
+
+    def test_modified_or_additional_exceptions_require_another_review(self) -> None:
+        original = self.policy["workflow_trust"]["pull_request_target_exceptions"][0]
+        for changed in (
+            [{**original, "target": "server"}],
+            [{**original, "path": ".github/workflows/copied.yml"}],
+            [{**original, "sha256": "0" * 64}],
+            [original, original],
+        ):
+            self.policy["workflow_trust"]["pull_request_target_exceptions"] = changed
+            with self.subTest(changed=changed), self.assertRaisesRegex(PolicyError, "separately reviewed"):
+                validate_policy(self.policy)
 
     def test_pull_request_jobs_cannot_use_environments_or_secrets(self) -> None:
         source = workflow("- run: echo ${{ secrets.TOKEN }}")

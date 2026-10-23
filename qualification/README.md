@@ -29,12 +29,139 @@ scanner, with the analysis token only on the final scanner step. It may produce
 coverage first using trusted repository code and approved actions. Other steps
 cannot reference secrets; existing cache restrictions still apply. Forks do
 not run this job.
-The scanner rejects `pull_request_target`, mutable container
+The scanner rejects `pull_request_target` outside the single content-bound
+public pilot described below, mutable container
 images, unreviewed `workflow_run` consumers, and privileged artifact consumers
 without exact producer and digest provenance.
 
 Product repositories own their tests, documentation deployment, publication,
 and deployment workflows. Editorial wording is outside this policy.
+
+## Isolated, hash-locked policy bootstrap
+
+Server's policy preflight requires action revision
+`fea245682582d0620054e8547a5f3c968f9ef0f0` and exactly:
+
+```sh
+python -I -m pip --isolated install --require-hashes --only-binary=:all: --no-deps -r .central-action-policy/qualification/requirements.lock
+```
+
+The reviewed central checkout supplies the lock. It permits only the reviewed
+PyYAML 6.0.2 CPython 3.13 glibc Linux wheels for amd64 and arm64. Native CI checks
+both wheel installations, a tampered hash, and working-directory `pip.py` and
+`pip/` shadows. Missing isolation/integrity/binary/no-dependency flags, another
+requirements path, extra options, a missing bootstrap or an older bootstrap
+revision fail the Server contract. The same command is available for staged
+adoption in other targets. Their legacy forms remain explicit migration work,
+not evidence of the locked-policy contract. This source check does not establish
+an independent protected execution boundary; that gate requires its own issuer
+and repository-rule acceptance.
+
+### Protected gate input layer
+
+`scripts/protected_policy_inputs.py` captures an open public pull request against
+the expected repository ID and exact `main` commit. It reads the candidate's
+exact commit/tree identities and regular workflow blobs, plus literal referenced
+helper blobs needed by the existing Composer inspection. Paths, file counts,
+individual sizes, total bytes and encoding are bounded. Symlinks, submodules,
+truncated trees and a changed PR identity refuse. Materialized files are data
+with mode `0600`; candidate commands are never executed by this layer.
+
+The caller must supply a bounded read-only GitHub API client from protected
+source, keep candidate data outside the interpreter's import path, and call
+`require_current` again immediately before issuing a result. This module does
+not create a Check Run, grant merge authority, configure an Environment or prove
+an issuer binding. Those live integration requirements remain open. Private
+repositories are explicitly refused until their separate gate is qualified.
+
+### Read-only protected-policy pilot client
+
+`scripts/protected_policy_check.py` connects that input layer to the reviewed
+validator for the public `.github` pilot. It binds the immutable repository ID,
+requires the expected protected `main` SHA, and rechecks main and PR identity
+after validation. Candidate workflow/helper files are temporary nonexecutable
+data outside Python's import path. The policy always comes from the reviewed
+central checkout; there is no candidate policy-path override.
+
+After the authenticated bootstrap exports its CA file, empty additional-root
+directory and digest, a read-only caller uses:
+
+```sh
+python -I scripts/protected_policy_check.py \
+  --pull-request "$POLICY_PULL_REQUEST" --base-sha "$POLICY_BASE_SHA"
+```
+
+The client requires curl 8.4 or newer, an explicit matching CA bundle and no
+additional roots. Transfers are HTTPS GETs to the fixed GitHub API host, with
+no redirects or automatic content decoding. Each response is capped at 8 MiB;
+there is a 15-second request budget and a shared 120-second API budget. JSON
+depth/node counts, endpoint shapes and request counts are also bounded. A read
+token, when supplied as `GITHUB_TOKEN`, travels on stdin rather than process
+arguments. The caller grants only Contents read and Pull requests read. Never
+give the reader the App signing key or its Checks-write token.
+
+Success prints a bounded identity/digest report. Failure prints escaped JSON
+and exits nonzero; candidate text cannot become a GitHub workflow command.
+Ordinary PR CI exercises the real read client and validator. That candidate
+controlled job remains a component test. Protected base execution, the App
+issuer, immediate identity recheck, environment-denial tests and issuer-bound
+repository rules still require separate live acceptance before enforcement.
+
+### Prepared App issuer component
+
+`scripts/protected_policy_issue.py` prepares the checks-only issuer for that
+same public pilot. It runs the validator itself rather than accepting a
+candidate-supplied report. The read-only `GITHUB_TOKEN` and separate
+`POLICY_CHECKS_TOKEN` installation token have different roles; the issuer never
+accepts or reads an App signing key. `POLICY_GATE_APP_ID` must name the reviewed
+installation's App. The App must have Checks write and implicit Metadata read
+only, installed solely on the pilot repository.
+
+The intended protected caller uses:
+
+```sh
+python -I scripts/protected_policy_issue.py \
+  --pull-request "$POLICY_PULL_REQUEST" --base-sha "$POLICY_BASE_SHA" \
+  --expected-head "$POLICY_HEAD_SHA"
+```
+
+It checks the protected-main workflow context and exact event head, validates
+bounded candidate data, creates one incomplete Check Run, and verifies the
+returned check name, original head and App ID. Only then does it re-read the
+protected main and complete PR identity immediately before completing that
+same check successfully. Read and write credentials use stdin, with explicit
+reviewed TLS roots and the existing transfer/time/JSON bounds. The App client
+has no arbitrary endpoint or repository input. Refusal exits nonzero and never
+reports success; a check already created may remain incomplete. A later head
+cannot inherit an earlier head's successful check.
+
+Caller environment markers are defense in depth, not proof of secret denial.
+The prepared workflow checks out `github.sha` from protected main, verifies
+both the workflow SHA and actual checkout match it, installs the hash-locked
+parser, then uses the pinned official App-token action. Its token is restricted
+to Checks write on the one public pilot. The key is an Environment secret and
+never enters the reader/issuer program. The token action selects only the
+verified OpenSSL CA file and empty additional-root directory; bundled, extra
+and additional system roots are excluded for that credentialed Node step.
+
+The policy permits this one exact UTF-8 workflow SHA-256, target and path.
+Another path/repository, changed checkout/permission/credential handling,
+different content or additional exception refuses. Updating that root requires
+another explicit source review. All other `pull_request_target` workflows
+remain forbidden. This does not validate arbitrary changes to central policy
+code; root-of-trust changes still require independent maintainer/Security review.
+
+This bootstrap revision is prepared source, not a live enforcement claim. It
+cannot authorize its own adoption. Security must accept the exact source;
+the account holder must establish the App and key; and the live pilot must
+prove Environment denial, wrong-issuer nonqualification, candidate nonexecution,
+stale-head refusal and a safe successful check before the required-check rule
+is bound to that App. The known Environment configuration alone is not proof.
+No App key, live write or private-repository adoption is exercised by the
+constructed-response tests. Existing Server/publication holds remain.
+
+The transport uses GitHub's [create and update Check Run API](https://docs.github.com/en/rest/checks/runs)
+and checks the documented [workflow environment variables](https://docs.github.com/en/actions/reference/workflows-and-actions/variables).
 
 ## Clean trust for dependency requests
 

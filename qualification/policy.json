@@ -22,6 +22,9 @@
       "actions/configure-pages": {
         "45bfe0192ca1faeb007ade9deae92b16b8254a0d": "v6"
       },
+      "actions/create-github-app-token": {
+        "64ab729a6294000f5aa4a4bc0b73d1f32bc45510": "v3.3.0"
+      },
       "actions/deploy-pages": {
         "cd2ce8fcbc39b97be8ca5fce6e763baed58fa128": "v5"
       },
@@ -73,6 +76,7 @@
         "4d407b29186a635f0cc27475ef0bc0ae605a8866": "1.86.0"
       },
       "durable-workflow/.github": {
+        "fea245682582d0620054e8547a5f3c968f9ef0f0": "clean-trust",
         "75587fc33ff40c34f32ef777293dad56bb6f48c7": "clean-trust",
         "ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10": "patched-pip"
       },
@@ -132,7 +136,13 @@
       "validator_runner": "ubuntu-latest"
     },
     "privileged_workflow_run_consumers": {},
-    "pull_request_target_exceptions": []
+    "pull_request_target_exceptions": [
+      {
+        "target": "github-control-plane",
+        "path": ".github/workflows/protected-policy.yml",
+        "sha256": "642d204ea939ca5eba7ef51be9e4ae56a35177413caabe849315086d3d9d2d31"
+      }
+    ]
   },
   "targets": {
     "ai": {
@@ -262,6 +272,7 @@
       "workflows": [
         {
           "action_policy_preflight": true,
+          "locked_policy_dependency_required": true,
           "matrix_independent": false,
           "path": "phpunit-feature.yml",
           "required_check": "PHPUnit feature suite"
