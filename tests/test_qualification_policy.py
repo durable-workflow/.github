@@ -5,11 +5,13 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.qualification_policy import (
     PolicyError,
     LOCKED_POLICY_BOOTSTRAP_REVISION,
     LOCKED_POLICY_INSTALL_COMMAND,
+    _workflow_action_references,
     _verify_action_policy_preflight,
     scan_workflow_sources,
     validate_local_action_references,
@@ -254,6 +256,50 @@ class QualificationPolicyTest(unittest.TestCase):
                 (directory / "ci.yml").write_bytes(source.replace(b"\n", ending))
 
                 validate_local_action_references(self.policy, directory)
+
+    def test_shared_yaml_nodes_do_not_multiply_action_reference_work(self) -> None:
+        visits = 0
+
+        class CountedMapping(dict):
+            def touch(self):
+                nonlocal visits
+                visits += 1
+                if visits > 64:
+                    raise AssertionError("Alias traversal exceeded the fixture's work budget")
+
+            def items(self):
+                self.touch()
+                return super().items()
+
+            def values(self):
+                self.touch()
+                return super().values()
+
+        reference = "actions/checkout@" + self.approved_action("actions/checkout")[0]
+        document = CountedMapping({"uses": reference})
+        for _ in range(14):
+            document = CountedMapping({"nested": [document, document]})
+
+        with patch("scripts.qualification_policy._parse_yaml", return_value=document):
+            self.assertEqual([reference], _workflow_action_references("", "shared graph"))
+
+    def test_real_yaml_aliases_keep_all_distinct_action_references(self) -> None:
+        first = "actions/checkout@" + self.approved_action("actions/checkout")[0]
+        second = "actions/setup-python@" + self.approved_action("actions/setup-python")[0]
+        source = f"shared: &shared [{{uses: {first}}}, {{uses: {second}}}]\n"
+        previous = "shared"
+        for index in range(8):
+            name = f"level{index}"
+            source += f"{name}: &{name} [*{previous}, *{previous}]\n"
+            previous = name
+
+        self.assertEqual({first, second}, set(_workflow_action_references(source, "real aliases")))
+
+    def test_recursive_yaml_alias_cannot_hide_a_later_action_reference(self) -> None:
+        reference = "actions/checkout@" + self.approved_action("actions/checkout")[0]
+        source = f"cycle: &cycle [*cycle]\nstep: {{uses: {reference}}}\n"
+
+        self.assertEqual([reference], _workflow_action_references(source, "recursive alias"))
 
     def test_preceding_policy_still_refuses_the_protected_workflow(self) -> None:
         self.policy["workflow_trust"]["pull_request_target_exceptions"] = []
