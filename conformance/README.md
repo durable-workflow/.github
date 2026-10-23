@@ -37,7 +37,7 @@ each public experiment.
 | Signals and queries | `durable-workflow/server`: `scripts/conformance/signals-queries-published-artifacts.sh` |
 | Timers | `durable-workflow/server`: `scripts/conformance/timers-published-artifacts.sh` (embedded PHP); `durable-workflow/sample-app`: `scripts/sdk-timers.sh` (PHP/Python/Rust SDK workers) |
 | Worker versioning | `durable-workflow/server`: `scripts/conformance/worker-versioning-published-artifacts.sh` with `DW_RUST_SDK_VERSION` for the managed Rust shard, or [`worker-versioning-rust-host-published-artifacts.sh`](https://github.com/durable-workflow/server/blob/main/scripts/conformance/worker-versioning.md) for its focused isolated stack and four Rust/PHP and Rust/Python build-cohort directions |
-| Workflow lifecycle | `durable-workflow/server`: `scripts/conformance/workflow-lifecycle-published-artifacts.sh` |
+| Workflow lifecycle | `durable-workflow/server`: `scripts/conformance/workflow-lifecycle-host-published-artifacts.sh` (Docker host wrapper for the published-image result runner) |
 | Workflow updates | `durable-workflow/server`: `scripts/conformance/workflow-updates-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-updates.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/updates/README.md) (nine live SDK client/handler directions) |
 
 Each runner documents its required exact-version environment variables and
@@ -47,6 +47,26 @@ project for every run.
 Sample App commands resolve their exact tuple with
 `scripts/resolve-current-artifacts.sh`. That resolver requires Node.js in
 addition to the Docker Compose and command-specific tools listed in each example.
+
+For workflow lifecycle, run the host wrapper from the Server checkout with
+Bash, Docker and Node.js. Set `DW_SERVER_VERSION`, `DW_RUST_SDK_VERSION`,
+`DW_CLI_VERSION`, `DW_PYTHON_SDK_VERSION`, `DW_PHP_SDK_VERSION`,
+`DW_WORKFLOW_PHP_VERSION` and `DW_WATERLINE_VERSION` from the selected exact
+tuple. Set `DW_SERVER_IMAGE` to its immutable image digest. The wrapper starts
+the isolated backend, HTTP and scheduler processes, builds the registry Rust
+probe, and invokes `workflow-lifecycle-published-artifacts.sh` inside the
+published Server image. Calling that inner script from a source checkout does
+not execute its focused published-image runtime probes.
+
+```sh
+result_dir="$(mktemp -d "${TMPDIR:-/tmp}/dw-lifecycle.XXXXXX")"
+bash scripts/conformance/workflow-lifecycle-host-published-artifacts.sh \
+  --result-dir "$result_dir"
+```
+
+The wrapper removes its containers and network on normal exit or a handled
+interrupt. Retain the result directory for the owning issue's evidence, then
+remove that directory after recording the sanitized outcome.
 
 ## Operator experience
 
