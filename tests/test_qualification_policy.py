@@ -261,6 +261,60 @@ class QualificationPolicyTest(unittest.TestCase):
         with self.assertRaisesRegex(PolicyError, "workspace root"):
             self.verify_server_preflight(jobs)
 
+    def test_preflight_refuses_inherited_custom_shells(self) -> None:
+        for scope in ("workflow", "job"):
+            jobs = self.locked_preflight_jobs()
+            defaults = {"run": {"shell": "bash -c true {0}"}}
+            workflow_defaults = defaults if scope == "workflow" else None
+            if scope == "job":
+                jobs["action-policy"]["defaults"] = defaults
+            with self.subTest(scope=scope), self.assertRaisesRegex(PolicyError, "reviewed shell"):
+                self.verify_server_preflight(jobs, workflow_defaults)
+
+    def test_preflight_refuses_custom_dynamic_and_non_shell_invocation(self) -> None:
+        for shell in ("bash {0}", "${{ inputs.shell }}", "python", "", None):
+            for index in (4, 5):
+                jobs = self.locked_preflight_jobs()
+                jobs["action-policy"]["steps"][index]["shell"] = shell
+                with self.subTest(shell=shell, index=index), self.assertRaisesRegex(PolicyError, "reviewed shell"):
+                    self.verify_server_preflight(jobs)
+
+    def test_preflight_accepts_default_and_builtin_safe_shells(self) -> None:
+        self.verify_server_preflight(self.locked_preflight_jobs())
+        for shell in ("bash", "sh"):
+            for scope in ("workflow", "job", "step"):
+                jobs = self.locked_preflight_jobs()
+                defaults = {"run": {"shell": shell}}
+                workflow_defaults = defaults if scope == "workflow" else None
+                if scope == "job":
+                    jobs["action-policy"]["defaults"] = defaults
+                elif scope == "step":
+                    for step in jobs["action-policy"]["steps"][4:]:
+                        step["shell"] = shell
+                with self.subTest(shell=shell, scope=scope):
+                    self.verify_server_preflight(jobs, workflow_defaults)
+
+    def test_preflight_shell_uses_the_most_specific_safe_setting(self) -> None:
+        jobs = self.locked_preflight_jobs()
+        jobs["action-policy"]["defaults"] = {"run": {"shell": "bash"}}
+        jobs["gate"]["defaults"] = {"run": {"shell": "sh"}}
+        self.verify_server_preflight(jobs, {"run": {"shell": "bash -c true {0}"}})
+        jobs["action-policy"]["defaults"]["run"]["shell"] = "bash -c true {0}"
+        for step in jobs["action-policy"]["steps"][4:]:
+            step["shell"] = "sh"
+        self.verify_server_preflight(jobs)
+        del jobs["action-policy"]["steps"][5]["shell"]
+        with self.assertRaisesRegex(PolicyError, "reviewed shell"):
+            self.verify_server_preflight(jobs)
+
+    def test_preflight_result_gate_cannot_inherit_a_custom_shell(self) -> None:
+        jobs = self.locked_preflight_jobs()
+        jobs["gate"]["defaults"] = {"run": {"shell": "bash -c true {0}"}}
+        with self.assertRaisesRegex(PolicyError, "fail closed"):
+            self.verify_server_preflight(jobs)
+        jobs["gate"]["steps"][0]["shell"] = "bash"
+        self.verify_server_preflight(jobs)
+
     def test_approved_immutable_action_with_version_comment_is_accepted(self) -> None:
         commit, version = self.approved_action("actions/checkout")
         evidence = self.scan(workflow(f"- uses: actions/checkout@{commit} # {version}"))
@@ -412,8 +466,9 @@ class QualificationPolicyTest(unittest.TestCase):
         self.assertEqual(2, len(evidence["external_actions"]))
         with self.assertRaisesRegex(PolicyError, "references a secret"):
             self.scan("late: ${{ secrets.EXAMPLE }}\n" + source)
+        shared_secret_source = source.replace("ordinary text", '"${{ secrets.EXAMPLE }}"')
         with self.assertRaisesRegex(PolicyError, "references a secret"):
-            self.scan(source.replace("ordinary text", '"${{ secrets.EXAMPLE }}"'))
+            self.scan(shared_secret_source)
         self.assertTrue(_references_secret_context({"nested": ["safe", "${{ secrets.EXAMPLE }}"]}))
         self.assertFalse(_references_secret_context({"nested": ["plain secrets.EXAMPLE"]}))
 

@@ -773,20 +773,25 @@ def _verify_action_policy_preflight(
     }
     if locked_dependency_required:
         reviewed_install_commands = {LOCKED_POLICY_INSTALL_COMMAND}
-    if set(install) - {"name", "run", "working-directory"} or _normalized_shell(install.get("run")) not in reviewed_install_commands:
+    if set(install) - {"name", "run", "working-directory", "shell"} or _normalized_shell(install.get("run")) not in reviewed_install_commands:
         raise PolicyError(f"{label} central action policy preflight must install the reviewed policy dependency")
     expected_validation = (
         "python .central-action-policy/scripts/qualification_policy.py validate "
         f"--policy .central-action-policy/qualification/policy.json --target {target_name} "
         "--workflow-directory .github/workflows"
     )
-    if set(validate) - {"name", "run", "working-directory"} or _normalized_shell(validate.get("run")) != expected_validation:
+    if set(validate) - {"name", "run", "working-directory", "shell"} or _normalized_shell(validate.get("run")) != expected_validation:
         raise PolicyError(f"{label} central action policy preflight does not invoke the reviewed validator")
     if not all(
         _runs_at_workspace_root(workflow_document or {}, preflight, step)
         for step in (install, validate)
     ):
         raise PolicyError(f"{label} central action policy install and validator must run from the workspace root")
+    if not all(
+        _uses_reviewed_run_shell(workflow_document or {}, preflight, step)
+        for step in (install, validate)
+    ):
+        raise PolicyError(f"{label} central action policy install and validator require a reviewed shell")
 
     gate = jobs[gate_job_name]
     if "action-policy" not in _job_needs(gate, f"{label} required check gate"):
@@ -803,6 +808,7 @@ def _verify_action_policy_preflight(
         and _condition_without_expression_wrapper(step.get("if", "")) in accepted_conditions
         and step.get("env") == reviewed_gate["env"]
         and _normalized_shell(step.get("run")) == reviewed_gate["run"]
+        and _uses_reviewed_run_shell(workflow_document or {}, gate, step)
         for step in gate.get("steps") or []
     ):
         raise PolicyError(f"{label} required check does not fail closed on the central action policy result")
@@ -1268,19 +1274,34 @@ def _run_defaults(scope: Mapping[str, Any]) -> Mapping[str, Any]:
     return run if isinstance(run, dict) else {}
 
 
+def _effective_run_setting(
+    workflow: Mapping[str, Any], job: Mapping[str, Any], step: Mapping[str, Any],
+    key: str, default: Any,
+) -> Any:
+    for scope in (step, _run_defaults(job), _run_defaults(workflow)):
+        if key in scope:
+            return scope[key]
+    return default
+
+
 def _runs_at_workspace_root(
     workflow: Mapping[str, Any], job: Mapping[str, Any], step: Mapping[str, Any]
 ) -> bool:
-    # GitHub uses the most specific run setting. A relative dot or the literal
-    # workspace context identifies the checkout root without evaluating input.
-    for scope in (step, _run_defaults(job), _run_defaults(workflow)):
-        if "working-directory" in scope:
-            directory = scope["working-directory"]
-            return isinstance(directory, str) and (
-                directory in {".", "./"}
-                or re.fullmatch(r"\$\{\{\s*github\.workspace\s*\}\}(?:/\.?)?", directory) is not None
-            )
-    return True
+    directory = _effective_run_setting(workflow, job, step, "working-directory", ".")
+    return isinstance(directory, str) and (
+        directory in {".", "./"}
+        or re.fullmatch(r"\$\{\{\s*github\.workspace\s*\}\}(?:/\.?)?", directory) is not None
+    )
+
+
+def _uses_reviewed_run_shell(
+    workflow: Mapping[str, Any], job: Mapping[str, Any], step: Mapping[str, Any]
+) -> bool:
+    # Keep the runner default and built-in POSIX script invocation. An arbitrary
+    # template can ignore the script or change its directory before running it.
+    runner_default = object()
+    shell = _effective_run_setting(workflow, job, step, "shell", runner_default)
+    return shell is runner_default or isinstance(shell, str) and shell in {"bash", "sh"}
 
 
 def _uses_only_allowed_environment(
@@ -2055,8 +2076,10 @@ def _composer_job_sinks(
     for index, step in enumerate(job.get("steps") or []):
         step_label = f"{label}:step-{index + 1}"
         source = step.get("run", "")
-        if _composer_helper_references(source) and not _runs_at_workspace_root(workflow, job, step):
-            raise PolicyError(f"{step_label} Composer relative helper inspection requires the workspace root")
+        if _composer_helper_references(source) and not (
+            _runs_at_workspace_root(workflow, job, step) and _uses_reviewed_run_shell(workflow, job, step)
+        ):
+            raise PolicyError(f"{step_label} Composer relative helper inspection requires the workspace root and a reviewed shell")
         expanded = _composer_step_source(source, root)
         if _composer_network_commands(expanded):
             _require_composer_request_trust(step, state, step_label, expanded)
