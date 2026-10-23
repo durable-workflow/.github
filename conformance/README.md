@@ -26,7 +26,7 @@ each public experiment.
 | Heartbeats | `durable-workflow/server`: the PHP, Python, and Rust `heartbeats-*-published-artifacts.sh` runners |
 | Migration | `durable-workflow/server`: `scripts/conformance/migration-published-artifacts.sh` |
 | Namespaces | `durable-workflow/server`: `scripts/conformance/namespaces-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-namespaces.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/namespaces/README.md) (Rust namespace-bound clients/workers, denied cross-namespace operations and cold recovery) |
-| Nexus | `durable-workflow/server`: `scripts/conformance/nexus-published-artifacts.sh`; [published caller workflow](sdk-coverage.md#run-the-published-nexus-caller-cases) (PHP/Python terminal results, handled and uncaught typed failure, target/caller cancellation, cold/backend recovery, external payloads and authored authorization refusals); separate embedded and API/browser/CLI consumers |
+| Nexus | `durable-workflow/server`: `scripts/conformance/nexus-published-artifacts.sh`; [published caller workflow](sdk-coverage.md#run-the-published-nexus-caller-cases) (PHP/Python terminal results, handled and uncaught typed failure, target/caller cancellation, cold/backend recovery, external payloads and authored authorization refusals); [Rust SDK profiles and installed-release evidence](sdk-coverage.md#run-and-interpret-rust-nexus-cases) with a separate tuple; separate embedded and API/browser/CLI consumers |
 | Polyglot | `durable-workflow/sample-app`: `scripts/polyglot.sh` |
 | Principal attribution | `durable-workflow/server`: `scripts/conformance/principal-attribution-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-namespaces.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/namespaces/README.md) (Rust named and anonymous actors, runtime credential rotation, start/signal/completion/query/failure/terminal-cancellation attribution, forged metadata refusal, cold recovery, CLI JSON/human history and Waterline remote selected-run API); [`scripts/sdk-children.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/child-workflows/README.md) (legacy, runtime-token and anonymous cooperative requests through actual PHP/Python/Rust clients, duplicate identity and actor preservation, access refusals and cold cleanup replay under forged metadata) |
 | Replay | `durable-workflow/server`: `scripts/conformance/replay-published-artifacts.sh` |
@@ -37,7 +37,7 @@ each public experiment.
 | Signals and queries | `durable-workflow/server`: `scripts/conformance/signals-queries-published-artifacts.sh` |
 | Timers | `durable-workflow/server`: `scripts/conformance/timers-published-artifacts.sh` (embedded PHP); `durable-workflow/sample-app`: `scripts/sdk-timers.sh` (PHP/Python/Rust SDK workers) |
 | Worker versioning | `durable-workflow/server`: `scripts/conformance/worker-versioning-published-artifacts.sh` with `DW_RUST_SDK_VERSION` for the managed Rust shard, or [`worker-versioning-rust-host-published-artifacts.sh`](https://github.com/durable-workflow/server/blob/main/scripts/conformance/worker-versioning.md) for its focused isolated stack and four Rust/PHP and Rust/Python build-cohort directions |
-| Workflow lifecycle | `durable-workflow/server`: `scripts/conformance/workflow-lifecycle-published-artifacts.sh` |
+| Workflow lifecycle | `durable-workflow/server`: `scripts/conformance/workflow-lifecycle-host-published-artifacts.sh` (Docker host wrapper for the published-image result runner) |
 | Workflow updates | `durable-workflow/server`: `scripts/conformance/workflow-updates-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-updates.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/updates/README.md) (nine live SDK client/handler directions) |
 
 Each runner documents its required exact-version environment variables and
@@ -47,6 +47,30 @@ project for every run.
 Sample App commands resolve their exact tuple with
 `scripts/resolve-current-artifacts.sh`. That resolver requires Node.js in
 addition to the Docker Compose and command-specific tools listed in each example.
+
+For workflow lifecycle, run the host wrapper from the Server checkout with
+Bash, Docker and Node.js. Set `DW_SERVER_VERSION`, `DW_RUST_SDK_VERSION`,
+`DW_CLI_VERSION`, `DW_PYTHON_SDK_VERSION`, `DW_PHP_SDK_VERSION`,
+`DW_WORKFLOW_PHP_VERSION` and `DW_WATERLINE_VERSION` from the selected exact
+tuple. Set `DW_SERVER_IMAGE` to its immutable image digest. The wrapper starts
+the isolated backend, HTTP and scheduler processes, builds the registry Rust
+probe, and invokes `workflow-lifecycle-published-artifacts.sh` inside the
+published Server image. Calling that inner script from a source checkout does
+not execute its focused published-image runtime probes.
+
+```sh
+result_dir="$(mktemp -d "${TMPDIR:-/tmp}/dw-lifecycle.XXXXXX")"
+bash scripts/conformance/workflow-lifecycle-host-published-artifacts.sh \
+  --result-dir "$result_dir"
+```
+
+The wrapper removes its containers and network on normal exit or a handled
+interrupt. Retain the result directory for the owning issue's evidence, then
+remove that directory after recording the sanitized outcome.
+Anonymous MySQL/Redis data volumes currently survive that container cleanup.
+The [cleanup implementation gap](https://github.com/durable-workflow/.github/issues/122#issuecomment-6361991895)
+remains open. Container and network removal alone does not establish complete
+fixture cleanup.
 
 ## Operator experience
 
@@ -90,9 +114,15 @@ refused with HTTP 401, including Python's discovery wrapper around that response
 The separate auth-disabled phase checks the configured anonymous actor.
 Both families preserve their original request identity, deadline and cleanup
 history through SIGKILL and cold replacement. They require both original runs
-to reach Cancelled within the initial shared 30-second budget. CLI and
-selected-run API inspection cover these cascades. Actual Waterline browser
-rendering remains a separate case.
+to reach Cancelled within the initial shared 30-second budget. The same command
+checks CLI and selected-run API inspection, then opens the published Waterline
+image in Chromium after each cancellation batch converges. Its 45 connected
+views cover parent desktop/mobile and child desktop for all five directions
+through legacy-token, runtime-token and anonymous access. The actual HTTP
+responses and rendered request, requester, deadline, delivery, recovery and
+completed cleanup must match the original SDK/Server evidence. Browser checks
+reject unhandled errors and horizontal overflow. Browser time is outside the
+original cleanup budget.
 The ordinary Rust authored-workflow playground does not prove
 cross-language child-workflow behavior by itself.
 
@@ -330,6 +360,43 @@ older SDK client reads the original result. History prefixes, both signal
 deliveries, one recorded effect and one completion must survive. Qualification
 applies to the selected SDK pair and these durable operations. Application changes
 and adding build IDs to existing histories need separate cases.
+
+## Run the child workflow and browser cases
+
+Use a prepared Sample App checkout with Docker Compose, Node.js 24, npm and the
+command's shell tools. Review `scripts/sdk-children.sh --help` and the linked
+[child-workflow instructions](https://github.com/durable-workflow/sample-app/blob/main/polyglot/child-workflows/README.md).
+From its repository root, install the locked browser tooling as the owning
+[CI workflow](https://github.com/durable-workflow/sample-app/blob/main/.github/workflows/sdk-children.yml)
+does:
+
+```bash
+npm ci --ignore-scripts
+./node_modules/.bin/playwright install --with-deps chromium
+scripts/playground doctor
+while IFS= read -r assignment; do export "$assignment"; done \
+  < <(scripts/resolve-current-artifacts.sh)
+SDK_CHILDREN_COMPOSE_PROJECT_NAME=sample-app-sdk-children \
+  SDK_CHILDREN_RESULT_DIR=/path/to/disposable/results \
+  scripts/sdk-children.sh
+```
+
+Choose an unused project name and a disposable result directory. The command
+refuses a project with existing containers. It records the runner revision,
+published tuple, image identities, original histories, request receipts,
+worker-loss evidence and browser responses, screenshots and rendered text.
+Require 15 browser views per access mode and report their outcomes separately
+from the nine successful parent/child directions and the failure/recovery cases.
+The exit trap removes the task stack, volumes, fixture images and temporary
+proof directory on success or failure. The selected result directory remains
+for review. Record sanitized findings in the owning issue, then remove those
+results. Hosted runs retain them for 30 days. After an external interruption,
+follow the owning instructions to remove only the same project and its printed
+proof directory.
+
+These checks cover cooperative cancellation with wait-for-child cleanup.
+Process loss during an external side effect, direct child TRY_CANCEL/ABANDON
+requests and parent close after normal completion still need separate cases.
 
 ## Report a run
 

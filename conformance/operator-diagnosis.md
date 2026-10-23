@@ -8,10 +8,18 @@ from the investigator's observations.
 
 ## Start with the original workflow
 
-Use the published CLI to inspect the workflow and the queue it actually targets:
+Record the workflow ID and original run ID from admission or the selected run
+before taking a recovery action. If only the workflow ID is known, inspect its
+current run once and confirm that it is the run being investigated. Retain that
+run ID for subsequent observations. The published CLI's unqualified
+`workflow:describe` command selects the current run, which can change after a
+workflow retry or continue-as-new.
+
+Use the explicit run selector and inspect the queue that the run actually
+targets:
 
 ```sh
-dw workflow:describe WORKFLOW_ID --json
+dw workflow:describe WORKFLOW_ID --run-id=RUN_ID --json
 dw task-queue:describe TASK_QUEUE --json
 dw doctor --output=json
 dw workflow:history WORKFLOW_ID RUN_ID --output=json
@@ -23,10 +31,12 @@ scope and outcome of its checks. In Waterline, use **Workers** for registrations
 queue affinity, heartbeat freshness and leases, then the original run's detail
 page for activity attempts, history and pending recovery paths.
 
-Keep the original run ID before acting. After recovery, verify its final status,
-expected result and history. A process that is running, a readable dashboard
-or a successful database connection alone does not establish that work is
-being completed.
+After recovery, use the same run selector to verify the original run's final
+status, expected result and history. If retry or continuation creates a linked
+successor, record and inspect that run separately. A successful current run
+alone does not establish recovery of the original acknowledged work. A process
+that is running, a readable dashboard or a successful database connection alone
+does not establish that work is being completed.
 
 ## Six cases
 
