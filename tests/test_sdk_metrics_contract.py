@@ -19,7 +19,7 @@ class SdkMetricsContractTest(unittest.TestCase):
 
     def test_contract_identity_and_reference_are_explicit(self) -> None:
         self.assertEqual("durable-workflow.sdk-metrics/v1", self.contract["schema"])
-        self.assertIs(type(self.contract["revision"]), int)
+        self.assertIs(int, type(self.contract["revision"]))
         self.assertGreaterEqual(self.contract["revision"], 1)
         reference = self.contract["reference"]
         self.assertEqual("durable-workflow/sdk-python", reference["repository"])
