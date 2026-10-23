@@ -315,6 +315,18 @@ class QualificationPolicyTest(unittest.TestCase):
         jobs["gate"]["steps"][0]["shell"] = "bash"
         self.verify_server_preflight(jobs)
 
+    def test_preflight_result_gate_cannot_ignore_its_failure(self) -> None:
+        jobs = self.locked_preflight_jobs()
+        self.verify_server_preflight(jobs)
+        for ignored in (False, "false"):
+            jobs["gate"]["steps"][0]["continue-on-error"] = ignored
+            with self.subTest(ignored=ignored):
+                self.verify_server_preflight(jobs)
+        for ignored in (True, "true", "${{ inputs.ignore }}", "${{ false }}"):
+            jobs["gate"]["steps"][0]["continue-on-error"] = ignored
+            with self.subTest(ignored=ignored), self.assertRaisesRegex(PolicyError, "fail closed"):
+                self.verify_server_preflight(jobs)
+
     def test_approved_immutable_action_with_version_comment_is_accepted(self) -> None:
         commit, version = self.approved_action("actions/checkout")
         evidence = self.scan(workflow(f"- uses: actions/checkout@{commit} # {version}"))
