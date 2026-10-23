@@ -377,14 +377,18 @@ Running the script from a Server checkout skips the full runtime matrix.
 Use the selected published image's bundled script and probes. Record the
 immutable image digest and the actual bundled probe identity, since a current
 checkout does not establish which implementation an older image contains.
-Select the exact artifact versions listed in its `--help`. The probe installs
-those artifacts, creates its own SQLite scratch database and drives the bundled
-Server through PHP Workflow-package and Python SDK adapters. This does not
-qualify external backend recovery or PHP service-SDK Worker execution.
+Select the exact artifact versions listed in its `--help`.
+`DW_WORKFLOW_PHP_VERSION` must match the image's installed Workflow package.
+The artifact probe checks that version in `vendor/composer/installed.json`;
+it does not replace the bundled package. It installs the selected Python SDK
+and CLI, and checks the remaining artifact references. The runtime probe creates
+its own SQLite scratch database and drives the bundled Server through PHP
+Workflow-package and Python SDK adapters. This does not qualify external
+backend recovery or PHP service-SDK Worker execution.
 
 Inspect `child-workflows-result.json` and its `outcome`, `runtime_matrix`,
 `scenario_results`, artifact-install and full-matrix evidence. A passing result
-requires the actual installs and every required scenario. A skipped probe or
+requires the artifact checks and every required scenario. A skipped probe or
 successful shell exit is insufficient. The separate Sample App host command
 below exercises service SDK workers and browser views.
 
