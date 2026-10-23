@@ -224,6 +224,28 @@ class QualificationPolicyTest(unittest.TestCase):
         report = scan_workflow_sources(self.policy, "github-control-plane", sources)
         self.assertIn(".github/workflows/protected-policy.yml", report)
 
+    def test_local_reviewed_workflow_keeps_its_original_lf_bytes(self) -> None:
+        source = (ROOT / ".github/workflows/protected-policy.yml").read_bytes()
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / ".github/workflows"
+            directory.mkdir(parents=True)
+            (directory / "protected-policy.yml").write_bytes(source)
+
+            validate_local_action_references(self.policy, directory)
+
+    def test_local_workflow_line_endings_cannot_reuse_the_reviewed_hash(self) -> None:
+        source = (ROOT / ".github/workflows/protected-policy.yml").read_bytes()
+        for ending in (b"\r\n", b"\r"):
+            changed = source.replace(b"\n", ending)
+            self.assertNotEqual(source, changed)
+            with self.subTest(ending=ending), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary) / ".github/workflows"
+                directory.mkdir(parents=True)
+                (directory / "protected-policy.yml").write_bytes(changed)
+
+                with self.assertRaisesRegex(PolicyError, "pull_request_target"):
+                    validate_local_action_references(self.policy, directory)
+
     def test_preceding_policy_still_refuses_the_protected_workflow(self) -> None:
         self.policy["workflow_trust"]["pull_request_target_exceptions"] = []
         sources = {".github/workflows/protected-policy.yml": self.protected_workflow()}
