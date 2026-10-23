@@ -15,6 +15,10 @@ work belong to [the experiment audit](https://github.com/durable-workflow/.githu
   checks as well as the successful result.
 - A timer belongs to its workflow runtime. It has no separate language-specific
   timer worker, so three workflow languages cover the meaningful directions.
+- History and list inspection require the actual PHP, Python and Rust client
+  bindings being claimed. A Python observer reading a Rust workflow's history
+  does not prove a Rust client API. Client pagination and paged worker replay
+  are separate cases, not nine new workflow/activity directions.
 - Schedule creation follows the installed client's API. PHP and Python can
   create schedules targeting any of the three workflow languages. The Rust
   SDK currently has no schedule creation API. Do not invent a Rust creator.
@@ -57,6 +61,7 @@ Their SDK installation lists do not widen that scope.
 | Signals and queries: Server `signals-queries-published-artifacts.sh` | PHP/Python/Rust clients and workers, including cross-language calls, Rust query immutability and cold-restarted instance state. | Read the direction-specific scenarios and histories. The crate pin alone proves none of them. |
 | Workflow updates: Server `workflow-updates-published-artifacts.sh`; Sample App `scripts/sdk-updates.sh` | Server's embedded probe, PHP SDK client/worker process boundary, Python installed-package surface fixtures, CLI and Waterline diagnostics. The Python fixture uses simulated HTTP responses. Sample App separately executes all nine PHP/Python/Rust client-to-handler directions against a live published Server, accumulated state mutation, read-only queries, all-worker SIGKILL/replacement, queued and completed duplicates, handler failure and validator refusal. Rust also checks original workflow input and three signal argument shapes through queries and updates around replacement. | Command-ordering races and process loss during a handler's external effect require additional fixtures. Rust refuses synchronous pre-accept validators. Retain the supported PHP/Python validation cells. |
 | Deterministic replay: Server `replay-published-artifacts.sh` | Separate installed PHP, Python and Rust replay shards, command/history matching and codec behavior. | Corpus replay does not prove worker process recovery or migration. Pair affected histories with their runtime restart and upgrade cases. |
+| History/list observation within existing experiments: Sample App readers and CLI `workflow:history` | The child, activity-recovery and update observers explicitly join Python history pages and guard repeated tokens. CLI history collects pages for JSON output or streams events as JSONL. These are inspection paths, separate from the worker's own history fetches. | [SDK iterator delivery](https://github.com/durable-workflow/.github/issues/247) needs actual multi-page history/list results through each claimed client binding. A manually paged observer or a constructed reader test does not establish that product API or a live multi-page SDK result. |
 | Workflow lifecycle: Server `workflow-lifecycle-host-published-artifacts.sh` | Docker host wrapper builds the exact published Rust probe and starts the published Server; inner runner includes PHP/Python/Rust lifecycle surfaces. | Select real continuation, retry/timeout, cancellation and termination scenarios. Terminal cancellation and cooperative cleanup are separate contracts. |
 | Worker versioning: Server `worker-versioning-published-artifacts.sh` and `worker-versioning-rust-host-published-artifacts.sh` | PHP/Python protocol-client build cohorts and mixed pinning, plus Python no-compatible-worker, replay and adversarial shards. Managed Rust SDK workers execute registration, pinning, promotion, incompatible refusal, cache eviction, SIGKILL/cold replay and drain/resume with queued work and recovery diagnostics. Source-bound handlers exercise changed/missing-definition refusal, divergent peer conflicts, unchanged recovery and a changed-build positive control. Selecting `DW_RUST_SDK_PREVIOUS_VERSION` compiles identical application sources against two published registry crates and preserves an original unversioned run through the upgrade and another SIGKILL, including the older client's result, both signals and one recorded effect/completion. The focused command also executes all four Rust/PHP and Rust/Python build-cohort directions with actual SDK workers and durable results. | The crate upgrade covers the selected version pair and signal/side-effect history. Changed application code, other durable operations and adding build IDs to existing unversioned histories need their own upgrade cases. Mixed build routing does not establish interchangeable cross-language histories or a shared build identity. |
 | Namespaces: Server `namespaces-published-artifacts.sh` and Sample App `sdk-namespaces.sh` | Server authorization/routing, PHP and Python SDK paths, CLI and Waterline namespace surfaces. Actual Rust clients/workers execute remote activities in two namespaces sharing queue/type names, use separate namespace-bound role credentials, reject wrong-role/cross-namespace reads, signals, starts, registrations and polls, and retain original runs/activity attempts/signal waits after SIGKILL and replacement. The published Server's cross-namespace workflow-ID reservation also rejects duplicate IDs explicitly. | Rust namespace selection and execution are covered through real SDK requests. Namespace CRUD remains the published Server API and PHP/Python/CLI surface. This does not establish namespace deletion/retention during active Rust work or Rust SDK namespace-administration methods. |
@@ -69,6 +74,41 @@ Their SDK installation lists do not widen that scope.
 | Cooperative cancellation and worker affinity: SDK integration suites, public qualification records and the timer command above | Source integration tests exist in every SDK. Published local-activity/session and mixed-cancellation qualifications are distinct release evidence. Python 2.5.0 and Rust 3.4.0 provide opt-in bounded sticky history with Server 2.5.10, covering paged warm reuse, entry/byte limits, expiry, build refusal and SIGKILL/replacement cold replay. Rust also checks cached canonical cancellation and cleanup on a cold successor. Exact installed-package and tuple evidence is recorded in [.github #124](https://github.com/durable-workflow/.github/issues/124). | Keep installed-package proof separate from source CI. Sticky history does not retain live workflow objects or session resources. Older affinity manifest expectations must not override the tested tuple's capabilities. |
 | Failover and diagnosis: Server `single-region-failover-published-artifacts.sh`, `agent-operability-published-artifacts.sh`; [operator diagnosis drill](operator-diagnosis.md) | Published container/backend failover and public API/CLI/Waterline operator paths. | Backend recovery success is not three-language workflow continuity. Include affected workers and pending work when that is the customer claim. Embedded Laravel injection/testing remains a PHP framework-specific case. |
 | Managed Cloud | Private Cloud repository's isolated qualification | Keep account, provisioning, provider chaos and commercial qualification private. Public SDK protocol coverage does not establish managed-plan capacity or Cloud recovery. |
+
+## Read complete histories and lists
+
+PHP `workflowHistory` and Python `get_history` return one page. Their workflow
+listing methods also return pages. Follow the opaque `next_page_token` until
+the response reports no next page when collecting complete evidence. Keep the
+original namespace, workflow/run IDs and list filters fixed. A single page can
+be a valid API result without being the complete history or workflow list.
+
+The existing [child reader](https://github.com/durable-workflow/sample-app/blob/main/polyglot/python_worker/scripts/sdk_children.py)
+and activity-recovery/update readers join history pages explicitly and reject
+repeated tokens. Their constructed reader controls, such as the child's
+two-page test, verify observer behavior. They do not prove an SDK-provided
+iterator or a multi-page result against a live published Server.
+
+The published CLI's `workflow:history --output=json` collects all returned pages
+into one document. `--output=jsonl` emits events page by page instead of
+buffering the whole history. Check the command's final exit status before
+accepting either output; an interrupted stream is partial evidence.
+
+Force at least two actual pages for a claimed pagination qualification. Use a
+controlled, stable data set for completeness claims. Verify the expected
+identities, order, typed data and end condition with no omitted or duplicate
+records. Preserve the declared observation budget. Repeated tokens, a
+middle-page error or a missing end condition cannot become a pass from the
+records already collected. For a running workflow, identify the observed
+history prefix rather than claiming a terminal history.
+
+The installed worker paged-tail/cache results in
+[#124](https://github.com/durable-workflow/.github/issues/124) remain bound to
+their recorded tuple and worker behavior. They do not qualify client history
+or list iterators. Those helpers and their one-page memory bound are product
+work in [#247](https://github.com/durable-workflow/.github/issues/247); manual
+loops and documentation corrections do not complete that requirement. Use
+each installed SDK's actual supported API rather than inventing iterator calls.
 
 ## Run the published Nexus caller cases
 
