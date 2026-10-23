@@ -60,6 +60,7 @@ jobs:
           tests.test_server_codec_counterfactual_schema
           tests.test_visual_evidence
           tests.test_temporal_runtime
+          tests.test_sdk_metrics_contract
           tests.test_ci_trust
           tests.test_pip_effective_trust
           tests.test_cli_effective_trust

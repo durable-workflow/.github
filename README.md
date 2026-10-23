@@ -24,6 +24,8 @@ guidance is in [`CONTRIBUTING.md`](CONTRIBUTING.md).
   releases and important compatibility changes.
 - [`regression-corpus/`](regression-corpus/) defines the shared evidence format
   for replay and payload-codec regressions.
+- [`sdk-metrics/`](sdk-metrics/) defines the shared client and worker recorder
+  names, types, units and tags, with SDK adoption tracked separately.
 - [`visual-evidence/`](visual-evidence/) contains the bounded browser-evidence
   contract used by the Rust SDK documentation workflow.
 
