@@ -2,9 +2,15 @@
 
 [`contract.json`](contract.json) is the shared list of SDK recorder names,
 instrument types, units and tag keys for PHP, Python and Rust. It captures the
-existing Python recorder surface. PHP/Rust implementation, SDK tests and user
-guides remain tracked in [#233](https://github.com/durable-workflow/.github/issues/233).
-Publishing this list does not establish that an SDK emits it.
+inspected Python recorder surface. Implementation, installed acceptance and
+exporter-guide delivery remain separate from publishing this list.
+
+Rust's recorder and optional Prometheus adapter have an
+[installed-package receipt](https://github.com/durable-workflow/sdk-rust/pull/131#issuecomment-6364178456)
+and [exporter guides in all eight locales](https://github.com/durable-workflow/durable-workflow.github.io/issues/388#issuecomment-6364644418).
+PHP implementation and the remaining Python publication, SDK tests and guide
+work stay open in [#233](https://github.com/durable-workflow/.github/issues/233).
+One SDK's delivery does not establish another SDK's adoption.
 
 Consumers should pin the contract's Git commit. SDK tests load that one list
 and compare observations from their actual client and worker recorder hooks.
@@ -52,10 +58,11 @@ Client metrics have `method`, `route`, `plane`, `status_code` and `outcome`:
 - `status_code` is the response's decimal status string, or `none` when no
   response status was recorded.
 - `outcome` includes `ok`, `http_error` and `bridge_rejected`. Other caught
-  exceptions use the language's exception type name. Python can also retain
-  `pending` when cancellation bypasses its ordinary exception handler. These
-  values are not an exhaustive portable error taxonomy. Dashboards should
-  not assume exception class names match between languages.
+  failures use language-specific exception or error categories. The pinned
+  Python reference can also retain `pending` when cancellation bypasses its
+  ordinary exception handler. These values are not an exhaustive portable
+  error taxonomy. Dashboards should not assume those categories match between
+  languages.
 
 Worker metrics have `task_kind`, `task_queue` and `outcome`:
 
@@ -75,12 +82,14 @@ segments, and a bounded `unknown` route value for an unrecognized operation.
 Queue names remain application-controlled. Exporter resource labels need their
 own cardinality and privacy review.
 
-The Python reference does not yet meet that route requirement for every newer
-operation. In particular, update-validation task and worker-session paths retain
-literal IDs. Those are implementation gaps in #233, not approved tag shapes.
-The JSON list records Python's actual metric names, instruments and tag keys;
-it does not certify bounded values or cross-SDK adoption. Additional operations
-need explicit normalization and outcome review.
+The pinned Python reference predates normalization of update-validation task
+and worker-session routes and retains literal IDs there. Those values are not
+approved tag shapes. The [source correction and locally packaged installed
+qualification](https://github.com/durable-workflow/sdk-python/pull/210#issuecomment-6363804584)
+are delivered separately; normal registry publication and registry-installed
+acceptance remain tracked in #233. The JSON records the inspected metric names,
+instruments and tag keys. It does not certify bounded values or cross-SDK
+adoption. Additional operations need explicit normalization and outcome review.
 
 ## Export and compatibility
 
@@ -115,7 +124,7 @@ queries containing synthetic secrets and unknown paths. Changing an ID or
 query must not create a new route series or expose its value. Never replace
 this check with an assertion that the tag key is merely named `route`.
 
-Use installed-package checks for the published adapters and examples. Keep
-PHP/Rust adoption and all-locale Prometheus/OpenTelemetry guides open until
-those results are recorded on #233. Source inspection and this contract's
-tests do not provide that runtime evidence.
+Use installed-package checks for the published adapters and examples. Record
+each SDK's package and guide results on #233, preserving the completed Rust
+receipts and the other SDKs' remaining work. Source inspection and this
+contract's tests do not provide that runtime evidence.
