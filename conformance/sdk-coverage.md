@@ -107,6 +107,9 @@ Default cleanup calls Compose down with volumes for the selected project.
 `--keep-stack` retains the stack for inspection. Retire that same stack after
 review, and remove this run's disposable results after recording the sanitized
 outcomes. Backend recovery alone does not qualify SDK workflow continuity.
+The audited c367 runner can [lose its JSON result when cleanup times out](https://github.com/durable-workflow/server/issues/325#issuecomment-6369070712).
+A missing result is incomplete qualification. This documentation change does
+not correct that runner defect.
 
 ## Run the MCP operator loop
 
