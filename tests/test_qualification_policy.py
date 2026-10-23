@@ -327,6 +327,95 @@ class QualificationPolicyTest(unittest.TestCase):
             with self.subTest(ignored=ignored), self.assertRaisesRegex(PolicyError, "fail closed"):
                 self.verify_server_preflight(jobs)
 
+    def verify_preflight_context(self, jobs: dict, workflow_document: dict | None = None) -> None:
+        _verify_action_policy_preflight(
+            "server", "source-only context fixture", jobs, "gate",
+            {LOCKED_POLICY_BOOTSTRAP_REVISION}, True, workflow_document,
+        )
+
+    def test_preflight_job_rejects_unreviewed_execution_fields(self) -> None:
+        for key, value in (
+            ("container", "ubuntu:24.04"),
+            ("services", {"sidecar": {"image": "busybox:latest"}}),
+            ("strategy", {"matrix": {"candidate": ["one"]}}),
+            ("environment", "unreviewed"),
+            ("continue-on-error", True),
+            ("concurrency", "unreviewed"),
+            ("outputs", {"value": "unreviewed"}),
+        ):
+            jobs = self.locked_preflight_jobs()
+            jobs["action-policy"][key] = value
+            with self.subTest(key=key), self.assertRaisesRegex(PolicyError, "reviewed read-only shape"):
+                self.verify_preflight_context(jobs)
+
+    def test_preflight_actions_cannot_skip_or_change_the_reviewed_context(self) -> None:
+        for index in range(4):
+            for key, value in (("if", "false"), ("if", False), ("continue-on-error", True), ("working-directory", "alternate")):
+                jobs = self.locked_preflight_jobs()
+                jobs["action-policy"]["steps"][index][key] = value
+                with self.subTest(index=index, key=key, value=value), self.assertRaises(PolicyError):
+                    self.verify_preflight_context(jobs)
+
+    def test_preflight_startup_bindings_are_data_only_and_refused(self) -> None:
+        for name in ("BASH_ENV", "ENV", "LD_PRELOAD", "NODE_OPTIONS", "PYTHONPATH", "PATH", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_PARAMETERS", "UNREVIEWED_SETTING"):
+            jobs = self.locked_preflight_jobs()
+            document = {"env": {name: "candidate-controlled-placeholder"}}
+            with self.subTest(name=name), self.assertRaisesRegex(PolicyError, "environment"):
+                self.verify_preflight_context(jobs, document)
+
+    def test_preflight_step_startup_bindings_refuse_without_running_them(self) -> None:
+        for index in range(6):
+            jobs = self.locked_preflight_jobs()
+            jobs["action-policy"]["steps"][index]["env"] = {"LD_PRELOAD": "candidate-controlled-placeholder"}
+            with self.subTest(index=index), self.assertRaisesRegex(PolicyError, "environment"):
+                self.verify_preflight_context(jobs)
+
+    def test_preflight_preserves_reviewed_diagnostics_and_literal_clears(self) -> None:
+        jobs = self.locked_preflight_jobs()
+        document = {"env": {"CI": "true", "CARGO_TERM_COLOR": "always", "RUST_BACKTRACE": "1"}}
+        jobs["action-policy"]["env"] = {"PYTHONUNBUFFERED": "1"}
+        for index, step in enumerate(jobs["action-policy"]["steps"]):
+            step["env"] = {"FORCE_COLOR": "1"}
+            if index < 4:
+                step["id"] = f"reviewed_{index}"
+                step["if"] = "${{ github.server_url == 'https://github.com' }}"
+                step["continue-on-error"] = "false"
+        self.verify_preflight_context(jobs, document)
+        clears = {name: "" for name in ("BASH_ENV", "ENV", "LD_PRELOAD", "NODE_OPTIONS")}
+        self.verify_preflight_context(self.locked_preflight_jobs(), {"env": clears})
+        jobs = self.locked_preflight_jobs()
+        jobs["action-policy"]["env"] = clears
+        self.verify_preflight_context(jobs)
+
+    def test_preflight_environment_is_closed_including_shadowed_bindings(self) -> None:
+        jobs = self.locked_preflight_jobs()
+        jobs["action-policy"]["env"] = {"BASH_ENV": ""}
+        for document in (
+            {"env": {"BASH_ENV": "candidate-controlled-placeholder"}},
+            {"env": {"NODE_OPTIONS": "${{ inputs.options }}"}},
+            {"env": {"GIT_CONFIG_COUNT": ""}},
+            {"env": {"CI": ["not a scalar"]}},
+            {"env": "not a mapping"},
+        ):
+            with self.subTest(document=document), self.assertRaisesRegex(PolicyError, "environment"):
+                self.verify_preflight_context(jobs, document)
+
+    def test_preflight_defaults_reject_unknown_execution_settings(self) -> None:
+        for scope in ("workflow", "job"):
+            jobs = self.locked_preflight_jobs()
+            defaults = {"run": {"unreviewed": "value"}}
+            document = {"defaults": defaults} if scope == "workflow" else None
+            if scope == "job":
+                jobs["action-policy"]["defaults"] = defaults
+            with self.subTest(scope=scope), self.assertRaisesRegex(PolicyError, "defaults"):
+                self.verify_preflight_context(jobs, document)
+        self.verify_preflight_context(self.locked_preflight_jobs(), {"defaults": {"run": {}}})
+
+    def test_preflight_shape_does_not_close_unrelated_test_jobs(self) -> None:
+        jobs = self.locked_preflight_jobs()
+        jobs["other"] = {"container": "ubuntu:24.04", "env": {"BASH_ENV": "other-job-placeholder"}}
+        self.verify_preflight_context(jobs)
+
     def test_approved_immutable_action_with_version_comment_is_accepted(self) -> None:
         commit, version = self.approved_action("actions/checkout")
         evidence = self.scan(workflow(f"- uses: actions/checkout@{commit} # {version}"))
