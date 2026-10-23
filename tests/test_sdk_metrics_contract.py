@@ -45,13 +45,12 @@ class SdkMetricsContractTest(unittest.TestCase):
                 self.assertIsNotNone(re.fullmatch(r"durable_workflow_[a-z_]+", name))
 
     def test_instruments_keep_recorder_operation_and_units(self) -> None:
-        instruments = {"counter": ("increment", "1"), "histogram": ("record", "s")}
+        expected_instruments = {"counter": ("increment", "1"), "histogram": ("record", "s")}
         for metric in self.metrics:
             with self.subTest(name=metric["name"]):
-                self.assertEqual(
-                    instruments[metric["type"]],
-                    (metric["recorder_method"], metric["unit"]),
-                )
+                expected_method, expected_unit = expected_instruments[metric["type"]]
+                self.assertEqual(expected_method, metric["recorder_method"])
+                self.assertEqual(expected_unit, metric["unit"])
                 self.assertEqual(metric["type"] == "histogram", metric["name"].endswith("_seconds"))
 
     def test_counts_and_durations_share_exact_tag_keys(self) -> None:
