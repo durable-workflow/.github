@@ -88,6 +88,8 @@ second PR is ready while the first still awaits CI, focus on reducing CI queue
 and run time before adding more PRs. Identify the bottleneck, improve it and
 measure the result while preserving required checks and coverage. Resume normal
 PR delivery when CI keeps pace. Customer-impacting incidents retain priority.
+Use [organization Actions performance metrics](https://github.com/orgs/durable-workflow/actions/metrics/performance)
+and individual run/job timings to identify bottlenecks and compare results.
 
 ## Issue And Review Hygiene
 
