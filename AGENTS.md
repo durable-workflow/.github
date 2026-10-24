@@ -83,6 +83,12 @@ but they must not replace these project-wide rules.
 Use issue and PR comments for meaningful decisions, findings, and handoffs. Do
 not post lease heartbeats, raw local logs, or vague status text.
 
+If you can deliver PRs faster than CI can validate them, fix CI first. When a
+second PR is ready while the first still awaits CI, focus on reducing CI queue
+and run time before adding more PRs. Identify the bottleneck, improve it and
+measure the result while preserving required checks and coverage. Resume normal
+PR delivery when CI keeps pace. Customer-impacting incidents retain priority.
+
 ## Issue And Review Hygiene
 
 - Review new issues and pull requests promptly. A public issue puts a visible
