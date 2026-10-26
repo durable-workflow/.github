@@ -205,6 +205,45 @@ class QualificationPolicyTest(unittest.TestCase):
     def test_isolated_same_repository_sonar_analysis_is_accepted(self) -> None:
         self.scan(self.sonar_workflow())
 
+    def test_merge_queue_sonar_accepts_only_the_trusted_static_scanner(self) -> None:
+        source = (ROOT / "tests/fixtures/merge-queue-sonar.yml").read_text(encoding="utf-8")
+        scan_workflow_sources(self.policy, "server", {".github/workflows/queue-sonar.yml": source})
+        with self.assertRaises(PolicyError):
+            scan_workflow_sources(self.policy, "sdk-php", {".github/workflows/queue-sonar.yml": source})
+        with self.assertRaises(PolicyError):
+            scan_workflow_sources(self.policy, "server", {".github/workflows/another-scanner.yml": source})
+
+    def test_merge_queue_sonar_refuses_candidate_execution_and_privilege_expansion(self) -> None:
+        source = (ROOT / "tests/fixtures/merge-queue-sonar.yml").read_text(encoding="utf-8")
+        mutations = [
+            source.replace("workflows: [PHPUnit Feature]", "workflows: [Other workflow]"),
+            source.replace("types: [completed]", "types: [requested]"),
+            source.replace("  workflow_run:", "  pull_request:\n  workflow_run:"),
+            source.replace("event == 'merge_group'", "event == 'pull_request'"),
+            source.replace("conclusion == 'success'", "conclusion != 'cancelled'"),
+            source.replace("github.workflow_sha", "github.event.workflow_run.head_sha"),
+            source.replace("steps.candidate.outputs.sha", "github.event.workflow_run.head_sha"),
+            source.replace(".sonar-control/scripts/ci/merge-queue-sonar.mjs prepare", "./.sonar-candidate/install.sh"),
+            source.replace(".sonar-control/scripts/ci/merge-queue-sonar.mjs validate", "echo trusted"),
+            source.replace("persist-credentials: false", "persist-credentials: true"),
+            source.replace("submodules: false", "submodules: true"),
+            source.replace("lfs: false", "lfs: true"),
+            source.replace("runs-on: ubuntu-latest", "runs-on: self-hosted"),
+            source.replace("timeout-minutes: 20", "timeout-minutes: 120"),
+            source.replace("SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}", "SONAR_TOKEN: ${{ secrets.PRODUCTION_TOKEN }}"),
+            source.replace("steps:\n", "env:\n      TOKEN: ${{ secrets.SONAR_TOKEN }}\n    steps:\n"),
+            source.replace("name: Check out trusted scanner controls", "name: ${{ secrets.SONAR_TOKEN }}"),
+            source.replace("queue-sonar-work", ".sonar-candidate/.scannerwork"),
+            source.replace("projectBaseDir: .sonar-candidate", "projectBaseDir: ."),
+            source.replace("qualitygate.timeout=300", "qualitygate.timeout=300 -Dsonar.host.url=https://example.invalid"),
+            source + "      - run: ./.sonar-candidate/after-scan.sh\n",
+            source + "      - uses: ./candidate-action # local\n",
+        ]
+        for changed in mutations:
+            self.assertNotEqual(source, changed)
+            with self.subTest(source=changed), self.assertRaises(PolicyError):
+                scan_workflow_sources(self.policy, "server", {".github/workflows/queue-sonar.yml": changed})
+
     def test_sonar_coverage_preparation_does_not_receive_analysis_credential(self) -> None:
         source = self.sonar_workflow().replace(
             "      - uses: SonarSource/",

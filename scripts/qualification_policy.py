@@ -1022,6 +1022,69 @@ def _isolated_sonar_job(job: dict[str, Any]) -> bool:
     )
 
 
+def _merge_queue_sonar_workflow(document: dict[str, Any], target: str, path: str) -> bool:
+    """Allow one default-branch static scanner, with no candidate execution."""
+    if target != "server" or Path(path).name != "queue-sonar.yml":
+        return False
+    if set(document) != {"name", "on", "permissions", "concurrency", "jobs"}:
+        return False
+    if document["on"] != {"workflow_run": {"workflows": ["PHPUnit Feature"], "types": ["completed"]}}:
+        return False
+    if document["permissions"] != {"contents": "read"} or document["concurrency"] != {
+        "group": "queue-sonar-${{ github.event.workflow_run.head_sha }}", "cancel-in-progress": "false",
+    }:
+        return False
+    jobs = document["jobs"]
+    if not isinstance(jobs, dict) or set(jobs) != {"queue-analysis"}:
+        return False
+    job = jobs["queue-analysis"]
+    if not isinstance(job, dict) or set(job) != {"name", "if", "runs-on", "timeout-minutes", "steps"}:
+        return False
+    if job["runs-on"] != "ubuntu-latest" or job["timeout-minutes"] != "20" or job["if"] != (
+        "github.event_name == 'workflow_run' && "
+        "github.event.workflow_run.event == 'merge_group' && "
+        "github.event.workflow_run.conclusion == 'success'"
+    ):
+        return False
+    steps = job["steps"]
+    if not isinstance(steps, list) or len(steps) != 5:
+        return False
+    normalized = []
+    for name in [document["name"], job["name"], *[step.get("name", "") for step in steps if isinstance(step, dict)]]:
+        if not isinstance(name, str) or "${{" in name:
+            return False
+    for step in steps:
+        if not isinstance(step, dict):
+            return False
+        value = {key: content for key, content in step.items() if key != "name"}
+        if "uses" in value:
+            reference = _split_action_reference(value["uses"])
+            if reference is None or reference[1]:
+                return False
+            # Immutable action approval is checked before this trust profile.
+            value["uses"] = reference[0]
+        normalized.append(value)
+    return normalized == [
+        {"uses": "actions/checkout", "with": {
+            "ref": "${{ github.workflow_sha }}", "path": ".sonar-control", "persist-credentials": "false",
+        }},
+        {"id": "candidate", "run": "node .sonar-control/scripts/ci/merge-queue-sonar.mjs validate"},
+        {"uses": "actions/checkout", "with": {
+            "ref": "${{ steps.candidate.outputs.sha }}", "path": ".sonar-candidate", "fetch-depth": "0",
+            "persist-credentials": "false", "submodules": "false", "lfs": "false",
+        }},
+        {"run": "node .sonar-control/scripts/ci/merge-queue-sonar.mjs prepare"},
+        {"uses": "sonarsource/sonarqube-scan-action", "env": {"SONAR_TOKEN": "${{ secrets.SONAR_TOKEN }}"},
+         "with": {"projectBaseDir": ".sonar-candidate", "args": (
+             "-Dsonar.branch.name=${{ steps.candidate.outputs.branch }} "
+             "-Dsonar.scm.revision=${{ steps.candidate.outputs.sha }} "
+             "-Dsonar.scm.exclusions.disabled=true "
+             "-Dsonar.working.directory=${{ runner.temp }}/queue-sonar-work "
+             "-Dsonar.qualitygate.wait=true -Dsonar.qualitygate.timeout=300"
+         )}},
+    ]
+
+
 def _sonar_coverage_handoff(jobs: dict[str, Any], job: dict[str, Any], download_index: int) -> bool:
     """Accept only Clover data from the same build's named coverage producer."""
     if download_index != 1 or not _main_sonar_coverage_condition(job) or not _isolated_sonar_job(job):
@@ -1632,7 +1695,7 @@ def _scan_workflow_trust(
                         "immutable artifact identity, and pre-use digest validation"
                     )
 
-    if workflow_run is not None:
+    if workflow_run is not None and not _merge_queue_sonar_workflow(document, target_name, workflow_path):
         if not isinstance(workflow_run, dict) or consumer_policy is None:
             raise PolicyError(f"{label} has no reviewed privileged workflow_run trust binding")
         if workflow_run.get("workflows") != [consumer_policy["workflow"]]:
@@ -1693,7 +1756,7 @@ def _scan_workflow_trust(
                         raise PolicyError(
                             f"{label} privileged workflow_run job {job_name!r} does not select an exact run"
                         )
-    elif consumer_policy is not None:
+    elif workflow_run is None and consumer_policy is not None:
         raise PolicyError(f"{label} is policy-bound as a workflow_run consumer but has no workflow_run trigger")
 
     return {
