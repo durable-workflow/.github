@@ -7,6 +7,7 @@ import argparse
 import contextlib
 import email.utils
 import errno
+import hashlib
 import http.client
 import json
 import os
@@ -17,7 +18,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,23 @@ SCHEMA = "durable-workflow.github-target-qualification/v1"
 CENTRAL_ACTION_REPOSITORY = "durable-workflow/.github"
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 SUPPORTED_JAVASCRIPT_ACTION_RUNTIMES = ["node24"]
+LOCKED_POLICY_BOOTSTRAP_REVISION = "fea245682582d0620054e8547a5f3c968f9ef0f0"
+LOCKED_POLICY_INSTALL_COMMAND = (
+    "python -I -m pip --isolated install --require-hashes --only-binary=:all: --no-deps "
+    "-r .central-action-policy/qualification/requirements.lock"
+)
+# Complete caller-supplied environment for the reviewed preflight. Startup
+# settings below are approved only as literal empty clears, never as hooks.
+PREFLIGHT_CI_ENVIRONMENT = {
+    "CI", "CARGO_TERM_COLOR", "RUST_BACKTRACE", "PYTHONUNBUFFERED",
+    "PYTHONDONTWRITEBYTECODE", "PYTHONUTF8", "FORCE_COLOR", "NO_COLOR",
+}
+PREFLIGHT_CLEAR_STARTUP_ENVIRONMENT = {"BASH_ENV", "ENV", "LD_PRELOAD", "NODE_OPTIONS"}
+PROTECTED_POLICY_EXCEPTION = {
+    "target": "github-control-plane",
+    "path": ".github/workflows/protected-policy.yml",
+    "sha256": "642d204ea939ca5eba7ef51be9e4ae56a35177413caabe849315086d3d9d2d31",
+}
 EXPECTED_TARGETS = {
     "ai": ("ai", "main"),
     "cli": ("cli", "main"),
@@ -443,7 +461,7 @@ def validate_policy(policy: dict[str, Any]) -> None:
         "pull_request_target_exceptions",
     }:
         raise PolicyError("qualification policy must declare the complete workflow trust contract")
-    if workflow_trust["pull_request_target_exceptions"] != []:
+    if workflow_trust["pull_request_target_exceptions"] not in ([], [PROTECTED_POLICY_EXCEPTION]):
         raise PolicyError("pull_request_target exceptions require a separately reviewed policy revision")
     artifact_handoffs = workflow_trust["privileged_artifact_handoffs"]
     if not isinstance(artifact_handoffs, dict) or set(artifact_handoffs) != {
@@ -688,51 +706,69 @@ def _is_action_step(step: object, repository: str) -> bool:
     )
 
 
+def _reviewed_preflight_action_options(step: object) -> bool:
+    return (
+        isinstance(step, dict)
+        and not set(step) - {"name", "id", "uses", "with", "env", "if", "continue-on-error"}
+        and isinstance(step.get("if", ""), str)
+        and _condition_without_expression_wrapper(step.get("if", ""))
+        in {"", "github.server_url == 'https://github.com'"}
+        and step.get("continue-on-error") in (None, False, "false")
+    )
+
+
 def _verify_action_policy_preflight(
     target_name: str,
     label: str,
     jobs: dict[str, Any],
     gate_job_name: str,
     approved_bootstraps: set[str] | None = None,
+    locked_dependency_required: bool = False,
+    workflow_document: Mapping[str, Any] | None = None,
 ) -> None:
     preflight = jobs.get("action-policy")
     if not isinstance(preflight, dict):
         raise PolicyError(f"{label} has no central action policy preflight job")
+    workflow_context = workflow_document or {}
+    _verify_preflight_execution_context(workflow_context, preflight, label)
     accepted_conditions = {"", "github.server_url == 'https://github.com'"}
     if (
         preflight.get("name") != "Central action policy preflight"
         or _condition_without_expression_wrapper(preflight.get("if", "")) not in accepted_conditions
         or preflight.get("runs-on") != "ubuntu-latest"
         or preflight.get("timeout-minutes") != "5"
-        or preflight.get("needs") is not None
-        or preflight.get("permissions") is not None
-        or preflight.get("env") is not None
     ):
         raise PolicyError(f"{label} central action policy preflight job is not the reviewed read-only shape")
 
     steps = preflight.get("steps")
+    if locked_dependency_required and (not isinstance(steps, list) or len(steps) != 6):
+        raise PolicyError(f"{label} central action policy preflight requires the locked-policy pip bootstrap")
     if isinstance(steps, list) and len(steps) == 6:
         bootstrap = steps[3]
         revisions = approved_bootstraps if approved_bootstraps is not None else {"ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10"}
         references = {"durable-workflow/.github/.github/actions/bootstrap-patched-pip@" + sha for sha in revisions}
         if (
-            not isinstance(bootstrap, dict)
-            or set(bootstrap) - {"name", "uses"}
+            not _reviewed_preflight_action_options(bootstrap)
+            or "with" in bootstrap
             or bootstrap.get("uses")
             not in references
         ):
             raise PolicyError(f"{label} central action policy preflight has an unreviewed pip bootstrap")
+        if locked_dependency_required and not bootstrap["uses"].endswith("@" + LOCKED_POLICY_BOOTSTRAP_REVISION):
+            raise PolicyError(f"{label} central action policy preflight requires the locked-policy pip bootstrap")
         steps = steps[:3] + steps[4:]
     if not isinstance(steps, list) or len(steps) != 5 or not all(isinstance(step, dict) for step in steps):
         raise PolicyError(f"{label} central action policy preflight must contain the five reviewed steps")
     candidate, central, setup_python, install, validate = steps
     if (
         not _is_action_step(candidate, "actions/checkout")
+        or not _reviewed_preflight_action_options(candidate)
         or candidate.get("with") != {"persist-credentials": "false"}
     ):
         raise PolicyError(f"{label} central action policy preflight must check out credential-free candidate source")
     if (
         not _is_action_step(central, "actions/checkout")
+        or not _reviewed_preflight_action_options(central)
         or central.get("with")
         != {
             "repository": CENTRAL_ACTION_REPOSITORY,
@@ -744,22 +780,38 @@ def _verify_action_policy_preflight(
         raise PolicyError(f"{label} central action policy preflight must use protected central policy source")
     if (
         not _is_action_step(setup_python, "actions/setup-python")
+        or not _reviewed_preflight_action_options(setup_python)
         or setup_python.get("with") != {"python-version": "3.13"}
     ):
         raise PolicyError(f"{label} central action policy preflight must use the reviewed Python runtime")
     reviewed_install_commands = {
         "python -m pip install PyYAML==6.0.2",
         "python -m pip install --only-binary :all: PyYAML==6.0.2",
+        "python -I -m pip install PyYAML==6.0.2",
+        "python -I -m pip install --only-binary :all: PyYAML==6.0.2",
+        LOCKED_POLICY_INSTALL_COMMAND,
     }
-    if set(install) - {"name", "run"} or _normalized_shell(install.get("run")) not in reviewed_install_commands:
+    if locked_dependency_required:
+        reviewed_install_commands = {LOCKED_POLICY_INSTALL_COMMAND}
+    if set(install) - {"name", "run", "working-directory", "shell", "env"} or _normalized_shell(install.get("run")) not in reviewed_install_commands:
         raise PolicyError(f"{label} central action policy preflight must install the reviewed policy dependency")
     expected_validation = (
         "python .central-action-policy/scripts/qualification_policy.py validate "
         f"--policy .central-action-policy/qualification/policy.json --target {target_name} "
         "--workflow-directory .github/workflows"
     )
-    if set(validate) - {"name", "run"} or _normalized_shell(validate.get("run")) != expected_validation:
+    if set(validate) - {"name", "run", "working-directory", "shell", "env"} or _normalized_shell(validate.get("run")) != expected_validation:
         raise PolicyError(f"{label} central action policy preflight does not invoke the reviewed validator")
+    if not all(
+        _runs_at_workspace_root(workflow_context, preflight, step)
+        for step in (install, validate)
+    ):
+        raise PolicyError(f"{label} central action policy install and validator must run from the workspace root")
+    if not all(
+        _uses_reviewed_run_shell(workflow_context, preflight, step)
+        for step in (install, validate)
+    ):
+        raise PolicyError(f"{label} central action policy install and validator require a reviewed shell")
 
     gate = jobs[gate_job_name]
     if "action-policy" not in _job_needs(gate, f"{label} required check gate"):
@@ -774,8 +826,10 @@ def _verify_action_policy_preflight(
     if not any(
         isinstance(step, dict)
         and _condition_without_expression_wrapper(step.get("if", "")) in accepted_conditions
+        and step.get("continue-on-error") in (None, False, "false")
         and step.get("env") == reviewed_gate["env"]
         and _normalized_shell(step.get("run")) == reviewed_gate["run"]
+        and _uses_reviewed_run_shell(workflow_context, gate, step)
         for step in gate.get("steps") or []
     ):
         raise PolicyError(f"{label} required check does not fail closed on the central action policy result")
@@ -821,7 +875,11 @@ def verify_workflow_source(name: str, branch: str, workflow: dict[str, Any], sou
             f"matching jobs={stable_jobs}"
         )
     if workflow.get("action_policy_preflight") is True:
-        _verify_action_policy_preflight(name, label, jobs, stable_jobs[0], approved_bootstraps)
+        _verify_action_policy_preflight(
+            name, label, jobs, stable_jobs[0], approved_bootstraps,
+            workflow.get("locked_policy_dependency_required", False),
+            workflow_document=document,
+        )
 
 
 def _parse_yaml(source: str, label: str) -> Any:
@@ -831,23 +889,33 @@ def _parse_yaml(source: str, label: str) -> Any:
         raise PolicyError(f"cannot parse {label} as YAML: {error}") from error
 
 
+def _walk_yaml_nodes(document: Any) -> Iterator[Any]:
+    pending = [document]
+    visited: set[int] = set()
+
+    # Shared YAML aliases must not multiply traversal work.
+    while pending:
+        node = pending.pop()
+        if not isinstance(node, (dict, list)):
+            yield node
+            continue
+        if id(node) in visited:
+            continue
+        visited.add(id(node))
+        yield node
+        children = list(node.values()) if isinstance(node, dict) else node
+        pending.extend(reversed(children))
+
+
 def _workflow_action_references(source: str, label: str) -> list[str]:
-    document = _parse_yaml(source, label)
     references: list[str] = []
+    for node in _walk_yaml_nodes(_parse_yaml(source, label)):
+        if isinstance(node, dict) and "uses" in node:
+            reference = node["uses"]
+            if not isinstance(reference, str):
+                raise PolicyError(f"{label} has a non-string action reference")
+            references.append(reference)
 
-    def visit(node: Any) -> None:
-        if isinstance(node, dict):
-            for key, value in node.items():
-                if key == "uses":
-                    if not isinstance(value, str):
-                        raise PolicyError(f"{label} has a non-string action reference")
-                    references.append(value)
-                visit(value)
-        elif isinstance(node, list):
-            for value in node:
-                visit(value)
-
-    visit(document)
     return references
 
 
@@ -921,16 +989,7 @@ def _job_needs(job: dict[str, Any], label: str) -> set[str]:
 
 
 def _string_values(value: Any) -> list[str]:
-    values: list[str] = []
-    if isinstance(value, dict):
-        for nested in value.values():
-            values.extend(_string_values(nested))
-    elif isinstance(value, list):
-        for nested in value:
-            values.extend(_string_values(nested))
-    elif isinstance(value, str):
-        values.append(value)
-    return values
+    return [node for node in _walk_yaml_nodes(value) if isinstance(node, str)]
 
 
 def _references_secret_context(value: Any) -> bool:
@@ -1300,6 +1359,36 @@ def _run_defaults(scope: Mapping[str, Any]) -> Mapping[str, Any]:
     return run if isinstance(run, dict) else {}
 
 
+def _effective_run_setting(
+    workflow: Mapping[str, Any], job: Mapping[str, Any], step: Mapping[str, Any],
+    key: str, default: Any,
+) -> Any:
+    for scope in (step, _run_defaults(job), _run_defaults(workflow)):
+        if key in scope:
+            return scope[key]
+    return default
+
+
+def _runs_at_workspace_root(
+    workflow: Mapping[str, Any], job: Mapping[str, Any], step: Mapping[str, Any]
+) -> bool:
+    directory = _effective_run_setting(workflow, job, step, "working-directory", ".")
+    return isinstance(directory, str) and (
+        directory in {".", "./"}
+        or re.fullmatch(r"\$\{\{\s*github\.workspace\s*\}\}(?:/\.?)?", directory) is not None
+    )
+
+
+def _uses_reviewed_run_shell(
+    workflow: Mapping[str, Any], job: Mapping[str, Any], step: Mapping[str, Any]
+) -> bool:
+    # Keep the runner default and built-in POSIX script invocation. An arbitrary
+    # template can ignore the script or change its directory before running it.
+    runner_default = object()
+    shell = _effective_run_setting(workflow, job, step, "shell", runner_default)
+    return shell is runner_default or isinstance(shell, str) and shell in {"bash", "sh"}
+
+
 def _uses_only_allowed_environment(
     scopes: tuple[Mapping[str, Any], ...], allowed_environment: object
 ) -> bool:
@@ -1313,6 +1402,48 @@ def _uses_only_allowed_environment(
         if not isinstance(environment, dict) or not set(environment).issubset(allowed_names):
             return False
     return True
+
+
+def _preflight_environment_is_reviewed(
+    workflow: Mapping[str, Any], job: Mapping[str, Any], step: Mapping[str, Any]
+) -> bool:
+    scopes = (workflow, job, step)
+    allowed = list(PREFLIGHT_CI_ENVIRONMENT | PREFLIGHT_CLEAR_STARTUP_ENVIRONMENT)
+    if not _uses_only_allowed_environment(scopes, allowed):
+        return False
+    for scope in scopes:
+        environment = scope.get("env") or {}
+        if not all(
+            value == "" if key in PREFLIGHT_CLEAR_STARTUP_ENVIRONMENT
+            else isinstance(value, (str, bool, int, float))
+            for key, value in environment.items()
+        ):
+            return False
+    return True
+
+
+def _verify_preflight_execution_context(
+    workflow: Mapping[str, Any], job: Mapping[str, Any], label: str
+) -> None:
+    allowed = {"name", "if", "runs-on", "timeout-minutes", "steps", "defaults", "env"}
+    if set(job) - allowed:
+        raise PolicyError(f"{label} central action policy preflight job is not the reviewed read-only shape")
+    for scope in (workflow, job):
+        defaults = scope.get("defaults")
+        if defaults is None:
+            continue
+        if not isinstance(defaults, dict) or set(defaults) - {"run"}:
+            raise PolicyError(f"{label} central action policy preflight has unreviewed defaults")
+        run = defaults.get("run", {})
+        if not isinstance(run, dict) or set(run) - {"shell", "working-directory"}:
+            raise PolicyError(f"{label} central action policy preflight has unreviewed run defaults")
+    steps = job.get("steps")
+    if (
+        isinstance(steps, list)
+        and all(isinstance(step, dict) for step in steps)
+        and not all(_preflight_environment_is_reviewed(workflow, job, step) for step in steps)
+    ):
+        raise PolicyError(f"{label} central action policy preflight environment is not reviewed")
 
 
 def _trusted_validator_action_step(step: object, expected_step: object) -> bool:
@@ -1560,6 +1691,17 @@ def _direct_artifact_handoff(
     )
 
 
+def _reviewed_policy_workflow(
+    policy: dict[str, Any], target_name: str, workflow_path: str, source: str,
+) -> bool:
+    return (
+        policy["workflow_trust"]["pull_request_target_exceptions"] == [PROTECTED_POLICY_EXCEPTION]
+        and target_name == PROTECTED_POLICY_EXCEPTION["target"]
+        and Path(workflow_path).parts[-3:] == Path(PROTECTED_POLICY_EXCEPTION["path"]).parts
+        and hashlib.sha256(source.encode("utf-8")).hexdigest() == PROTECTED_POLICY_EXCEPTION["sha256"]
+    )
+
+
 def _scan_workflow_trust(
     policy: dict[str, Any],
     target_name: str,
@@ -1573,7 +1715,7 @@ def _scan_workflow_trust(
     triggers = document.get("on")
     if not isinstance(triggers, dict):
         raise PolicyError(f"{label} must declare explicit workflow triggers")
-    if "pull_request_target" in triggers:
+    if "pull_request_target" in triggers and not _reviewed_policy_workflow(policy, target_name, workflow_path, source):
         raise PolicyError(f"{label} uses forbidden pull_request_target execution")
 
     top_writes = _permissions_with_write(document.get("permissions"), f"{label} top-level")
@@ -1920,6 +2062,7 @@ def audit_action_releases(
 COMPOSER_LOCAL_COMMANDS = {"about", "help", "list"}
 TRUST_ACTION_PREFIX = "durable-workflow/.github/.github/actions/"
 COMPOSER_TRUST_FIELDS = {"SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "GIT_SSL_CAPATH", "GIT_SSL_NO_VERIFY", "COMPOSER_CAFILE", "COMPOSER_CAPATH", "COMPOSER_DISABLE_TLS", "COMPOSER", "COMPOSER_HOME", "DW_CI_CA_SHA256", "PIP_CERT", "REQUESTS_CA_BUNDLE"}
+COMPOSER_HELPER_PATTERN = re.compile(r"(?:\./)?(?:scripts|\.github)/[A-Za-z0-9_./-]+")
 
 
 def _composer_subcommand_needs_network(arguments: list[str]) -> bool:
@@ -1960,17 +2103,45 @@ def _is_composer_shell_helper(path: Path, contents: str) -> bool:
     return path.suffix in {"", ".sh", ".bash", ".ksh", ".zsh"} or re.match(r"^#![^\n]*\b(?:bash|sh|dash|ksh|zsh)\b", contents) is not None
 
 
+def _shell_changes_working_directory(source: str) -> bool:
+    try:
+        lexer = shlex.shlex(source, posix=True, punctuation_chars=";&|()\n")
+        lexer.whitespace = " \t\r"
+        lexer.whitespace_split = True
+        return any(
+            token in {"cd", "pushd", "popd"}
+            or re.search(r"(?:^|[;&|()\n])\s*(?:cd|pushd|popd)(?:\s|$)", token) is not None
+            for token in lexer
+        )
+    except ValueError:
+        # Shell helpers with an unprovable directory context are not evidence.
+        return True
+
+
+def _composer_helper_references(source: str) -> list[str]:
+    # Explicit non-shell interpreters keep their existing program semantics.
+    # Remove only that invocation, so a following shell helper is still seen.
+    non_shell = r"(?<![\w./-])(?:python(?:3(?:\.\d+)?)?|node|php)\s+(?:-[\w-]+\s+)*(?:" + COMPOSER_HELPER_PATTERN.pattern + r")"
+    return COMPOSER_HELPER_PATTERN.findall(re.sub(non_shell, " ", source))
+
+
 def _composer_step_source(source: str, root: Path, visited: set[Path] | None = None) -> str:
     contents = [source]
     visited = set() if visited is None else visited
-    for name in re.findall(r"(?:\./)?(?:scripts|\.github)/[A-Za-z0-9_./-]+", source):
+    helpers = _composer_helper_references(source)
+    if helpers and _shell_changes_working_directory(source):
+        raise PolicyError("Composer relative helper inspection requires an unchanged workspace root")
+    for name in helpers:
         path = (root / name).resolve()
         if not path.is_relative_to(root.resolve()):
             raise PolicyError("Composer source contract must not read outside the candidate repository")
         if path.is_file() and path not in visited:
             visited.add(path)
             helper = path.read_text(encoding="utf-8")
-            if _is_composer_shell_helper(path, helper):
+            shell_invocation = re.search(
+                r"\b(?:bash|sh|dash|ksh|zsh)\s+(?:-[\w-]+\s+)*" + re.escape(name) + r"(?=\s|[;&|()]|$)", source,
+            )
+            if _is_composer_shell_helper(path, helper) or shell_invocation:
                 contents.append(_composer_step_source(helper, root, visited))
     return "\n".join(contents)
 
@@ -2021,14 +2192,22 @@ def _require_composer_request_trust(step: dict[str, Any], state: tuple[bool, boo
         raise PolicyError(f"{label} changes Composer trust inside its request step or helper")
 
 
-def _composer_job_sinks(job: dict[str, Any], root: Path, approved: set[str], local: bool, label: str) -> list[str]:
+def _composer_job_sinks(
+    job: dict[str, Any], root: Path, approved: set[str], local: bool, label: str,
+    workflow: Mapping[str, Any],
+) -> list[str]:
     if set(job.get("env") or {}) & COMPOSER_TRUST_FIELDS:
         raise PolicyError(f"{label} declares unverified job-level Composer trust overrides")
     evidence = []
     state = (False, False, False)
     for index, step in enumerate(job.get("steps") or []):
         step_label = f"{label}:step-{index + 1}"
-        expanded = _composer_step_source(step.get("run", ""), root)
+        source = step.get("run", "")
+        if _composer_helper_references(source) and not (
+            _runs_at_workspace_root(workflow, job, step) and _uses_reviewed_run_shell(workflow, job, step)
+        ):
+            raise PolicyError(f"{step_label} Composer relative helper inspection requires the workspace root and a reviewed shell")
+        expanded = _composer_step_source(source, root)
         if _composer_network_commands(expanded):
             _require_composer_request_trust(step, state, step_label, expanded)
             evidence.append(step_label)
@@ -2049,15 +2228,17 @@ def verify_composer_network_sinks(policy: dict[str, Any], target: str, sources: 
         if set(document.get("env") or {}) & COMPOSER_TRUST_FIELDS:
             raise PolicyError(f"{filename} declares unverified workflow-level Composer trust overrides")
         for job_name, job in (document.get("jobs") or {}).items():
-            evidence.extend(_composer_job_sinks(job, root, approved, target == "github-control-plane", f"{filename}:{job_name}"))
+            evidence.extend(_composer_job_sinks(job, root, approved, target == "github-control-plane", f"{filename}:{job_name}", document))
     return evidence
 
 
 def validate_local_action_references(
     policy: dict[str, Any], directory: Path, target_name: str = "github-control-plane"
 ) -> list[str]:
+    # The reviewed workflow exception hashes Git blob bytes. Text-mode reads
+    # normalize line endings and would admit unreviewed byte variants.
     sources = {
-        path.as_posix(): path.read_text(encoding="utf-8") for path in sorted(directory.glob("*.y*ml")) if path.is_file()
+        path.as_posix(): path.read_bytes().decode("utf-8") for path in sorted(directory.glob("*.y*ml")) if path.is_file()
     }
     evidence = scan_workflow_sources(policy, target_name, sources)
     verify_composer_network_sinks(policy, target_name, sources, directory.parent.parent)

@@ -250,7 +250,17 @@
           "type": "object"
         },
         "pull_request_target_exceptions": {
-          "maxItems": 0,
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "target": {"const": "github-control-plane"},
+              "path": {"const": ".github/workflows/protected-policy.yml"},
+              "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            },
+            "required": ["target", "path", "sha256"],
+            "type": "object"
+          },
+          "maxItems": 1,
           "type": "array"
         }
       },
@@ -300,6 +310,9 @@
     "workflow": {
       "additionalProperties": false,
       "properties": {
+        "locked_policy_dependency_required": {
+          "type": "boolean"
+        },
         "action_policy_preflight": {
           "type": "boolean"
         },
