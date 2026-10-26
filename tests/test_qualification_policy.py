@@ -235,6 +235,7 @@ class QualificationPolicyTest(unittest.TestCase):
             source.replace("name: Check out trusted scanner controls", "name: ${{ secrets.SONAR_TOKEN }}"),
             source.replace("queue-sonar-work", ".sonar-candidate/.scannerwork"),
             source.replace("projectBaseDir: .sonar-candidate", "projectBaseDir: ."),
+            source.replace("sonar.rust.clippy.enabled=false", "sonar.rust.clippy.enabled=true"),
             source.replace("qualitygate.timeout=300", "qualitygate.timeout=300 -Dsonar.host.url=https://example.invalid"),
             source + "      - run: ./.sonar-candidate/after-scan.sh\n",
             source + "      - uses: ./candidate-action # local\n",

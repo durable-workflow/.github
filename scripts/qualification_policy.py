@@ -1079,6 +1079,7 @@ def _merge_queue_sonar_workflow(document: dict[str, Any], target: str, path: str
              "-Dsonar.branch.name=${{ steps.candidate.outputs.branch }} "
              "-Dsonar.scm.revision=${{ steps.candidate.outputs.sha }} "
              "-Dsonar.scm.exclusions.disabled=true "
+             "-Dsonar.rust.clippy.enabled=false "
              "-Dsonar.working.directory=${{ runner.temp }}/queue-sonar-work "
              "-Dsonar.qualitygate.wait=true -Dsonar.qualitygate.timeout=300"
          )}},
