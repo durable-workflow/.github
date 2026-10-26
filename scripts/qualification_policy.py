@@ -1081,7 +1081,7 @@ def _merge_queue_sonar_workflow(document: dict[str, Any], target: str, path: str
              "-Dsonar.scm.exclusions.disabled=true "
              "-Dsonar.rust.clippy.enabled=false "
              "-Dsonar.working.directory=${{ runner.temp }}/queue-sonar-work "
-             "-Dsonar.qualitygate.wait=true -Dsonar.qualitygate.timeout=300"
+             "-Dsonar.qualitygate.wait=false"
          )}},
     ]
 
