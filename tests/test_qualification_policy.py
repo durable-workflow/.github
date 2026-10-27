@@ -380,6 +380,56 @@ class QualificationPolicyTest(unittest.TestCase):
         with self.assertRaisesRegex(PolicyError, "unsafe cache path"):
             self.scan(source)
 
+    TRUSTED_SAVE = "github.event_name == 'push' && github.ref == 'refs/heads/main'"
+
+    def trusted_main_cache(self) -> str:
+        commit, version = self.approved_action("actions/cache")
+        save_if = f"success() && {self.TRUSTED_SAVE} && steps.cache.outputs.cache-hit != 'true'"
+        return workflow(
+            f"""- id: cache
+  uses: actions/cache/restore@{commit} # {version}
+  with:
+    path: build-cache
+    key: build-v1-${{{{ hashFiles('Cargo.lock') }}}}
+- run: echo build
+- if: ${{{{ {save_if} }}}}
+  uses: actions/cache/save@{commit} # {version}
+  with:
+    path: build-cache
+    key: ${{{{ steps.cache.outputs.cache-primary-key }}}}"""
+        )
+
+    def test_pull_request_cache_shares_an_exact_key_written_only_by_protected_pushes(self) -> None:
+        source = self.trusted_main_cache()
+        self.scan(source)
+        # The same condition with its terms reordered and parenthesized.
+        reordered = "github.ref == 'refs/heads/main' && (github.event_name == 'push')"
+        self.scan(source.replace(self.TRUSTED_SAVE, reordered))
+
+    def test_pull_request_cache_without_partition_refuses_untrusted_writes_and_prefixes(self) -> None:
+        source = self.trusted_main_cache()
+        key = "{{ hashFiles('Cargo.lock') }}"
+        either = "github.event_name == 'push' || github.ref == 'refs/heads/main'"
+        mutations = [
+            # A broad restore prefix could substitute stale output.
+            source.replace(key, key + "\n          restore-keys: build-v1-", 1),
+            # A save any event, or any branch, can run.
+            source.replace(f"success() && {self.TRUSTED_SAVE} && ", ""),
+            source.replace("github.event_name == 'push' && ", ""),
+            source.replace(" && github.ref == 'refs/heads/main'", ""),
+            source.replace(self.TRUSTED_SAVE, either),
+            source.replace("refs/heads/main", "refs/heads/other"),
+            source.replace("github.event_name == 'push'", "github.event_name != 'pull_request'"),
+            # The combined action restores and saves on every event.
+            source.replace("actions/cache/restore@", "actions/cache@"),
+        ]
+        for changed in mutations:
+            with (
+                self.subTest(source=changed),
+                self.assertRaisesRegex(PolicyError, "must partition trusted and untrusted events"),
+            ):
+                self.scan(changed)
+
     def test_policy_rejects_a_retired_javascript_runtime(self) -> None:
         candidate = copy.deepcopy(self.policy)
         candidate["action_runtime"]["supported_javascript_runtimes"] = ["node20"]

@@ -1180,6 +1180,29 @@ def _cache_keys_partition_events(value: str) -> bool:
     return bool(keys) and all(event_partition.search(key) for key in keys)
 
 
+def _requires_protected_push(condition: object, protected_ref: str) -> bool:
+    """Whether a step condition can be true only for a push to the protected ref.
+
+    The condition must be a top-level conjunction, with no top-level ``||``,
+    that includes both ``github.event_name == 'push'`` and
+    ``github.ref == '<protected ref>'``. Other terms may narrow it further.
+    """
+
+    if not isinstance(condition, str) or not condition.strip():
+        return False
+    expression = _strip_balanced_parentheses(_condition_without_expression_wrapper(condition))
+    if _split_condition(expression, "||"):
+        return False
+    terms = _split_condition(expression, "&&") or [expression]
+    normalized = {
+        re.sub(r"\s+", " ", _strip_balanced_parentheses(term)).replace('"', "'") for term in terms
+    }
+    return (
+        "github.event_name == 'push'" in normalized
+        and f"github.ref == '{protected_ref}'" in normalized
+    )
+
+
 def _condition_without_expression_wrapper(condition: str) -> str:
     condition = condition.strip()
     if condition.startswith("${{") and condition.endswith("}}"):
@@ -1663,8 +1686,26 @@ def _scan_workflow_trust(
                 if not isinstance(path, str) or _unsafe_cache_path(path):
                     raise PolicyError(f"{label} cache step in job {job_name!r} has an unsafe cache path")
                 if pull_request:
+                    # Trusted writes, untrusted reads: a restore-only step, or a
+                    # save only a push to the protected branch can run, may share
+                    # one exact key across events. A broad restore prefix could
+                    # substitute stale output, so a shared key allows none.
+                    variant = parsed[1] if parsed is not None else ""
+                    shared_key = variant == "restore" or (
+                        variant == "save" and _requires_protected_push(step.get("if"), protected_ref)
+                    )
+                    key = settings.get("key")
+                    exact_shared_key = (
+                        shared_key
+                        and isinstance(key, str)
+                        and bool(key.strip())
+                        and "\n" not in key.strip()
+                        and "restore-keys" not in settings
+                    )
                     for key_name in ("key", "restore-keys"):
                         value = settings.get(key_name)
+                        if key_name == "key" and exact_shared_key:
+                            continue
                         if value is not None and (
                             not isinstance(value, str) or not _cache_keys_partition_events(value)
                         ):
