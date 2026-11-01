@@ -29,6 +29,10 @@ scanner, with the analysis token only on the final scanner step. It may produce
 coverage first using trusted repository code and approved actions. Other steps
 cannot reference secrets; existing cache restrictions still apply. Forks do
 not run this job.
+Cache restores in pull-request workflows must also exclude external forks at
+the job or step condition. An earlier revision can populate the same PR cache,
+so event-partitioned keys alone do not protect a later revision's build. An exact
+shared key remains available for guarded restores and protected-main-only saves.
 The scanner rejects `pull_request_target`, mutable container
 images, unreviewed `workflow_run` consumers, and privileged artifact consumers
 without exact producer and digest provenance.
