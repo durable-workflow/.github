@@ -1323,20 +1323,22 @@ def _condition_truth_for_external_fork(expression: str) -> tuple[bool, bool]:
         operand = expression[1:].strip()
         # ! binds before comparison in Actions expressions. Only invert a
         # grouped expression or literal, never an ungrouped comparison.
-        if operand.casefold() not in {"true", "false"} and (
+        if operand.lower() not in {"true", "false"} and (
             not operand.startswith("(") or _strip_balanced_parentheses(operand) == operand
         ):
             return True, True
         can_be_true, can_be_false = _condition_truth_for_external_fork(operand)
         return can_be_false, can_be_true
-    if expression.casefold() in {"true", "false"}:
-        value = expression.casefold() == "true"
+    if expression.lower() in {"true", "false"}:
+        value = expression.lower() == "true"
         return value, not value
 
     event = re.fullmatch(r"github\.event_name\s*(==|!=)\s*(['\"])(.*?)\2", expression)
     if event is not None:
         operator, _quote, expected = event.groups()
-        equality = expected.casefold() == "pull_request"
+        if not expected.isascii():
+            return True, True
+        equality = expected.lower() == "pull_request"
         value = equality if operator == "==" else not equality
         return value, not value
     repository = re.fullmatch(

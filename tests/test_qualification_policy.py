@@ -438,6 +438,9 @@ class QualificationPolicyTest(unittest.TestCase):
             "!github.event_name != 'push'",
             "!github.event.pull_request.head.repo.full_name != github.repository",
             "github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'",
+            "github.event_name != 'pull_requeﬆ'",
+            "!(github.event_name == 'pull_requeﬆ')",
+            "falſe",
         ):
             candidate = source.replace(self.TRUSTED_READ, condition)
             with self.subTest(condition=condition), self.assertRaisesRegex(
