@@ -1268,6 +1268,13 @@ def _split_condition(expression: str, operator: str) -> list[str]:
     return parts
 
 
+def _supports_condition_negation(operand: str) -> bool:
+    # ! binds before comparison. Only invert a grouped expression or literal.
+    return operand.lower() in {"true", "false"} or (
+        operand.startswith("(") and _strip_balanced_parentheses(operand) != operand
+    )
+
+
 def _condition_truth_for_unprotected_dispatch(expression: str, protected_ref: str) -> tuple[bool, bool]:
     """Return whether an expression can be true/false for a dispatch from another ref."""
 
@@ -1281,8 +1288,14 @@ def _condition_truth_for_unprotected_dispatch(expression: str, protected_ref: st
         values = [_condition_truth_for_unprotected_dispatch(part, protected_ref) for part in conjunction]
         return all(value[0] for value in values), any(value[1] for value in values)
     if expression.startswith("!") and not expression.startswith("!="):
-        can_be_true, can_be_false = _condition_truth_for_unprotected_dispatch(expression[1:], protected_ref)
+        operand = expression[1:].strip()
+        if not _supports_condition_negation(operand):
+            return True, True
+        can_be_true, can_be_false = _condition_truth_for_unprotected_dispatch(operand, protected_ref)
         return can_be_false, can_be_true
+    if expression.lower() in {"true", "false"}:
+        value = expression.lower() == "true"
+        return value, not value
 
     comparison = re.fullmatch(
         r"github\.(event_name|ref)\s*(==|!=)\s*(['\"])(.*?)\3",
@@ -1293,7 +1306,10 @@ def _condition_truth_for_unprotected_dispatch(expression: str, protected_ref: st
         return True, True
     field, operator, _quote, expected = comparison.groups()
     if field == "event_name":
-        equality = expected == "workflow_dispatch"
+        # GitHub event names are ASCII; other literals cannot establish trust.
+        if not expected.isascii():
+            return True, True
+        equality = expected.lower() == "workflow_dispatch"
         value = equality if operator == "==" else not equality
         return value, not value
     if expected != protected_ref:
