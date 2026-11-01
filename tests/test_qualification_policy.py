@@ -439,10 +439,11 @@ class QualificationPolicyTest(unittest.TestCase):
             "!github.event.pull_request.head.repo.full_name != github.repository",
             "github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'",
         ):
+            candidate = source.replace(self.TRUSTED_READ, condition)
             with self.subTest(condition=condition), self.assertRaisesRegex(
                 PolicyError, "cache restore.*external fork"
             ):
-                self.scan(source.replace(self.TRUSTED_READ, condition))
+                self.scan(candidate)
 
     def test_cache_restore_guards_accept_protected_and_same_repository_contexts(self) -> None:
         source = self.trusted_main_cache()
@@ -465,8 +466,9 @@ class QualificationPolicyTest(unittest.TestCase):
         source = source.replace(f"        if: ${{{{ {self.TRUSTED_READ} }}}}\n", "")
         source = source.replace("    runs-on:", f"    if: ${{{{ {self.TRUSTED_READ} }}}}\n    runs-on:")
         self.scan(source)
+        candidate = source.replace(self.TRUSTED_READ, "github.ref == 'refs/heads/main'")
         with self.assertRaisesRegex(PolicyError, "cache restore.*external fork"):
-            self.scan(source.replace(self.TRUSTED_READ, "github.ref == 'refs/heads/main'"))
+            self.scan(candidate)
 
     def test_pull_request_cache_without_partition_refuses_untrusted_writes_and_prefixes(self) -> None:
         source = self.trusted_main_cache()
