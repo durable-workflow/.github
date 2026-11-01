@@ -53,6 +53,48 @@ class QualificationPolicyTest(unittest.TestCase):
         commit, version = next(iter(releases.items()))
         return commit, version
 
+    def privileged_dispatch(self, condition: str) -> str:
+        return workflow("- run: echo checked", trigger="workflow_dispatch").replace(
+            "    runs-on:",
+            f"    if: ${{{{ {condition} }}}}\n    permissions:\n      contents: write\n    runs-on:",
+        )
+
+    def test_dispatch_rejects_case_and_bare_negation_bypasses(self) -> None:
+        for condition in (
+            "github.event_name == 'WORKFLOW_DISPATCH'",
+            "github.event_name == 'WorkFlow_Dispatch'",
+            "!github.event_name != 'push'",
+            "(!github.event_name != 'push') && github.ref != 'refs/heads/main'",
+            "!github.ref != 'refs/heads/main'",
+            "github.ref == 'refs/heads/main' || github.event_name == 'WORKFLOW_DISPATCH'",
+            "!(github.ref == 'refs/heads/main')",
+            "github.ref == 'refs/heads/other'",
+            "success() || github.ref == 'refs/heads/main'",
+            "!false",
+            "github.event_name != 'workﬂow_dispatch'",
+            "github.event_name != 'workflow_diſpatch'",
+            "falſe",
+        ):
+            candidate = self.privileged_dispatch(condition)
+            with self.subTest(condition=condition), self.assertRaisesRegex(
+                PolicyError, "privileged workflow_dispatch.*outside"
+            ):
+                self.scan(candidate)
+
+    def test_dispatch_retains_protected_ref_guards_and_boolean_composition(self) -> None:
+        for condition in (
+            "github.ref == 'refs/heads/main'",
+            "!(github.ref != 'refs/heads/main')",
+            "github.event_name == 'push' || github.ref == 'refs/heads/main'",
+            "github.event_name != 'WORKFLOW_DISPATCH' || github.ref == 'refs/heads/main'",
+            "github.event_name == 'WORKFLOW_DISPATCH' && github.ref == 'refs/heads/main'",
+            "always() && github.ref == 'refs/heads/main'",
+            "!true",
+            "false",
+        ):
+            with self.subTest(condition=condition):
+                self.scan(self.privileged_dispatch(condition))
+
     def test_checked_in_policy_is_valid_and_has_no_retired_consumers(self) -> None:
         validate_policy(self.policy)
         self.assertEqual(

@@ -1281,8 +1281,17 @@ def _condition_truth_for_unprotected_dispatch(expression: str, protected_ref: st
         values = [_condition_truth_for_unprotected_dispatch(part, protected_ref) for part in conjunction]
         return all(value[0] for value in values), any(value[1] for value in values)
     if expression.startswith("!") and not expression.startswith("!="):
-        can_be_true, can_be_false = _condition_truth_for_unprotected_dispatch(expression[1:], protected_ref)
+        operand = expression[1:].strip()
+        # ! binds before comparison. An ungrouped comparison remains unknown.
+        if operand.lower() not in {"true", "false"} and (
+            not operand.startswith("(") or _strip_balanced_parentheses(operand) == operand
+        ):
+            return True, True
+        can_be_true, can_be_false = _condition_truth_for_unprotected_dispatch(operand, protected_ref)
         return can_be_false, can_be_true
+    if expression.lower() in {"true", "false"}:
+        value = expression.lower() == "true"
+        return value, not value
 
     comparison = re.fullmatch(
         r"github\.(event_name|ref)\s*(==|!=)\s*(['\"])(.*?)\3",
@@ -1293,7 +1302,10 @@ def _condition_truth_for_unprotected_dispatch(expression: str, protected_ref: st
         return True, True
     field, operator, _quote, expected = comparison.groups()
     if field == "event_name":
-        equality = expected == "workflow_dispatch"
+        # GitHub event names are ASCII; other literals cannot establish trust.
+        if not expected.isascii():
+            return True, True
+        equality = expected.lower() == "workflow_dispatch"
         value = equality if operator == "==" else not equality
         return value, not value
     if expected != protected_ref:
