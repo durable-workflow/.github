@@ -1268,6 +1268,13 @@ def _split_condition(expression: str, operator: str) -> list[str]:
     return parts
 
 
+def _supports_condition_negation(operand: str) -> bool:
+    # ! binds before comparison. Only invert a grouped expression or literal.
+    return operand.lower() in {"true", "false"} or (
+        operand.startswith("(") and _strip_balanced_parentheses(operand) != operand
+    )
+
+
 def _condition_truth_for_unprotected_dispatch(expression: str, protected_ref: str) -> tuple[bool, bool]:
     """Return whether an expression can be true/false for a dispatch from another ref."""
 
@@ -1282,10 +1289,7 @@ def _condition_truth_for_unprotected_dispatch(expression: str, protected_ref: st
         return all(value[0] for value in values), any(value[1] for value in values)
     if expression.startswith("!") and not expression.startswith("!="):
         operand = expression[1:].strip()
-        # ! binds before comparison. An ungrouped comparison remains unknown.
-        if operand.lower() not in {"true", "false"} and (
-            not operand.startswith("(") or _strip_balanced_parentheses(operand) == operand
-        ):
+        if not _supports_condition_negation(operand):
             return True, True
         can_be_true, can_be_false = _condition_truth_for_unprotected_dispatch(operand, protected_ref)
         return can_be_false, can_be_true
