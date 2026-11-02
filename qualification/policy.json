@@ -34,7 +34,8 @@
       },
       "actions/setup-python": {
         "ece7cb06caefa5fff74198d8649806c4678c61a1": "v6",
-        "5fda3b95a4ea91299a34e894583c3862153e4b97": "v7"
+        "5fda3b95a4ea91299a34e894583c3862153e4b97": "v7",
+        "6d4fd22b20465ccc0f7354476588e8df7c9ca0e0": "v7.1.0"
       },
       "actions/upload-artifact": {
         "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a": "v7",
@@ -55,7 +56,8 @@
       },
       "docker/login-action": {
         "af1e73f918a031802d376d3c8bbc3fe56130a9b0": "v4",
-        "dbcb813823bdd20940b903addbd779551569679f": "v4.6.0"
+        "dbcb813823bdd20940b903addbd779551569679f": "v4.6.0",
+        "81c6f93d4bc991e510b342a00b419b3bb4efc5c6": "v4.7.0"
       },
       "docker/metadata-action": {
         "dc802804100637a589fabce1cb79ff13a1411302": "v6"
@@ -74,6 +76,7 @@
       },
       "durable-workflow/.github": {
         "75587fc33ff40c34f32ef777293dad56bb6f48c7": "clean-trust",
+        "76f333804e68725059039fd54df241d40d855cd3": "clean-trust",
         "ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10": "patched-pip"
       },
       "helm/chart-testing-action": {
@@ -99,7 +102,8 @@
         "3d0d9888cb7fd7b750713d6e236d1fcb99157228": "v3"
       },
       "sonarsource/sonarqube-scan-action": {
-        "d209202bc7d53ff1cc128f7f907dac145c9d6ae9": "v8.3.0"
+        "d209202bc7d53ff1cc128f7f907dac145c9d6ae9": "v8.3.0",
+        "4d1dc0c91ee400dcf8a6dddf2f705ac36542e304": "v8.4.0"
       }
     },
     "supported_javascript_runtimes": [
