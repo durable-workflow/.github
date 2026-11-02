@@ -46,4 +46,3 @@ runs:
         --source-directory "$TRUST_SOURCE_DIRECTORY"
         --source-commit "$TRUST_SOURCE_COMMIT"
         --provenance "$TRUST_PROVENANCE"
-        --github-output "$GITHUB_OUTPUT"

@@ -1,10 +1,15 @@
 from copy import deepcopy
+import json
+import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from scripts.composer_container_trust import ContainerTrustRefused, prepare, sha256
+from scripts import composer_container_trust as container_trust
+from scripts.composer_container_trust import ContainerTrustRefused, prepare, provenance_destination, sha256
 
 
 IMAGE = "composer:2.10.3@sha256:" + "a" * 64
@@ -91,7 +96,7 @@ class ComposerContainerSourceTest(unittest.TestCase):
 
     def test_dirty_recipe_and_unreviewed_new_commit_fail_before_a_build(self):
         (self.source / "Dockerfile").write_text(self.dockerfile + "RUN composer update\n")
-        with self.assertRaisesRegex(ContainerTrustRefused, "Recipe bytes"):
+        with self.assertRaisesRegex(ContainerTrustRefused, "actual build context"):
             self.check()
         self.git("add", "Dockerfile")
         self.git("commit", "--quiet", "-m", "new unreviewed recipe")
@@ -148,7 +153,7 @@ class ComposerContainerSourceTest(unittest.TestCase):
         dockerfile = self.source / "Dockerfile"
         dockerfile.unlink()
         dockerfile.symlink_to(self.source / "prepare.php")
-        with self.assertRaisesRegex(ContainerTrustRefused, "symbolic links"):
+        with self.assertRaises(ContainerTrustRefused):
             self.check()
         dockerfile.unlink()
         dockerfile.write_text(self.dockerfile)
@@ -161,6 +166,65 @@ class ComposerContainerSourceTest(unittest.TestCase):
         bundle.write_bytes(self.bundle.read_bytes())
         with self.assertRaises(ContainerTrustRefused):
             self.check(environment={**self.environment, "COMPOSER_CAFILE": str(bundle)})
+
+    def test_actual_context_rejects_tracked_staged_untracked_and_ignored_bytes(self):
+        runtime = self.source / "runtime.php"
+        runtime.write_text("<?php // selected source\n")
+        (self.source / ".gitignore").write_text("ignored/\n")
+        self.git("add", ".")
+        self.git("commit", "--quiet", "-m", "runtime")
+        self.commit = self.git("rev-parse", "HEAD")
+        for staged in (False, True):
+            runtime.write_text("<?php // changed source\n")
+            if staged:
+                self.git("add", "runtime.php")
+            with self.subTest(staged=staged), self.assertRaises(ContainerTrustRefused):
+                self.check()
+            self.git("restore", "--source=HEAD", "--staged", "--worktree", "runtime.php")
+        for name in ("new.php", "ignored/new.php"):
+            extra = self.source / name
+            extra.parent.mkdir(exist_ok=True)
+            extra.write_text("<?php // extra build context\n")
+            with self.subTest(extra=name), self.assertRaises(ContainerTrustRefused):
+                self.check()
+            extra.unlink()
+            if extra.parent != self.source:
+                extra.parent.rmdir()
+        self.assertEqual(self.commit, self.check()[1]["source_commit"])
+
+    def test_assume_unchanged_index_flag_cannot_hide_changed_context_bytes(self):
+        self.git("update-index", "--assume-unchanged", "prepare.php")
+        (self.source / "prepare.php").write_text("<?php // hidden changed bytes\n")
+        self.assertEqual("", self.git("status", "--porcelain"))
+        with self.assertRaisesRegex(ContainerTrustRefused, "context bytes"):
+            self.check()
+
+    def test_provenance_refuses_outside_workspace_and_existing_destinations(self):
+        environment = {"GITHUB_WORKSPACE": str(self.root)}
+        self.assertEqual(self.root / "new.json", provenance_destination(self.root / "new.json", environment, self.source))
+        for path in (self.source / "Dockerfile", self.source / "new.json", self.root.parent / "outside.json", self.bundle):
+            with self.subTest(path=path), self.assertRaises(ContainerTrustRefused):
+                provenance_destination(path, environment, self.source)
+        (self.root / "link").symlink_to(self.root.parent, target_is_directory=True)
+        with self.assertRaises(ContainerTrustRefused):
+            provenance_destination(self.root / "link/outside.json", environment, self.source)
+
+    def test_cli_records_the_real_binding_and_uses_the_actions_output_environment(self):
+        control = self.root / "central"
+        (control / "qualification").mkdir(parents=True)
+        (control / "qualification/composer-container-trust.json").write_text(json.dumps(self.catalog))
+        verifier = control / ".github/actions/verify-composer-trust"
+        verifier.mkdir(parents=True)
+        (verifier / "verify.php").write_text("<?php // reviewed verifier\n")
+        record, output = self.root / "record.json", self.root / "output"
+        environment = self.environment | {"GITHUB_WORKSPACE": str(self.root), "GITHUB_OUTPUT": str(output)}
+        argv = ["container-trust", "--source-directory", str(self.source), "--source-commit", self.commit,
+                "--request", "fixture", "--provenance", str(record)]
+        with patch.object(container_trust, "ROOT", control), patch.object(sys, "argv", argv), patch.dict(os.environ, environment):
+            self.assertEqual(0, container_trust.main())
+            self.assertEqual(self.commit, json.loads(record.read_text())["source_commit"])
+            self.assertIn("source-commit=" + self.commit, output.read_text())
+            self.assertEqual(1, container_trust.main(), "A repeat must not clobber provenance.")
 
 
 if __name__ == "__main__":

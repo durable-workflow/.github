@@ -36,10 +36,10 @@ def sha256(contents: bytes) -> str:
     return hashlib.sha256(contents).hexdigest()
 
 
-def git(root: Path, *arguments: str) -> bytes:
+def git(root: Path, *arguments: str, input_bytes: bytes | None = None) -> bytes:
     try:
         return subprocess.run(
-            ["git", "-C", str(root), *arguments], check=True, capture_output=True,
+            ["git", "-C", str(root), *arguments], check=True, capture_output=True, input=input_bytes,
         ).stdout
     except (OSError, subprocess.CalledProcessError) as error:
         raise ContainerTrustRefused("Cannot verify the source checkout with Git.") from error
@@ -105,13 +105,51 @@ def approved_recipe(source: Path, commit: str, request: dict[str, Any]) -> dict[
                 or not SHA256.fullmatch(expected)
                 or sha256(checkout_file(source, relative, commit)) != expected):
             raise ContainerTrustRefused("The selected source no longer matches its reviewed recipe files.")
-    stages = dict((name.lower(), base) for base, name in re.findall(
+    stages = {name.lower(): base for base, name in re.findall(
         r"^\s*FROM\s+(?:--platform=\S+\s+)?(\S+)\s+AS\s+(\S+)\s*$",
         contents.decode("utf-8"), flags=re.IGNORECASE | re.MULTILINE,
-    ))
+    )}
     if stages.get(stage.lower()) != image or str(request.get("stage", "")).lower() not in stages:
         raise ContainerTrustRefused("The declared Composer and request stages differ from the reviewed Dockerfile.")
     return recipe
+
+
+def require_clean_context(source: Path, commit: str) -> None:
+    if git(source, "status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching"):
+        raise ContainerTrustRefused("The actual build context contains tracked, staged, untracked or ignored changes.")
+    paths, expected = [], []
+    for entry in git(source, "ls-tree", "-rz", commit).split(b"\0"):
+        if not entry:
+            continue
+        metadata, relative = entry.split(b"\t", 1)
+        mode, kind, object_id = metadata.split()
+        path = source / relative.decode("utf-8")
+        if kind != b"blob" or mode not in {b"100644", b"100755"}:
+            raise ContainerTrustRefused("Container source contexts with links or submodules are not supported.")
+        if not path.is_file() or path.is_symlink() or bool(path.stat().st_mode & 0o111) != (mode == b"100755"):
+            raise ContainerTrustRefused("The actual build context has changed file types or executable modes.")
+        paths.append(json.dumps(str(path), ensure_ascii=False))
+        expected.append(object_id)
+    # Hash the bytes independently of Git's index/stat cache, assume-unchanged
+    # flags and checkout filters. Labels and a clean status alone are not proof.
+    actual = git(source, "hash-object", "--no-filters", "--stdin-paths",
+                 input_bytes=("\n".join(paths) + "\n").encode()).splitlines()
+    if actual != expected:
+        raise ContainerTrustRefused("The actual build context bytes differ from the selected tree.")
+
+
+def authenticated_bundle(environment: dict[str, str]) -> tuple[Path, str]:
+    expected = environment.get("DW_CI_CA_SHA256", "")
+    if not SHA256.fullmatch(expected):
+        raise ContainerTrustRefused("The clean bootstrap must supply its authenticated CA digest.")
+    bundle_name = environment.get("COMPOSER_CAFILE", "")
+    if not bundle_name or any(character in bundle_name for character in "\r\n\0"):
+        raise ContainerTrustRefused("The clean bootstrap must select a CA file.")
+    bundle = Path(bundle_name).resolve(strict=True)
+    if (not bundle.is_file() or bundle.stat().st_size > 8 * 1024 * 1024
+            or sha256(bundle.read_bytes()) != expected):
+        raise ContainerTrustRefused("The selected CA file differs from the authenticated bootstrap.")
+    return bundle, expected
 
 
 def prepare(
@@ -133,17 +171,9 @@ def prepare(
     remote = git(source, "remote", "get-url", "origin").decode().strip()
     if repository_name(remote) != request.get("repository"):
         raise ContainerTrustRefused("The checkout is from a different source repository.")
+    require_clean_context(source, commit)
     recipe = approved_recipe(source, commit, request)
-    expected = environment.get("DW_CI_CA_SHA256", "")
-    if not SHA256.fullmatch(expected):
-        raise ContainerTrustRefused("The clean bootstrap must supply its authenticated CA digest.")
-    bundle_name = environment.get("COMPOSER_CAFILE", "")
-    if not bundle_name or any(character in bundle_name for character in "\r\n\0"):
-        raise ContainerTrustRefused("The clean bootstrap must select a CA file.")
-    bundle = Path(bundle_name).resolve(strict=True)
-    if (not bundle.is_file() or bundle.stat().st_size > 8 * 1024 * 1024
-            or sha256(bundle.read_bytes()) != expected):
-        raise ContainerTrustRefused("The selected CA file differs from the authenticated bootstrap.")
+    bundle, expected = authenticated_bundle(environment)
     verifier = verifier_directory.resolve(strict=True) / "verify.php"
     if not verifier.is_file() or verifier.is_symlink():
         raise ContainerTrustRefused("The reviewed in-container verifier is missing.")
@@ -164,13 +194,24 @@ def prepare(
     return outputs, evidence
 
 
+def provenance_destination(path: Path, environment: dict[str, str], source: Path) -> Path:
+    workspace = Path(environment["GITHUB_WORKSPACE"]).resolve(strict=True)
+    destination = path.resolve()
+    if not destination.is_relative_to(workspace) or destination == workspace:
+        raise ContainerTrustRefused("Provenance must be a new file inside the Actions workspace.")
+    if destination.is_relative_to(source.resolve(strict=True)):
+        raise ContainerTrustRefused("Provenance must not add bytes to the selected build context.")
+    if path.is_symlink() or destination.exists():
+        raise ContainerTrustRefused("Provenance must not replace an existing file or symbolic link.")
+    return destination
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-directory", type=Path, required=True)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--request", required=True)
     parser.add_argument("--provenance", type=Path, required=True)
-    parser.add_argument("--github-output", type=Path, required=True)
     args = parser.parse_args()
     try:
         catalog = json.loads((ROOT / "qualification/composer-container-trust.json").read_text())
@@ -178,12 +219,17 @@ def main() -> int:
             args.source_directory, args.source_commit, args.request, catalog, dict(os.environ),
             ROOT / ".github/actions/verify-composer-trust",
         )
-        args.provenance.write_text(json.dumps(evidence, indent=2) + "\n")
-        with args.github_output.open("a") as destination:
+        provenance = provenance_destination(args.provenance, dict(os.environ), args.source_directory)
+        output = Path(os.environ["GITHUB_OUTPUT"]).resolve()
+        if output.is_relative_to(args.source_directory.resolve(strict=True)):
+            raise ContainerTrustRefused("Actions outputs must not add bytes to the selected build context.")
+        with provenance.open("x") as destination:
+            destination.write(json.dumps(evidence, indent=2) + "\n")
+        with output.open("a") as destination:
             destination.writelines(f"{key}={value}\n" for key, value in outputs.items())
         print(f"Verified container Composer recipe for {evidence['source_repository']} at {args.source_commit}.")
         return 0
-    except (ContainerTrustRefused, OSError, ValueError) as error:
+    except (ContainerTrustRefused, OSError, ValueError, KeyError) as error:
         message = str(error) if isinstance(error, ContainerTrustRefused) else "Container trust input inspection failed."
         print(f"Container Composer trust refused: {message}")
         return 1
