@@ -227,6 +227,7 @@
     },
     "sdk-php": {
       "branch": "main",
+      "composer_trust_required": true,
       "repository": "sdk-php",
       "workflows": [
         {
