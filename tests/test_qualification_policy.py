@@ -561,6 +561,24 @@ class QualificationPolicyTest(unittest.TestCase):
 
 
 TAG_GATE = "github.ref == format('refs/tags/{0}', inputs.tag)"
+CHECKOUT_STEP = """      - name: Check out trusted release tooling
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+"""
+VERIFIER_STEP = """      - name: Require a dispatch from the release tag, at its commit, on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
+          DISPATCH_REF: ${{ github.ref }}
+          DISPATCH_SHA: ${{ github.sha }}
+        run: scripts/ci/verify-native-release-dispatch.sh
+"""
+PLAN_STEPS = CHECKOUT_STEP + VERIFIER_STEP + """      - name: Choose registries
+        run: echo dockerhub=true >> "$GITHUB_OUTPUT"
+"""
 
 
 def tag_dispatch_workflow(
@@ -572,6 +590,10 @@ def tag_dispatch_workflow(
     environment: str = "dockerhub-native",
     needs: str = "plan",
     extra_job: str = "",
+    plan_steps: str | None = None,
+    plan_job_extra: str = "",
+    workflow_extra: str = "",
+    job_extra: str = "",
 ) -> str:
     def publishing_job(name: str, condition: str) -> str:
         return f"""  {name}:
@@ -580,7 +602,7 @@ def tag_dispatch_workflow(
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: {environment}
-    permissions:
+{job_extra}    permissions:
       contents: read
       packages: write
     steps:
@@ -597,14 +619,14 @@ on:
         required: true
 {trigger_extra}permissions:
   contents: read
-jobs:
+{workflow_extra}jobs:
   plan:
 {plan_extra}    runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions:
+{plan_job_extra}    permissions:
       contents: read
     steps:
-      - run: echo verify the exact tag ref and commit
+{PLAN_STEPS if plan_steps is None else plan_steps}\
 {"".join(publishing_job(name, gate) for name in ("build-amd64", "build-arm64", "publish"))}\
 {publishing_job("aliases", gate + " && needs.plan.outputs.dockerhub == 'true'")}{extra_job}"""
 
@@ -706,12 +728,58 @@ class TagDispatchPolicyTest(unittest.TestCase):
         with self.assertRaisesRegex(PolicyError, r"missing policy-bound tag dispatch jobs \['verify'\]"):
             self.scan(tag_dispatch_workflow(), policy)
 
+    def test_status_functions_cannot_run_publishing_after_a_failed_plan(self) -> None:
+        for gate in (f"always() && {TAG_GATE}", f"{TAG_GATE} && failure()", f"cancelled () && {TAG_GATE}",
+                     f"ALWAYS() && {TAG_GATE}"):
+            with self.subTest(gate=gate):
+                self.assert_refused(tag_dispatch_workflow(gate=gate), "can run outside refs/heads/main")
+
+    def test_plan_must_run_the_exact_verifier_after_the_checkout(self) -> None:
+        echo = """      - name: Require a dispatch from the release tag, at its commit, on main
+        run: echo skipped
+"""
+        tampered = VERIFIER_STEP.replace("RELEASE_TAG: ${{ inputs.tag }}", "RELEASE_TAG: native-9.9.9")
+        cases = {
+            "removed": CHECKOUT_STEP,
+            "replaced": CHECKOUT_STEP + echo,
+            "changed env": CHECKOUT_STEP + tampered,
+            "conditional": CHECKOUT_STEP + VERIFIER_STEP.replace("        run:", "        if: false\n        run:"),
+            "continue on error": CHECKOUT_STEP
+            + VERIFIER_STEP.replace("        run:", "        continue-on-error: true\n        run:"),
+            "custom shell": CHECKOUT_STEP
+            + VERIFIER_STEP.replace("        run:", "        shell: true {0}\n        run:"),
+            "step before verifier": CHECKOUT_STEP
+            + "      - run: echo 'exit 0' > scripts/ci/verify-native-release-dispatch.sh\n"
+            + VERIFIER_STEP,
+            "no checkout": VERIFIER_STEP,
+        }
+        for case, steps in cases.items():
+            with self.subTest(case=case):
+                self.assert_refused(tag_dispatch_workflow(plan_steps=steps), "plan job must")
+
+    def test_plan_and_publishing_jobs_cannot_continue_on_error_or_change_run_defaults(self) -> None:
+        self.assert_refused(
+            tag_dispatch_workflow(plan_job_extra="    continue-on-error: true\n"), "plan job must not continue on error"
+        )
+        self.assert_refused(
+            tag_dispatch_workflow(job_extra="    continue-on-error: true\n"), "must not continue on error"
+        )
+        self.assert_refused(
+            tag_dispatch_workflow(workflow_extra="defaults:\n  run:\n    shell: true {0}\n"),
+            "must not override run defaults",
+        )
+        self.assert_refused(
+            tag_dispatch_workflow(plan_job_extra="    defaults:\n      run:\n        working-directory: tmp\n"),
+            "must not override run defaults",
+        )
+
     def test_policy_refuses_a_loosened_or_incomplete_binding(self) -> None:
         cases = {
             "tag_ref_condition": "startsWith(github.ref, 'refs/tags/')",
             "jobs": ["publish", "aliases"],
             "plan_job": "publish",
             "environment": "",
+            "plan_verifier": {"run": "scripts/ci/verify-native-release-dispatch.sh"},
         }
         for field, value in cases.items():
             with self.subTest(field=field):

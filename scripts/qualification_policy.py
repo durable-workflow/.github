@@ -1663,7 +1663,16 @@ def _direct_artifact_handoff(
     )
 
 
-TAG_DISPATCH_BINDING_FIELDS = {"environment", "jobs", "plan_job", "tag_input", "tag_ref_condition"}
+TAG_DISPATCH_BINDING_FIELDS = {
+    "environment",
+    "jobs",
+    "plan_job",
+    "plan_verifier",
+    "tag_input",
+    "tag_ref_condition",
+}
+# Any of these replaces the implicit success() check, so a job could run after a failed plan.
+STATUS_FUNCTION_PATTERN = re.compile(r"\b(?:always|failure|cancelled)\s*\(", re.IGNORECASE)
 
 
 def _tag_ref_condition(tag_input: str) -> str:
@@ -1705,6 +1714,19 @@ def _validate_tag_dispatch_bindings(policy: dict[str, Any], bindings: object) ->
             raise PolicyError(f"{path} tag dispatch input must be a workflow input name")
         if binding["tag_ref_condition"] != _tag_ref_condition(tag_input):
             raise PolicyError(f"{path} tag dispatch condition must be the reviewed exact tag-ref predicate")
+        verifier = binding["plan_verifier"]
+        if (
+            not isinstance(verifier, dict)
+            or set(verifier) != {"env", "run"}
+            or not isinstance(verifier["run"], str)
+            or not verifier["run"].strip()
+            or not isinstance(verifier["env"], dict)
+            or not all(
+                isinstance(name, str) and isinstance(value, str) and value
+                for name, value in verifier["env"].items()
+            )
+        ):
+            raise PolicyError(f"{path} tag dispatch plan verifier must declare its exact run command and env")
 
 
 def _job_environment_name(job: Mapping[str, Any]) -> str | None:
@@ -1723,15 +1745,57 @@ def _requires_exact_tag_ref(job: Mapping[str, Any], expected: str) -> bool:
     if not isinstance(condition, str) or not condition.strip():
         return False
     expression = _strip_balanced_parentheses(_condition_without_expression_wrapper(condition))
-    if _split_condition(expression, "||"):
+    if STATUS_FUNCTION_PATTERN.search(expression) or _split_condition(expression, "||"):
         return False
     conjuncts = _split_condition(expression, "&&") or [expression]
     normalized = " ".join(expected.split())
     return any(" ".join(_strip_balanced_parentheses(part).split()) == normalized for part in conjuncts)
 
 
+def _check_tag_dispatch_verifier(
+    label: str, document: Mapping[str, Any], plan: Mapping[str, Any], verifier: Mapping[str, Any]
+) -> None:
+    """Require the plan job to check out the dispatch commit and then run the exact reviewed verifier.
+
+    Nothing may run before the verifier, change how it runs, or let the plan succeed after it fails.
+    """
+
+    if "continue-on-error" in plan:
+        raise PolicyError(f"{label} tag dispatch plan job must not continue on error")
+    for scope_label, scope in (("workflow", document), ("plan job", plan)):
+        if _run_defaults(scope):
+            raise PolicyError(f"{label} tag dispatch {scope_label} must not override run defaults")
+    steps = plan.get("steps")
+    if not isinstance(steps, list) or len(steps) < 2:
+        raise PolicyError(f"{label} tag dispatch plan job must check out and then run its verifier")
+    checkout, step = steps[0], steps[1]
+    checkout_action = (
+        _split_action_reference(checkout["uses"])
+        if isinstance(checkout, dict) and isinstance(checkout.get("uses"), str)
+        else None
+    )
+    if (
+        checkout_action is None
+        or checkout_action[0] != "actions/checkout"
+        or set(checkout) - {"name", "uses", "with"}
+        or checkout.get("with") != {"ref": "${{ github.sha }}", "persist-credentials": "false"}
+    ):
+        raise PolicyError(f"{label} tag dispatch plan job must first check out the dispatch commit")
+    if (
+        not isinstance(step, dict)
+        or set(step) - {"name", "env", "run"}
+        or step.get("run") != verifier["run"]
+        or step.get("env") != verifier["env"]
+    ):
+        raise PolicyError(f"{label} tag dispatch plan job must run the exact reviewed verifier next")
+
+
 def _check_tag_dispatch_workflow(
-    label: str, triggers: Mapping[str, Any], jobs: Mapping[str, Any], binding: Mapping[str, Any]
+    label: str,
+    document: Mapping[str, Any],
+    triggers: Mapping[str, Any],
+    jobs: Mapping[str, Any],
+    binding: Mapping[str, Any],
 ) -> None:
     if set(triggers) != {"workflow_dispatch"}:
         raise PolicyError(f"{label} tag dispatch workflow must be triggered only by workflow_dispatch")
@@ -1757,6 +1821,11 @@ def _check_tag_dispatch_workflow(
         raise PolicyError(f"{label} tag dispatch plan job must run unconditionally so a wrong ref fails")
     if plan_writes or "environment" in plan or "secrets" in plan or _references_secret_context(plan):
         raise PolicyError(f"{label} tag dispatch plan job must not be privileged")
+    _check_tag_dispatch_verifier(label, document, plan, binding["plan_verifier"])
+    for job_name in binding["jobs"]:
+        job = jobs.get(job_name)
+        if isinstance(job, dict) and "continue-on-error" in job:
+            raise PolicyError(f"{label} tag dispatch job {job_name!r} must not continue on error")
     missing = sorted(set(binding["jobs"]) - set(jobs))
     if missing:
         raise PolicyError(f"{label} is missing policy-bound tag dispatch jobs {missing}")
@@ -2000,7 +2069,7 @@ def _scan_workflow_trust(
         raise PolicyError(f"{label} is policy-bound as a workflow_run consumer but has no workflow_run trigger")
     if tag_dispatch_admitted:
         # Jobs admitted from a tag ref depend on the whole reviewed workflow shape.
-        _check_tag_dispatch_workflow(label, triggers, jobs, tag_binding)
+        _check_tag_dispatch_workflow(label, document, triggers, jobs, tag_binding)
 
     return {
         "containers": sorted(container_actions),

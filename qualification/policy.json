@@ -147,6 +147,16 @@
           "publish"
         ],
         "plan_job": "plan",
+        "plan_verifier": {
+          "env": {
+            "DISPATCH_REF": "${{ github.ref }}",
+            "DISPATCH_SHA": "${{ github.sha }}",
+            "GH_TOKEN": "${{ github.token }}",
+            "RELEASE_COMMIT": "${{ inputs.release_commit }}",
+            "RELEASE_TAG": "${{ inputs.tag }}"
+          },
+          "run": "scripts/ci/verify-native-release-dispatch.sh"
+        },
         "tag_input": "tag",
         "tag_ref_condition": "github.ref == format('refs/tags/{0}', inputs.tag)"
       }

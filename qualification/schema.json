@@ -164,6 +164,27 @@
           "pattern": "^[A-Za-z0-9_-]+$",
           "type": "string"
         },
+        "plan_verifier": {
+          "additionalProperties": false,
+          "properties": {
+            "env": {
+              "additionalProperties": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "run": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "env",
+            "run"
+          ],
+          "type": "object"
+        },
         "tag_input": {
           "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
           "type": "string"
@@ -177,6 +198,7 @@
         "environment",
         "jobs",
         "plan_job",
+        "plan_verifier",
         "tag_input",
         "tag_ref_condition"
       ],
