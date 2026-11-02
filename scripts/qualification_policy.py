@@ -1339,9 +1339,7 @@ def _condition_truth_for_external_fork(expression: str) -> tuple[bool, bool]:
         operand = expression[1:].strip()
         # ! binds before comparison in Actions expressions. Only invert a
         # grouped expression or literal, never an ungrouped comparison.
-        if operand.lower() not in {"true", "false"} and (
-            not operand.startswith("(") or _strip_balanced_parentheses(operand) == operand
-        ):
+        if not _supports_condition_negation(operand):
             return True, True
         can_be_true, can_be_false = _condition_truth_for_external_fork(operand)
         return can_be_false, can_be_true
