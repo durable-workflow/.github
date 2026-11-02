@@ -1319,6 +1319,68 @@ def _condition_truth_for_unprotected_dispatch(expression: str, protected_ref: st
     return value, not value
 
 
+def _condition_truth_for_external_fork(expression: str) -> tuple[bool, bool]:
+    """Return possible truth values for an external fork's pull-request event.
+
+    Only the event and unequal repository identities are fixed. Ref checks and
+    other terms remain unknown, so a main-looking ref cannot establish trust.
+    """
+
+    expression = _strip_balanced_parentheses(expression)
+    disjunction = _split_condition(expression, "||")
+    if disjunction:
+        values = [_condition_truth_for_external_fork(part) for part in disjunction]
+        return any(value[0] for value in values), all(value[1] for value in values)
+    conjunction = _split_condition(expression, "&&")
+    if conjunction:
+        values = [_condition_truth_for_external_fork(part) for part in conjunction]
+        return all(value[0] for value in values), any(value[1] for value in values)
+    if expression.startswith("!") and not expression.startswith("!="):
+        operand = expression[1:].strip()
+        # ! binds before comparison in Actions expressions. Only invert a
+        # grouped expression or literal, never an ungrouped comparison.
+        if not _supports_condition_negation(operand):
+            return True, True
+        can_be_true, can_be_false = _condition_truth_for_external_fork(operand)
+        return can_be_false, can_be_true
+    if expression.lower() in {"true", "false"}:
+        value = expression.lower() == "true"
+        return value, not value
+
+    event = re.fullmatch(r"github\.event_name\s*(==|!=)\s*(['\"])(.*?)\2", expression)
+    if event is not None:
+        operator, _quote, expected = event.groups()
+        if not expected.isascii():
+            return True, True
+        equality = expected.lower() == "pull_request"
+        value = equality if operator == "==" else not equality
+        return value, not value
+    repository = re.fullmatch(
+        r"(github\.event\.pull_request\.head\.repo\.full_name|github\.repository)\s*"
+        r"(==|!=)\s*(github\.event\.pull_request\.head\.repo\.full_name|github\.repository)",
+        expression,
+    )
+    if repository is not None:
+        left, operator, right = repository.groups()
+        if left != right:
+            value = operator == "!="
+            return value, not value
+    return True, True
+
+
+def _cache_restore_excludes_external_forks(job: Mapping[str, Any], step: Mapping[str, Any]) -> bool:
+    # Both guards must pass before a step runs; either can exclude a fork.
+    for scope in (job, step):
+        condition = scope.get("if")
+        if isinstance(condition, str) and condition.strip():
+            can_run, _can_skip = _condition_truth_for_external_fork(
+                _condition_without_expression_wrapper(condition)
+            )
+            if not can_run:
+                return True
+    return False
+
+
 def _protects_manual_dispatch(job: dict[str, Any], protected_ref: str) -> bool:
     condition = job.get("if")
     if not isinstance(condition, str) or not condition.strip():
@@ -1702,11 +1764,14 @@ def _scan_workflow_trust(
                 if not isinstance(path, str) or _unsafe_cache_path(path):
                     raise PolicyError(f"{label} cache step in job {job_name!r} has an unsafe cache path")
                 if pull_request:
-                    # Trusted writes, untrusted reads: a restore-only step, or a
-                    # save only a push to the protected branch can run, may share
-                    # one exact key across events. A broad restore prefix could
-                    # substitute stale output, so a shared key allows none.
                     variant = parsed[1] if parsed is not None else ""
+                    if variant != "save" and not _cache_restore_excludes_external_forks(job, step):
+                        raise PolicyError(
+                            f"{label} pull-request cache restore in job {job_name!r} "
+                            "must exclude external forks at the job or step condition"
+                        )
+                    # Trusted reads and protected writes may share one exact
+                    # key. A broad restore prefix could substitute stale output.
                     shared_key = variant == "restore" or (
                         variant == "save" and _requires_protected_push(step.get("if"), protected_ref)
                     )

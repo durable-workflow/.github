@@ -423,12 +423,14 @@ class QualificationPolicyTest(unittest.TestCase):
             self.scan(source)
 
     TRUSTED_SAVE = "github.event_name == 'push' && github.ref == 'refs/heads/main'"
+    TRUSTED_READ = "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository"
 
     def trusted_main_cache(self) -> str:
         commit, version = self.approved_action("actions/cache")
         save_if = f"success() && {self.TRUSTED_SAVE} && steps.cache.outputs.cache-hit != 'true'"
         return workflow(
             f"""- id: cache
+  if: ${{{{ {self.TRUSTED_READ} }}}}
   uses: actions/cache/restore@{commit} # {version}
   with:
     path: build-cache
@@ -447,6 +449,71 @@ class QualificationPolicyTest(unittest.TestCase):
         # The same condition with its terms reordered and parenthesized.
         reordered = "github.ref == 'refs/heads/main' && (github.event_name == 'push')"
         self.scan(source.replace(self.TRUSTED_SAVE, reordered))
+
+    def test_cache_restores_require_a_non_fork_guard_even_with_partitioned_keys(self) -> None:
+        source = self.trusted_main_cache()
+        guard = f"        if: ${{{{ {self.TRUSTED_READ} }}}}\n"
+        for path in ("target/debug/deps", "vendor", "node_modules", "~/.cargo/registry/cache"):
+            candidate = source.replace("path: build-cache", f"path: {path}")
+            for partitioned in (False, True):
+                changed = candidate.replace(guard, "")
+                if partitioned:
+                    changed = changed.replace("key: build-v1-", "key: build-${{ github.event_name }}-")
+                with self.subTest(path=path, partitioned=partitioned), self.assertRaisesRegex(
+                    PolicyError, "cache restore.*external fork"
+                ):
+                    self.scan(changed)
+
+    def test_cache_restore_guard_rejects_fork_and_main_ref_bypasses(self) -> None:
+        source = self.trusted_main_cache()
+        same_repository = "github.event.pull_request.head.repo.full_name == github.repository"
+        for condition in (
+            "true",
+            "github.ref == 'refs/heads/main'",
+            "github.event_name == 'pull_request'",
+            "github.event_name == 'PULL_REQUEST'",
+            "github.event_name != 'workflow_dispatch'",
+            f"{same_repository} || github.event_name == 'pull_request'",
+            f"{same_repository} || github.ref == 'refs/heads/main'",
+            f"{same_repository} || success()",
+            f"!({same_repository})",
+            "!github.event_name != 'push'",
+            "!github.event.pull_request.head.repo.full_name != github.repository",
+            "github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'",
+            "github.event_name != 'pull_requeﬆ'",
+            "!(github.event_name == 'pull_requeﬆ')",
+            "falſe",
+        ):
+            candidate = source.replace(self.TRUSTED_READ, condition)
+            with self.subTest(condition=condition), self.assertRaisesRegex(
+                PolicyError, "cache restore.*external fork"
+            ):
+                self.scan(candidate)
+
+    def test_cache_restore_guards_accept_protected_and_same_repository_contexts(self) -> None:
+        source = self.trusted_main_cache()
+        same_repository = "github.event.pull_request.head.repo.full_name == github.repository"
+        for condition in (
+            same_repository,
+            "github.repository == github.event.pull_request.head.repo.full_name",
+            "!(github.event.pull_request.head.repo.full_name != github.repository)",
+            f"success() && ({same_repository})",
+            f"({self.TRUSTED_SAVE}) || (github.event_name == 'pull_request' && {same_repository})",
+            f"always() && ({self.TRUSTED_READ})",
+            self.TRUSTED_SAVE,
+            "false",
+        ):
+            with self.subTest(condition=condition):
+                self.scan(source.replace(self.TRUSTED_READ, condition))
+
+    def test_cache_restore_can_inherit_the_job_non_fork_guard(self) -> None:
+        source = self.trusted_main_cache()
+        source = source.replace(f"        if: ${{{{ {self.TRUSTED_READ} }}}}\n", "")
+        source = source.replace("    runs-on:", f"    if: ${{{{ {self.TRUSTED_READ} }}}}\n    runs-on:")
+        self.scan(source)
+        candidate = source.replace(self.TRUSTED_READ, "github.ref == 'refs/heads/main'")
+        with self.assertRaisesRegex(PolicyError, "cache restore.*external fork"):
+            self.scan(candidate)
 
     def test_pull_request_cache_without_partition_refuses_untrusted_writes_and_prefixes(self) -> None:
         source = self.trusted_main_cache()
