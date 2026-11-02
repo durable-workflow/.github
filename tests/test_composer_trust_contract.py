@@ -14,9 +14,15 @@ PREFIX = "durable-workflow/.github/.github/actions/"
 
 class ComposerContainerCallerContractTest(unittest.TestCase):
     def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.bootstrap = {"uses": PREFIX + "bootstrap-patched-pip@" + REVISION, "id": "clean-bootstrap"}
         self.guard = {"uses": PREFIX + "verify-composer-container-trust@" + REVISION, "id": "container-trust",
                       "with": {"request": "fixture", "source-directory": "server", "source-commit": "${{ inputs.server_commit }}",
-                               "compose-directory": "sdk", "provenance": "sdk/provenance.json"}}
+                               "compose-directory": "sdk", "provenance": "sdk/provenance.json",
+                               "ca-file": "${{ steps.clean-bootstrap.outputs.ca-file }}",
+                               "ca-sha256": "${{ steps.clean-bootstrap.outputs.ca-sha256 }}"}}
         self.command = "docker compose --env-file /dev/null up -d --build --wait --wait-timeout 300"
         bindings = {"DWF_COMPOSER_TRUST_CONTEXT": "context-directory", "COMPOSER_CAFILE": "ca-file",
                     "DW_CI_CA_SHA256": "ca-sha256", "DW_SERVER_SOURCE_COMMIT": "source-commit",
@@ -26,8 +32,9 @@ class ComposerContainerCallerContractTest(unittest.TestCase):
         self.catalog = {"requests": {"fixture": {"target": "fixture", "workflow": "ci.yml", "job": "connected", "command": self.command}}}
 
     def check(self, steps=None):
-        source = yaml.safe_dump({"jobs": {"connected": {"steps": [self.guard, self.build] if steps is None else steps}}})
-        return verify_composer_container_callers("fixture", {".github/workflows/ci.yml": source}, {REVISION}, self.catalog)
+        selected = [self.guard, self.build] if steps is None else steps
+        source = yaml.safe_dump({"jobs": {"connected": {"steps": [self.bootstrap, *selected]}}})
+        return verify_composer_container_callers("fixture", {".github/workflows/ci.yml": source}, {REVISION}, self.catalog, self.root)
 
     def test_build_uses_every_output_from_its_fresh_registered_guard(self):
         self.assertEqual(["ci.yml:connected:container-fixture"], self.check())
@@ -77,7 +84,46 @@ class ComposerContainerCallerContractTest(unittest.TestCase):
     def test_deleting_the_workflow_or_registered_job_does_not_hide_a_sink(self):
         for sources in ({}, {"ci.yml": "jobs: {}"}):
             with self.subTest(sources=sources), self.assertRaises(PolicyError):
-                verify_composer_container_callers("fixture", sources, {REVISION}, self.catalog)
+                verify_composer_container_callers("fixture", sources, {REVISION}, self.catalog, self.root)
+
+    def test_guard_ca_identity_must_come_from_the_reviewed_bootstrap_outputs(self):
+        for field in ("ca-file", "ca-sha256"):
+            steps = deepcopy([self.guard, self.build])
+            steps[0]["with"][field] = "${{ env.UNVERIFIED }}"
+            with self.subTest(field=field), self.assertRaises(PolicyError):
+                self.check(steps)
+        self.guard["env"] = {"COMPOSER_CAFILE": "/tmp/unverified.pem", "DW_CI_CA_SHA256": "f" * 64}
+        with self.assertRaisesRegex(PolicyError, "overrides trust"):
+            self.check()
+
+    def test_prior_environment_mutation_cannot_supply_the_ca_identity(self):
+        mutation = {"run": 'printf "COMPOSER_CAFILE=/tmp/unverified.pem\\nDW_CI_CA_SHA256=fake\\n" >> "$GITHUB_ENV"'}
+        self.guard["with"]["ca-file"] = "${{ env.COMPOSER_CAFILE }}"
+        self.guard["with"]["ca-sha256"] = "${{ env.DW_CI_CA_SHA256 }}"
+        with self.assertRaises(PolicyError):
+            self.check([mutation, self.guard, self.build])
+
+    def test_missing_conditional_ignored_and_unreviewed_bootstraps_refuse(self):
+        for mutation in ({"id": "different"}, {"if": "false"}, {"continue-on-error": True},
+                         {"uses": PREFIX + "bootstrap-patched-pip@" + "b" * 40}):
+            self.bootstrap.update(mutation)
+            with self.subTest(mutation=mutation), self.assertRaises(PolicyError):
+                self.check()
+            self.bootstrap = {"uses": PREFIX + "bootstrap-patched-pip@" + REVISION, "id": "clean-bootstrap"}
+
+    def test_no_extra_compose_direct_buildx_bake_action_or_helper_build_is_invisible(self):
+        commands = ["docker compose build", "docker compose up --build", "docker-compose build", "docker build server",
+                    "docker --context fixture build server", "docker buildx build server", "docker buildx bake",
+                    "/usr/bin/docker compose -f alternate.yml build"]
+        for command in commands:
+            with self.subTest(command=command), self.assertRaisesRegex(PolicyError, "additional unguarded"):
+                self.check([self.guard, self.build, {"run": command}])
+        (self.root / "scripts").mkdir()
+        (self.root / "scripts/build.sh").write_text("docker compose build\n")
+        with self.assertRaises(PolicyError):
+            self.check([self.guard, self.build, {"run": "scripts/build.sh"}])
+        with self.assertRaises(PolicyError):
+            self.check([self.guard, self.build, {"uses": "docker/build-push-action@" + REVISION}])
 
 
 class ComposerNetworkContractTest(unittest.TestCase):

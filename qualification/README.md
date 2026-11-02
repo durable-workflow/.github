@@ -69,6 +69,10 @@ The immediately following build uses the same directory and the action's outputs
 for all trust/source variables and `COMPOSE_FILE`. The central caller contract
 requires that exact command and refuses an omitted, conditional, ignored or stale
 guard. No rendered application configuration is printed or retained.
+Its `ca-file` and `ca-sha256` inputs must reference outputs of the same earlier,
+unconditional reviewed `bootstrap-patched-pip` step. Ambient or step-local CA
+values cannot supply that identity. Additional Docker, Compose or Buildx build
+commands in the registered job also refuse, including calls in shell helpers.
 
 The initial `sdk-php-cooperative-server` entry in
 `composer-container-trust.json` has no approved recipes. It therefore refuses
