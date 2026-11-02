@@ -291,6 +291,18 @@ class ComposerContainerComposeTest(unittest.TestCase):
             with self.subTest(secret=secret), self.assertRaises(ContainerTrustRefused):
                 self.check(document)
 
+    def test_external_cache_keys_refuse_for_every_registered_service(self):
+        # Secrets do not invalidate cached layers, so an imported layer could
+        # bypass the request-time verifier. Even empty declarations fail closed.
+        for name in self.request["services"]:
+            for field in ("cache_from", "cache_to"):
+                for value in ([], None, ["type=registry,ref=example.invalid/cache:fixture"]):
+                    document = deepcopy(self.document)
+                    document["services"][name]["build"][field] = value
+                    with self.subTest(service=name, field=field, value=value):
+                        with self.assertRaisesRegex(ContainerTrustRefused, "BuildKit caches"):
+                            self.check(document)
+
     def test_renderer_uses_the_same_registered_files_and_verified_environment(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
