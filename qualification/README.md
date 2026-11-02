@@ -37,6 +37,14 @@ The scanner rejects `pull_request_target`, mutable container
 images, unreviewed `workflow_run` consumers, and privileged artifact consumers
 without exact producer and digest provenance.
 
+A privileged `workflow_dispatch` job must be limited to the protected branch.
+The only exceptions are listed in `privileged_tag_dispatch_workflows`: one named
+workflow, its named jobs and one environment. Each listed job needs an
+unconditional, unprivileged plan job and carries the exact
+`github.ref == format('refs/tags/{0}', inputs.<tag>)` predicate as a top-level
+condition, so a release runs from its own tag ref and a wrong ref fails in the
+plan job. The workflow may have no other trigger.
+
 Product repositories own their tests, documentation deployment, publication,
 and deployment workflows. Editorial wording is outside this policy.
 

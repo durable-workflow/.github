@@ -249,11 +249,13 @@ class QualificationPolicyTest(unittest.TestCase):
 
     def test_merge_queue_sonar_accepts_only_the_trusted_static_scanner(self) -> None:
         source = (ROOT / "tests/fixtures/merge-queue-sonar.yml").read_text(encoding="utf-8")
-        scan_workflow_sources(self.policy, "server", {".github/workflows/queue-sonar.yml": source})
+        policy = copy.deepcopy(self.policy)
+        policy["workflow_trust"]["privileged_tag_dispatch_workflows"] = {}
+        scan_workflow_sources(policy, "server", {".github/workflows/queue-sonar.yml": source})
         with self.assertRaises(PolicyError):
-            scan_workflow_sources(self.policy, "sdk-php", {".github/workflows/queue-sonar.yml": source})
+            scan_workflow_sources(policy, "sdk-php", {".github/workflows/queue-sonar.yml": source})
         with self.assertRaises(PolicyError):
-            scan_workflow_sources(self.policy, "server", {".github/workflows/another-scanner.yml": source})
+            scan_workflow_sources(policy, "server", {".github/workflows/another-scanner.yml": source})
 
     def test_merge_queue_sonar_refuses_candidate_execution_and_privilege_expansion(self) -> None:
         source = (ROOT / "tests/fixtures/merge-queue-sonar.yml").read_text(encoding="utf-8")
@@ -556,6 +558,172 @@ class QualificationPolicyTest(unittest.TestCase):
             before = sorted(path.name for path in directory.iterdir())
             validate_local_action_references(self.policy, directory, "github-control-plane")
             self.assertEqual(before, sorted(path.name for path in directory.iterdir()))
+
+
+TAG_GATE = "github.ref == format('refs/tags/{0}', inputs.tag)"
+
+
+def tag_dispatch_workflow(
+    *,
+    plan_extra: str = "",
+    gate: str = TAG_GATE,
+    trigger_extra: str = "",
+    tag_required: str = "true",
+    environment: str = "dockerhub-native",
+    needs: str = "plan",
+    extra_job: str = "",
+) -> str:
+    def publishing_job(name: str, condition: str) -> str:
+        return f"""  {name}:
+    needs: {needs}
+    if: {condition}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: {environment}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - run: echo {name}
+"""
+
+    return f"""name: native release
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        required: {tag_required}
+      release_commit:
+        required: true
+{trigger_extra}permissions:
+  contents: read
+jobs:
+  plan:
+{plan_extra}    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - run: echo verify the exact tag ref and commit
+{"".join(publishing_job(name, gate) for name in ("build-amd64", "build-arm64", "publish"))}\
+{publishing_job("aliases", gate + " && needs.plan.outputs.dockerhub == 'true'")}{extra_job}"""
+
+
+class TagDispatchPolicyTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.policy = policy_fixture()
+
+    def scan(self, source: str, policy: dict[str, object] | None = None) -> dict[str, dict[str, object]]:
+        return scan_workflow_sources(
+            policy or self.policy, "server", {".github/workflows/native-release.yml": source}
+        )
+
+    def assert_refused(self, source: str, message: str) -> None:
+        with self.assertRaisesRegex(PolicyError, message):
+            self.scan(source)
+
+    def test_reviewed_tag_ref_release_workflow_is_admitted(self) -> None:
+        evidence = self.scan(tag_dispatch_workflow())
+        self.assertEqual(
+            evidence[".github/workflows/native-release.yml"]["privileged_jobs"],
+            ["aliases", "build-amd64", "build-arm64", "publish"],
+        )
+
+    def test_the_same_workflow_is_refused_without_its_binding(self) -> None:
+        policy = copy.deepcopy(self.policy)
+        policy["workflow_trust"]["privileged_tag_dispatch_workflows"] = {}
+        with self.assertRaisesRegex(PolicyError, "can run outside refs/heads/main"):
+            self.scan(tag_dispatch_workflow(), policy)
+
+    def test_binding_does_not_transfer_to_another_workflow_or_target(self) -> None:
+        with self.assertRaisesRegex(PolicyError, "can run outside refs/heads/main"):
+            scan_workflow_sources(
+                self.policy,
+                "server",
+                {
+                    ".github/workflows/native-release.yml": tag_dispatch_workflow(),
+                    ".github/workflows/other-release.yml": tag_dispatch_workflow(),
+                },
+            )
+        with self.assertRaisesRegex(PolicyError, "can run outside refs/heads/main"):
+            scan_workflow_sources(
+                self.policy, "sdk-php", {".github/workflows/native-release.yml": tag_dispatch_workflow()}
+            )
+
+    def test_conditioned_plan_job_is_refused(self) -> None:
+        self.assert_refused(
+            tag_dispatch_workflow(plan_extra=f"    if: {TAG_GATE}\n"), "plan job must run unconditionally"
+        )
+
+    def test_privileged_plan_job_is_refused(self) -> None:
+        self.assert_refused(
+            tag_dispatch_workflow(plan_extra="    environment: dockerhub-native\n"),
+            "job 'plan' can run outside refs/heads/main|plan job must not be privileged",
+        )
+
+    def test_loosened_or_missing_tag_ref_predicates_are_refused(self) -> None:
+        for gate in (
+            f"{TAG_GATE} || true",
+            f"!({TAG_GATE})",
+            "github.ref != 'refs/heads/main'",
+            "startsWith(github.ref, 'refs/tags/')",
+            "github.ref == format('refs/heads/{0}', inputs.tag)",
+        ):
+            with self.subTest(gate=gate):
+                self.assert_refused(tag_dispatch_workflow(gate=gate), "can run outside refs/heads/main")
+
+    def test_wrong_environment_or_missing_plan_dependency_is_refused(self) -> None:
+        self.assert_refused(tag_dispatch_workflow(environment="production"), "can run outside refs/heads/main")
+        self.assert_refused(tag_dispatch_workflow(needs="[]"), "can run outside refs/heads/main")
+
+    def test_unlisted_privileged_job_is_refused_even_with_the_tag_predicate(self) -> None:
+        extra = f"""  sign:
+    needs: plan
+    if: {TAG_GATE}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: dockerhub-native
+    permissions:
+      contents: write
+    steps:
+      - run: echo sign
+"""
+        self.assert_refused(tag_dispatch_workflow(extra_job=extra), "job 'sign' can run outside refs/heads/main")
+
+    def test_other_triggers_and_optional_tag_input_are_refused(self) -> None:
+        self.assert_refused(
+            tag_dispatch_workflow(trigger_extra="  push:\n    tags: ['native-*']\n"),
+            "triggered only by workflow_dispatch",
+        )
+        self.assert_refused(tag_dispatch_workflow(tag_required="false"), "must be a required string")
+
+    def test_missing_bound_workflow_or_job_is_refused(self) -> None:
+        with self.assertRaisesRegex(PolicyError, "missing policy-bound tag dispatch workflows"):
+            scan_workflow_sources(self.policy, "server", {".github/workflows/ci.yml": workflow("- run: echo ok")})
+        policy = copy.deepcopy(self.policy)
+        binding = policy["workflow_trust"]["privileged_tag_dispatch_workflows"]["server/native-release.yml"]
+        binding["jobs"] = sorted([*binding["jobs"], "verify"])
+        with self.assertRaisesRegex(PolicyError, r"missing policy-bound tag dispatch jobs \['verify'\]"):
+            self.scan(tag_dispatch_workflow(), policy)
+
+    def test_policy_refuses_a_loosened_or_incomplete_binding(self) -> None:
+        cases = {
+            "tag_ref_condition": "startsWith(github.ref, 'refs/tags/')",
+            "jobs": ["publish", "aliases"],
+            "plan_job": "publish",
+            "environment": "",
+        }
+        for field, value in cases.items():
+            with self.subTest(field=field):
+                policy = copy.deepcopy(self.policy)
+                bindings = policy["workflow_trust"]["privileged_tag_dispatch_workflows"]
+                bindings["server/native-release.yml"][field] = value
+                with self.assertRaises(PolicyError):
+                    validate_policy(policy)
+        policy = copy.deepcopy(self.policy)
+        del policy["workflow_trust"]["privileged_tag_dispatch_workflows"]["server/native-release.yml"]["plan_job"]
+        with self.assertRaisesRegex(PolicyError, "complete tag dispatch trust binding"):
+            validate_policy(policy)
 
 
 if __name__ == "__main__":

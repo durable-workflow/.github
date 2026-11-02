@@ -439,6 +439,7 @@ def validate_policy(policy: dict[str, Any]) -> None:
     workflow_trust = policy.get("workflow_trust")
     if not isinstance(workflow_trust, dict) or set(workflow_trust) != {
         "privileged_artifact_handoffs",
+        "privileged_tag_dispatch_workflows",
         "privileged_workflow_run_consumers",
         "pull_request_target_exceptions",
     }:
@@ -493,6 +494,7 @@ def validate_policy(policy: dict[str, Any]) -> None:
         or checkout_commit not in checkout_releases
     ):
         raise PolicyError("privileged artifact validation predecessor must use an approved checkout release")
+    _validate_tag_dispatch_bindings(policy, workflow_trust["privileged_tag_dispatch_workflows"])
     consumers = workflow_trust["privileged_workflow_run_consumers"]
     if not isinstance(consumers, dict):
         raise PolicyError("privileged workflow_run consumers must be an object")
@@ -1661,6 +1663,117 @@ def _direct_artifact_handoff(
     )
 
 
+TAG_DISPATCH_BINDING_FIELDS = {"environment", "jobs", "plan_job", "tag_input", "tag_ref_condition"}
+
+
+def _tag_ref_condition(tag_input: str) -> str:
+    return f"github.ref == format('refs/tags/{{0}}', inputs.{tag_input})"
+
+
+def _validate_tag_dispatch_bindings(policy: dict[str, Any], bindings: object) -> None:
+    """Validate reviewed workflows whose privileged dispatch jobs run from a release tag ref.
+
+    Each binding names one workflow, one environment and the exact privileged jobs. The
+    ref predicate is fixed by code, so policy data cannot loosen it.
+    """
+
+    if not isinstance(bindings, dict):
+        raise PolicyError("privileged tag dispatch workflows must be an object")
+    for path, binding in bindings.items():
+        if not isinstance(path, str) or not re.fullmatch(r"[a-z0-9.-]+/[a-z0-9][a-z0-9.-]*\.yml", path):
+            raise PolicyError(f"invalid privileged tag dispatch workflow path {path!r}")
+        if path.split("/", 1)[0] not in policy.get("targets", {}):
+            raise PolicyError(f"{path} names an unknown workflow trust target")
+        if not isinstance(binding, dict) or set(binding) != TAG_DISPATCH_BINDING_FIELDS:
+            raise PolicyError(f"{path} must declare the complete tag dispatch trust binding")
+        jobs = binding["jobs"]
+        if (
+            not isinstance(jobs, list)
+            or not jobs
+            or not all(isinstance(job, str) and re.fullmatch(r"[A-Za-z0-9_-]+", job) for job in jobs)
+            or jobs != sorted(set(jobs))
+        ):
+            raise PolicyError(f"{path} tag dispatch jobs must be a sorted list of unique job names")
+        plan_job = binding["plan_job"]
+        if not isinstance(plan_job, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", plan_job) or plan_job in jobs:
+            raise PolicyError(f"{path} tag dispatch plan job must be a separate job name")
+        environment = binding["environment"]
+        if not isinstance(environment, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", environment):
+            raise PolicyError(f"{path} tag dispatch environment must be one environment name")
+        tag_input = binding["tag_input"]
+        if not isinstance(tag_input, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", tag_input):
+            raise PolicyError(f"{path} tag dispatch input must be a workflow input name")
+        if binding["tag_ref_condition"] != _tag_ref_condition(tag_input):
+            raise PolicyError(f"{path} tag dispatch condition must be the reviewed exact tag-ref predicate")
+
+
+def _job_environment_name(job: Mapping[str, Any]) -> str | None:
+    environment = job.get("environment")
+    if isinstance(environment, str):
+        return environment
+    if isinstance(environment, dict) and isinstance(environment.get("name"), str):
+        return environment["name"]
+    return None
+
+
+def _requires_exact_tag_ref(job: Mapping[str, Any], expected: str) -> bool:
+    """Return whether the job condition requires the exact tag-ref predicate as a top-level conjunct."""
+
+    condition = job.get("if")
+    if not isinstance(condition, str) or not condition.strip():
+        return False
+    expression = _strip_balanced_parentheses(_condition_without_expression_wrapper(condition))
+    if _split_condition(expression, "||"):
+        return False
+    conjuncts = _split_condition(expression, "&&") or [expression]
+    normalized = " ".join(expected.split())
+    return any(" ".join(_strip_balanced_parentheses(part).split()) == normalized for part in conjuncts)
+
+
+def _check_tag_dispatch_workflow(
+    label: str, triggers: Mapping[str, Any], jobs: Mapping[str, Any], binding: Mapping[str, Any]
+) -> None:
+    if set(triggers) != {"workflow_dispatch"}:
+        raise PolicyError(f"{label} tag dispatch workflow must be triggered only by workflow_dispatch")
+    dispatch = triggers["workflow_dispatch"]
+    inputs = dispatch.get("inputs") if isinstance(dispatch, dict) else None
+    tag_input = inputs.get(binding["tag_input"]) if isinstance(inputs, dict) else None
+    # Workflow YAML scalars load as strings; dispatch inputs default to type string.
+    if (
+        not isinstance(tag_input, dict)
+        or tag_input.get("required") not in {True, "true"}
+        or tag_input.get("type", "string") != "string"
+    ):
+        raise PolicyError(f"{label} tag dispatch input {binding['tag_input']!r} must be a required string")
+    plan = jobs.get(binding["plan_job"])
+    if not isinstance(plan, dict):
+        raise PolicyError(f"{label} tag dispatch plan job {binding['plan_job']!r} is missing")
+    plan_writes = (
+        _permissions_with_write(plan.get("permissions"), f"{label} job {binding['plan_job']!r}")
+        if plan.get("permissions") is not None
+        else set()
+    )
+    if "if" in plan:
+        raise PolicyError(f"{label} tag dispatch plan job must run unconditionally so a wrong ref fails")
+    if plan_writes or "environment" in plan or "secrets" in plan or _references_secret_context(plan):
+        raise PolicyError(f"{label} tag dispatch plan job must not be privileged")
+    missing = sorted(set(binding["jobs"]) - set(jobs))
+    if missing:
+        raise PolicyError(f"{label} is missing policy-bound tag dispatch jobs {missing}")
+
+
+def _admits_tag_dispatch_job(
+    label: str, job_name: str, job: dict[str, Any], binding: Mapping[str, Any] | None
+) -> bool:
+    return (
+        binding is not None
+        and job_name in binding["jobs"]
+        and _job_environment_name(job) == binding["environment"]
+        and binding["plan_job"] in _job_needs(job, f"{label} job {job_name!r}")
+        and _requires_exact_tag_ref(job, binding["tag_ref_condition"])
+    )
+
+
 def _scan_workflow_trust(
     policy: dict[str, Any],
     target_name: str,
@@ -1725,6 +1838,8 @@ def _scan_workflow_trust(
     jobs = document.get("jobs")
     if not isinstance(jobs, dict) or not jobs:
         raise PolicyError(f"{label} must declare jobs")
+    tag_binding = policy["workflow_trust"]["privileged_tag_dispatch_workflows"].get(consumer_key)
+    tag_dispatch_admitted = False
     privileged_jobs: list[str] = []
     for job_name, job in jobs.items():
         if not isinstance(job_name, str) or not isinstance(job, dict):
@@ -1741,9 +1856,11 @@ def _scan_workflow_trust(
         if job_privileged:
             privileged_jobs.append(job_name)
         if manual_dispatch and job_privileged and not _protects_manual_dispatch(job, protected_ref):
-            raise PolicyError(
-                f"{label} privileged workflow_dispatch job {job_name!r} can run outside {protected_ref}"
-            )
+            if not _admits_tag_dispatch_job(label, job_name, job, tag_binding):
+                raise PolicyError(
+                    f"{label} privileged workflow_dispatch job {job_name!r} can run outside {protected_ref}"
+                )
+            tag_dispatch_admitted = True
         if pull_request and job_writes:
             raise PolicyError(f"{label} pull-request job {job_name!r} grants write permissions")
         if pull_request and "environment" in job:
@@ -1881,6 +1998,9 @@ def _scan_workflow_trust(
                         )
     elif workflow_run is None and consumer_policy is not None:
         raise PolicyError(f"{label} is policy-bound as a workflow_run consumer but has no workflow_run trigger")
+    if tag_dispatch_admitted:
+        # Jobs admitted from a tag ref depend on the whole reviewed workflow shape.
+        _check_tag_dispatch_workflow(label, triggers, jobs, tag_binding)
 
     return {
         "containers": sorted(container_actions),
@@ -1904,6 +2024,16 @@ def scan_workflow_sources(
         if key.startswith(f"{target_name}/")
     }
     present = {Path(path).name for path in workflow_sources}
+    expected_tag_dispatch = {
+        key.rsplit("/", 1)[1]
+        for key in policy["workflow_trust"]["privileged_tag_dispatch_workflows"]
+        if key.startswith(f"{target_name}/")
+    }
+    missing_tag_dispatch = expected_tag_dispatch - present
+    if missing_tag_dispatch:
+        raise PolicyError(
+            f"{target_name} is missing policy-bound tag dispatch workflows {sorted(missing_tag_dispatch)}"
+        )
     missing = expected_consumers - present
     if missing:
         raise PolicyError(f"{target_name} is missing policy-bound workflow_run consumers {sorted(missing)}")

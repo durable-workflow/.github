@@ -137,6 +137,20 @@
       ],
       "validator_runner": "ubuntu-latest"
     },
+    "privileged_tag_dispatch_workflows": {
+      "server/native-release.yml": {
+        "environment": "dockerhub-native",
+        "jobs": [
+          "aliases",
+          "build-amd64",
+          "build-arm64",
+          "publish"
+        ],
+        "plan_job": "plan",
+        "tag_input": "tag",
+        "tag_ref_condition": "github.ref == format('refs/tags/{0}', inputs.tag)"
+      }
+    },
     "privileged_workflow_run_consumers": {},
     "pull_request_target_exceptions": []
   },
