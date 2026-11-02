@@ -76,6 +76,7 @@
       },
       "durable-workflow/.github": {
         "54cce4c6a814c8137dafbee594a1e0bdcf0ba60c": "clean-trust",
+        "699d09d602fc0353160bdecaa2b23f07ef4c7c21": "clean-trust",
         "75587fc33ff40c34f32ef777293dad56bb6f48c7": "clean-trust",
         "76f333804e68725059039fd54df241d40d855cd3": "clean-trust",
         "ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10": "patched-pip"
