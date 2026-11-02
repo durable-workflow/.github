@@ -215,6 +215,10 @@ def verify_compose_build(build: dict[str, Any], source: Path, request: dict[str,
             or build.get("target", request["stage"]) != request["stage"]
             or "dockerfile_inline" in build):
         raise ContainerTrustRefused("Compose must build the verified source, Dockerfile and request stage.")
+    if "cache_from" in build or "cache_to" in build:
+        # Secret contents are absent from BuildKit cache keys. Registered
+        # requests use a fresh hosted runner, without imported/exported layers.
+        raise ContainerTrustRefused("Compose must not import or export BuildKit caches.")
     if build.get("additional_contexts") != {"dwf_composer_trust": outputs["context-directory"]}:
         raise ContainerTrustRefused("Compose must mount only the reviewed verifier context.")
     arguments = {"DW_CI_CA_SHA256": outputs["ca-sha256"], "DW_SERVER_SOURCE_COMMIT": outputs["source-commit"],
