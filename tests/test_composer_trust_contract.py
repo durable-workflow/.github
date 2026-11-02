@@ -5,11 +5,79 @@ import unittest
 
 import yaml
 
-from scripts.qualification_policy import PolicyError, verify_composer_network_sinks
+from scripts.qualification_policy import PolicyError, verify_composer_container_callers, verify_composer_network_sinks
 
 
 REVISION = "a" * 40
 PREFIX = "durable-workflow/.github/.github/actions/"
+
+
+class ComposerContainerCallerContractTest(unittest.TestCase):
+    def setUp(self):
+        self.guard = {"uses": PREFIX + "verify-composer-container-trust@" + REVISION, "id": "container-trust",
+                      "with": {"request": "fixture", "source-directory": "server", "source-commit": "${{ inputs.server_commit }}",
+                               "compose-directory": "sdk", "provenance": "sdk/provenance.json"}}
+        self.command = "docker compose --env-file /dev/null up -d --build --wait --wait-timeout 300"
+        bindings = {"DWF_COMPOSER_TRUST_CONTEXT": "context-directory", "COMPOSER_CAFILE": "ca-file",
+                    "DW_CI_CA_SHA256": "ca-sha256", "DW_SERVER_SOURCE_COMMIT": "source-commit",
+                    "DW_SERVER_DOCKERFILE_SHA256": "dockerfile-sha256", "COMPOSE_FILE": "compose-file"}
+        self.build = {"run": self.command, "working-directory": "sdk",
+                      "env": {name: "${{ steps.container-trust.outputs." + output + " }}" for name, output in bindings.items()}}
+        self.catalog = {"requests": {"fixture": {"target": "fixture", "workflow": "ci.yml", "job": "connected", "command": self.command}}}
+
+    def check(self, steps=None):
+        source = yaml.safe_dump({"jobs": {"connected": {"steps": [self.guard, self.build] if steps is None else steps}}})
+        return verify_composer_container_callers("fixture", {".github/workflows/ci.yml": source}, {REVISION}, self.catalog)
+
+    def test_build_uses_every_output_from_its_fresh_registered_guard(self):
+        self.assertEqual(["ci.yml:connected:container-fixture"], self.check())
+
+    def test_missing_unreviewed_or_intervening_guard_refuses(self):
+        with self.assertRaises(PolicyError):
+            self.check([self.build])
+        with self.assertRaises(PolicyError):
+            self.check([self.guard, {"run": "echo intervening"}, self.build])
+        self.guard["uses"] = PREFIX + "verify-composer-container-trust@" + "b" * 40
+        with self.assertRaises(PolicyError):
+            self.check()
+
+    def test_conditional_ignored_duplicate_or_changed_build_refuses(self):
+        for index in (0, 1):
+            for field, value in (("if", "always()"), ("continue-on-error", True)):
+                steps = deepcopy([self.guard, self.build])
+                steps[index][field] = value
+                with self.subTest(index=index, field=field), self.assertRaises(PolicyError):
+                    self.check(steps)
+        with self.assertRaises(PolicyError):
+            self.check([self.guard, self.build, self.guard, self.build])
+        self.build["run"] = "docker compose up --build"
+        with self.assertRaises(PolicyError):
+            self.check()
+
+    def test_each_source_trust_and_compose_output_is_required(self):
+        for name in self.build["env"]:
+            steps = deepcopy([self.guard, self.build])
+            steps[1]["env"][name] = "unverified"
+            with self.subTest(name=name), self.assertRaises(PolicyError):
+                self.check(steps)
+        self.build["env"]["COMPOSER_HOME"] = "/unverified"
+        with self.assertRaises(PolicyError):
+            self.check()
+
+    def test_request_and_actual_build_directory_cannot_change(self):
+        for field in ("request", "source-directory", "source-commit", "compose-directory", "provenance"):
+            steps = deepcopy([self.guard, self.build])
+            steps[0]["with"][field] = ""
+            with self.subTest(field=field), self.assertRaises(PolicyError):
+                self.check(steps)
+        self.build["working-directory"] = "another-directory"
+        with self.assertRaises(PolicyError):
+            self.check()
+
+    def test_deleting_the_workflow_or_registered_job_does_not_hide_a_sink(self):
+        for sources in ({}, {"ci.yml": "jobs: {}"}):
+            with self.subTest(sources=sources), self.assertRaises(PolicyError):
+                verify_composer_container_callers("fixture", sources, {REVISION}, self.catalog)
 
 
 class ComposerNetworkContractTest(unittest.TestCase):

@@ -105,6 +105,9 @@ def approved_recipe(source: Path, commit: str, request: dict[str, Any]) -> dict[
                 or not SHA256.fullmatch(expected)
                 or sha256(checkout_file(source, relative, commit)) != expected):
             raise ContainerTrustRefused("The selected source no longer matches its reviewed recipe files.")
+    context_policies = [name for name in (".dockerignore", dockerfile + ".dockerignore") if (source / name).is_file()]
+    if not context_policies or any(name not in files for name in context_policies):
+        raise ContainerTrustRefused("Every Docker context exclusion file must be part of the reviewed recipe.")
     stages = {name.lower(): base for base, name in re.findall(
         r"^\s*FROM\s+(?:--platform=\S+\s+)?(\S+)\s+AS\s+(\S+)\s*$",
         contents.decode("utf-8"), flags=re.IGNORECASE | re.MULTILINE,
@@ -206,11 +209,74 @@ def provenance_destination(path: Path, environment: dict[str, str], source: Path
     return destination
 
 
+def verify_compose_build(build: dict[str, Any], source: Path, request: dict[str, Any], outputs: dict[str, str]) -> None:
+    if (not isinstance(build, dict) or Path(build.get("context", "")).resolve() != source.resolve()
+            or build.get("dockerfile", "Dockerfile") != request["dockerfile"]
+            or build.get("target", request["stage"]) != request["stage"]
+            or "dockerfile_inline" in build):
+        raise ContainerTrustRefused("Compose must build the verified source, Dockerfile and request stage.")
+    if build.get("additional_contexts") != {"dwf_composer_trust": outputs["context-directory"]}:
+        raise ContainerTrustRefused("Compose must mount only the reviewed verifier context.")
+    arguments = {"DW_CI_CA_SHA256": outputs["ca-sha256"], "DW_SERVER_SOURCE_COMMIT": outputs["source-commit"],
+                 "DW_SERVER_DOCKERFILE_SHA256": outputs["dockerfile-sha256"]}
+    if any(build.get("args", {}).get(name) != value for name, value in arguments.items()):
+        raise ContainerTrustRefused("Compose must use the verified source and CA build arguments.")
+    if build.get("secrets") not in ([{"source": "dwf_ci_ca"}], [{"source": "dwf_ci_ca", "target": "dwf_ci_ca"}]):
+        raise ContainerTrustRefused("Compose must mount the authenticated CA build secret.")
+
+
+def verify_compose_configuration(document: dict[str, Any], source: Path, request: dict[str, Any], outputs: dict[str, str]) -> list[str]:
+    services = document.get("services", {})
+    expected = request.get("services")
+    if not isinstance(services, dict) or not isinstance(expected, list) or not expected:
+        raise ContainerTrustRefused("The registered Compose build services are missing.")
+    builds = {name: service["build"] for name, service in services.items() if "build" in service}
+    if set(builds) != set(expected):
+        raise ContainerTrustRefused("The actual Compose build services differ from the registered request.")
+    for build in builds.values():
+        verify_compose_build(build, source, request, outputs)
+    secrets = document.get("secrets", {})
+    selected = secrets.get("dwf_ci_ca", {})
+    if selected.get("file") != outputs["ca-file"] or "environment" in selected or selected.get("external"):
+        raise ContainerTrustRefused("The actual Compose CA secret differs from the authenticated file.")
+    return sorted(builds)
+
+
+def compose_environment(environment: dict[str, str], outputs: dict[str, str]) -> dict[str, str]:
+    return environment | {
+        "DWF_COMPOSER_TRUST_CONTEXT": outputs["context-directory"], "COMPOSER_CAFILE": outputs["ca-file"],
+        "DW_CI_CA_SHA256": outputs["ca-sha256"], "DW_SERVER_SOURCE_COMMIT": outputs["source-commit"],
+        "DW_SERVER_DOCKERFILE_SHA256": outputs["dockerfile-sha256"],
+    }
+
+
+def inspect_compose(directory: Path, source: Path, request: dict[str, Any], outputs: dict[str, str]) -> list[str]:
+    files = os.environ.get("COMPOSE_FILE", "").split(os.pathsep)
+    if files not in request.get("compose_files", []):
+        raise ContainerTrustRefused("Compose must use the registered local file set.")
+    for name in files:
+        path = directory / name
+        if path.is_symlink() or not path.is_file():
+            raise ContainerTrustRefused("The registered Compose file must be a regular local file.")
+    outputs["compose-file"] = os.pathsep.join(files)
+    try:
+        result = subprocess.run(["docker", "compose", "--env-file", "/dev/null", "config", "--format", "json"], cwd=directory,
+                                env=compose_environment(dict(os.environ), outputs), check=True,
+                                capture_output=True, text=True, timeout=30)
+        document = json.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError) as error:
+        # Compose's rendered configuration and errors can contain application
+        # environment values. Keep both out of logs and the provenance record.
+        raise ContainerTrustRefused("Cannot inspect the actual merged Compose build configuration.") from error
+    return verify_compose_configuration(document, source, request, outputs)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-directory", type=Path, required=True)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--request", required=True)
+    parser.add_argument("--compose-directory", type=Path, required=True)
     parser.add_argument("--provenance", type=Path, required=True)
     args = parser.parse_args()
     try:
@@ -218,6 +284,9 @@ def main() -> int:
         outputs, evidence = prepare(
             args.source_directory, args.source_commit, args.request, catalog, dict(os.environ),
             ROOT / ".github/actions/verify-composer-trust",
+        )
+        evidence["compose_services"] = inspect_compose(
+            args.compose_directory, args.source_directory, catalog["requests"][args.request], outputs,
         )
         provenance = provenance_destination(args.provenance, dict(os.environ), args.source_directory)
         output = Path(os.environ["GITHUB_OUTPUT"]).resolve()
@@ -229,7 +298,7 @@ def main() -> int:
             destination.writelines(f"{key}={value}\n" for key, value in outputs.items())
         print(f"Verified container Composer recipe for {evidence['source_repository']} at {args.source_commit}.")
         return 0
-    except (ContainerTrustRefused, OSError, ValueError, KeyError) as error:
+    except (ContainerTrustRefused, OSError, ValueError, KeyError, TypeError) as error:
         message = str(error) if isinstance(error, ContainerTrustRefused) else "Container trust input inspection failed."
         print(f"Container Composer trust refused: {message}")
         return 1

@@ -56,6 +56,19 @@ Dockerfile and preparation files with an explicitly reviewed recipe, and checks
 the bootstrap's CA digest against the actual file. It returns the verifier
 context directory, CA file and digest, source commit, and Dockerfile digest. Its
 provenance contains identities and hashes without environment or credentials.
+The entire build context must match the selected Git tree, including raw file
+bytes and executable modes. Tracked, staged, untracked and ignored changes
+refuse. Docker exclusion files must be part of the reviewed recipe. New clean
+product commits can use the same recipe while its build instructions remain
+unchanged.
+
+Give the action the actual `compose-directory`. It renders the registered local
+Compose files with `--env-file /dev/null` and verifies every registered service's
+build context, Dockerfile, stage, verifier context, source arguments and CA secret.
+The immediately following build uses the same directory and the action's outputs
+for all trust/source variables and `COMPOSE_FILE`. The central caller contract
+requires that exact command and refuses an omitted, conditional, ignored or stale
+guard. No rendered application configuration is printed or retained.
 
 The initial `sdk-php-cooperative-server` entry in
 `composer-container-trust.json` has no approved recipes. It therefore refuses

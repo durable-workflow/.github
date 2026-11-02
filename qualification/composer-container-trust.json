@@ -3,6 +3,15 @@
   "requests": {
     "sdk-php-cooperative-server": {
       "repository": "durable-workflow/server",
+      "target": "sdk-php",
+      "workflow": "ci.yml",
+      "job": "cooperative-integration",
+      "command": "docker compose --env-file /dev/null up -d --build --wait --wait-timeout 300",
+      "services": ["bootstrap", "server", "worker", "repair"],
+      "compose_files": [
+        ["docker-compose.test.yml", "docker-compose.composer-trust.yml"],
+        ["docker-compose.test.yml", "docker-compose.composer-trust.yml", "docker-compose.child-policy.yml"]
+      ],
       "dockerfile": "Dockerfile",
       "stage": "production",
       "approved_recipes": []

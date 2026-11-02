@@ -2160,7 +2160,8 @@ def _composer_job_sinks(job: dict[str, Any], root: Path, approved: set[str], loc
 
 def verify_composer_network_sinks(policy: dict[str, Any], target: str, sources: dict[str, str], root: Path) -> list[str]:
     enabled = policy["targets"][target].get("composer_trust_required", False) or any(
-        ".github/actions/verify-composer-trust" in source for source in sources.values()
+        ".github/actions/verify-composer-trust" in source or ".github/actions/verify-composer-container-trust" in source
+        for source in sources.values()
     )
     if not enabled:
         return []
@@ -2172,6 +2173,49 @@ def verify_composer_network_sinks(policy: dict[str, Any], target: str, sources: 
             raise PolicyError(f"{filename} declares unverified workflow-level Composer trust overrides")
         for job_name, job in (document.get("jobs") or {}).items():
             evidence.extend(_composer_job_sinks(job, root, approved, target == "github-control-plane", f"{filename}:{job_name}"))
+    catalog = json.loads((Path(__file__).resolve().parents[1] / "qualification/composer-container-trust.json").read_text())
+    evidence.extend(verify_composer_container_callers(target, sources, approved, catalog))
+    return evidence
+
+
+def _require_container_caller(steps: list[dict[str, Any]], request_id: str, request: dict[str, Any], approved: set[str], local: bool) -> None:
+    matches = [index for index, step in enumerate(steps) if step.get("run", "").strip() == request["command"]]
+    if len(matches) != 1 or matches[0] == 0:
+        raise PolicyError(f"{request_id} must retain its single registered Compose build command")
+    build, guard = steps[matches[0]], steps[matches[0] - 1]
+    if not _reviewed_composer_action(guard.get("uses", ""), "verify-composer-container-trust", approved, local):
+        raise PolicyError(f"{request_id} lacks the immediately preceding reviewed container verifier")
+    if any(step.get("if") or str(step.get("continue-on-error", "false")) != "false" for step in (guard, build)):
+        raise PolicyError(f"{request_id} cannot skip or ignore the verifier or build refusal")
+    inputs, identity = guard.get("with", {}), guard.get("id", "")
+    if (inputs.get("request") != request_id or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", identity)
+            or not all(inputs.get(field) for field in ("source-directory", "source-commit", "compose-directory", "provenance"))
+            or inputs["compose-directory"] != build.get("working-directory")):
+        raise PolicyError(f"{request_id} must bind its source and actual Compose directory")
+    bindings = {"DWF_COMPOSER_TRUST_CONTEXT": "context-directory", "COMPOSER_CAFILE": "ca-file",
+                "DW_CI_CA_SHA256": "ca-sha256", "DW_SERVER_SOURCE_COMMIT": "source-commit",
+                "DW_SERVER_DOCKERFILE_SHA256": "dockerfile-sha256", "COMPOSE_FILE": "compose-file"}
+    environment = build.get("env", {})
+    for name, output in bindings.items():
+        if environment.get(name) != "${{ steps." + identity + ".outputs." + output + " }}":
+            raise PolicyError(f"{request_id} must build with the verifier's {output} output")
+    if (set(environment) & COMPOSER_TRUST_FIELDS) - set(bindings):
+        raise PolicyError(f"{request_id} has additional unverified trust overrides")
+
+
+def verify_composer_container_callers(target: str, sources: dict[str, str], approved: set[str], catalog: dict[str, Any]) -> list[str]:
+    evidence = []
+    for request_id, request in catalog["requests"].items():
+        if request.get("target") != target:
+            continue
+        candidates = [source for name, source in sources.items() if Path(name).name == request["workflow"]]
+        if len(candidates) != 1:
+            raise PolicyError(f"{request_id} is missing its registered workflow")
+        job = _parse_yaml(candidates[0], request["workflow"]).get("jobs", {}).get(request["job"])
+        if not isinstance(job, dict):
+            raise PolicyError(f"{request_id} is missing its registered build job")
+        _require_container_caller(job.get("steps", []), request_id, request, approved, target == "github-control-plane")
+        evidence.append(f"{request['workflow']}:{request['job']}:container-{request_id}")
     return evidence
 
 
