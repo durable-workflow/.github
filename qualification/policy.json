@@ -144,7 +144,8 @@
           "aliases",
           "build-amd64",
           "build-arm64",
-          "publish"
+          "publish",
+          "release"
         ],
         "plan_job": "plan",
         "plan_verifier": {

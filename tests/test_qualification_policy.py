@@ -595,7 +595,7 @@ def tag_dispatch_workflow(
     workflow_extra: str = "",
     job_extra: str = "",
 ) -> str:
-    def publishing_job(name: str, condition: str) -> str:
+    def publishing_job(name: str, condition: str, permissions: str = "contents: read\n      packages: write") -> str:
         return f"""  {name}:
     needs: {needs}
     if: {condition}
@@ -603,8 +603,7 @@ def tag_dispatch_workflow(
     timeout-minutes: 5
     environment: {environment}
 {job_extra}    permissions:
-      contents: read
-      packages: write
+      {permissions}
     steps:
       - run: echo {name}
 """
@@ -628,7 +627,8 @@ on:
     steps:
 {PLAN_STEPS if plan_steps is None else plan_steps}\
 {"".join(publishing_job(name, gate) for name in ("build-amd64", "build-arm64", "publish"))}\
-{publishing_job("aliases", gate + " && needs.plan.outputs.dockerhub == 'true'")}{extra_job}"""
+{publishing_job("aliases", gate + " && needs.plan.outputs.dockerhub == 'true'")}\
+{publishing_job("release", gate, "contents: write\n      packages: read")}{extra_job}"""
 
 
 class TagDispatchPolicyTest(unittest.TestCase):
@@ -648,7 +648,7 @@ class TagDispatchPolicyTest(unittest.TestCase):
         evidence = self.scan(tag_dispatch_workflow())
         self.assertEqual(
             evidence[".github/workflows/native-release.yml"]["privileged_jobs"],
-            ["aliases", "build-amd64", "build-arm64", "publish"],
+            ["aliases", "build-amd64", "build-arm64", "publish", "release"],
         )
 
     def test_the_same_workflow_is_refused_without_its_binding(self) -> None:
