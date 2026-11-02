@@ -729,8 +729,16 @@ class TagDispatchPolicyTest(unittest.TestCase):
             self.scan(tag_dispatch_workflow(), policy)
 
     def test_status_functions_cannot_run_publishing_after_a_failed_plan(self) -> None:
-        for gate in (f"always() && {TAG_GATE}", f"{TAG_GATE} && failure()", f"cancelled () && {TAG_GATE}",
-                     f"ALWAYS() && {TAG_GATE}"):
+        for gate in (
+            f"always() && {TAG_GATE}",
+            f"{TAG_GATE} && failure()",
+            f"cancelled () && {TAG_GATE}",
+            f"ALWAYS() && {TAG_GATE}",
+            f"success() == false && {TAG_GATE}",
+            f"${{{{ !success() && {TAG_GATE} }}}}",
+            f"Success ( ) == false && {TAG_GATE}",
+            f"{TAG_GATE} && success()",
+        ):
             with self.subTest(gate=gate):
                 self.assert_refused(tag_dispatch_workflow(gate=gate), "can run outside refs/heads/main")
 

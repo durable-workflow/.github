@@ -1671,8 +1671,9 @@ TAG_DISPATCH_BINDING_FIELDS = {
     "tag_input",
     "tag_ref_condition",
 }
-# Any of these replaces the implicit success() check, so a job could run after a failed plan.
-STATUS_FUNCTION_PATTERN = re.compile(r"\b(?:always|failure|cancelled)\s*\(", re.IGNORECASE)
+# Any explicit status function replaces the implicit success() check, so a job could run after a
+# failed plan (for example `success() == false`). Admitted jobs must rely on the implicit check.
+STATUS_FUNCTION_PATTERN = re.compile(r"\b(?:always|failure|cancelled|success)\s*\(", re.IGNORECASE)
 
 
 def _tag_ref_condition(tag_input: str) -> str:
