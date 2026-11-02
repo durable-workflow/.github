@@ -42,6 +42,53 @@ and deployment workflows. Editorial wording is outside this policy.
 
 ## Clean trust for dependency requests
 
+### Composer inside a container
+
+A host verifier cannot establish the trust used by Composer inside a build or
+running container. The container must run `verify-composer-trust/verify.php`
+against its own Composer binary and final project configuration, immediately
+before each Composer command. Use the authenticated CA file and an empty
+additional-root directory inside that same request boundary.
+
+`verify-composer-container-trust` prepares inputs for registered container
+requests. It checks the actual Git checkout and selected commit, compares the
+Dockerfile and preparation files with an explicitly reviewed recipe, and checks
+the bootstrap's CA digest against the actual file. It returns the verifier
+context directory, CA file and digest, source commit, and Dockerfile digest. Its
+provenance contains identities and hashes without environment or credentials.
+The entire build context must match the selected Git tree, including raw file
+bytes and executable modes. Tracked, staged, untracked and ignored changes
+refuse. Docker exclusion files must be part of the reviewed recipe. New clean
+product commits can use the same recipe while its build instructions remain
+unchanged.
+
+Give the action the actual `compose-directory`. It renders the registered local
+Compose files with `--env-file /dev/null` and verifies every registered service's
+build context, Dockerfile, stage, verifier context, source arguments and CA secret.
+The immediately following build uses the same directory and the action's outputs
+for all trust/source variables and `COMPOSE_FILE`. The central caller contract
+requires that exact command and refuses an omitted, conditional, ignored or stale
+guard. No rendered application configuration is printed or retained.
+Its `ca-file` and `ca-sha256` inputs must reference outputs of the same earlier,
+unconditional reviewed `bootstrap-patched-pip` step. Ambient or step-local CA
+values cannot supply that identity. Additional Docker, Compose or Buildx build
+commands in the registered job also refuse, including calls in shell helpers.
+
+The initial `sdk-php-cooperative-server` entry in
+`composer-container-trust.json` has no approved recipes. It therefore refuses
+every build until the Server hook and caller pass combined container controls.
+This preparation action does not make SDK-PHP's Composer migration mandatory or
+authorize its new audit job. Those changes follow combined qualification.
+
+The container control runs the actual digest-pinned Composer image against a
+local synthetic TLS registry. The ambient store accepts its synthetic blocked
+root. The verified clean store refuses before an HTTP request. Wrong bundle
+digests, extra roots and a missing verifier also refuse. This exercises the
+container client; BuildKit mount lifetime and final-image inspection remain
+part of the Server hook's combined qualification.
+
+### Composer on the runner
+
 Linux jobs that fetch Composer dependencies use this order after checkout:
 
 ```yaml

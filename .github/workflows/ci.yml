@@ -65,6 +65,8 @@ jobs:
           tests.test_pip_effective_trust
           tests.test_cli_effective_trust
           tests.test_composer_trust_contract
+          tests.test_composer_container_trust
+          tests.test_composer_container_effective_trust
 
       - name: Test actual Composer trust selection
         run: COMPOSER_BINARY="$(command -v composer)" phpunit --configuration phpunit-composer-trust.xml --do-not-cache-result
