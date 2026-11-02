@@ -1,0 +1,11 @@
+{
+  "schema": "durable-workflow.composer-container-trust.v1",
+  "requests": {
+    "sdk-php-cooperative-server": {
+      "repository": "durable-workflow/server",
+      "dockerfile": "Dockerfile",
+      "stage": "production",
+      "approved_recipes": []
+    }
+  }
+}
