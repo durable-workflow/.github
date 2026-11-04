@@ -71,6 +71,17 @@ class SdkMetricsContractTest(unittest.TestCase):
                 for metric in scopes[scope]:
                     self.assertEqual(tags, set(metric["tags"]))
 
+    def test_schedule_to_start_is_a_separate_dispatch_histogram(self) -> None:
+        self.assertGreaterEqual(self.contract["revision"], 2)
+        dispatch_metrics = [metric for metric in self.metrics if metric["scope"] == "worker_task_dispatch"]
+        self.assertEqual(1, len(dispatch_metrics))
+        metric = dispatch_metrics[0]
+        self.assertEqual("durable_workflow_worker_task_schedule_to_start_seconds", metric["name"])
+        self.assertEqual("histogram", metric["type"])
+        self.assertEqual("record", metric["recorder_method"])
+        self.assertEqual("s", metric["unit"])
+        self.assertEqual({"task_kind", "task_queue"}, set(metric["tags"]))
+
 
 if __name__ == "__main__":
     unittest.main()
