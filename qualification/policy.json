@@ -2,6 +2,9 @@
   "$schema": "./schema.json",
   "action_runtime": {
     "allowed_container_images": {
+      "docker/buildkit-syft-scanner": {
+        "sha256:873a7458c3c8ac8e32c7b796c10e1600b07b963d2aa000a72a2d97aaaa2d6315": "1.12.1"
+      },
       "lycheeverse/lychee": {
         "sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d": "0.24.2"
       }
