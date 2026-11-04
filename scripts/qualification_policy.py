@@ -457,6 +457,7 @@ def validate_policy(policy: dict[str, Any]) -> None:
     workflow_trust = policy.get("workflow_trust")
     if not isinstance(workflow_trust, dict) or set(workflow_trust) != {
         "privileged_artifact_handoffs",
+        "privileged_tag_dispatch_workflows",
         "privileged_workflow_run_consumers",
         "pull_request_target_exceptions",
     }:
@@ -511,6 +512,7 @@ def validate_policy(policy: dict[str, Any]) -> None:
         or checkout_commit not in checkout_releases
     ):
         raise PolicyError("privileged artifact validation predecessor must use an approved checkout release")
+    _validate_tag_dispatch_bindings(policy, workflow_trust["privileged_tag_dispatch_workflows"])
     consumers = workflow_trust["privileged_workflow_run_consumers"]
     if not isinstance(consumers, dict):
         raise PolicyError("privileged workflow_run consumers must be an object")
@@ -1081,6 +1083,70 @@ def _isolated_sonar_job(job: dict[str, Any]) -> bool:
     )
 
 
+def _merge_queue_sonar_workflow(document: dict[str, Any], target: str, path: str) -> bool:
+    """Allow one default-branch static scanner, with no candidate execution."""
+    if target != "server" or Path(path).name != "queue-sonar.yml":
+        return False
+    if set(document) != {"name", "on", "permissions", "concurrency", "jobs"}:
+        return False
+    if document["on"] != {"workflow_run": {"workflows": ["PHPUnit Feature"], "types": ["completed"]}}:
+        return False
+    if document["permissions"] != {"contents": "read"} or document["concurrency"] != {
+        "group": "queue-sonar-${{ github.event.workflow_run.head_sha }}", "cancel-in-progress": "false",
+    }:
+        return False
+    jobs = document["jobs"]
+    if not isinstance(jobs, dict) or set(jobs) != {"queue-analysis"}:
+        return False
+    job = jobs["queue-analysis"]
+    if not isinstance(job, dict) or set(job) != {"name", "if", "runs-on", "timeout-minutes", "steps"}:
+        return False
+    if job["runs-on"] != "ubuntu-latest" or job["timeout-minutes"] != "20" or job["if"] != (
+        "github.event_name == 'workflow_run' && "
+        "github.event.workflow_run.event == 'merge_group' && "
+        "github.event.workflow_run.conclusion == 'success'"
+    ):
+        return False
+    steps = job["steps"]
+    if not isinstance(steps, list) or len(steps) != 5:
+        return False
+    normalized = []
+    for name in [document["name"], job["name"], *[step.get("name", "") for step in steps if isinstance(step, dict)]]:
+        if not isinstance(name, str) or "${{" in name:
+            return False
+    for step in steps:
+        if not isinstance(step, dict):
+            return False
+        value = {key: content for key, content in step.items() if key != "name"}
+        if "uses" in value:
+            reference = _split_action_reference(value["uses"])
+            if reference is None or reference[1]:
+                return False
+            # Immutable action approval is checked before this trust profile.
+            value["uses"] = reference[0]
+        normalized.append(value)
+    return normalized == [
+        {"uses": "actions/checkout", "with": {
+            "ref": "${{ github.workflow_sha }}", "path": ".sonar-control", "persist-credentials": "false",
+        }},
+        {"id": "candidate", "run": "node .sonar-control/scripts/ci/merge-queue-sonar.mjs validate"},
+        {"uses": "actions/checkout", "with": {
+            "ref": "${{ steps.candidate.outputs.sha }}", "path": ".sonar-candidate", "fetch-depth": "0",
+            "persist-credentials": "false", "submodules": "false", "lfs": "false",
+        }},
+        {"run": "node .sonar-control/scripts/ci/merge-queue-sonar.mjs prepare"},
+        {"uses": "sonarsource/sonarqube-scan-action", "env": {"SONAR_TOKEN": "${{ secrets.SONAR_TOKEN }}"},
+         "with": {"projectBaseDir": ".sonar-candidate", "args": (
+             "-Dsonar.branch.name=${{ steps.candidate.outputs.branch }} "
+             "-Dsonar.scm.revision=${{ steps.candidate.outputs.sha }} "
+             "-Dsonar.scm.exclusions.disabled=true "
+             "-Dsonar.rust.clippy.enabled=false "
+             "-Dsonar.working.directory=${{ runner.temp }}/queue-sonar-work "
+             "-Dsonar.qualitygate.wait=false"
+         )}},
+    ]
+
+
 def _sonar_coverage_handoff(jobs: dict[str, Any], job: dict[str, Any], download_index: int) -> bool:
     """Accept only Clover data from the same build's named coverage producer."""
     if download_index != 1 or not _main_sonar_coverage_condition(job) or not _isolated_sonar_job(job):
@@ -1175,6 +1241,29 @@ def _cache_keys_partition_events(value: str) -> bool:
     return bool(keys) and all(event_partition.search(key) for key in keys)
 
 
+def _requires_protected_push(condition: object, protected_ref: str) -> bool:
+    """Whether a step condition can be true only for a push to the protected ref.
+
+    The condition must be a top-level conjunction, with no top-level ``||``,
+    that includes both ``github.event_name == 'push'`` and
+    ``github.ref == '<protected ref>'``. Other terms may narrow it further.
+    """
+
+    if not isinstance(condition, str) or not condition.strip():
+        return False
+    expression = _strip_balanced_parentheses(_condition_without_expression_wrapper(condition))
+    if _split_condition(expression, "||"):
+        return False
+    terms = _split_condition(expression, "&&") or [expression]
+    normalized = {
+        re.sub(r"\s+", " ", _strip_balanced_parentheses(term)).replace('"', "'") for term in terms
+    }
+    return (
+        "github.event_name == 'push'" in normalized
+        and f"github.ref == '{protected_ref}'" in normalized
+    )
+
+
 def _condition_without_expression_wrapper(condition: str) -> str:
     condition = condition.strip()
     if condition.startswith("${{") and condition.endswith("}}"):
@@ -1240,6 +1329,13 @@ def _split_condition(expression: str, operator: str) -> list[str]:
     return parts
 
 
+def _supports_condition_negation(operand: str) -> bool:
+    # ! binds before comparison. Only invert a grouped expression or literal.
+    return operand.lower() in {"true", "false"} or (
+        operand.startswith("(") and _strip_balanced_parentheses(operand) != operand
+    )
+
+
 def _condition_truth_for_unprotected_dispatch(expression: str, protected_ref: str) -> tuple[bool, bool]:
     """Return whether an expression can be true/false for a dispatch from another ref."""
 
@@ -1253,8 +1349,14 @@ def _condition_truth_for_unprotected_dispatch(expression: str, protected_ref: st
         values = [_condition_truth_for_unprotected_dispatch(part, protected_ref) for part in conjunction]
         return all(value[0] for value in values), any(value[1] for value in values)
     if expression.startswith("!") and not expression.startswith("!="):
-        can_be_true, can_be_false = _condition_truth_for_unprotected_dispatch(expression[1:], protected_ref)
+        operand = expression[1:].strip()
+        if not _supports_condition_negation(operand):
+            return True, True
+        can_be_true, can_be_false = _condition_truth_for_unprotected_dispatch(operand, protected_ref)
         return can_be_false, can_be_true
+    if expression.lower() in {"true", "false"}:
+        value = expression.lower() == "true"
+        return value, not value
 
     comparison = re.fullmatch(
         r"github\.(event_name|ref)\s*(==|!=)\s*(['\"])(.*?)\3",
@@ -1265,7 +1367,10 @@ def _condition_truth_for_unprotected_dispatch(expression: str, protected_ref: st
         return True, True
     field, operator, _quote, expected = comparison.groups()
     if field == "event_name":
-        equality = expected == "workflow_dispatch"
+        # GitHub event names are ASCII; other literals cannot establish trust.
+        if not expected.isascii():
+            return True, True
+        equality = expected.lower() == "workflow_dispatch"
         value = equality if operator == "==" else not equality
         return value, not value
     if expected != protected_ref:
@@ -1273,6 +1378,68 @@ def _condition_truth_for_unprotected_dispatch(expression: str, protected_ref: st
     equality = False
     value = equality if operator == "==" else not equality
     return value, not value
+
+
+def _condition_truth_for_external_fork(expression: str) -> tuple[bool, bool]:
+    """Return possible truth values for an external fork's pull-request event.
+
+    Only the event and unequal repository identities are fixed. Ref checks and
+    other terms remain unknown, so a main-looking ref cannot establish trust.
+    """
+
+    expression = _strip_balanced_parentheses(expression)
+    disjunction = _split_condition(expression, "||")
+    if disjunction:
+        values = [_condition_truth_for_external_fork(part) for part in disjunction]
+        return any(value[0] for value in values), all(value[1] for value in values)
+    conjunction = _split_condition(expression, "&&")
+    if conjunction:
+        values = [_condition_truth_for_external_fork(part) for part in conjunction]
+        return all(value[0] for value in values), any(value[1] for value in values)
+    if expression.startswith("!") and not expression.startswith("!="):
+        operand = expression[1:].strip()
+        # ! binds before comparison in Actions expressions. Only invert a
+        # grouped expression or literal, never an ungrouped comparison.
+        if not _supports_condition_negation(operand):
+            return True, True
+        can_be_true, can_be_false = _condition_truth_for_external_fork(operand)
+        return can_be_false, can_be_true
+    if expression.lower() in {"true", "false"}:
+        value = expression.lower() == "true"
+        return value, not value
+
+    event = re.fullmatch(r"github\.event_name\s*(==|!=)\s*(['\"])(.*?)\2", expression)
+    if event is not None:
+        operator, _quote, expected = event.groups()
+        if not expected.isascii():
+            return True, True
+        equality = expected.lower() == "pull_request"
+        value = equality if operator == "==" else not equality
+        return value, not value
+    repository = re.fullmatch(
+        r"(github\.event\.pull_request\.head\.repo\.full_name|github\.repository)\s*"
+        r"(==|!=)\s*(github\.event\.pull_request\.head\.repo\.full_name|github\.repository)",
+        expression,
+    )
+    if repository is not None:
+        left, operator, right = repository.groups()
+        if left != right:
+            value = operator == "!="
+            return value, not value
+    return True, True
+
+
+def _cache_restore_excludes_external_forks(job: Mapping[str, Any], step: Mapping[str, Any]) -> bool:
+    # Both guards must pass before a step runs; either can exclude a fork.
+    for scope in (job, step):
+        condition = scope.get("if")
+        if isinstance(condition, str) and condition.strip():
+            can_run, _can_skip = _condition_truth_for_external_fork(
+                _condition_without_expression_wrapper(condition)
+            )
+            if not can_run:
+                return True
+    return False
 
 
 def _protects_manual_dispatch(job: dict[str, Any], protected_ref: str) -> bool:
@@ -1638,6 +1805,187 @@ def _reviewed_policy_workflow(
     )
 
 
+TAG_DISPATCH_BINDING_FIELDS = {
+    "environment",
+    "jobs",
+    "plan_job",
+    "plan_verifier",
+    "tag_input",
+    "tag_ref_condition",
+}
+# Any explicit status function replaces the implicit success() check, so a job could run after a
+# failed plan (for example `success() == false`). Admitted jobs must rely on the implicit check.
+STATUS_FUNCTION_PATTERN = re.compile(r"\b(?:always|failure|cancelled|success)\s*\(", re.IGNORECASE)
+
+
+def _tag_ref_condition(tag_input: str) -> str:
+    return f"github.ref == format('refs/tags/{{0}}', inputs.{tag_input})"
+
+
+def _validate_tag_dispatch_bindings(policy: dict[str, Any], bindings: object) -> None:
+    """Validate reviewed workflows whose privileged dispatch jobs run from a release tag ref.
+
+    Each binding names one workflow, one environment and the exact privileged jobs. The
+    ref predicate is fixed by code, so policy data cannot loosen it.
+    """
+
+    if not isinstance(bindings, dict):
+        raise PolicyError("privileged tag dispatch workflows must be an object")
+    for path, binding in bindings.items():
+        if not isinstance(path, str) or not re.fullmatch(r"[a-z0-9.-]+/[a-z0-9][a-z0-9.-]*\.yml", path):
+            raise PolicyError(f"invalid privileged tag dispatch workflow path {path!r}")
+        if path.split("/", 1)[0] not in policy.get("targets", {}):
+            raise PolicyError(f"{path} names an unknown workflow trust target")
+        if not isinstance(binding, dict) or set(binding) != TAG_DISPATCH_BINDING_FIELDS:
+            raise PolicyError(f"{path} must declare the complete tag dispatch trust binding")
+        jobs = binding["jobs"]
+        if (
+            not isinstance(jobs, list)
+            or not jobs
+            or not all(isinstance(job, str) and re.fullmatch(r"[A-Za-z0-9_-]+", job) for job in jobs)
+            or jobs != sorted(set(jobs))
+        ):
+            raise PolicyError(f"{path} tag dispatch jobs must be a sorted list of unique job names")
+        plan_job = binding["plan_job"]
+        if not isinstance(plan_job, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", plan_job) or plan_job in jobs:
+            raise PolicyError(f"{path} tag dispatch plan job must be a separate job name")
+        environment = binding["environment"]
+        if not isinstance(environment, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", environment):
+            raise PolicyError(f"{path} tag dispatch environment must be one environment name")
+        tag_input = binding["tag_input"]
+        if not isinstance(tag_input, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", tag_input):
+            raise PolicyError(f"{path} tag dispatch input must be a workflow input name")
+        if binding["tag_ref_condition"] != _tag_ref_condition(tag_input):
+            raise PolicyError(f"{path} tag dispatch condition must be the reviewed exact tag-ref predicate")
+        verifier = binding["plan_verifier"]
+        if (
+            not isinstance(verifier, dict)
+            or set(verifier) != {"env", "run"}
+            or not isinstance(verifier["run"], str)
+            or not verifier["run"].strip()
+            or not isinstance(verifier["env"], dict)
+            or not all(
+                isinstance(name, str) and isinstance(value, str) and value
+                for name, value in verifier["env"].items()
+            )
+        ):
+            raise PolicyError(f"{path} tag dispatch plan verifier must declare its exact run command and env")
+
+
+def _job_environment_name(job: Mapping[str, Any]) -> str | None:
+    environment = job.get("environment")
+    if isinstance(environment, str):
+        return environment
+    if isinstance(environment, dict) and isinstance(environment.get("name"), str):
+        return environment["name"]
+    return None
+
+
+def _requires_exact_tag_ref(job: Mapping[str, Any], expected: str) -> bool:
+    """Return whether the job condition requires the exact tag-ref predicate as a top-level conjunct."""
+
+    condition = job.get("if")
+    if not isinstance(condition, str) or not condition.strip():
+        return False
+    expression = _strip_balanced_parentheses(_condition_without_expression_wrapper(condition))
+    if STATUS_FUNCTION_PATTERN.search(expression) or _split_condition(expression, "||"):
+        return False
+    conjuncts = _split_condition(expression, "&&") or [expression]
+    normalized = " ".join(expected.split())
+    return any(" ".join(_strip_balanced_parentheses(part).split()) == normalized for part in conjuncts)
+
+
+def _check_tag_dispatch_verifier(
+    label: str, document: Mapping[str, Any], plan: Mapping[str, Any], verifier: Mapping[str, Any]
+) -> None:
+    """Require the plan job to check out the dispatch commit and then run the exact reviewed verifier.
+
+    Nothing may run before the verifier, change how it runs, or let the plan succeed after it fails.
+    """
+
+    if "continue-on-error" in plan:
+        raise PolicyError(f"{label} tag dispatch plan job must not continue on error")
+    for scope_label, scope in (("workflow", document), ("plan job", plan)):
+        if _run_defaults(scope):
+            raise PolicyError(f"{label} tag dispatch {scope_label} must not override run defaults")
+    steps = plan.get("steps")
+    if not isinstance(steps, list) or len(steps) < 2:
+        raise PolicyError(f"{label} tag dispatch plan job must check out and then run its verifier")
+    checkout, step = steps[0], steps[1]
+    checkout_action = (
+        _split_action_reference(checkout["uses"])
+        if isinstance(checkout, dict) and isinstance(checkout.get("uses"), str)
+        else None
+    )
+    if (
+        checkout_action is None
+        or checkout_action[0] != "actions/checkout"
+        or set(checkout) - {"name", "uses", "with"}
+        or checkout.get("with") != {"ref": "${{ github.sha }}", "persist-credentials": "false"}
+    ):
+        raise PolicyError(f"{label} tag dispatch plan job must first check out the dispatch commit")
+    if (
+        not isinstance(step, dict)
+        or set(step) - {"name", "env", "run"}
+        or step.get("run") != verifier["run"]
+        or step.get("env") != verifier["env"]
+    ):
+        raise PolicyError(f"{label} tag dispatch plan job must run the exact reviewed verifier next")
+
+
+def _check_tag_dispatch_workflow(
+    label: str,
+    document: Mapping[str, Any],
+    triggers: Mapping[str, Any],
+    jobs: Mapping[str, Any],
+    binding: Mapping[str, Any],
+) -> None:
+    if set(triggers) != {"workflow_dispatch"}:
+        raise PolicyError(f"{label} tag dispatch workflow must be triggered only by workflow_dispatch")
+    dispatch = triggers["workflow_dispatch"]
+    inputs = dispatch.get("inputs") if isinstance(dispatch, dict) else None
+    tag_input = inputs.get(binding["tag_input"]) if isinstance(inputs, dict) else None
+    # Workflow YAML scalars load as strings; dispatch inputs default to type string.
+    if (
+        not isinstance(tag_input, dict)
+        or tag_input.get("required") not in {True, "true"}
+        or tag_input.get("type", "string") != "string"
+    ):
+        raise PolicyError(f"{label} tag dispatch input {binding['tag_input']!r} must be a required string")
+    plan = jobs.get(binding["plan_job"])
+    if not isinstance(plan, dict):
+        raise PolicyError(f"{label} tag dispatch plan job {binding['plan_job']!r} is missing")
+    plan_writes = (
+        _permissions_with_write(plan.get("permissions"), f"{label} job {binding['plan_job']!r}")
+        if plan.get("permissions") is not None
+        else set()
+    )
+    if "if" in plan:
+        raise PolicyError(f"{label} tag dispatch plan job must run unconditionally so a wrong ref fails")
+    if plan_writes or "environment" in plan or "secrets" in plan or _references_secret_context(plan):
+        raise PolicyError(f"{label} tag dispatch plan job must not be privileged")
+    _check_tag_dispatch_verifier(label, document, plan, binding["plan_verifier"])
+    for job_name in binding["jobs"]:
+        job = jobs.get(job_name)
+        if isinstance(job, dict) and "continue-on-error" in job:
+            raise PolicyError(f"{label} tag dispatch job {job_name!r} must not continue on error")
+    missing = sorted(set(binding["jobs"]) - set(jobs))
+    if missing:
+        raise PolicyError(f"{label} is missing policy-bound tag dispatch jobs {missing}")
+
+
+def _admits_tag_dispatch_job(
+    label: str, job_name: str, job: dict[str, Any], binding: Mapping[str, Any] | None
+) -> bool:
+    return (
+        binding is not None
+        and job_name in binding["jobs"]
+        and _job_environment_name(job) == binding["environment"]
+        and binding["plan_job"] in _job_needs(job, f"{label} job {job_name!r}")
+        and _requires_exact_tag_ref(job, binding["tag_ref_condition"])
+    )
+
+
 def _scan_workflow_trust(
     policy: dict[str, Any],
     target_name: str,
@@ -1702,6 +2050,8 @@ def _scan_workflow_trust(
     jobs = document.get("jobs")
     if not isinstance(jobs, dict) or not jobs:
         raise PolicyError(f"{label} must declare jobs")
+    tag_binding = policy["workflow_trust"]["privileged_tag_dispatch_workflows"].get(consumer_key)
+    tag_dispatch_admitted = False
     privileged_jobs: list[str] = []
     for job_name, job in jobs.items():
         if not isinstance(job_name, str) or not isinstance(job, dict):
@@ -1718,9 +2068,11 @@ def _scan_workflow_trust(
         if job_privileged:
             privileged_jobs.append(job_name)
         if manual_dispatch and job_privileged and not _protects_manual_dispatch(job, protected_ref):
-            raise PolicyError(
-                f"{label} privileged workflow_dispatch job {job_name!r} can run outside {protected_ref}"
-            )
+            if not _admits_tag_dispatch_job(label, job_name, job, tag_binding):
+                raise PolicyError(
+                    f"{label} privileged workflow_dispatch job {job_name!r} can run outside {protected_ref}"
+                )
+            tag_dispatch_admitted = True
         if pull_request and job_writes:
             raise PolicyError(f"{label} pull-request job {job_name!r} grants write permissions")
         if pull_request and "environment" in job:
@@ -1741,8 +2093,29 @@ def _scan_workflow_trust(
                 if not isinstance(path, str) or _unsafe_cache_path(path):
                     raise PolicyError(f"{label} cache step in job {job_name!r} has an unsafe cache path")
                 if pull_request:
+                    variant = parsed[1] if parsed is not None else ""
+                    if variant != "save" and not _cache_restore_excludes_external_forks(job, step):
+                        raise PolicyError(
+                            f"{label} pull-request cache restore in job {job_name!r} "
+                            "must exclude external forks at the job or step condition"
+                        )
+                    # Trusted reads and protected writes may share one exact
+                    # key. A broad restore prefix could substitute stale output.
+                    shared_key = variant == "restore" or (
+                        variant == "save" and _requires_protected_push(step.get("if"), protected_ref)
+                    )
+                    key = settings.get("key")
+                    exact_shared_key = (
+                        shared_key
+                        and isinstance(key, str)
+                        and bool(key.strip())
+                        and "\n" not in key.strip()
+                        and "restore-keys" not in settings
+                    )
                     for key_name in ("key", "restore-keys"):
                         value = settings.get(key_name)
+                        if key_name == "key" and exact_shared_key:
+                            continue
                         if value is not None and (
                             not isinstance(value, str) or not _cache_keys_partition_events(value)
                         ):
@@ -1774,7 +2147,7 @@ def _scan_workflow_trust(
                         "immutable artifact identity, and pre-use digest validation"
                     )
 
-    if workflow_run is not None:
+    if workflow_run is not None and not _merge_queue_sonar_workflow(document, target_name, workflow_path):
         if not isinstance(workflow_run, dict) or consumer_policy is None:
             raise PolicyError(f"{label} has no reviewed privileged workflow_run trust binding")
         if workflow_run.get("workflows") != [consumer_policy["workflow"]]:
@@ -1835,8 +2208,11 @@ def _scan_workflow_trust(
                         raise PolicyError(
                             f"{label} privileged workflow_run job {job_name!r} does not select an exact run"
                         )
-    elif consumer_policy is not None:
+    elif workflow_run is None and consumer_policy is not None:
         raise PolicyError(f"{label} is policy-bound as a workflow_run consumer but has no workflow_run trigger")
+    if tag_dispatch_admitted:
+        # Jobs admitted from a tag ref depend on the whole reviewed workflow shape.
+        _check_tag_dispatch_workflow(label, document, triggers, jobs, tag_binding)
 
     return {
         "containers": sorted(container_actions),
@@ -1860,6 +2236,16 @@ def scan_workflow_sources(
         if key.startswith(f"{target_name}/")
     }
     present = {Path(path).name for path in workflow_sources}
+    expected_tag_dispatch = {
+        key.rsplit("/", 1)[1]
+        for key in policy["workflow_trust"]["privileged_tag_dispatch_workflows"]
+        if key.startswith(f"{target_name}/")
+    }
+    missing_tag_dispatch = expected_tag_dispatch - present
+    if missing_tag_dispatch:
+        raise PolicyError(
+            f"{target_name} is missing policy-bound tag dispatch workflows {sorted(missing_tag_dispatch)}"
+        )
     missing = expected_consumers - present
     if missing:
         raise PolicyError(f"{target_name} is missing policy-bound workflow_run consumers {sorted(missing)}")
@@ -2153,7 +2539,8 @@ def _composer_job_sinks(
 
 def verify_composer_network_sinks(policy: dict[str, Any], target: str, sources: dict[str, str], root: Path) -> list[str]:
     enabled = policy["targets"][target].get("composer_trust_required", False) or any(
-        ".github/actions/verify-composer-trust" in source for source in sources.values()
+        ".github/actions/verify-composer-trust" in source or ".github/actions/verify-composer-container-trust" in source
+        for source in sources.values()
     )
     if not enabled:
         return []
@@ -2165,6 +2552,95 @@ def verify_composer_network_sinks(policy: dict[str, Any], target: str, sources: 
             raise PolicyError(f"{filename} declares unverified workflow-level Composer trust overrides")
         for job_name, job in (document.get("jobs") or {}).items():
             evidence.extend(_composer_job_sinks(job, root, approved, target == "github-control-plane", f"{filename}:{job_name}", document))
+    catalog = json.loads((Path(__file__).resolve().parents[1] / "qualification/composer-container-trust.json").read_text())
+    evidence.extend(verify_composer_container_callers(target, sources, approved, catalog, root))
+    return evidence
+
+
+def _docker_build_command(source: str) -> bool:
+    try:
+        lexer = shlex.shlex(source.replace("\\\n", ""), posix=True, punctuation_chars=";&|()\n")
+        lexer.whitespace = " \t\r"
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return "docker" in source
+    for index, token in enumerate(tokens):
+        if Path(token).name not in {"docker", "docker-compose"}:
+            continue
+        arguments = []
+        for value in tokens[index + 1:]:
+            if re.fullmatch(r"[;&|()\n]+", value):
+                break
+            arguments.append(value)
+        if {"build", "bake", "--build"} & set(arguments):
+            return True
+    return False
+
+
+def _require_bootstrap_binding(steps: list[dict[str, Any]], guard: dict[str, Any], approved: set[str], local: bool, request_id: str) -> None:
+    if set(guard.get("env", {})) & COMPOSER_TRUST_FIELDS:
+        raise PolicyError(f"{request_id} overrides trust on its container guard")
+    inputs = guard.get("with", {})
+    candidates = [step for step in steps if _reviewed_composer_action(step.get("uses", ""), "bootstrap-patched-pip", approved, local)]
+    for bootstrap in candidates:
+        identity = bootstrap.get("id", "")
+        unconditional = not bootstrap.get("if") and bootstrap.get("continue-on-error", False) in (False, "false")
+        if not unconditional or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", identity):
+            continue
+        if all(inputs.get(field) == "${{ steps." + identity + ".outputs." + field + " }}" for field in ("ca-file", "ca-sha256")):
+            return
+    raise PolicyError(f"{request_id} must bind its CA file and digest to the same reviewed unconditional clean bootstrap")
+
+
+def _require_only_registered_build(steps: list[dict[str, Any]], selected: int, root: Path, request_id: str) -> None:
+    for index, step in enumerate(steps):
+        source = _composer_step_source(step.get("run", ""), root)
+        build_action = step.get("uses", "").startswith(("docker/build-push-action@", "docker/bake-action@"))
+        if index != selected and (_docker_build_command(source) or build_action):
+            raise PolicyError(f"{request_id} contains an additional unguarded Docker build")
+
+
+def _require_container_caller(steps: list[dict[str, Any]], request_id: str, request: dict[str, Any], approved: set[str], local: bool, root: Path) -> None:
+    matches = [index for index, step in enumerate(steps) if step.get("run", "").strip() == request["command"]]
+    if len(matches) != 1 or matches[0] == 0:
+        raise PolicyError(f"{request_id} must retain its single registered Compose build command")
+    build, guard = steps[matches[0]], steps[matches[0] - 1]
+    _require_bootstrap_binding(steps[:matches[0] - 1], guard, approved, local, request_id)
+    _require_only_registered_build(steps, matches[0], root, request_id)
+    if not _reviewed_composer_action(guard.get("uses", ""), "verify-composer-container-trust", approved, local):
+        raise PolicyError(f"{request_id} lacks the immediately preceding reviewed container verifier")
+    if any(step.get("if") or str(step.get("continue-on-error", "false")) != "false" for step in (guard, build)):
+        raise PolicyError(f"{request_id} cannot skip or ignore the verifier or build refusal")
+    inputs, identity = guard.get("with", {}), guard.get("id", "")
+    if (inputs.get("request") != request_id or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", identity)
+            or not all(inputs.get(field) for field in ("source-directory", "source-commit", "compose-directory", "provenance"))
+            or inputs["compose-directory"] != build.get("working-directory")):
+        raise PolicyError(f"{request_id} must bind its source and actual Compose directory")
+    bindings = {"DWF_COMPOSER_TRUST_CONTEXT": "context-directory", "COMPOSER_CAFILE": "ca-file",
+                "DW_CI_CA_SHA256": "ca-sha256", "DW_SERVER_SOURCE_COMMIT": "source-commit",
+                "DW_SERVER_DOCKERFILE_SHA256": "dockerfile-sha256", "COMPOSE_FILE": "compose-file"}
+    environment = build.get("env", {})
+    for name, output in bindings.items():
+        if environment.get(name) != "${{ steps." + identity + ".outputs." + output + " }}":
+            raise PolicyError(f"{request_id} must build with the verifier's {output} output")
+    if (set(environment) & COMPOSER_TRUST_FIELDS) - set(bindings):
+        raise PolicyError(f"{request_id} has additional unverified trust overrides")
+
+
+def verify_composer_container_callers(target: str, sources: dict[str, str], approved: set[str], catalog: dict[str, Any], root: Path) -> list[str]:
+    evidence = []
+    for request_id, request in catalog["requests"].items():
+        if request.get("target") != target:
+            continue
+        candidates = [source for name, source in sources.items() if Path(name).name == request["workflow"]]
+        if len(candidates) != 1:
+            raise PolicyError(f"{request_id} is missing its registered workflow")
+        job = _parse_yaml(candidates[0], request["workflow"]).get("jobs", {}).get(request["job"])
+        if not isinstance(job, dict):
+            raise PolicyError(f"{request_id} is missing its registered build job")
+        _require_container_caller(job.get("steps", []), request_id, request, approved, target == "github-control-plane", root)
+        evidence.append(f"{request['workflow']}:{request['job']}:container-{request_id}")
     return evidence
 
 

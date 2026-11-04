@@ -1,0 +1,64 @@
+name: Bind container Composer trust
+description: Validate the selected source recipe and prepare inputs for its actual in-container verifier.
+inputs:
+  request:
+    description: Registered container Composer request.
+    required: true
+  source-directory:
+    description: Exact source checkout used as the build context.
+    required: true
+  source-commit:
+    description: Exact selected Git commit, verified against the actual checkout.
+    required: true
+  compose-directory:
+    description: Directory used by the immediately following registered Compose build command.
+    required: true
+  ca-file:
+    description: ca-file output of the reviewed clean bootstrap step.
+    required: true
+  ca-sha256:
+    description: ca-sha256 output of that same reviewed clean bootstrap step.
+    required: true
+  provenance:
+    description: Destination for the small source and trust identity record.
+    required: true
+outputs:
+  context-directory:
+    description: Reviewed verifier directory for the dwf_composer_trust named context.
+    value: ${{ steps.bind.outputs.context-directory }}
+  ca-file:
+    description: Authenticated CA file for the dwf_ci_ca read-only build secret.
+    value: ${{ steps.bind.outputs.ca-file }}
+  ca-sha256:
+    description: Required DW_CI_CA_SHA256 build argument.
+    value: ${{ steps.bind.outputs.ca-sha256 }}
+  source-commit:
+    description: Verified source commit.
+    value: ${{ steps.bind.outputs.source-commit }}
+  dockerfile-sha256:
+    description: Verified reviewed Dockerfile digest.
+    value: ${{ steps.bind.outputs.dockerfile-sha256 }}
+  compose-file:
+    description: Registered local Compose file set, verified as the actual merged configuration.
+    value: ${{ steps.bind.outputs.compose-file }}
+runs:
+  using: composite
+  steps:
+    - name: Bind the actual source and authenticated bundle
+      id: bind
+      shell: bash
+      env:
+        TRUST_REQUEST: ${{ inputs.request }}
+        TRUST_SOURCE_DIRECTORY: ${{ inputs.source-directory }}
+        TRUST_SOURCE_COMMIT: ${{ inputs.source-commit }}
+        TRUST_PROVENANCE: ${{ inputs.provenance }}
+        TRUST_COMPOSE_DIRECTORY: ${{ inputs.compose-directory }}
+        COMPOSER_CAFILE: ${{ inputs.ca-file }}
+        DW_CI_CA_SHA256: ${{ inputs.ca-sha256 }}
+      run: >-
+        python3 "$GITHUB_ACTION_PATH/../../../scripts/composer_container_trust.py"
+        --request "$TRUST_REQUEST"
+        --source-directory "$TRUST_SOURCE_DIRECTORY"
+        --source-commit "$TRUST_SOURCE_COMMIT"
+        --compose-directory "$TRUST_COMPOSE_DIRECTORY"
+        --provenance "$TRUST_PROVENANCE"

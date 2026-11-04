@@ -144,6 +144,66 @@
       ],
       "type": "object"
     },
+    "tagDispatchWorkflow": {
+      "additionalProperties": false,
+      "properties": {
+        "environment": {
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "type": "string"
+        },
+        "jobs": {
+          "items": {
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "plan_job": {
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "type": "string"
+        },
+        "plan_verifier": {
+          "additionalProperties": false,
+          "properties": {
+            "env": {
+              "additionalProperties": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "run": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "env",
+            "run"
+          ],
+          "type": "object"
+        },
+        "tag_input": {
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        "tag_ref_condition": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "environment",
+        "jobs",
+        "plan_job",
+        "plan_verifier",
+        "tag_input",
+        "tag_ref_condition"
+      ],
+      "type": "object"
+    },
     "workflowRunConsumer": {
       "additionalProperties": false,
       "properties": {
@@ -243,6 +303,12 @@
         "privileged_artifact_handoffs": {
           "$ref": "#/$defs/artifactHandoff"
         },
+        "privileged_tag_dispatch_workflows": {
+          "additionalProperties": {
+            "$ref": "#/$defs/tagDispatchWorkflow"
+          },
+          "type": "object"
+        },
         "privileged_workflow_run_consumers": {
           "additionalProperties": {
             "$ref": "#/$defs/workflowRunConsumer"
@@ -266,6 +332,7 @@
       },
       "required": [
         "privileged_artifact_handoffs",
+        "privileged_tag_dispatch_workflows",
         "privileged_workflow_run_consumers",
         "pull_request_target_exceptions"
       ],

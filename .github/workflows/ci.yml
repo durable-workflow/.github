@@ -100,6 +100,8 @@ jobs:
           tests.test_pip_effective_trust
           tests.test_cli_effective_trust
           tests.test_composer_trust_contract
+          tests.test_composer_container_trust
+          tests.test_composer_container_effective_trust
 
       - name: Exercise the read-only policy client on this public PR
         if: github.event_name == 'pull_request'

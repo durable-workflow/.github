@@ -1,0 +1,35 @@
+{
+  "schema": "durable-workflow.composer-container-trust.v1",
+  "requests": {
+    "sdk-php-cooperative-server": {
+      "repository": "durable-workflow/server",
+      "target": "sdk-php",
+      "workflow": "ci.yml",
+      "job": "cooperative-integration",
+      "command": "docker compose --env-file /dev/null up -d --build --wait --wait-timeout 300",
+      "services": ["bootstrap", "server", "worker", "repair"],
+      "compose_files": [
+        ["docker-compose.test.yml", "docker-compose.composer-trust.yml"],
+        ["docker-compose.test.yml", "docker-compose.composer-trust.yml", "docker-compose.child-policy.yml"]
+      ],
+      "dockerfile": "Dockerfile",
+      "stage": "production",
+      "approved_recipes": [
+        {
+          "files": {
+            "Dockerfile": "1f717d14c4ab950a46457b67aa4034328706f5871342ffabca5847d8ed17e336",
+            ".dockerignore": "9ae64622b015a660f64c594f6948540e224255ffe64ab1a766ee0633f1d5f5c4",
+            "Dockerfile.dockerignore": "e7bf60d34720f0639193f44ce715d74165bba3355c0dacb5445fe5e82c64ba33",
+            "composer.json": "e22b3c192ac024781142c44a6cc2c81deb6abdd364cf84cba5f15381be98c4f5",
+            "composer.lock": "387eefcb2ae81d08d0ee79dd911a97fb0758ba13640265caeb687a6135d1c1ea",
+            "scripts/ci/WorkflowPackageAuthority.php": "24960bb0afe9078ee0522c81f6be45aa85122e76655fe0a1dfabd5f4ee4de9a3",
+            "scripts/ci/resolve-workflow-package-authority.php": "53ae520195192c20efe6531c3c2a50aef599ff0dcf99ebaf0933cbb6b5a04f86",
+            "scripts/ci/prepare-release-workflow-composer-metadata.php": "a96f9a3d0472646de3476fc1a07ba4754b5832f8cf8739223b16ca8d57a122fd"
+          },
+          "composer_image": "composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee",
+          "composer_stage": "composer"
+        }
+      ]
+    }
+  }
+}

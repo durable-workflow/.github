@@ -49,20 +49,21 @@ Their SDK installation lists do not widen that scope.
 
 | Experiment and existing entry point | Executed language scope | Remaining portable behavior to qualify |
 | --- | --- | --- |
+| SDK parity: Server `php-sdk-published-artifacts.sh` and `python-published-artifacts.sh` | PHP installs the selected service SDK and runs separate client and managed Worker processes against a prepared Server. Python installs its SDK, CLI and companion packages and provisions an isolated Server stack. Each writes its own structured evidence. | These are separate language-specific entry points, not all nine remote-activity directions. PHP definition validation is an offline package check. Python's standalone result does not satisfy its separate managed-runtime evidence requirement. [Commands, results and cleanup](#run-the-sdk-parity-entry-points). |
 | Remote activity external effects: Sample App `scripts/sdk-activity-recovery.sh --external-effects` | All nine PHP/Python/Rust workflow/activity directions commit an operation to an isolated downstream HTTP service before activity-worker SIGKILL. A distinct replacement retries with the original operation key, immutable input and total deadline. Require one business effect, two delivery receipts tied to the actual attempt identities, the original effect identity, stale completion refusal, unchanged history and one workflow completion. Separate service tests exercise concurrent duplicates, conflicting inputs and physical downstream restart over the same SQLite ledger. | This fixture requires application idempotency supplied by the downstream service. It does not establish exactly-once effects for arbitrary external systems or cover compensation, child or update-handler side effects. |
 | Authoring, inputs/results and remote activities: Sample App `scripts/polyglot.sh`, full matrix in `polyglot/README.md`, `scripts/sdk-activity-recovery.sh`; Server `activities-published-artifacts.sh` | Featured PHP → Python → Rust journey and the full nine-direction successful activity matrix are separate commands. The recovery command executes retryable first-attempt failure, activity-worker SIGKILL, total deadline expiry across attempts, exhaustion of two retryable failures and application progress heartbeat expiry in all nine PHP/Python/Rust workflow/activity directions. It checks actual SDK claims, the original run/execution/total deadline, distinct attempts, recorded backoff, stale completion refusal while the retry is active and unchanged history. The progress case verifies typed details, liveness beyond the initial heartbeat deadline, a heartbeat retry with the same live worker, preserved expired progress and obsolete heartbeat refusal. Successful cases have one durable result/completion. Failed cases retain the actual terminal activity cause in one workflow failure, reject results after closure and admit no third attempt or successful result. Server's activity manifest primarily uses embedded PHP/Python cells, with a focused PHP SDK heartbeat-renewal shard. | The focused cases cover two attempts, start-to-close and heartbeat timeout retries, total deadline expiry, retry exhaustion and application progress in every supported workflow/activity language direction. Recovery of an external side effect requires a separate application idempotency or downstream fencing fixture. |
-| Child workflows: Server `child-workflows-published-artifacts.sh`; Sample App `scripts/sdk-children.sh` and `polyglot/child-workflows/` | Server's four embedded PHP/Python parent-child directions. Sample App runs all nine PHP/Python/Rust SDK completion directions and the five Rust-involving typed failure, cold worker-recovery and cooperative cancellation directions. Separate five-case runtime-token and anonymous cancellation families execute actual PHP/Python/Rust cancellation clients, operator/administrator duplicate actor preservation and worker/missing-authentication refusals. Cancellation uses wait-for-child cleanup, worker SIGKILL during a recorded cleanup timer, original delivery/timer replay, immutable duplicate identity/deadline and complete matching API/CLI cascade views. The same command inspects the published Waterline image through 45 connected Chromium views: parent desktop/mobile and child desktop across all five cancellation directions and three access modes. Actual HTTP responses and rendered request, requester, deadline, delivery, recovery and completed cleanup must match the original SDK/Server evidence, with no browser errors or horizontal overflow. Browser time is outside the cleanup deadline measurement. | Process loss during an external side effect, direct child TRY_CANCEL/ABANDON requests, parent close after normal completion require separate scenarios. Keep the Server runner's PHP/Python cells and Sample App's SDK cells distinct. |
-| Heartbeats: Server `heartbeats-published-artifacts.sh`, `heartbeats-python-published-artifacts.sh`, `heartbeats-rust-published-artifacts.sh`, shared wave runner; Sample App `scripts/sdk-activity-recovery.sh` | Server covers all three actual SDK worker heartbeat loops, cadence, metrics, stale transitions and routing exclusion. Sample App separately executes application progress heartbeat and missing-progress retry in all nine workflow/activity directions using the published cooperative worker opt-in, while the activity worker stays running. Its four ordinary recovery scenarios retain their existing worker mode. | Worker health, application progress and cancellation observation have distinct contracts and observations. Stopping application progress must not be hidden by healthy worker heartbeats. External effects still require application idempotency or downstream fencing. |
+| Child workflows: Server `child-workflows-published-artifacts.sh`; Sample App `scripts/sdk-children.sh` and `polyglot/child-workflows/` | Server's four PHP Workflow-package/Python SDK parent-child directions, using the image-bundled probe described in the [runbook](README.md#run-the-server-child-workflow-probe). Sample App runs all nine PHP/Python/Rust SDK completion directions and the five Rust-involving typed failure, cold worker-recovery and cooperative cancellation directions. Separate five-case runtime-token and anonymous cancellation families execute actual PHP/Python/Rust cancellation clients, operator/administrator duplicate actor preservation and worker/missing-authentication refusals. Cancellation uses wait-for-child cleanup, worker SIGKILL during a recorded cleanup timer, original delivery/timer replay, immutable duplicate identity/deadline and complete matching API/CLI cascade views. The same command inspects the published Waterline image through 45 connected Chromium views: parent desktop/mobile and child desktop across all five cancellation directions and three access modes. Actual HTTP responses and rendered request, requester, deadline, delivery, recovery and completed cleanup must match the original SDK/Server evidence, with no browser errors or horizontal overflow. Browser time is outside the cleanup deadline measurement. | Process loss during an external side effect, direct child TRY_CANCEL/ABANDON requests, parent close after normal completion require separate scenarios. Keep the Server runner's PHP/Python cells and Sample App's SDK cells distinct. |
+| Heartbeats: Server `heartbeats-published-artifacts.sh`, `heartbeats-python-published-artifacts.sh`, `heartbeats-rust-published-artifacts.sh`, shared wave runner; Sample App `scripts/sdk-activity-recovery.sh` | Server's Python and Rust fixtures use managed SDK worker loops. Its PHP fixture combines actual `Worker::tick()` execution with explicit client heartbeat calls. These inspect cadence, metrics, stale transitions and routing exclusion within their respective execution surfaces. Sample App separately executes application progress heartbeat and missing-progress retry in all nine workflow/activity directions using the published cooperative worker opt-in, while the activity worker stays running. Its four ordinary recovery scenarios retain their existing worker mode. | PHP managed `Worker::run()` heartbeat lifecycle needs separate installed qualification. Worker health, application progress and cancellation observation have distinct contracts and observations. Stopping application progress must not be hidden by healthy worker heartbeats. External effects still require application idempotency or downstream fencing. |
 | Timers: Server `timers-published-artifacts.sh`; Sample App `scripts/sdk-timers.sh` | Server's PHP-hosted protocol/package timer probes. Its concurrent-deadline case directly submits commands and drives queue jobs in sorted deadline order, so it does not independently prove ordinary scheduler ordering or SDK-authored concurrent waits. Sample App supplies forty SDK originals: PHP twelve, Python sixteen, Rust twelve. Completion, worker SIGKILL/cold replay, Server restart and cooperative cancellation cover single timers and three-member concurrent all/parallel groups. Every concurrent member must fire during worker absence before one cold-replayed completion. Server restart crosses every original deadline; cancellation closes every member and is observed beyond its last deadline with no fire or completion. Original run/timer identities, full barrier metadata, scalar types and nested paths stay intact. Compatible business-helper replacement preserves the original prefix and version-one decision on fresh revision-two workers, then proves the new branch on fresh runs. Four additional Python originals require a recorded class fingerprint, different-class refusal with unclaimed original work, cold original-class restoration and fresh new-class execution. Worker replacement retires only the captured owned registrations with zero lease recovery and waits for the new roster before admission. | Both authored helpers are bundled and selected before startup under unchanged registered wrappers. The separate Python class cases preserve the released definition fence; they do not authorize adopting a different class into a pinned original. SDK package upgrades, build-ID rollouts, other class-evolution mechanisms, other application changes and nested cancellation need separate qualification. Keep the manually driven Server probe distinct from actual SDK execution. |
 | Version introduction: Sample App `scripts/sdk-timers.sh --unversioned-upgrades` | Twelve separate originals: old and fresh single/concurrent runs in PHP, Python and Rust. Old code schedules timers without a marker. Cold replacement code introduces the numeric version helper with minimum -1 and maximum 2. The same old runs retain no marker, resolve legacy -1 and preserve their complete original prefixes, timer/barrier identities, sequences and deadlines. Fresh runs record version 2 before new timer commands. Typed results, stable registered wrappers and one completion remain required. | This covers introducing versioning around the selected timer operations. Keep its twelve outcomes separate from the default forty. Both helper implementations are bundled and selected before process startup. Other durable operations, SDK package upgrades, build routing and incompatible class adoption require separate cases. |
 | SDK package timer upgrades: Sample App `scripts/sdk-timers.sh --sdk-upgrades` | Twelve separate originals across PHP, Python and Rust: old-package single/concurrent histories replayed by cold current-package workers and fresh current-package controls. Both image generations are built before admission, with installed/compiled package identity and exact registered SDK checks. Every original timer fires during worker absence, then the same run completes once with unchanged complete prefix, timer/barrier identities, sequences, deadlines and typed result. Python's recorded class binding stays exact; no version marker is introduced. | Selected baseline versions and current qualified targets are explicit manifests. This covers only those actual pairs and timer operations with unchanged application code. Other durable operations, combined package/application changes, build routing and incompatible class adoption require separate cases. Keep these twelve outcomes separate from the forty timer and twelve version-introduction cases. |
 | Combined SDK and application timer upgrades: Sample App `scripts/sdk-timers.sh --sdk-application-upgrades` | Twelve separate originals across PHP, Python and Rust. Six old-package single/concurrent runs record helper version one with bounds 1..1. Their timers fire while workers are absent, then cold current-package workers use helper revision two to finish the same originals with the original decision, marker bounds, full prefix, timers, barriers, command sequences and deadlines. Six fresh controls use the new branch and bounds 1..2. Actual installed packages, original/replacement worker identities, typed results, one completion and Python's recorded definition binding are checked. | Both helpers ship under unchanged registered wrappers and are selected before startup. This covers the selected package pairs and helper changes, not arbitrary source or class adoption. Other durable operations, build routing and incompatible class adoption require separate cases. Report these twelve outcomes separately from the other timer commands. |
 | Pending activity SDK/application upgrades: Sample App `scripts/sdk-activity-upgrades.sh` | Eighteen separate originals across every PHP/Python/Rust workflow/activity direction. Nine previous-package workflows record version 1/range 1..1 and leave their activity unstarted. Cold current-package workers use revision-two helpers, execute the same original activity once and complete the same workflow with its full original prefix, marker, policy, command sequence, identities and typed results. Nine fresh controls select version 2/range 1..2 and the changed policy. Both image generations and installed/registered package identities are verified before admission; Python's recorded definition remains bound to the unchanged wrapper. | This covers the selected package pairs and versioned helper changes around one pending remote activity. It does not qualify incompatible class adoption, build routing, other durable operations, an activity callback interrupted by the upgrade or external side-effect recovery. Report all eighteen actual outcomes separately from timer and recovery experiments; source verifier tests alone establish no package replay. |
-| Sagas: Server `sagas-published-artifacts.sh`; Sample App `polyglot/sagas/` | Server's PHP/Python workflow-compensation directions; Sample App's five Rust-involving directions, typed compensation failure and restart before compensation. | Process loss during an external compensation side effect, duplicate delivery and external-effect recovery require explicit side-effect fixtures. Restart before compensation does not establish them. |
-| Schedules: Server `schedules-published-artifacts.sh`; Sample App `polyglot/schedules/` | PHP/Python creators and workers in Server; PHP and Python creators targeting Rust in Sample App. | The Rust examples check one automatic interval fire. Run cadence, restart, overlap/backfill and failure recovery for those directions. Calendar folds/gaps are temporal cases, not extra creator languages. |
+| Sagas: Server `sagas-published-artifacts.sh`; Sample App `polyglot/sagas/` | Server combines the PHP Workflow package through a fixture protocol adapter with the Python SDK. Its cases include reverse compensation, typed failure and restart after the first compensation marker. Sample App executes the five Rust-involving service-SDK directions, typed compensation failure and restart before compensation. | The PHP service SDK's PHP/Python directions need their own cases; the Workflow package fixture does not fill them. Process loss during an external compensation side effect, duplicate delivery and external-effect recovery require explicit side-effect fixtures. A recorded restart boundary does not establish them. |
+| Schedules: Server `schedules-published-artifacts.sh`; Sample App `polyglot/schedules/` | Server includes PHP/Python schedule creators and worker-protocol client cells. Sample App runs PHP- and Python-created schedules on an authored Rust workflow worker. | Direct worker-protocol completion does not establish authored PHP/Python workflow execution after a scheduled fire. The Rust examples check one automatic interval fire. Run cadence, restart, overlap/backfill and failure recovery for those directions. Calendar folds/gaps are temporal cases, not extra creator languages. |
 | Signals and queries: Server `signals-queries-published-artifacts.sh` | PHP/Python/Rust clients and workers, including cross-language calls, Rust query immutability and cold-restarted instance state. | Read the direction-specific scenarios and histories. The crate pin alone proves none of them. |
 | Workflow updates: Server `workflow-updates-published-artifacts.sh`; Sample App `scripts/sdk-updates.sh` | Server's embedded probe, directly driven worker-protocol validation controls, PHP SDK client/worker process boundary, Python installed-package surface fixtures, CLI and Waterline diagnostics. The Python fixture uses simulated HTTP responses. Sample App separately executes all nine PHP/Python/Rust client-to-handler directions and completed duplicate directions against a live published Server. It checks accumulated state, read-only queries, all-worker SIGKILL/replacement and queued updates in each worker runtime. Handler failure and validator refusal target Rust. Rust also checks original workflow input, three signal argument shapes and completion immediately after an acknowledged update. | Other command-ordering races and process loss during a handler's external effect require additional fixtures. Keep Server's protocol controls and simulated Python client fixtures distinct from authored SDK validator-worker evidence. PHP SDK validator authoring is absent and Rust refuses validator contracts. Their implementation and embedded PHP support remain in [#234](https://github.com/durable-workflow/.github/issues/234). |
-| Deterministic replay: Server `replay-published-artifacts.sh` | Separate installed PHP, Python and Rust replay shards, command/history matching and codec behavior. | Corpus replay does not prove worker process recovery or migration. Pair affected histories with their runtime restart and upgrade cases. |
+| Deterministic replay: Server `replay-published-artifacts.sh` | Separate installed PHP, Python and Rust shards. Python reconstructs fixture history, including simulated restart controls. Rust uses actual Server calls and gracefully replaces Worker instances within one process. Inspect each selected package’s actual shard and outcome. | These surfaces do not establish OS process loss or registry-package upgrades. Pair affected histories with their runtime restart and upgrade cases. [Evidence boundaries](#interpret-replay-skew-and-migration-evidence). |
 | History/list observation within existing experiments: Sample App readers and CLI `workflow:history` | The child, activity-recovery and update observers explicitly join Python history pages and guard repeated tokens. CLI history collects pages for JSON output or streams events as JSONL. These are inspection paths, separate from the worker's own history fetches. | [SDK iterator delivery](https://github.com/durable-workflow/.github/issues/247) needs actual multi-page history/list results through each claimed client binding. A manually paged observer or a constructed reader test does not establish that product API or a live multi-page SDK result. |
 | Workflow lifecycle: Server `workflow-lifecycle-host-published-artifacts.sh` | The host extracts probes from the selected published Server image. PHP runs an installed SDK worker subprocess. Python exercises an installed client with simulated HTTP and serializes workflow commands. Rust runs authored workers, separate continuation processes and concurrent cancellation replacement. [Interpret each surface separately](#interpret-lifecycle-execution-surfaces). | Python worker execution and process recovery need actual worker cases. Rust cancellation replacement inside one probe process does not establish SIGKILL/cold-process recovery. Select actual continuation, retry/timeout, cancellation and termination outcomes for the exact tuple. Terminal cancellation and cooperative cleanup are separate contracts. |
 | Worker versioning: Server `worker-versioning-published-artifacts.sh` and `worker-versioning-rust-host-published-artifacts.sh` | PHP/Python protocol-client build cohorts and mixed pinning, plus Python no-compatible-worker, replay and adversarial shards. Managed Rust SDK workers execute registration, pinning, promotion, incompatible refusal, cache eviction, SIGKILL/cold replay and drain/resume with queued work and recovery diagnostics. Source-bound handlers exercise changed/missing-definition refusal, divergent peer conflicts, unchanged recovery and a changed-build positive control. Selecting `DW_RUST_SDK_PREVIOUS_VERSION` compiles identical application sources against two published registry crates and preserves an original unversioned run through the upgrade and another SIGKILL, including the older client's result, both signals and one recorded effect/completion. The focused command also executes all four Rust/PHP and Rust/Python build-cohort directions with actual SDK workers and durable results. | The crate upgrade covers the selected version pair and signal/side-effect history. Changed application code, other durable operations and adding build IDs to existing unversioned histories need their own upgrade cases. Mixed build routing does not establish interchangeable cross-language histories or a shared build identity. |
@@ -70,12 +71,253 @@ Their SDK installation lists do not widen that scope.
 | Search attributes: Server `search-attributes-published-artifacts.sh`; Sample App `scripts/sdk-search-attributes.sh` | Server's PHP SDK, Waterline and PHP/Python codec shards, or supplied host matrix evidence. Sample App separately runs published Rust workflow-side authoring of all seven typed values, PHP/Python selected-run and filtered-list observers, worker SIGKILL, an acknowledged signal during absence and cold replay of original upsert/wait identities before one mutation, deletion and completion. | Rust 4.6.0 adds a visibility-filter list API with a [separate client receipt](#read-complete-histories-and-lists). The recorded Sample App Rust 4.1.0 cohort still uses PHP/Python metadata observers. Dedicated schema-administration and start-time search-attribute client APIs remain absent in 4.6.0. The focused command does not establish Rust Waterline coverage, namespace isolation, load latency, continuation inheritance or application-code upgrades. Supplied evidence must come from a real worker run. |
 | Frozen Server Nexus: `nexus-published-artifacts.sh` | Installed PHP/Python clients execute all four admission directions. Actual PHP/Python caller workflow workers execute all four caller/service directions in same and cross namespaces, with terminal results, handled and uncaught typed failures, direct target cancellation, waiting-caller cancellation propagation, caller SIGKILL/replacement and MySQL interruption. Uncaught cases require the original remote failure, one call failure and one failed caller workflow in eight distinct originals. The [focused workflow](#run-the-published-nexus-caller-cases) also checks oversized argument/result recovery and authored worker-role refusal before target dispatch. Original caller/call/target identities, deadlines and one terminal delivery remain required. | The complete scenario manifest retains its own coverage requirements. Its legacy invocable-carrier cells remain separate from workflow-run bindings and retain `not_covered` until their execution lane is qualified. Embedded applications use the separate [installed-package recipe](https://github.com/durable-workflow/workflow/blob/main/examples/embedded-http/qualification/nexus.md). Rust SDK and native Server qualification are separate. |
 | Rust-involving Nexus: Rust SDK `tests/nexus/run.sh` and `examples/nexus_cooperation.rs` | Five authored caller/target directions: Rust/PHP, PHP/Rust, Rust/Rust, Rust/Python and Python/Rust. The [SDK fixture](#run-and-interpret-rust-nexus-cases) defines cooperative cancellation and cold target replacement, typed outcomes, cross-namespace isolation, explicit admission/wait modes, lost command acknowledgements and separate catalog browser inspection. Its ordinary preparation builds the Rust checkout. The [installed-release receipt](https://github.com/durable-workflow/sdk-rust/issues/86#issuecomment-6303358379) separately records 72 selected HTTP originals from a normally downloaded crate: six cancellation/cold-target, forty typed cross-namespace outcomes, twenty lost acknowledgements and six selected admission cases. | That installed result belongs to its recorded published tuple and actor. It does not qualify every source admission cell, the current package tuple, native Server or catalog browser rendering. Do not combine it with the frozen Server's four directions to claim one nine-direction tuple. |
-| 1.x → 2.x migration: Server `migration-published-artifacts.sh` | Supported 1.x PHP artifacts and their durable state, target PHP/Python and operator surfaces. | Rust has no 1.x source artifact to migrate. Rust starting against the migrated target is a meaningful post-migration case. SDK upgrades within 2.x/3.x are separate from this engine migration. |
-| Compatibility skew: Server `skew-published-artifacts.sh` | CLI, PHP/Python SDK, Waterline and worker protocol pairings. | Add Rust's supported and refused protocol pairings. A major SDK package number is not itself a worker protocol compatibility boundary. |
+| 1.x → 2.x migration: Server `migration-published-artifacts.sh` | Composes actual host evidence for supported 1.x PHP artifacts and durable state, target PHP/Python and operator surfaces. A supplied foundation plan can execute setup, migration and post-upgrade commands. | Artifact resolution or storage connectivity alone does not establish migration. Missing required cells remain uncovered. Rust has no 1.x source artifact to migrate; running it against the migrated target is a separate post-migration case. [Evidence requirements](#interpret-replay-skew-and-migration-evidence). |
+| Compatibility skew: Server `skew-published-artifacts.sh` | CLI, Python SDK, PHP SDK worker and Waterline protocol negotiation/refusal under one exact selected artifact tuple. Older, future and outside-window protocol shapes come from the Server’s advertised authority. | These protocol cases do not install historical or future SDK packages. Add Rust’s supported and refused protocol pairings, and retain separate installed-package compatibility evidence. A major SDK package number is not itself a worker protocol boundary. [Interpret the results](#interpret-replay-skew-and-migration-evidence). |
 | Principal attribution: Server `principal-attribution-published-artifacts.sh`; Sample App `scripts/sdk-namespaces.sh` and `scripts/sdk-children.sh` | Server covers named/anonymous/raw HTTP actors, PHP/Python clients, worker completion/failure, CLI and Waterline. Sample App separately executes real Rust starts, signals, remote activities and workflow completions with namespace-bound operator and worker credentials. A disposable gateway injects the published principal contract's forged body fields and headers into actual SDK requests. During worker absence, all four credentials are rotated through the Server API. Duplicate rotations preserve their timestamp, real Rust calls refuse the old credentials, and new credentials complete the original runs with the same authenticated subjects. Successful request receipts and original-run histories retain start/signal/completion actors through worker SIGKILL and cold replacement. Selected-run queries distinguish Server's authenticated response principal from a forged application-result principal and leave history unchanged. Additional Rust workflows fail with the worker actor or receive terminal cancellation with the operator actor after a declared wait, preserving their original runs and one terminal boundary. A final isolated phase requires token-driver refusal before explicitly recreating the disposable frontend with the `none` driver. Actual credential-free Rust callers and worker then execute activity/workflow completion, signals, queries, authored failure and terminal cancellation with server/anonymous actors and the same forged metadata matrix. Published native CLI JSON and human tables inspect every original terminal run. Published Waterline uses its read-only remote backend to inspect the same selected runs, statuses, complete timelines and command actors. Both views must match preserved Server histories without mutating them. | The Rust case covers named and anonymous actors, runtime credential rotation and start/signal/completion/query/failure/terminal-cancellation attribution, plus CLI and Waterline API visibility of actual Rust runs. Activity execution identities are checked separately, while internal events may have explicit null principals. The separate child runner checks legacy, runtime-token and anonymous requesters through actual PHP/Python/Rust cancellation clients, Rust-involving cooperative propagation, duplicate identity and original actor preservation, committed delivery and cold cleanup recovery under forged metadata. It also requires actual worker-role 403 and unauthenticated 401 refusals. The same command also checks 45 connected published Waterline browser views across those five directions and three access modes, preserving the original requester and complete cascade after cold cleanup recovery. The anonymous phase qualifies auth-disabled self-hosting, not anonymous Cloud access or namespace isolation without authentication. Credential administration uses the Server API. Transport injection does not add a custom-header SDK API, and the query observer does not add a Rust raw-response API. |
 | Cooperative cancellation and worker affinity: SDK integration suites, public qualification records and the timer command above | Source integration tests exist in every SDK. Published local-activity/session and mixed-cancellation qualifications are distinct release evidence. Python 2.5.0 and Rust 3.4.0 provide opt-in bounded sticky history with Server 2.5.10, covering paged warm reuse, entry/byte limits, expiry, build refusal and SIGKILL/replacement cold replay. Rust also checks cached canonical cancellation and cleanup on a cold successor. Exact installed-package and tuple evidence is recorded in [.github #124](https://github.com/durable-workflow/.github/issues/124). | Keep installed-package proof separate from source CI. Sticky history does not retain live workflow objects or session resources. Older affinity manifest expectations must not override the tested tuple's capabilities. |
-| Failover and diagnosis: Server `single-region-failover-published-artifacts.sh`, `agent-operability-published-artifacts.sh`; [operator diagnosis drill](operator-diagnosis.md) | Published container/backend failover and public API/CLI/Waterline operator paths. | Backend recovery success is not three-language workflow continuity. Include affected workers and pending work when that is the customer claim. Embedded Laravel injection/testing remains a PHP framework-specific case. |
+| Backend failover: Server `single-region-failover-published-artifacts.sh` | A Python HTTP driver registers, polls and completes workflow tasks directly across cross-node completion, API-node loss, database/Redis interruption, worker lease loss and scheduler restart. Its registration declares `runtime: python`. | That field does not establish Python SDK Worker execution. SDK-authored workflow continuity, pending durable operations and external effects require their own worker/runtime evidence. [Host prerequisites and results](#run-the-backend-failover-rehearsal). |
+| MCP operator loop: Server `agent-operability-published-artifacts.sh` | Validates retained Sample App metadata or drives an explicitly configured MCP endpoint through discover, guarded operating choice, run, diagnose and repair stages. | Record which evidence source actually ran. The script requires existing metadata or an isolated app endpoint and does not provision the app. SDK-worker recovery and the separate six-case diagnosis drill retain their own qualification. [Inputs and result interpretation](#run-the-mcp-operator-loop). |
+| Self-hosted operator diagnosis: [six-case drill](operator-diagnosis.md) | Documented CLI, Server API and Waterline diagnosis/recovery instructions with explicit original-run tracking. Published command syntax and source dispatch have been checked. | Actual staged faults, recovery and original-run outcomes need their own recorded execution. Embedded Laravel injection/testing remains a PHP framework-specific case. |
 | Managed Cloud | Private Cloud repository's isolated qualification | Keep account, provisioning, provider chaos and commercial qualification private. Public SDK protocol coverage does not establish managed-plan capacity or Cloud recovery. |
+
+
+## Run the SDK parity entry points
+
+Use a Server checkout so the runners can load their adjacent evidence helpers.
+Keep each language's result and artifact identities separate.
+
+For PHP, prepare an isolated Server endpoint first. The host needs Bash, PHP,
+Composer, Node and Python 3. Set `DW_PHP_SDK_VERSION`, `DW_SERVER_VERSION`,
+`DW_SERVER_IMAGE` and `DW_PHP_SDK_CONFORMANCE_SERVER_URL` to the selected
+published SDK and exact Server image/version. Set the documented control and
+worker credential variables for that isolated endpoint. The runner installs the
+SDK into a disposable Composer project; it does not provision the Server.
+
+```bash
+result_dir="$(mktemp -d "${TMPDIR:-/tmp}/dw-php-sdk.XXXXXX")"
+bash scripts/conformance/php-sdk-published-artifacts.sh \
+  --scope lifecycle --result-dir "$result_dir"
+```
+
+The other scopes are `namespace` and `search-attributes`. Read
+`php-sdk-conformance-result.json`, `php-sdk-lifecycle-evidence.json`, the selected
+scope's assertions and `executed-distribution-identities.json`. Failure paths
+can write a non-passing result and exit zero. A successful shell exit does not
+qualify the SDK. `--validate-definitions` installs the selected package and checks
+handler definitions without Server execution; keep that result separate.
+Lifecycle restart uses TERM and a new worker process, rather than physical
+SIGKILL. The exit trap terminates its captured worker. It retains results,
+the Composer project/cache and the separately prepared Server. Review the
+evidence, then remove only those owned scratch files and retire the isolated
+Server through its owning setup.
+
+For Python, the host needs Bash, Python 3 with venv support, curl and Docker
+Compose. Set the exact `DW_SERVER_IMAGE`, `DW_SERVER_VERSION`,
+`DW_PYTHON_SDK_VERSION`, `DW_CLI_VERSION`, `DW_WORKFLOW_PHP_VERSION` and
+`DW_WATERLINE_VERSION` for the selected public artifacts. Without explicit
+versions, the resolver can select newer registry releases. The runner creates
+its own stack, SDK environment and CLI installation.
+
+```bash
+result_dir="$(mktemp -d "${TMPDIR:-/tmp}/dw-python-sdk.XXXXXX")"
+bash scripts/conformance/python-published-artifacts.sh --result-dir "$result_dir"
+```
+
+Retain `pins.json`, `executed-distribution-identities.json`,
+`python-host-evidence.json`, `python-conformance-result.json`,
+`python-conformance-evaluation.json` and `python-conformance-record.json`.
+The installed SDK composes and evaluates the result. Require the actual
+evaluation to pass. Its standalone external-payload subresult and separate
+isolated managed-runtime evidence remain distinct. Missing managed evidence
+leaves that capability/scenario `not_covered`; it does not become an overall
+pass because the standalone subresult passed. Managed account and operational
+qualification stay private.
+
+Python's exit trap attempts namespace deletion and removes its Compose stack
+and volumes. It retains the scratch root on failure or explicit file retention.
+`--keep-run-root` keeps files, not the running stack. Successful runs remove
+the scratch root only when results were written outside it. Review retained
+evidence and remove owned scratch files after recording the outcome. Neither
+language's entry point qualifies the other SDKs or replaces the direction-specific
+experiments above.
+
+Sample App's `scripts/playground rust` runs one caller-owned workflow/activity
+journey. It scaffolds missing files, preserves existing source and uses a local
+published Server by default. Read its effective contract, completed result and
+journey evidence. This is a starter journey, with separate scope from a full SDK
+parity suite. Choose an unused `PLAYGROUND_COMPOSE_PROJECT` and owned source and
+evidence paths. The worker is terminated after the journey, but local services
+remain unless `PLAYGROUND_CLEANUP=1` is set. Alternatively, run
+`scripts/playground down rust` with the same project setting to remove that
+project's services and volumes. Caller-owned source and evidence remain.
+
+## Run the backend failover rehearsal
+
+Use a Server checkout with Bash, Python 3 and Docker Compose v2. Set
+`DW_SERVER_IMAGE` to the selected exact public Server image. The wrapper pulls
+that image and its selected MySQL, Redis and Nginx dependencies, resolves their
+repository digests and rejects Compose builds and source mounts. Review
+`--help` for supporting-image, connection and port overrides.
+
+Choose an unused project when overriding `DW_FAILOVER_PROJECT`. The default
+name includes the run context and process ID. From the Server repository root:
+
+```sh
+result_dir="$(mktemp -d "${TMPDIR:-/tmp}/dw-failover.XXXXXX")"
+bash scripts/conformance/single-region-failover-published-artifacts.sh \
+  --result-dir "$result_dir"
+```
+
+Read `single-region-failover-result.json`, its `outcome`, `runner_blocked`,
+`phase_outcomes` and `phase_evidence`, together with the resolved image digests.
+The [driver supplies worker-protocol HTTP commands itself](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/single-region-failover-published-artifacts.py#L788-L879).
+Its Python runtime declaration identifies that probe, rather than an installed
+SDK worker or authored three-language workload.
+
+Default cleanup calls Compose down with volumes for the selected project.
+`--keep-stack` retains the stack for inspection. Retire that same stack after
+review, and remove this run's disposable results after recording the sanitized
+outcomes. Backend recovery alone does not qualify SDK workflow continuity.
+The audited c367 runner can [lose its JSON result when cleanup times out](https://github.com/durable-workflow/server/issues/325#issuecomment-6369070712).
+A missing result is incomplete qualification. This documentation change does
+not correct that runner defect.
+
+## Run the MCP operator loop
+
+Use a Server checkout with Bash and Python 3. Set the exact artifact versions
+and Sample App ref listed in the runner's `--help`. Prepare actual recorded
+Sample App conformance metadata, or an isolated Sample App MCP endpoint. The
+runner does not start or provision that application.
+
+For the recorded-metadata path, clear the live endpoint override and supply
+the metadata file:
+
+```sh
+result_dir="$(mktemp -d "${TMPDIR:-/tmp}/dw-operator-loop.XXXXXX")"
+DW_AGENT_OPERABILITY_MCP_URL= \
+DW_AGENT_OPERABILITY_SAMPLE_APP_METADATA_PATH=/path/to/recorded-metadata.json \
+  bash scripts/conformance/agent-operability-published-artifacts.sh \
+    --result-dir "$result_dir"
+```
+
+[Usable metadata takes precedence](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/agent-operability-published-artifacts.sh#L794-L807).
+With no usable metadata and `DW_AGENT_OPERABILITY_MCP_URL` set, the runner
+calls MCP tools to start a synthetic diagnostic workflow, observe its failure,
+diagnose it, request repair and read history. Run that mode against an isolated
+app prepared for this experiment. Missing inputs produce a coverage finding.
+
+Read `agent-operability-result.json`, including `evidence_source`,
+`scenario_results` and `findings`. All five loop stages and the artifact-policy
+checks must pass. The change stage records a guarded operating choice.
+Recorded metadata, a live MCP loop, SDK-worker recovery and the
+[six-case operator diagnosis drill](operator-diagnosis.md) require their own
+identified evidence. Record the source and outcome before retiring this run's
+results and any app resources created for it.
+
+## Interpret replay, skew and migration evidence
+
+A scenario name is not sufficient evidence of process recovery or package
+compatibility. Read the selected package's implementation and the individual
+result alongside its exact distribution identity.
+
+Python's [published replay command](https://github.com/durable-workflow/sdk-python/blob/04116871c83e6a502c713789cb452e90917a3438/src/durable_workflow/replay_conformance.py#L431-L460)
+reconstructs query state from golden history and records
+`worker_restart_simulated: true`. Its signal timing case also uses constructed
+history. Rust's [published replay binary](https://github.com/durable-workflow/sdk-rust/blob/5e2af20fde934e05bf18f64111dce8e590ea6c90/src/bin/durable-workflow-replay-conformance.rs#L92-L176)
+uses real Server calls, stops one Worker gracefully and creates another in the
+same process with a wider supported version range. Its replacement boundary is
+a Worker instance. SIGKILL recovery, executable replacement and registry-package
+upgrades require separate cases. Keep those runtime recovery and upgrade
+receipts attached to their actual tuples.
+
+The skew runner [selects one current artifact tuple](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/static/platform-conformance/skew-refusal-matrix-scenarios.json#L19-L32)
+and derives its protocol pairings from the Server's advertised compatibility
+window. Read `skew-result.json`, per-surface/per-pairing results and
+`request-response-captures.json` to verify the actual operation or refusal.
+A successful older-protocol case does not qualify an older package that was
+never installed.
+
+The migration wrapper [accepts host evidence or a supplied foundation plan](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/migration-published-artifacts.sh#L8-L56).
+Use `DW_MIGRATION_EVIDENCE_JSON` or `DW_MIGRATION_EVIDENCE_DIR` for retained
+results from an actual host migration. Use
+`DW_MIGRATION_FOUNDATION_PLAN_FILE` for an explicit reviewed plan of setup,
+migration and post-upgrade commands. Automatic plan execution requires that
+plan to be present. Review the command's `--help` before invoking it against
+disposable state, and inspect `migration-conformance-result.json` for source
+capabilities, artifact prerequisites, command outcomes and every required
+scenario. Missing migration cells remain uncovered; a storage connection or
+successful evidence-composer invocation cannot replace them.
+
+## Interpret saga runtime evidence
+
+The Server saga runner [declares `workflow-php` and `sdk-python` runtimes](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/sagas-published-artifacts.sh#L3968).
+Its PHP actor [uses the Workflow package's `Workflow` and
+`WorkflowFiberRunner`](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/sagas-published-artifacts.sh#L1248)
+with a fixture adapter for the Server worker protocol. This exercises that
+package's compensation logic. The PHP service SDK's `DurableWorkflow\Worker`
+is a separate authoring and execution path. Installing both packages in the
+artifact tuple does not make their runtime coverage interchangeable.
+
+The [Sample App saga client](https://github.com/durable-workflow/sample-app/blob/40be451c020c6a0e8c9561585bcd96d38a352a75/polyglot/sagas/client.py#L25)
+selects Rust → Rust, Rust → PHP, Rust → Python, PHP → Rust and Python → Rust.
+Its PHP and Python actors use the service SDK workers. These cases leave three
+non-Rust service-SDK directions requiring their own qualification: PHP → PHP,
+PHP → Python and Python → PHP. The Server runner's Python → Python SDK baseline
+remains distinct from its PHP package cases. Keep every result bound to its
+own runner and artifact tuple.
+
+The Server's [mid-compensation restart case](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/sagas-published-artifacts.sh#L3530)
+observes `pause_after_refund`, restarts the selected worker and checks resumed
+compensation order and duplicate ledger rows. The Sample App restart recipe
+stops before compensation. Neither boundary alone qualifies process loss
+during an external compensation side effect or recovery after its lost
+acknowledgement. Those claims need their own application-idempotency or
+downstream-fencing fixture and retained outcomes.
+
+## Interpret worker heartbeat evidence
+
+The Server PHP heartbeat fixture [registers through the client, then runs
+`Worker::tick()` and explicit `Client::heartbeatWorker()` calls](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/heartbeats-published-artifacts.mjs#L651).
+It executes real PHP workflow tasks and observes SDK heartbeat acknowledgements
+and Server stale-worker routing. It does not invoke the PHP managed worker loop.
+
+In published PHP SDK 3.1.0, [`Worker::run()` establishes the internal registration
+and managed heartbeat state](https://github.com/durable-workflow/sdk-php/blob/222e27eddc0915957ad513dcc3b2b2418f5eb959/src/Worker.php#L356).
+`tick()` does not establish that state, and automatic heartbeat refresh refuses
+while the worker is internally unregistered. The fixture's explicit client
+heartbeats therefore do not qualify managed interval adoption, automatic
+refresh, heartbeat retry or shutdown behavior for that package.
+
+The Python fixture [starts `Worker.run()`](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/heartbeats-published-artifacts.mjs#L789).
+The Rust fixture [uses `Worker::run_until()` and its heartbeat observation
+callback](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/heartbeats-published-artifacts.mjs#L914).
+Keep these execution surfaces and each retained artifact tuple distinct.
+Neither a shared wave nor another language's managed loop fills the PHP
+qualification gap. This distinction does not establish a product defect or
+promote an unexecuted tuple into passing coverage.
+
+## Interpret scheduled workflow evidence
+
+The Server schedule runner's cross-language shard [reports
+`worker_execution_mode: published_php_python_worker_protocol_clients`](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/schedules-published-artifacts.mjs#L7590).
+Its helpers use actual SDK clients to create schedules, register and heartbeat
+workers, poll tasks and submit completion commands. The
+[Python helper](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/schedules-published-artifacts.mjs#L9344)
+and [PHP helper](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/schedules-published-artifacts.mjs#L9488)
+construct the `complete_workflow` result directly. Those cells test schedule
+dispatch and the worker protocol, rather than executing authored workflows
+through the PHP or Python SDK worker runtime.
+
+The separate [Sample App schedule examples](https://github.com/durable-workflow/sample-app/blob/40be451c020c6a0e8c9561585bcd96d38a352a75/polyglot/schedules/README.md)
+use PHP and Python SDK creators with an authored Rust workflow worker. Each
+waits for its first automatic interval fire, checks the result and linked
+schedule/run history, then deletes the schedule. Neither client manually
+triggers the fire. These two cases do not qualify other worker runtimes or
+schedule cadence, restart, overlap/backfill and failure recovery.
+
+Keep protocol-client results, authored worker execution and each recorded
+artifact tuple distinct. A result field naming a runtime or an SDK package pin
+alone does not fill a missing authored-worker case.
 
 ## Interpret lifecycle execution surfaces
 
@@ -107,6 +349,50 @@ outputs. Keep constructed client responses, typed result inspection, live worker
 execution and physical process loss distinct. A successful lifecycle job belongs
 to its recorded tuple and executed cells. Unexecuted cells and newer artifact
 tuples remain unqualified.
+
+## Read signals and queries outcomes
+
+The Server [signals/query runner](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/signals-queries-published-artifacts.sh#L4)
+documents its published artifact inputs, optional probes and result directory:
+
+```sh
+bash scripts/conformance/signals-queries-published-artifacts.sh --help
+```
+
+Run that command from the Server checkout. Freeze the published tuple and runner
+revision before executing probes. A configured CLI binary or Python executable
+alone does not prove installation from the published artifact.
+
+The full runner declares these SDK client-to-worker directions, with additional
+CLI checks. They are signal/query directions, separate from workflow-to-activity
+directions:
+
+| Worker runtime | SDK clients |
+| --- | --- |
+| PHP | PHP, Python, Rust |
+| Python | PHP, Python, Rust |
+| Rust | PHP, Python, Rust |
+
+Inspect `signals-queries-result.json`: its `outcome`, `runtime_matrix`,
+`scenario_results` and `executed_distribution_identities` identify the result
+and consumed artifacts. The runner [requires nineteen scenarios](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/signals-queries-published-artifacts.sh#L17046),
+including replay, terminal behavior, adversarial errors and Waterline visibility.
+Each scenario has its own executed scope. Declaring all nine client/worker
+directions does not repeat every adversarial or recovery case in every direction.
+
+The command [writes a structured record](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/signals-queries-published-artifacts.sh#L18506)
+even when the result is `non_passing` or `non_passing_runner_blocked`. A normal
+process exit alone is insufficient evidence of conformance. Preserve failures,
+`unsupported`, `not_covered` and runner blockers. Disabling a probe contributes
+no execution evidence; installing its SDK does not replace the missing scenario.
+
+`--focus=php-worker-cli-signal` produces a separate
+`signals-queries-php-cli-signal-result.json` with
+`broad_property_claimed: false` and `broad_confirmation_required: true`. This
+[focused mode disables](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/signals-queries-published-artifacts.sh#L140)
+the adversarial, replay/terminal, Rust and Waterline probes. Its result cannot
+qualify the full matrix or a different artifact tuple. Keep the retained JSON
+records with the owning run's evidence; leave unexecuted cells unqualified.
 
 ## Read complete histories and lists
 

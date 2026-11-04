@@ -62,6 +62,48 @@ class QualificationPolicyTest(unittest.TestCase):
         commit, version = next(iter(releases.items()))
         return commit, version
 
+    def privileged_dispatch(self, condition: str) -> str:
+        return workflow("- run: echo checked", trigger="workflow_dispatch").replace(
+            "    runs-on:",
+            f"    if: ${{{{ {condition} }}}}\n    permissions:\n      contents: write\n    runs-on:",
+        )
+
+    def test_dispatch_rejects_case_and_bare_negation_bypasses(self) -> None:
+        for condition in (
+            "github.event_name == 'WORKFLOW_DISPATCH'",
+            "github.event_name == 'WorkFlow_Dispatch'",
+            "!github.event_name != 'push'",
+            "(!github.event_name != 'push') && github.ref != 'refs/heads/main'",
+            "!github.ref != 'refs/heads/main'",
+            "github.ref == 'refs/heads/main' || github.event_name == 'WORKFLOW_DISPATCH'",
+            "!(github.ref == 'refs/heads/main')",
+            "github.ref == 'refs/heads/other'",
+            "success() || github.ref == 'refs/heads/main'",
+            "!false",
+            "github.event_name != 'workﬂow_dispatch'",
+            "github.event_name != 'workflow_diſpatch'",
+            "falſe",
+        ):
+            candidate = self.privileged_dispatch(condition)
+            with self.subTest(condition=condition), self.assertRaisesRegex(
+                PolicyError, "privileged workflow_dispatch.*outside"
+            ):
+                self.scan(candidate)
+
+    def test_dispatch_retains_protected_ref_guards_and_boolean_composition(self) -> None:
+        for condition in (
+            "github.ref == 'refs/heads/main'",
+            "!(github.ref != 'refs/heads/main')",
+            "github.event_name == 'push' || github.ref == 'refs/heads/main'",
+            "github.event_name != 'WORKFLOW_DISPATCH' || github.ref == 'refs/heads/main'",
+            "github.event_name == 'WORKFLOW_DISPATCH' && github.ref == 'refs/heads/main'",
+            "always() && github.ref == 'refs/heads/main'",
+            "!true",
+            "false",
+        ):
+            with self.subTest(condition=condition):
+                self.scan(self.privileged_dispatch(condition))
+
     def test_checked_in_policy_is_valid_and_has_no_retired_consumers(self) -> None:
         validate_policy(self.policy)
         self.assertEqual(
@@ -653,6 +695,48 @@ class QualificationPolicyTest(unittest.TestCase):
     def test_isolated_same_repository_sonar_analysis_is_accepted(self) -> None:
         self.scan(self.sonar_workflow())
 
+    def test_merge_queue_sonar_accepts_only_the_trusted_static_scanner(self) -> None:
+        source = (ROOT / "tests/fixtures/merge-queue-sonar.yml").read_text(encoding="utf-8")
+        policy = copy.deepcopy(self.policy)
+        policy["workflow_trust"]["privileged_tag_dispatch_workflows"] = {}
+        scan_workflow_sources(policy, "server", {".github/workflows/queue-sonar.yml": source})
+        with self.assertRaises(PolicyError):
+            scan_workflow_sources(policy, "sdk-php", {".github/workflows/queue-sonar.yml": source})
+        with self.assertRaises(PolicyError):
+            scan_workflow_sources(policy, "server", {".github/workflows/another-scanner.yml": source})
+
+    def test_merge_queue_sonar_refuses_candidate_execution_and_privilege_expansion(self) -> None:
+        source = (ROOT / "tests/fixtures/merge-queue-sonar.yml").read_text(encoding="utf-8")
+        mutations = [
+            source.replace("workflows: [PHPUnit Feature]", "workflows: [Other workflow]"),
+            source.replace("types: [completed]", "types: [requested]"),
+            source.replace("  workflow_run:", "  pull_request:\n  workflow_run:"),
+            source.replace("event == 'merge_group'", "event == 'pull_request'"),
+            source.replace("conclusion == 'success'", "conclusion != 'cancelled'"),
+            source.replace("github.workflow_sha", "github.event.workflow_run.head_sha"),
+            source.replace("steps.candidate.outputs.sha", "github.event.workflow_run.head_sha"),
+            source.replace(".sonar-control/scripts/ci/merge-queue-sonar.mjs prepare", "./.sonar-candidate/install.sh"),
+            source.replace(".sonar-control/scripts/ci/merge-queue-sonar.mjs validate", "echo trusted"),
+            source.replace("persist-credentials: false", "persist-credentials: true"),
+            source.replace("submodules: false", "submodules: true"),
+            source.replace("lfs: false", "lfs: true"),
+            source.replace("runs-on: ubuntu-latest", "runs-on: self-hosted"),
+            source.replace("timeout-minutes: 20", "timeout-minutes: 120"),
+            source.replace("SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}", "SONAR_TOKEN: ${{ secrets.PRODUCTION_TOKEN }}"),
+            source.replace("steps:\n", "env:\n      TOKEN: ${{ secrets.SONAR_TOKEN }}\n    steps:\n"),
+            source.replace("name: Check out trusted scanner controls", "name: ${{ secrets.SONAR_TOKEN }}"),
+            source.replace("queue-sonar-work", ".sonar-candidate/.scannerwork"),
+            source.replace("projectBaseDir: .sonar-candidate", "projectBaseDir: ."),
+            source.replace("sonar.rust.clippy.enabled=false", "sonar.rust.clippy.enabled=true"),
+            source.replace("qualitygate.wait=false", "qualitygate.wait=false -Dsonar.host.url=https://example.invalid"),
+            source + "      - run: ./.sonar-candidate/after-scan.sh\n",
+            source + "      - uses: ./candidate-action # local\n",
+        ]
+        for changed in mutations:
+            self.assertNotEqual(source, changed)
+            with self.subTest(source=changed), self.assertRaises(PolicyError):
+                scan_workflow_sources(self.policy, "server", {".github/workflows/queue-sonar.yml": changed})
+
     def test_sonar_coverage_preparation_does_not_receive_analysis_credential(self) -> None:
         source = self.sonar_workflow().replace(
             "      - uses: SonarSource/",
@@ -788,6 +872,123 @@ class QualificationPolicyTest(unittest.TestCase):
         with self.assertRaisesRegex(PolicyError, "unsafe cache path"):
             self.scan(source)
 
+    TRUSTED_SAVE = "github.event_name == 'push' && github.ref == 'refs/heads/main'"
+    TRUSTED_READ = "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository"
+
+    def trusted_main_cache(self) -> str:
+        commit, version = self.approved_action("actions/cache")
+        save_if = f"success() && {self.TRUSTED_SAVE} && steps.cache.outputs.cache-hit != 'true'"
+        return workflow(
+            f"""- id: cache
+  if: ${{{{ {self.TRUSTED_READ} }}}}
+  uses: actions/cache/restore@{commit} # {version}
+  with:
+    path: build-cache
+    key: build-v1-${{{{ hashFiles('Cargo.lock') }}}}
+- run: echo build
+- if: ${{{{ {save_if} }}}}
+  uses: actions/cache/save@{commit} # {version}
+  with:
+    path: build-cache
+    key: ${{{{ steps.cache.outputs.cache-primary-key }}}}"""
+        )
+
+    def test_pull_request_cache_shares_an_exact_key_written_only_by_protected_pushes(self) -> None:
+        source = self.trusted_main_cache()
+        self.scan(source)
+        # The same condition with its terms reordered and parenthesized.
+        reordered = "github.ref == 'refs/heads/main' && (github.event_name == 'push')"
+        self.scan(source.replace(self.TRUSTED_SAVE, reordered))
+
+    def test_cache_restores_require_a_non_fork_guard_even_with_partitioned_keys(self) -> None:
+        source = self.trusted_main_cache()
+        guard = f"        if: ${{{{ {self.TRUSTED_READ} }}}}\n"
+        for path in ("target/debug/deps", "vendor", "node_modules", "~/.cargo/registry/cache"):
+            candidate = source.replace("path: build-cache", f"path: {path}")
+            for partitioned in (False, True):
+                changed = candidate.replace(guard, "")
+                if partitioned:
+                    changed = changed.replace("key: build-v1-", "key: build-${{ github.event_name }}-")
+                with self.subTest(path=path, partitioned=partitioned), self.assertRaisesRegex(
+                    PolicyError, "cache restore.*external fork"
+                ):
+                    self.scan(changed)
+
+    def test_cache_restore_guard_rejects_fork_and_main_ref_bypasses(self) -> None:
+        source = self.trusted_main_cache()
+        same_repository = "github.event.pull_request.head.repo.full_name == github.repository"
+        for condition in (
+            "true",
+            "github.ref == 'refs/heads/main'",
+            "github.event_name == 'pull_request'",
+            "github.event_name == 'PULL_REQUEST'",
+            "github.event_name != 'workflow_dispatch'",
+            f"{same_repository} || github.event_name == 'pull_request'",
+            f"{same_repository} || github.ref == 'refs/heads/main'",
+            f"{same_repository} || success()",
+            f"!({same_repository})",
+            "!github.event_name != 'push'",
+            "!github.event.pull_request.head.repo.full_name != github.repository",
+            "github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'",
+            "github.event_name != 'pull_requeﬆ'",
+            "!(github.event_name == 'pull_requeﬆ')",
+            "falſe",
+        ):
+            candidate = source.replace(self.TRUSTED_READ, condition)
+            with self.subTest(condition=condition), self.assertRaisesRegex(
+                PolicyError, "cache restore.*external fork"
+            ):
+                self.scan(candidate)
+
+    def test_cache_restore_guards_accept_protected_and_same_repository_contexts(self) -> None:
+        source = self.trusted_main_cache()
+        same_repository = "github.event.pull_request.head.repo.full_name == github.repository"
+        for condition in (
+            same_repository,
+            "github.repository == github.event.pull_request.head.repo.full_name",
+            "!(github.event.pull_request.head.repo.full_name != github.repository)",
+            f"success() && ({same_repository})",
+            f"({self.TRUSTED_SAVE}) || (github.event_name == 'pull_request' && {same_repository})",
+            f"always() && ({self.TRUSTED_READ})",
+            self.TRUSTED_SAVE,
+            "false",
+        ):
+            with self.subTest(condition=condition):
+                self.scan(source.replace(self.TRUSTED_READ, condition))
+
+    def test_cache_restore_can_inherit_the_job_non_fork_guard(self) -> None:
+        source = self.trusted_main_cache()
+        source = source.replace(f"        if: ${{{{ {self.TRUSTED_READ} }}}}\n", "")
+        source = source.replace("    runs-on:", f"    if: ${{{{ {self.TRUSTED_READ} }}}}\n    runs-on:")
+        self.scan(source)
+        candidate = source.replace(self.TRUSTED_READ, "github.ref == 'refs/heads/main'")
+        with self.assertRaisesRegex(PolicyError, "cache restore.*external fork"):
+            self.scan(candidate)
+
+    def test_pull_request_cache_without_partition_refuses_untrusted_writes_and_prefixes(self) -> None:
+        source = self.trusted_main_cache()
+        key = "{{ hashFiles('Cargo.lock') }}"
+        either = "github.event_name == 'push' || github.ref == 'refs/heads/main'"
+        mutations = [
+            # A broad restore prefix could substitute stale output.
+            source.replace(key, key + "\n          restore-keys: build-v1-", 1),
+            # A save any event, or any branch, can run.
+            source.replace(f"success() && {self.TRUSTED_SAVE} && ", ""),
+            source.replace("github.event_name == 'push' && ", ""),
+            source.replace(" && github.ref == 'refs/heads/main'", ""),
+            source.replace(self.TRUSTED_SAVE, either),
+            source.replace("refs/heads/main", "refs/heads/other"),
+            source.replace("github.event_name == 'push'", "github.event_name != 'pull_request'"),
+            # The combined action restores and saves on every event.
+            source.replace("actions/cache/restore@", "actions/cache@"),
+        ]
+        for changed in mutations:
+            with (
+                self.subTest(source=changed),
+                self.assertRaisesRegex(PolicyError, "must partition trusted and untrusted events"),
+            ):
+                self.scan(changed)
+
     def test_policy_rejects_a_retired_javascript_runtime(self) -> None:
         candidate = copy.deepcopy(self.policy)
         candidate["action_runtime"]["supported_javascript_runtimes"] = ["node20"]
@@ -805,6 +1006,248 @@ class QualificationPolicyTest(unittest.TestCase):
             before = sorted(path.name for path in directory.iterdir())
             validate_local_action_references(self.policy, directory, "github-control-plane")
             self.assertEqual(before, sorted(path.name for path in directory.iterdir()))
+
+
+TAG_GATE = "github.ref == format('refs/tags/{0}', inputs.tag)"
+CHECKOUT_STEP = """      - name: Check out trusted release tooling
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+"""
+VERIFIER_STEP = """      - name: Require a dispatch from the release tag, at its commit, on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
+          DISPATCH_REF: ${{ github.ref }}
+          DISPATCH_SHA: ${{ github.sha }}
+        run: scripts/ci/verify-native-release-dispatch.sh
+"""
+PLAN_STEPS = CHECKOUT_STEP + VERIFIER_STEP + """      - name: Choose registries
+        run: echo dockerhub=true >> "$GITHUB_OUTPUT"
+"""
+
+
+def tag_dispatch_workflow(
+    *,
+    plan_extra: str = "",
+    gate: str = TAG_GATE,
+    trigger_extra: str = "",
+    tag_required: str = "true",
+    environment: str = "dockerhub-native",
+    needs: str = "plan",
+    extra_job: str = "",
+    plan_steps: str | None = None,
+    plan_job_extra: str = "",
+    workflow_extra: str = "",
+    job_extra: str = "",
+) -> str:
+    def publishing_job(name: str, condition: str) -> str:
+        return f"""  {name}:
+    needs: {needs}
+    if: {condition}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: {environment}
+{job_extra}    permissions:
+      contents: read
+      packages: write
+    steps:
+      - run: echo {name}
+"""
+
+    return f"""name: native release
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        required: {tag_required}
+      release_commit:
+        required: true
+{trigger_extra}permissions:
+  contents: read
+{workflow_extra}jobs:
+  plan:
+{plan_extra}    runs-on: ubuntu-latest
+    timeout-minutes: 5
+{plan_job_extra}    permissions:
+      contents: read
+    steps:
+{PLAN_STEPS if plan_steps is None else plan_steps}\
+{"".join(publishing_job(name, gate) for name in ("build-amd64", "build-arm64", "publish"))}\
+{publishing_job("aliases", gate + " && needs.plan.outputs.dockerhub == 'true'")}{extra_job}"""
+
+
+class TagDispatchPolicyTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.policy = policy_fixture()
+
+    def scan(self, source: str, policy: dict[str, object] | None = None) -> dict[str, dict[str, object]]:
+        return scan_workflow_sources(
+            policy or self.policy, "server", {".github/workflows/native-release.yml": source}
+        )
+
+    def assert_refused(self, source: str, message: str) -> None:
+        with self.assertRaisesRegex(PolicyError, message):
+            self.scan(source)
+
+    def test_reviewed_tag_ref_release_workflow_is_admitted(self) -> None:
+        evidence = self.scan(tag_dispatch_workflow())
+        self.assertEqual(
+            evidence[".github/workflows/native-release.yml"]["privileged_jobs"],
+            ["aliases", "build-amd64", "build-arm64", "publish"],
+        )
+
+    def test_the_same_workflow_is_refused_without_its_binding(self) -> None:
+        policy = copy.deepcopy(self.policy)
+        policy["workflow_trust"]["privileged_tag_dispatch_workflows"] = {}
+        with self.assertRaisesRegex(PolicyError, "can run outside refs/heads/main"):
+            self.scan(tag_dispatch_workflow(), policy)
+
+    def test_binding_does_not_transfer_to_another_workflow_or_target(self) -> None:
+        with self.assertRaisesRegex(PolicyError, "can run outside refs/heads/main"):
+            scan_workflow_sources(
+                self.policy,
+                "server",
+                {
+                    ".github/workflows/native-release.yml": tag_dispatch_workflow(),
+                    ".github/workflows/other-release.yml": tag_dispatch_workflow(),
+                },
+            )
+        with self.assertRaisesRegex(PolicyError, "can run outside refs/heads/main"):
+            scan_workflow_sources(
+                self.policy, "sdk-php", {".github/workflows/native-release.yml": tag_dispatch_workflow()}
+            )
+
+    def test_conditioned_plan_job_is_refused(self) -> None:
+        self.assert_refused(
+            tag_dispatch_workflow(plan_extra=f"    if: {TAG_GATE}\n"), "plan job must run unconditionally"
+        )
+
+    def test_privileged_plan_job_is_refused(self) -> None:
+        self.assert_refused(
+            tag_dispatch_workflow(plan_extra="    environment: dockerhub-native\n"),
+            "job 'plan' can run outside refs/heads/main|plan job must not be privileged",
+        )
+
+    def test_loosened_or_missing_tag_ref_predicates_are_refused(self) -> None:
+        for gate in (
+            f"{TAG_GATE} || true",
+            f"!({TAG_GATE})",
+            "github.ref != 'refs/heads/main'",
+            "startsWith(github.ref, 'refs/tags/')",
+            "github.ref == format('refs/heads/{0}', inputs.tag)",
+        ):
+            with self.subTest(gate=gate):
+                self.assert_refused(tag_dispatch_workflow(gate=gate), "can run outside refs/heads/main")
+
+    def test_wrong_environment_or_missing_plan_dependency_is_refused(self) -> None:
+        self.assert_refused(tag_dispatch_workflow(environment="production"), "can run outside refs/heads/main")
+        self.assert_refused(tag_dispatch_workflow(needs="[]"), "can run outside refs/heads/main")
+
+    def test_unlisted_privileged_job_is_refused_even_with_the_tag_predicate(self) -> None:
+        extra = f"""  sign:
+    needs: plan
+    if: {TAG_GATE}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: dockerhub-native
+    permissions:
+      contents: write
+    steps:
+      - run: echo sign
+"""
+        self.assert_refused(tag_dispatch_workflow(extra_job=extra), "job 'sign' can run outside refs/heads/main")
+
+    def test_other_triggers_and_optional_tag_input_are_refused(self) -> None:
+        self.assert_refused(
+            tag_dispatch_workflow(trigger_extra="  push:\n    tags: ['native-*']\n"),
+            "triggered only by workflow_dispatch",
+        )
+        self.assert_refused(tag_dispatch_workflow(tag_required="false"), "must be a required string")
+
+    def test_missing_bound_workflow_or_job_is_refused(self) -> None:
+        with self.assertRaisesRegex(PolicyError, "missing policy-bound tag dispatch workflows"):
+            scan_workflow_sources(self.policy, "server", {".github/workflows/ci.yml": workflow("- run: echo ok")})
+        policy = copy.deepcopy(self.policy)
+        binding = policy["workflow_trust"]["privileged_tag_dispatch_workflows"]["server/native-release.yml"]
+        binding["jobs"] = sorted([*binding["jobs"], "verify"])
+        with self.assertRaisesRegex(PolicyError, r"missing policy-bound tag dispatch jobs \['verify'\]"):
+            self.scan(tag_dispatch_workflow(), policy)
+
+    def test_status_functions_cannot_run_publishing_after_a_failed_plan(self) -> None:
+        for gate in (
+            f"always() && {TAG_GATE}",
+            f"{TAG_GATE} && failure()",
+            f"cancelled () && {TAG_GATE}",
+            f"ALWAYS() && {TAG_GATE}",
+            f"success() == false && {TAG_GATE}",
+            f"${{{{ !success() && {TAG_GATE} }}}}",
+            f"Success ( ) == false && {TAG_GATE}",
+            f"{TAG_GATE} && success()",
+        ):
+            with self.subTest(gate=gate):
+                self.assert_refused(tag_dispatch_workflow(gate=gate), "can run outside refs/heads/main")
+
+    def test_plan_must_run_the_exact_verifier_after_the_checkout(self) -> None:
+        echo = """      - name: Require a dispatch from the release tag, at its commit, on main
+        run: echo skipped
+"""
+        tampered = VERIFIER_STEP.replace("RELEASE_TAG: ${{ inputs.tag }}", "RELEASE_TAG: native-9.9.9")
+        cases = {
+            "removed": CHECKOUT_STEP,
+            "replaced": CHECKOUT_STEP + echo,
+            "changed env": CHECKOUT_STEP + tampered,
+            "conditional": CHECKOUT_STEP + VERIFIER_STEP.replace("        run:", "        if: false\n        run:"),
+            "continue on error": CHECKOUT_STEP
+            + VERIFIER_STEP.replace("        run:", "        continue-on-error: true\n        run:"),
+            "custom shell": CHECKOUT_STEP
+            + VERIFIER_STEP.replace("        run:", "        shell: true {0}\n        run:"),
+            "step before verifier": CHECKOUT_STEP
+            + "      - run: echo 'exit 0' > scripts/ci/verify-native-release-dispatch.sh\n"
+            + VERIFIER_STEP,
+            "no checkout": VERIFIER_STEP,
+        }
+        for case, steps in cases.items():
+            with self.subTest(case=case):
+                self.assert_refused(tag_dispatch_workflow(plan_steps=steps), "plan job must")
+
+    def test_plan_and_publishing_jobs_cannot_continue_on_error_or_change_run_defaults(self) -> None:
+        self.assert_refused(
+            tag_dispatch_workflow(plan_job_extra="    continue-on-error: true\n"), "plan job must not continue on error"
+        )
+        self.assert_refused(
+            tag_dispatch_workflow(job_extra="    continue-on-error: true\n"), "must not continue on error"
+        )
+        self.assert_refused(
+            tag_dispatch_workflow(workflow_extra="defaults:\n  run:\n    shell: true {0}\n"),
+            "must not override run defaults",
+        )
+        self.assert_refused(
+            tag_dispatch_workflow(plan_job_extra="    defaults:\n      run:\n        working-directory: tmp\n"),
+            "must not override run defaults",
+        )
+
+    def test_policy_refuses_a_loosened_or_incomplete_binding(self) -> None:
+        cases = {
+            "tag_ref_condition": "startsWith(github.ref, 'refs/tags/')",
+            "jobs": ["publish", "aliases"],
+            "plan_job": "publish",
+            "environment": "",
+            "plan_verifier": {"run": "scripts/ci/verify-native-release-dispatch.sh"},
+        }
+        for field, value in cases.items():
+            with self.subTest(field=field):
+                policy = copy.deepcopy(self.policy)
+                bindings = policy["workflow_trust"]["privileged_tag_dispatch_workflows"]
+                bindings["server/native-release.yml"][field] = value
+                with self.assertRaises(PolicyError):
+                    validate_policy(policy)
+        policy = copy.deepcopy(self.policy)
+        del policy["workflow_trust"]["privileged_tag_dispatch_workflows"]["server/native-release.yml"]["plan_job"]
+        with self.assertRaisesRegex(PolicyError, "complete tag dispatch trust binding"):
+            validate_policy(policy)
 
 
 if __name__ == "__main__":
