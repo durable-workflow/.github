@@ -63,8 +63,8 @@ class TemporalRuntimeTests(unittest.TestCase):
         executable, database = self.launch()
         self.assertTrue(executable.is_relative_to(self.temporary_parent))
         self.assertEqual(executable.parent, database.parent)
-        self.assertEqual(stat.S_IMODE(executable.parent.stat().st_mode), 0o700)
-        self.assertEqual(executable.read_bytes(), self.binary)
+        self.assertEqual(0o700, stat.S_IMODE(executable.parent.stat().st_mode))
+        self.assertEqual(self.binary, executable.read_bytes())
         self.assertTrue(os.access(executable, os.X_OK))
         self.assertFalse(database.exists())
 
@@ -79,7 +79,7 @@ class TemporalRuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'checksum mismatch'):
             self.launch()
         self.execute.assert_not_called()
-        self.assertEqual(list(self.temporary_parent.iterdir()), [])
+        self.assertEqual([], list(self.temporary_parent.iterdir()))
 
     def test_candidate_archive_url_or_digest_cannot_select_runtime_authority(self):
         for field, value in (('archive', 'https://example.invalid/replacement.tar.gz'),
