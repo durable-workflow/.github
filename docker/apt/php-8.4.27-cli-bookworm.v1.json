@@ -1,0 +1,136 @@
+{
+  "schema": "durable-workflow.php-bookworm-apt-parent.v1",
+  "scope": "publisher-source-inventory-only",
+  "repository": "docker.io/library/php",
+  "discovery_tag": "8.4.27-cli-bookworm",
+  "php_version": "8.4.27",
+  "os": {
+    "id": "debian",
+    "version_id": "12"
+  },
+  "architectures": [
+    "amd64",
+    "arm64"
+  ],
+  "fixed": {
+    "apt": "2.6.2",
+    "libapt-pkg6.0": "2.6.2"
+  },
+  "authority": [
+    "https://lists.debian.org/debian-lts-announce/2026/11/msg00004.html",
+    "https://packages.debian.org/bookworm/apt",
+    "https://packages.debian.org/bookworm/libapt-pkg6.0"
+  ],
+  "inventory": {
+    "layer_fetch": false,
+    "image_execution": false,
+    "rootfs_inspection": false,
+    "installed_qualification": false
+  },
+  "parents": {
+    "predecessor": {
+      "index": {
+        "digest": "sha256:54b467ede1db96c66675e7b78457dd43729d0e7be31978d4a1e5c069ceabcf76",
+        "size": 6501
+      },
+      "platforms": {
+        "linux/amd64": {
+          "child": {
+            "digest": "sha256:dd0e2b902f1edfb6ca02fbcb391c28b1554c7d35a4e36e5925876b90aa804851",
+            "size": 2878
+          },
+          "config": {
+            "digest": "sha256:12f6d2ea136f247580f3dc42bda86b27af080fa8f04ea5ec9b581238702093ff",
+            "size": 9007
+          },
+          "attestation": {
+            "digest": "sha256:ab7746990035696c58dc15c84923a2164212106d49a72d38b4d887d2efcc88b9",
+            "size": 841
+          },
+          "spdx": {
+            "digest": "sha256:f56402e73d62fcdd665a7152bcd1aaa5e0da7e85b2ba7a42c9d306cd475a2672",
+            "size": 6407897
+          },
+          "packages": {
+            "apt": "2.6.1",
+            "libapt-pkg6.0": "2.6.1"
+          }
+        },
+        "linux/arm64": {
+          "child": {
+            "digest": "sha256:ec3adc33ae9801f3cb9291c3f343c12ae1e9f3879d866c1517cd32160a74fa23",
+            "size": 2879
+          },
+          "config": {
+            "digest": "sha256:ca2f912b5fc4cee612b0863e15e3a23a087f1446ec51136a64f3527809b7dd59",
+            "size": 9020
+          },
+          "attestation": {
+            "digest": "sha256:1f2b9e200944bd584ad1c39e036031fb81fa26fab8c7ad9f97f0ddfb600c24f9",
+            "size": 841
+          },
+          "spdx": {
+            "digest": "sha256:34eab70d705d37508cca2b6a93d1d448807c2ed4f966959f7755b77548aad6ee",
+            "size": 6436288
+          },
+          "packages": {
+            "apt": "2.6.1",
+            "libapt-pkg6.0": "2.6.1"
+          }
+        }
+      }
+    },
+    "candidate": {
+      "index": {
+        "digest": "sha256:b3e907a1108629c562c4bb313ce3449e34d49991f6bb2487913f6146f47200fe",
+        "size": 6501
+      },
+      "platforms": {
+        "linux/amd64": {
+          "child": {
+            "digest": "sha256:5d3eebbd478bc102494c539d43be98a885984b33f929c6081f1c59033a878d6a",
+            "size": 2878
+          },
+          "config": {
+            "digest": "sha256:3db89bf1e580bf2a2767ea5bdeb168f4f053bf275188a103744e97c47bf0edaa",
+            "size": 9007
+          },
+          "attestation": {
+            "digest": "sha256:bf3bf52ff7e0e21a244116b0d31eb2490b9b0a6fc5fb914d08e562d61c92a792",
+            "size": 841
+          },
+          "spdx": {
+            "digest": "sha256:169f54509152a0455c7c7ab21d3a90834b6208f298ea78e5392decc7028ea53b",
+            "size": 6407951
+          },
+          "packages": {
+            "apt": "2.6.2",
+            "libapt-pkg6.0": "2.6.2"
+          }
+        },
+        "linux/arm64": {
+          "child": {
+            "digest": "sha256:f4501edd9c94d75fe90c78a81e9db9e5147170398619258165dff01607cec592",
+            "size": 2879
+          },
+          "config": {
+            "digest": "sha256:2b040a3b56b4b844d9992dff098a3302811007cdb759fc1b8daf6c4f094a9d29",
+            "size": 9022
+          },
+          "attestation": {
+            "digest": "sha256:3adad572ed13aadfc7bfcd0d50c714c29ce52e4ac2ccd113ee415b57e0362b49",
+            "size": 841
+          },
+          "spdx": {
+            "digest": "sha256:939898a2aefda54caa35d0d25b27b8db2da9cbc314aad87e19de3dfde9d0bdb5",
+            "size": 6436342
+          },
+          "packages": {
+            "apt": "2.6.2",
+            "libapt-pkg6.0": "2.6.2"
+          }
+        }
+      }
+    }
+  }
+}
