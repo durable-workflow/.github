@@ -34,6 +34,7 @@ PYTHON_MODULES = {"unittest", "pip", "venv", "http.server"}
 # Filled with explicit reviewed workflow-byte identities, never derived from
 # candidate text. A changed complex workflow needs a separate source review.
 REVIEWED_COMPLEX_WORKFLOWS = {
+    ".github/workflows/qualify-linux-php-initial.yml": "c94aa78f856940b71ce21476caf1f9f826375f11499d54759c81a79467acd1eb",
     ".github/workflows/ci.yml": "d5b32d7b2868638e09b7deea1d3cab4bcbd3b4601fd9120da0be55319540eff7",
     ".github/workflows/sonar.yml": "0dd432a52b1dcb6ef10b6e25404163b285deaa651a92219456eabec18514067b",
     ".github/workflows/protected-policy.yml": "642d204ea939ca5eba7ef51be9e4ae56a35177413caabe849315086d3d9d2d31",

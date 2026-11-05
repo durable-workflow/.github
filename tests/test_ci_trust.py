@@ -12,7 +12,8 @@ from unittest.mock import patch
 # Keep the CI trust suite's existing entrypoint while collecting the isolated
 # source boundary cases. These tests never invoke setup or package operations.
 from tests import (test_fixed_apt, test_php_linux_bootstrap, test_php_linux_tools,
-                   test_php_linux_recipe, test_php_linux_archive, test_setup_php_linux)
+                   test_php_linux_recipe, test_php_linux_archive, test_setup_php_linux,
+                   test_php_linux_qualification, test_php_linux_qualification_workflow)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,7 +26,8 @@ SPEC.loader.exec_module(trust)
 
 def load_tests(loader, standard_tests, pattern):
     for module in (test_fixed_apt, test_php_linux_bootstrap, test_php_linux_tools,
-                   test_php_linux_recipe, test_php_linux_archive, test_setup_php_linux):
+                   test_php_linux_recipe, test_php_linux_archive, test_setup_php_linux,
+                   test_php_linux_qualification, test_php_linux_qualification_workflow):
         standard_tests.addTests(loader.loadTestsFromModule(module))
     return standard_tests
 
