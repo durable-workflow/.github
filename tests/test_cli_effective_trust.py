@@ -159,6 +159,9 @@ class CliEffectiveTrustTest(unittest.TestCase):
 
     def exported(self, client):
         target = self.case_directory / (client + "-trust")
+        target.mkdir(mode=0o700)
+        (target / "github-env").touch(mode=0o600)
+        (target / "github-output").touch(mode=0o600)
         return trust.export_bundle(
             self.clean, target, target / "github-env", target / "github-output", (client,),
         )

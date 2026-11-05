@@ -14,7 +14,7 @@ from unittest.mock import patch
 from tests import (test_fixed_apt, test_php_linux_bootstrap, test_php_linux_tools,
                    test_php_linux_recipe, test_php_linux_archive, test_setup_php_linux,
                    test_php_linux_qualification, test_php_linux_qualification_workflow,
-                   test_bookworm_apt_source)
+                   test_bookworm_apt_source, test_private_pip_runtime)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,7 +29,7 @@ def load_tests(loader, standard_tests, pattern):
     for module in (test_fixed_apt, test_php_linux_bootstrap, test_php_linux_tools,
                    test_php_linux_recipe, test_php_linux_archive, test_setup_php_linux,
                    test_php_linux_qualification, test_php_linux_qualification_workflow,
-                   test_bookworm_apt_source):
+                   test_bookworm_apt_source, test_private_pip_runtime):
         standard_tests.addTests(loader.loadTestsFromModule(module))
     return standard_tests
 
@@ -59,6 +59,8 @@ class CleanBundleTest(unittest.TestCase):
         self.directory = Path(self.temporary.name)
         self.env_file = self.directory / "github-env"
         self.output_file = self.directory / "github-output"
+        self.env_file.touch(mode=0o600)
+        self.output_file.touch(mode=0o600)
         self.clean = self.certificates["CI test root"]
 
     def export(self, source=None, directory=None):
@@ -72,8 +74,8 @@ class CleanBundleTest(unittest.TestCase):
         for name in trust.BLOCKED_SUBJECTS:
             with self.subTest(subject=name), self.assertRaisesRegex(ValueError, "Blocked certificate"):
                 self.export(self.certificates[name])
-        self.assertFalse(self.env_file.exists())
-        self.assertFalse(self.output_file.exists())
+        self.assertEqual("", self.env_file.read_text())
+        self.assertEqual("", self.output_file.read_text())
 
     def test_a_blocked_root_later_in_the_bundle_is_refused(self):
         combined = self.directory / "combined.pem"
@@ -130,7 +132,7 @@ class CleanBundleTest(unittest.TestCase):
     def test_environment_file_injection_is_refused(self):
         with self.assertRaisesRegex(ValueError, "line breaks"):
             self.export(directory=self.directory / "bad\nINJECTED=value")
-        self.assertFalse(self.env_file.exists())
+        self.assertEqual("", self.env_file.read_text())
 
     def test_only_selected_clients_receive_overrides(self):
         variables = trust.export_bundle(self.clean, self.directory, self.env_file, self.output_file, ("composer", "curl", "git"))
@@ -154,17 +156,68 @@ class CleanBundleTest(unittest.TestCase):
         self.assertNotIn("CARGO_HTTP_PROXY_CAINFO", variables)
         self.assertNotIn("NODE_EXTRA_CA_CERTS", variables)
 
-    def test_main_uses_the_authenticated_pip_distribution(self):
+    def test_main_uses_the_verified_private_certifi_object(self):
         variables = {
             "RUNNER_TEMP": str(self.directory), "GITHUB_ENV": str(self.env_file),
-            "GITHUB_OUTPUT": str(self.output_file),
+            "GITHUB_OUTPUT": str(self.output_file), "DW_CI_PIP_PYTHON": "/fixture/private/bin/python",
         }
-        with patch.dict(os.environ, variables), patch("pip.__version__", "26.2.2"), patch("pip._vendor.certifi.where", return_value=str(self.clean)):
+        source = self.directory / "pip/_vendor/certifi/cacert.pem"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(self.clean.read_bytes())
+        with trust.runtime.held_file(source, owned=True) as (_contents, identity):
+            pass
+        receipt = str(self.directory / "runtime.json")
+        report = {"purelib": str(self.directory), "root": str(self.directory)}
+        with patch.dict(os.environ, variables), patch.object(trust.sys, "argv", ["export-trust", "--runtime", receipt]), \
+                patch.object(trust.runtime, "verify_runtime", return_value=(report, {str(source): identity})) as verify, \
+                patch.object(trust.runtime, "verify_active_origin") as active:
             trust.main()
+        verify.assert_called_once_with(receipt, str(self.directory))
+        active.assert_called_once_with(report, trust.shutil.which("python"))
         self.assertIn("PIP_CERT=", self.env_file.read_text())
         self.assertNotIn("COMPOSER_CAFILE=", self.env_file.read_text())
-        with patch("pip.__version__", "25.0"), self.assertRaisesRegex(ValueError, "26.2.2"):
+        self.env_file.write_text("")
+        source.write_bytes(b"changed after private source verification")
+        with patch.dict(os.environ, variables), patch.object(trust.sys, "argv", ["export-trust", "--runtime", receipt]), \
+                patch.object(trust.runtime, "verify_runtime", return_value=(report, {str(source): identity})), \
+                patch.object(trust.runtime, "verify_active_origin"), \
+                self.assertRaisesRegex(ValueError, "object changed"):
             trust.main()
+        self.assertEqual("", self.env_file.read_text())
+
+    def test_main_has_no_ambient_pip_or_receipt_discovery_fallback(self):
+        with patch.object(trust.sys, "argv", ["export-trust"]), \
+                patch.object(trust.runtime, "verify_runtime") as verify, self.assertRaisesRegex(ValueError, "explicit"):
+            trust.main()
+        verify.assert_not_called()
+
+    def test_ca_source_links_and_redirected_command_files_refuse_without_output(self):
+        original = self.directory / "source.pem"
+        original.write_bytes(self.clean.read_bytes())
+        link = self.directory / "redirect.pem"
+        link.symlink_to(original)
+        with self.assertRaises((OSError, ValueError)):
+            self.export(link)
+        link.unlink()
+        os.link(original, link)
+        with self.assertRaisesRegex(ValueError, "link"):
+            self.export(link)
+        link.unlink()
+        self.env_file.unlink()
+        self.env_file.symlink_to(original)
+        with self.assertRaises((OSError, ValueError)):
+            self.export()
+        self.assertEqual(self.clean.read_bytes(), original.read_bytes())
+        self.assertEqual("", self.output_file.read_text())
+
+    def test_ambient_openssl_executable_and_configuration_are_not_used(self):
+        binary = self.directory / "openssl"
+        marker = self.directory / "ambient-openssl-executed"
+        binary.write_text("#!/bin/sh\nprintf bad > '" + str(marker) + "'\n")
+        binary.chmod(0o700)
+        with patch.dict(os.environ, {"PATH": str(self.directory), "OPENSSL_CONF": str(binary)}):
+            self.export()
+        self.assertFalse(marker.exists())
 
 
 if __name__ == "__main__":

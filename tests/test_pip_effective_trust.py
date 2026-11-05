@@ -55,8 +55,12 @@ class PipEffectiveTrustTest(unittest.TestCase):
                 trust.inspect_bundle(affected)
             extra = directory / "openssl-default-directory"
             extra.mkdir()
+            runner = directory / "runner"
+            runner.mkdir(mode=0o700)
+            (runner / "env").touch(mode=0o600)
+            (runner / "output").touch(mode=0o600)
             variables = trust.export_bundle(
-                clean, directory / "runner", directory / "env", directory / "output", ("pip",),
+                clean, runner, runner / "env", runner / "output", ("pip",),
             )
             wheel = directory / "trust_probe-1.0-py3-none-any.whl"
             with zipfile.ZipFile(wheel, "w") as archive:

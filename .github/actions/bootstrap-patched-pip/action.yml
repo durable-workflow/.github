@@ -1,11 +1,20 @@
 name: Bootstrap patched pip trust
 description: Authenticate patched pip and export its verified clean CA bundle for subsequent CI requests.
 inputs:
+  operation:
+    description: Bootstrap the private runtime, or verify the existing explicit runtime without acquisition.
+    default: bootstrap
   clients:
     description: Comma-separated Linux CI clients invoked by later steps (pip, python, composer, curl, git, npm, cargo).
     default: pip
 
 outputs:
+  pip-state:
+    description: Exact owned private-runtime receipt for later origin verification and cleanup.
+    value: ${{ steps.runtime.outputs.pip-state }}
+  pip-python:
+    description: Bound job-private Python executable preserving the selected interpreter version.
+    value: ${{ steps.runtime.outputs.pip-python }}
   ca-file:
     description: Absolute path of the verified public CA bundle.
     value: ${{ steps.trust.outputs.ca-file }}
@@ -19,16 +28,27 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Install and verify pip 26.2.2
+    - name: Seed or verify the exact job-private pip runtime
+      id: runtime
       shell: bash
+      env:
+        TRUST_OPERATION: ${{ inputs.operation }}
+        TRUST_CALLER_LD_LIBRARY_PATH: ${{ env.LD_LIBRARY_PATH }}
+        LD_LIBRARY_PATH: ''
+        LD_PRELOAD: ''
+        LD_AUDIT: ''
       run: |
         set -euo pipefail
-        python -I -m pip --isolated --disable-pip-version-check install --no-deps --upgrade \
-          "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
-        test "$(python -I -c 'import pip; print(pip.__version__)')" = 26.2.2
+        selected_python="$(command -v python)"
+        exec /usr/bin/python3 -I -S -B "$GITHUB_ACTION_PATH/pip_runtime.py" "$TRUST_OPERATION" "$selected_python"
     - name: Verify and export the effective CI trust bundle
       id: trust
       shell: bash
       env:
         TRUST_CLIENTS: ${{ inputs.clients }}
-      run: python -I "$GITHUB_ACTION_PATH/export-trust.py"
+        TRUST_RUNTIME: ${{ steps.runtime.outputs.pip-state }}
+        TRUST_CALLER_LD_LIBRARY_PATH: ${{ env.LD_LIBRARY_PATH }}
+        LD_LIBRARY_PATH: ''
+        LD_PRELOAD: ''
+        LD_AUDIT: ''
+      run: exec /usr/bin/python3 -I -S -B "$GITHUB_ACTION_PATH/export-trust.py" --runtime "$TRUST_RUNTIME"
