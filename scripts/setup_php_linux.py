@@ -27,6 +27,7 @@ from scripts import php_linux_recipe as recipe
 from scripts import php_linux_tools as tools
 
 
+RECEIPT_NAME = "receipt.json"
 CA_SHA256 = "50f79f98dac192b20dbf73f35c56f0b0c557ab267ff5199d1117cc1180b70785"
 
 
@@ -163,7 +164,7 @@ def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
         report.update(outcome="refused", **failure_details(error))
         raise
     finally:
-        (state / "receipt.json").write_text(json.dumps(report, sort_keys=True) + "\n")
+        (state / RECEIPT_NAME).write_text(json.dumps(report, sort_keys=True) + "\n")
         shutil.rmtree(runtime)
 
 
@@ -185,10 +186,10 @@ def main(arguments):
     try:
         run_setup(state, request, node, environment)
         with Path(environment["GITHUB_OUTPUT"]).open("a") as output:
-            output.write(f"bootstrap-receipt={state / 'receipt.json'}\n")
+            output.write(f"bootstrap-receipt={state / RECEIPT_NAME}\n")
     except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
-        if not (state / "receipt.json").exists():
-            (state / "receipt.json").write_text(json.dumps({"outcome": "refused", "stage": "preflight",
+        if not (state / RECEIPT_NAME).exists():
+            (state / RECEIPT_NAME).write_text(json.dumps({"outcome": "refused", "stage": "preflight",
                 **failure_details(error)}) + "\n")
         raise
     finally:

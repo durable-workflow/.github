@@ -51,8 +51,9 @@ class PhpLinuxArchiveTest(unittest.TestCase):
     def test_ambiguous_and_escaping_member_paths_refuse_before_any_install(self):
         for members in ([('usr/bin/php8.3', b'one'), ('usr/bin/php8.3', b'two')],
                         [('/usr/bin/php8.3', b'absolute')], [('../outside', b'escape')]):
+            stream = self.tar(members)
             with self.subTest(members=members), self.assertRaises(ValueError):
-                archive.inventory(self.tar(members))
+                archive.inventory(stream)
 
     def test_exact_predecessor_accepts_links_special_and_sparse_while_successor_refuses(self):
         old = self.predecessor()
@@ -61,8 +62,9 @@ class PhpLinuxArchiveTest(unittest.TestCase):
             payload = self.typed_tar([('usr/bin/inert',kind)])
             with self.subTest(kind=kind):
                 old(io.BytesIO(payload))
+                stream = io.BytesIO(payload)
                 with self.assertRaisesRegex(ValueError, 'links/sparse/special'):
-                    archive.inventory(io.BytesIO(payload))
+                    archive.inventory(stream)
 
     def test_exact_predecessor_collapses_aliases_and_accepts_parent_type_collisions(self):
         old = self.predecessor()
@@ -80,8 +82,9 @@ class PhpLinuxArchiveTest(unittest.TestCase):
             payload = self.typed_tar(members)
             with self.subTest(members=members):
                 old(io.BytesIO(payload))
+                stream = io.BytesIO(payload)
                 with self.assertRaises(ValueError):
-                    archive.inventory(io.BytesIO(payload))
+                    archive.inventory(stream)
         aliases = self.typed_tar(cases[0])
         self.assertEqual(['usr/bin/php'], list(old(io.BytesIO(aliases))))
 

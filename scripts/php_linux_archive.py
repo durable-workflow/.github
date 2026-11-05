@@ -64,38 +64,46 @@ def canonical_member(member) -> str:
     return name
 
 
+def reserve_member(member, seen, parents) -> str:
+    if (member.type not in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.DIRTYPE)
+            or member.issparse() or set(member.pax_headers) -
+            {"path", "mtime", "atime", "ctime", "uid", "gid", "uname", "gname"}):
+        raise ValueError("Bound archive links/sparse/special members are unsupported")
+    name = canonical_member(member)
+    ancestors = {parent.as_posix() for parent in PurePosixPath(name).parents if parent.as_posix() != "."}
+    kind = "directory" if member.isdir() else "file"
+    if (name in seen or any(seen.get(parent) == "file" for parent in ancestors)
+            or (kind == "file" and name in parents)):
+        raise ValueError("Bound archive canonical member/parent/type collision")
+    seen[name] = kind
+    parents.update(ancestors)
+    if len(seen) + len(parents) > MAX_MEMBERS:
+        raise ValueError("Bound archive explicit/implicit member limit exceeded")
+    return name
+
+
+def member_identity(source, expected_size):
+    digest, size = hashlib.sha256(), 0
+    while chunk := source.read(65536):
+        digest.update(chunk)
+        size += len(chunk)
+    if size != expected_size:
+        raise ValueError("Bound archive regular member is truncated")
+    return {"size": size, "sha256": digest.hexdigest()}
+
+
 def inventory_members(archive) -> dict:
     files, seen, parents, total = {}, {}, set(), 0
     for count, member in enumerate(archive, 1):
         if count > MAX_MEMBERS:
             raise ValueError("Bound archive member limit exceeded")
-        if (member.type not in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.DIRTYPE)
-                or member.issparse() or set(member.pax_headers) -
-                {"path", "mtime", "atime", "ctime", "uid", "gid", "uname", "gname"}):
-            raise ValueError("Bound archive links/sparse/special members are unsupported")
-        name = canonical_member(member)
-        ancestors = {parent.as_posix() for parent in PurePosixPath(name).parents if parent.as_posix() != "."}
-        kind = "directory" if member.isdir() else "file"
-        if (name in seen or any(seen.get(parent) == "file" for parent in ancestors)
-                or (kind == "file" and name in parents)):
-            raise ValueError("Bound archive canonical member/parent/type collision")
-        seen[name] = kind
-        parents.update(ancestors)
-        if len(seen) + len(parents) > MAX_MEMBERS:
-            raise ValueError("Bound archive explicit/implicit member limit exceeded")
+        name = reserve_member(member, seen, parents)
         if member.isdir():
             continue
         total += member.size
         if member.size < 0 or total > MAX_UNPACKED:
             raise ValueError("Bound archive file-size limit exceeded")
-        digest, size = hashlib.sha256(), 0
-        source = archive.extractfile(member)
-        while chunk := source.read(65536):
-            digest.update(chunk)
-            size += len(chunk)
-        if size != member.size:
-            raise ValueError("Bound archive regular member is truncated")
-        files[name] = {"size": size, "sha256": digest.hexdigest()}
+        files[name] = member_identity(archive.extractfile(member), member.size)
     return files
 
 
@@ -109,7 +117,8 @@ def inspect_held(held: bootstrap.HeldAsset) -> dict:
         with io.BufferedReader(BoundedPipe(process.stdout)) as stream:
             files = inventory(stream)
             while stream.read(65536):
-                pass
+                # Consume through decoder EOF so zstd verifies its checksum.
+                continue
         if process.wait(timeout=5) != 0:
             raise ValueError("Bound archive decompression failed")
         return files
@@ -129,9 +138,7 @@ def verify_file(path: Path, expected: dict, read=None):
         raise ValueError("Installed PHP/module does not match its held archive member")
 
 
-def verify_installed(files: dict, php: str, required: list[str], execute=subprocess.run,
-                     root: Path = Path("/"), read=None, shared=None, command_path=None,
-                     active_configs=None, resolve=None) -> dict:
+def verify_commands(files, php, root, read, command_path):
     binary_name = f"usr/bin/php{php}"
     if binary_name not in files:
         raise ValueError("Bound archive does not contain its exact regular PHP binary")
@@ -144,6 +151,10 @@ def verify_installed(files: dict, php: str, required: list[str], execute=subproc
         if member not in files or command_path(command) != (root / member).resolve():
             raise ValueError("Default PHP command does not resolve to its bound installed archive member")
         verify_file(root / member, files[member], read)
+    return binary_name, binary
+
+
+def probe_binary(binary, php, execute):
     # -n suppresses configuration/module loading until the requested module
     # identities are checked. The executable itself was bound above.
     probe = execute([str(binary), "-n", "-r",
@@ -167,6 +178,10 @@ def verify_installed(files: dict, php: str, required: list[str], execute=subproc
     if (not directory.is_absolute() or ".." in directory.parts
             or not directory.as_posix().startswith("/usr/lib/php/")):
         raise ValueError("Bound PHP extension directory is outside the archive scope")
+    return result, directory
+
+
+def verify_shared(files, directory, root, read, shared):
     prefix = directory.as_posix().lstrip("/")
     shared = list((root / prefix).glob("*.so")) if shared is None else shared
     for path in shared:
@@ -174,6 +189,23 @@ def verify_installed(files: dict, php: str, required: list[str], execute=subproc
         if name not in files:
             raise ValueError("Ambient shared extension is absent from the bound archive")
         verify_file(path, files[name], read)
+
+
+def verify_config_modules(text, directory, files, root, read):
+    if re.search(r"^\s*extension_dir\s*=", text, re.M | re.I):
+        raise ValueError("An active extension_dir override has no reviewed initial profile")
+    for match in re.finditer(r"^\s*(?:zend_)?extension\s*=\s*([^;\r\n]+)", text, re.M | re.I):
+        value = match[1].strip().strip('"\'')
+        module = PurePosixPath(value)
+        if not module.is_absolute():
+            module = directory / (value if value.endswith(".so") else value + ".so")
+        member = module.as_posix().lstrip("/")
+        if ".." in module.parts or member not in files:
+            raise ValueError("Active startup module is absent from the bound archive")
+        verify_file(root / member, files[member], read)
+
+
+def verify_configs(files, php, result, directory, root, read, active_configs, resolve):
     # Default startup must not load an ambient .ini or a module from outside
     # the held archive before pinned upstream starts. Redis's one INI rewrite
     # is the deterministic effect in the bound upstream installer itself.
@@ -194,17 +226,11 @@ def verify_installed(files: dict, php: str, required: list[str], execute=subproc
             raise ValueError("Ambient PHP startup configuration is absent from the held source recipe")
         verify_file(target, configs[name], read)
         text = target.read_text() if read is None else read(target)[1].decode()
-        if re.search(r"^\s*extension_dir\s*=", text, re.M | re.I):
-            raise ValueError("An active extension_dir override has no reviewed initial profile")
-        for match in re.finditer(r"^\s*(?:zend_)?extension\s*=\s*([^;\r\n]+)", text, re.M | re.I):
-            value = match[1].strip().strip('"\'')
-            module = PurePosixPath(value)
-            if not module.is_absolute():
-                module = directory / (value if value.endswith(".so") else value + ".so")
-            member = module.as_posix().lstrip("/")
-            if ".." in module.parts or member not in files:
-                raise ValueError("Active startup module is absent from the bound archive")
-            verify_file(root / member, files[member], read)
+        verify_config_modules(text, directory, files, root, read)
+
+
+def verify_required(files, required, result, directory, binary_name, root, read):
+    prefix = directory.as_posix().lstrip("/")
     builtins = {name.lower() for name in result["builtins"]}
     checked = {}
     for extension in required:
@@ -217,6 +243,17 @@ def verify_installed(files: dict, php: str, required: list[str], execute=subproc
             raise ValueError("Requested extension is absent from the bound PHP archive; no acquisition")
         verify_file(root / member, files[member], read)
         checked[extension] = {"source": member, **files[member]}
+    return checked
+
+
+def verify_installed(files: dict, php: str, required: list[str], execute=subprocess.run,
+                     root: Path = Path("/"), read=None, shared=None, command_path=None,
+                     active_configs=None, resolve=None) -> dict:
+    binary_name, binary = verify_commands(files, php, root, read, command_path)
+    result, directory = probe_binary(binary, php, execute)
+    verify_shared(files, directory, root, read, shared)
+    verify_configs(files, php, result, directory, root, read, active_configs, resolve)
+    checked = verify_required(files, required, result, directory, binary_name, root, read)
     return {"binary": {"source": binary_name, **files[binary_name]}, "extensions": checked,
             "version": result["version"], "zts": result["zts"], "debug": result["debug"]}
 

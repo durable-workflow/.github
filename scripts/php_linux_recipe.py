@@ -16,7 +16,7 @@ from scripts import php_linux_bootstrap as bootstrap
 from scripts import php_linux_tools as tools
 
 
-UPSTREAM = bootstrap.ROOT / ".github/actions/setup-php-linux/upstream"
+UPSTREAM = bootstrap.ROOT / ".github/actions/setup-php-linux/vendor"
 MANIFEST = bootstrap.ROOT / "qualification/setup-php-source.json"
 INPUTS = ("php-version", "extensions", "ini-file", "ini-values", "coverage", "tools", "fail-fast")
 CUSTOM_EXTENSIONS = frozenset(("relay", "blackfire", "pdo_cubrid", "cubrid", "couchbase", "event",
@@ -55,7 +55,12 @@ def capture_request(environment: dict) -> dict:
         inputs[name] = direct or indirect
         # INPUT_* also includes action metadata defaults. It cannot prove
         # that a caller explicitly wrote a with: field.
-        origins[name] = "input" if direct else "env" if indirect else "omitted"
+        origin = "omitted"
+        if direct:
+            origin = "input"
+        elif indirect:
+            origin = "env"
+        origins[name] = origin
     overrides = {name: environment.get(name.lower()) or environment.get(name.upper()) or ""
                  for name in ("update", "debug", "phpts", "runner", "setup_php_tools_dir",
                               "setup_php_tool_cache_dir")}
@@ -118,7 +123,7 @@ def verified_source(root: Path = UPSTREAM, manifest: Path = MANIFEST) -> dict[st
         if not re.fullmatch(r"(?:LICENSE|(?:src|dist)/[a-zA-Z0-9_.\-/]+)", name) or ".." in name.split("/"):
             raise ValueError("Unbound setup source member path")
         contents = (root / name).read_bytes()
-        blob = hashlib.sha1(b"blob " + str(len(contents)).encode() + b"\0" + contents).hexdigest()
+        blob = hashlib.sha1(b"blob " + str(len(contents)).encode() + b"\0" + contents, usedforsecurity=False).hexdigest()
         if (len(contents) != identity["size"] or bootstrap.sha256(contents) != identity["sha256"]
                 or blob != identity["git_blob"]):
             raise ValueError("Pinned setup source member differs from exact Git bytes")

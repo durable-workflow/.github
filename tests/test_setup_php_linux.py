@@ -49,7 +49,7 @@ class SetupPhpLinuxTest(unittest.TestCase):
         @contextmanager
         def fetch(identity, context):
             calls.append("read-installer" if identity["name"] == "install.sh" else "read-archive")
-            source = ((bootstrap.ROOT / "qualification/upstream/php-ubuntu-713206915/install.sh").read_bytes()
+            source = ((bootstrap.ROOT / "qualification/vendor/php-ubuntu-713206915/install.sh").read_bytes()
                       if identity["name"] == "install.sh" else archive_bytes)
             with bootstrap.hold_verified(io.BytesIO(source), identity, bootstrap.asset_url(identity)) as held:
                 yield held
@@ -147,8 +147,8 @@ class SetupPhpLinuxTest(unittest.TestCase):
             changed['inputs'][name] = value
             candidates.append((host, changed))
         for actual_host, actual_request in candidates:
+            plan = recipe.validate_request(actual_request, catalog, tool_catalog, actual_host)
             with self.subTest(host=actual_host, inputs=actual_request['inputs']), self.assertRaises(ValueError):
-                plan = recipe.validate_request(actual_request, catalog, tool_catalog, actual_host)
                 setup.initial_profile(plan, actual_host)
 
     def test_masked_upstream_refusal_keeps_original_failed_stage_and_never_installs_tools(self):

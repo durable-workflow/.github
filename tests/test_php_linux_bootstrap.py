@@ -1,6 +1,7 @@
 """Inert source controls: no network, PHP setup, sudo or archive extraction."""
 
 import copy
+from contextlib import ExitStack
 import errno
 import io
 import json
@@ -20,7 +21,7 @@ from scripts import php_linux_bootstrap as bootstrap
 class PhpLinuxBootstrapTest(unittest.TestCase):
     def setUp(self):
         self.catalog = json.loads(bootstrap.CATALOG.read_text())
-        self.original = (bootstrap.ROOT / "qualification/upstream/php-ubuntu-713206915/install.sh").read_bytes()
+        self.original = (bootstrap.ROOT / "qualification/vendor/php-ubuntu-713206915/install.sh").read_bytes()
         self.row = bootstrap.select(self.catalog, operating_system="ubuntu", release="26.04",
                                     architecture="x86_64", php="8.3")
 
@@ -105,8 +106,9 @@ class PhpLinuxBootstrapTest(unittest.TestCase):
                 bootstrap.explicit_trust(bundle, "0" * 64)
             alias = Path(directory) / "alias.pem"
             alias.symlink_to(bundle)
+            digest = bootstrap.sha256(fixture)
             with self.assertRaises(ValueError):
-                bootstrap.explicit_trust(alias, bootstrap.sha256(fixture))
+                bootstrap.explicit_trust(alias, digest)
 
     def test_inert_exact_id_download_has_no_auth_proxy_retry_or_name_lookup(self):
         data = b"inert downloader payload"
@@ -131,20 +133,21 @@ class PhpLinuxBootstrapTest(unittest.TestCase):
         self.assertEqual(bootstrap.asset_url(identity), calls[0][0].full_url)
         self.assertNotIn("authorization", {key.lower() for key in calls[0][0].headers})
         self.assertEqual({"timeout": 15}, calls[0][1])
-        with self.assertRaises(ValueError):
-            with bootstrap.download_held(dict(identity, digest="sha256:" + "0" * 64), context, factory):
-                self.fail("Fresh endpoint cannot authorize changed archive bytes")
+        operation = bootstrap.download_held(dict(identity, digest="sha256:" + "0" * 64), context, factory)
+        with ExitStack() as stack, self.assertRaises(ValueError):
+            stack.enter_context(operation)
         self.assertEqual(2, len(calls))
-        with self.assertRaises(ValueError):
-            with bootstrap.download_held(identity, SimpleNamespace(verify_mode=ssl.CERT_NONE,
-                                         check_hostname=False), factory):
-                self.fail("Unverified trust cannot make a request")
+        unverified = SimpleNamespace(verify_mode=ssl.CERT_NONE, check_hostname=False)
+        operation = bootstrap.download_held(identity, unverified, factory)
+        with ExitStack() as stack, self.assertRaises(ValueError):
+            stack.enter_context(operation)
         self.assertEqual(2, len(calls))
 
     def test_stream_deadline_refuses_without_another_read(self):
         source = SimpleNamespace(read=lambda size: self.fail("Deadline exhausted before source read"))
+        bounded = bootstrap.DeadlineInput(source, 60, clock=lambda: 60)
         with self.assertRaises(ValueError):
-            bootstrap.DeadlineInput(source, 60, clock=lambda: 60).read(1)
+            bounded.read(1)
 
     def test_real_sealed_descriptor_refuses_mutation_and_has_no_path_reopen(self):
         data = b"inert archive bytes; never extracted"
@@ -165,15 +168,15 @@ class PhpLinuxBootstrapTest(unittest.TestCase):
         data = b"known inert input"
         identity = self.identity("fixture", data)
         for content in (data + b"x", data[:-1], b"different-input!"):
-            with self.subTest(content=content), self.assertRaises(ValueError):
-                with bootstrap.hold_verified(io.BytesIO(content), identity, bootstrap.asset_url(identity)):
-                    self.fail("Mutated bytes must not produce an executable/extraction authority")
+            operation = bootstrap.hold_verified(io.BytesIO(content), identity, bootstrap.asset_url(identity))
+            with self.subTest(content=content), ExitStack() as stack, self.assertRaises(ValueError):
+                stack.enter_context(operation)
         with self.assertRaises(ValueError):
             bootstrap.installer_source(self.original + b"\n", self.catalog)
 
     def test_pinned_source_bytes_and_deterministic_derived_installer_are_bound(self):
         for name, expected in self.catalog["upstream_sources"].items():
-            original = bootstrap.ROOT / "qualification/upstream/setup-php-f3e473d" / name
+            original = bootstrap.ROOT / "qualification/vendor/setup-php-f3e473d" / name
             self.assertEqual(expected, bootstrap.sha256(original.read_bytes()))
         derived = bootstrap.installer_source(self.original, self.catalog)
         self.assertEqual(derived, bootstrap.installer_source(self.original, self.catalog))
@@ -194,7 +197,7 @@ class PhpLinuxBootstrapTest(unittest.TestCase):
                               capture_output=True, text=True, timeout=5)
 
     def test_exact_predecessor_run_script_admits_unbound_installer(self):
-        source = (bootstrap.ROOT / "qualification/upstream/setup-php-f3e473d/unix.sh").read_text()
+        source = (bootstrap.ROOT / "qualification/vendor/setup-php-f3e473d/unix.sh").read_text()
         function = self.shell_function(source, "run_script")
         result = self.shell("""set -eu
 github=https://github.com/shivammathur

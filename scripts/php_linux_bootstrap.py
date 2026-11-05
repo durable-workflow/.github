@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / "qualification/php-linux-bootstrap.json"
 SOURCE_COMMIT = "f3e473d116dcccaddc5834248c87452386958240"
 REPOSITORY = "shivammathur/php-ubuntu"
+SHA256_PREFIX = "sha256:"
 MAX_ARCHIVE = 64 * 1024 * 1024
 MAX_INSTALLER = 16 * 1024
 SEALS = fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
@@ -200,7 +201,7 @@ class HeldAsset:
         while chunk := os.pread(self.descriptor, 65536, offset):
             digest.update(chunk)
             offset += len(chunk)
-        if "sha256:" + digest.hexdigest() != self.identity["digest"]:
+        if SHA256_PREFIX + digest.hexdigest() != self.identity["digest"]:
             raise ValueError("Sealed installer/archive identity differs")
 
     def close(self) -> None:
@@ -225,7 +226,7 @@ def hold_bytes(source: BinaryIO, identity: dict, final: dict):
             view = memoryview(chunk)
             while view:
                 view = view[os.write(descriptor, view):]
-        if size != identity["size"] or "sha256:" + digest.hexdigest() != identity["digest"]:
+        if size != identity["size"] or SHA256_PREFIX + digest.hexdigest() != identity["digest"]:
             raise ValueError("Bootstrap input differs from the independently pinned bytes")
         fcntl.fcntl(descriptor, fcntl.F_ADD_SEALS, SEALS)
         os.lseek(descriptor, 0, os.SEEK_SET)
@@ -258,7 +259,7 @@ def installer_source(original: bytes, catalog: dict) -> bytes:
     separate issue295 guard/offline contract is integrated and reviewed.
     """
     validate_catalog(catalog)
-    if len(original) != catalog["installer"]["size"] or "sha256:" + sha256(original) != catalog["installer"]["digest"]:
+    if len(original) != catalog["installer"]["size"] or SHA256_PREFIX + sha256(original) != catalog["installer"]["digest"]:
         raise ValueError("Installer patch requires the exact independently pinned upstream bytes")
     source = original.decode("utf-8")
     start = source.index("get() {\n")
@@ -349,10 +350,10 @@ def run_held_installer(script: HeldAsset, archive: HeldAsset, arguments: tuple[s
         raise ValueError("Exact PHP/build/thread-safety arguments required")
     selected = select(catalog, **(observed_host() if host is None else host),
                       php=arguments[0], build=arguments[1], thread_safety=arguments[2])
-    original = (ROOT / "qualification/upstream/php-ubuntu-713206915/install.sh").read_bytes()
+    original = (ROOT / "qualification/vendor/php-ubuntu-713206915/install.sh").read_bytes()
     derived = no_apt_installer_source(original, catalog) if no_apt else installer_source(original, catalog)
     derived_identity = dict(catalog["installer"], name="bound-install.sh", size=len(derived),
-                            digest="sha256:" + sha256(derived))
+                            digest=SHA256_PREFIX + sha256(derived))
     if archive.identity != selected["asset"] or script.identity != derived_identity:
         raise ValueError("Held inputs do not match the exact selected source/tuple")
     if environment != clean_environment(environment, environment.get("HOME", "")) or dict(os.environ) != environment:

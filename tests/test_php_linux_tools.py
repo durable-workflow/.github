@@ -1,6 +1,7 @@
 """Inert PHAR boundary controls; no network, PHP, PHAR stub or installation."""
 
 import copy
+from contextlib import ExitStack
 import io
 import json
 import os
@@ -106,16 +107,17 @@ class PhpLinuxToolsTest(unittest.TestCase):
             candidate = dict(payload=payload, **{key: value for key, value in options.items() if key != "payload"})
             candidate["payload"] = options.get("payload", payload)
             opener = self.opener(row, calls=calls, **candidate)
-            with self.subTest(options=options), self.assertRaises(ValueError):
-                with tools.download_held(row, context, opener):
-                    self.fail("No replacement bytes should be held")
+            operation = tools.download_held(row, context, opener)
+            with self.subTest(options=options), ExitStack() as stack, self.assertRaises(ValueError):
+                stack.enter_context(operation)
         self.assertEqual(3, len(calls))
+        redirect = tools.NoRedirects()
         with self.assertRaises(ValueError):
-            tools.NoRedirects().redirect_request(None, None, 302, "redirect", {}, row["url"])
+            redirect.redirect_request(None, None, 302, "redirect", {}, row["url"])
         unqualified = dict(row, publisher_authority={"state": "missing-full-fingerprint-binding"})
-        with self.assertRaises(ValueError):
-            with tools.download_held(unqualified, context, self.opener(row, payload, calls)):
-                self.fail("Unqualified publisher cannot fetch")
+        operation = tools.download_held(unqualified, context, self.opener(row, payload, calls))
+        with ExitStack() as stack, self.assertRaises(ValueError):
+            stack.enter_context(operation)
         self.assertEqual(3, len(calls))
 
     def test_fixed_install_command_reads_held_fd_and_checks_actual_target_before_returning(self):

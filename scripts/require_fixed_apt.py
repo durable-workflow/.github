@@ -14,12 +14,14 @@ FIXED = {
     ("ubuntu", "26.10"): "3.3.3ubuntu0.1",
     ("debian", "13"): "3.0.4",
 }
+LIBAPT7 = "libapt-pkg7.0"
+VERSION = re.compile(r"\d[\dA-Za-z.+:~-]{0,99}", re.ASCII)
 LIBRARIES = {
     ("ubuntu", "22.04"): "libapt-pkg6.0",
     ("ubuntu", "24.04"): "libapt-pkg6.0t64",
-    ("ubuntu", "26.04"): "libapt-pkg7.0",
-    ("ubuntu", "26.10"): "libapt-pkg7.0",
-    ("debian", "13"): "libapt-pkg7.0",
+    ("ubuntu", "26.04"): LIBAPT7,
+    ("ubuntu", "26.10"): LIBAPT7,
+    ("debian", "13"): LIBAPT7,
 }
 CLEAN_ENV = {"PATH": "/usr/bin:/bin", "LC_ALL": "C"}
 
@@ -40,7 +42,7 @@ def require_fixed_apt(release, run=subprocess.run):
         fields = line.split("\t")
         if (len(fields) != 4 or fields[0] not in {"apt", library} or fields[0] in versions
                 or fields[1] != "install ok installed"
-                or re.fullmatch(r"[0-9][0-9A-Za-z.+:~\-]{0,99}", fields[2]) is None
+                or VERSION.fullmatch(fields[2]) is None
                 or fields[3] not in {"amd64", "arm64"}):
             raise ValueError("Installed APT pair status/version is missing or ambiguous")
         versions[fields[0]] = fields[2]

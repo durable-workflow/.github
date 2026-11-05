@@ -100,8 +100,9 @@ class FixedAptTest(unittest.TestCase):
                  ("ubuntu", "26.04", "3.2.1"), ("ubuntu", "26.10", "3.3.3"),
                  ("debian", "13", "3.0.3"))
         for system, release, version in cases:
+            read = self.reader(version)
             with self.subTest(system=system, release=release), self.assertRaisesRegex(ValueError, "fixed"):
-                guard.require_fixed_apt({"ID": system, "VERSION_ID": release}, self.reader(version))
+                guard.require_fixed_apt({"ID": system, "VERSION_ID": release}, read)
 
     def test_unknown_release_refuses_before_any_package_command(self):
         run = Mock()

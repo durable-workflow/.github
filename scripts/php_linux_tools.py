@@ -23,6 +23,7 @@ from scripts import php_linux_bootstrap as bootstrap
 CATALOG = bootstrap.ROOT / "qualification/php-linux-tools.json"
 PROFILES = {"composer": ("2.10.3", "https://getcomposer.org/download/2.10.3/composer.phar"),
             "phpunit": ("11.5.57", "https://phar.phpunit.de/phpunit-11.5.57.phar")}
+SHA256_PATTERN = r"[a-f0-9]{64}"
 MAX_TOOL = 10 * 1024 * 1024
 PUBLISHER_STATES = frozenset(("verified", "reviewed-publisher-digest"))
 
@@ -32,7 +33,7 @@ def evidence_file(record: dict, root: Path) -> bytes:
     name = record["file"]
     if (not isinstance(name, str) or not name.startswith("qualification/php-tools/")
             or any(part in ("", ".", "..") for part in name.split("/"))
-            or not re.fullmatch(r"[a-f0-9]{64}", record["sha256"])):
+            or not re.fullmatch(SHA256_PATTERN, record["sha256"])):
         raise ValueError("Unbound publisher evidence path or digest")
     path = root / name
     if any(parent.is_symlink() for parent in (path, *path.parents) if parent != root.parent):
@@ -43,6 +44,78 @@ def evidence_file(record: dict, root: Path) -> bytes:
     return contents
 
 
+def validate_tool_tuple(row, names):
+    bootstrap.exact_keys(row, {"name", "version", "url", "size", "sha256", "minimum_php",
+                              "publisher_digest_url", "publisher_signature_url", "evidence",
+                              "publisher_authority"})
+    if (row["name"] not in PROFILES or row["name"] in names
+            or (row["version"], row["url"]) != PROFILES[row["name"]]
+            or type(row["size"]) is not int or not 0 < row["size"] <= MAX_TOOL
+            or not re.fullmatch(SHA256_PATTERN, row["sha256"])
+            or row["minimum_php"] != {"composer": "7.2.5", "phpunit": "8.2"}[row["name"]]):
+        raise ValueError("Unsupported or replaced exact tool tuple")
+    names.add(row["name"])
+
+
+def prepared_receipt(row, root):
+    authority = row["publisher_authority"]
+    required = {"state", "receipt", "receipt_sha256", "decision"}
+    if row["name"] == "composer":
+        required |= {"public_key", "public_key_sha256"}
+    bootstrap.exact_keys(authority, required)
+    if authority["state"] not in PUBLISHER_STATES | {"missing-full-fingerprint-binding"}:
+        raise ValueError("Unknown publisher authority state")
+    receipt = json.loads(evidence_file({"file": authority["receipt"],
+                                       "sha256": authority["receipt_sha256"]}, root))
+    if (receipt.get("kind") != "source-data-two-phars"
+            or receipt.get("authority_ca_sha256") != "50f79f98dac192b20dbf73f35c56f0b0c557ab267ff5199d1117cc1180b70785"
+            or any(receipt.get(name) is not False for name in
+                   ("php_executed", "phar_stub_executed", "setup_executed", "apt_executed"))):
+        raise ValueError("Tool evidence lacks the selected data-only client/store provenance")
+    obj = receipt["objects"][f"{row['name']}-{row['version']}.phar"]
+    if obj != {"url": row["url"], "effective_url": row["url"],
+               "size": row["size"], "sha256": row["sha256"]}:
+        raise ValueError("Prepared PHAR differs from its exact catalog identity")
+    return receipt
+
+
+def verify_publisher_metadata(row, receipt):
+    records = {"composer": ("composer.sha256sum", "composer.sig.json"),
+               "phpunit": ("phpunit-phive.xml", "phpunit.asc")}[row["name"]]
+    for role, name in zip(("digest", "signature"), records):
+        if (receipt["objects"][name]["url"] != row[f"publisher_{role}_url"]
+                or receipt["objects"][name]["sha256"] != row["evidence"][role]["sha256"]):
+            raise ValueError("Publisher metadata is not bound to the captured exact authority")
+
+
+def verify_composer_authority(row, evidence, signature, root):
+    authority = row["publisher_authority"]
+    public = evidence_file({"file": authority["public_key"],
+                            "sha256": authority["public_key_sha256"]}, root)
+    if (authority["state"] != "verified" or signature.get("verification") != "Verified OK"
+            or signature.get("public_key_role") != "Tags Public Key"
+            or signature.get("public_key_pem_sha256") != bootstrap.sha256(public)):
+        raise ValueError("Composer publisher verification is incomplete")
+    if evidence["digest"].decode().split()[0] != row["sha256"]:
+        raise ValueError("Composer publisher digest differs from selected bytes")
+
+
+def verify_phpunit_digest(row, evidence):
+    if row["publisher_authority"]["decision"] != "https://github.com/durable-workflow/.github/issues/297#issuecomment-6664627349":
+        raise ValueError("Publisher digest authority lacks its exact source decision")
+    manifest = ET.fromstring(evidence["digest"])
+    if manifest.tag != "{https://phar.io/repository}repository":
+        raise ValueError("Unknown publisher manifest format")
+    releases = [release for phar in manifest if phar.get("name") == "phpunit"
+                for release in phar if release.get("version") == row["version"]]
+    if len(releases) != 1 or releases[0].get("url") != row["url"]:
+        raise ValueError("Canonical publisher tool/version record is missing or ambiguous")
+    hashes = [item for item in releases[0] if item.tag.rsplit("}", 1)[-1] == "hash"
+              and item.get("type") == "sha-256"]
+    if len(hashes) != 1 or hashes[0].get("value") != row["sha256"]:
+        raise ValueError("Canonical publisher digest differs from selected PHAR bytes")
+
+
 def validate_catalog(catalog: dict, root: Path = bootstrap.ROOT) -> dict:
     bootstrap.exact_keys(catalog, {"schema", "tools"})
     if (catalog["schema"] != "durable-workflow.php-linux-tools/v1"
@@ -50,66 +123,17 @@ def validate_catalog(catalog: dict, root: Path = bootstrap.ROOT) -> dict:
         raise ValueError("Unknown exact Linux tool catalog")
     names = set()
     for row in catalog["tools"]:
-        bootstrap.exact_keys(row, {"name", "version", "url", "size", "sha256", "minimum_php",
-                                  "publisher_digest_url", "publisher_signature_url", "evidence",
-                                  "publisher_authority"})
-        if (row["name"] not in PROFILES or row["name"] in names
-                or (row["version"], row["url"]) != PROFILES[row["name"]]
-                or type(row["size"]) is not int or not 0 < row["size"] <= MAX_TOOL
-                or not re.fullmatch(r"[a-f0-9]{64}", row["sha256"])
-                or row["minimum_php"] != {"composer": "7.2.5", "phpunit": "8.2"}[row["name"]]):
-            raise ValueError("Unsupported or replaced exact tool tuple")
-        names.add(row["name"])
+        validate_tool_tuple(row, names)
         bootstrap.exact_keys(row["evidence"], {"digest", "signature", "requirements"})
         evidence = {name: evidence_file(record, root) for name, record in row["evidence"].items()}
-        authority = row["publisher_authority"]
-        required = {"state", "receipt", "receipt_sha256", "decision"}
-        if row["name"] == "composer":
-            required |= {"public_key", "public_key_sha256"}
-        bootstrap.exact_keys(authority, required)
-        if authority["state"] not in PUBLISHER_STATES | {"missing-full-fingerprint-binding"}:
-            raise ValueError("Unknown publisher authority state")
-        receipt = json.loads(evidence_file({"file": authority["receipt"],
-                                           "sha256": authority["receipt_sha256"]}, root))
-        if (receipt.get("kind") != "source-data-two-phars"
-                or receipt.get("authority_ca_sha256") != "50f79f98dac192b20dbf73f35c56f0b0c557ab267ff5199d1117cc1180b70785"
-                or any(receipt.get(name) is not False for name in
-                       ("php_executed", "phar_stub_executed", "setup_executed", "apt_executed"))):
-            raise ValueError("Tool evidence lacks the selected data-only client/store provenance")
-        obj = receipt["objects"][f"{row['name']}-{row['version']}.phar"]
-        if obj != {"url": row["url"], "effective_url": row["url"],
-                   "size": row["size"], "sha256": row["sha256"]}:
-            raise ValueError("Prepared PHAR differs from its exact catalog identity")
+        receipt = prepared_receipt(row, root)
         signature = receipt["signatures"][row["name"]]
-        records = {"composer": ("composer.sha256sum", "composer.sig.json"),
-                   "phpunit": ("phpunit-phive.xml", "phpunit.asc")}[row["name"]]
-        for role, name in zip(("digest", "signature"), records):
-            if (receipt["objects"][name]["url"] != row[f"publisher_{role}_url"]
-                    or receipt["objects"][name]["sha256"] != row["evidence"][role]["sha256"]):
-                raise ValueError("Publisher metadata is not bound to the captured exact authority")
+        verify_publisher_metadata(row, receipt)
+        authority = row["publisher_authority"]
         if row["name"] == "composer":
-            public = evidence_file({"file": authority["public_key"],
-                                    "sha256": authority["public_key_sha256"]}, root)
-            if (authority["state"] != "verified" or signature.get("verification") != "Verified OK"
-                    or signature.get("public_key_role") != "Tags Public Key"
-                    or signature.get("public_key_pem_sha256") != bootstrap.sha256(public)):
-                raise ValueError("Composer publisher verification is incomplete")
-            if evidence["digest"].decode().split()[0] != row["sha256"]:
-                raise ValueError("Composer publisher digest differs from selected bytes")
+            verify_composer_authority(row, evidence, signature, root)
         elif authority["state"] == "reviewed-publisher-digest":
-            if authority["decision"] != "https://github.com/durable-workflow/.github/issues/297#issuecomment-6664627349":
-                raise ValueError("Publisher digest authority lacks its exact source decision")
-            manifest = ET.fromstring(evidence["digest"])
-            if manifest.tag != "{https://phar.io/repository}repository":
-                raise ValueError("Unknown publisher manifest format")
-            releases = [release for phar in manifest if phar.get("name") == "phpunit"
-                        for release in phar if release.get("version") == row["version"]]
-            if len(releases) != 1 or releases[0].get("url") != row["url"]:
-                raise ValueError("Canonical publisher tool/version record is missing or ambiguous")
-            hashes = [item for item in releases[0] if item.tag.rsplit("}", 1)[-1] == "hash"
-                      and item.get("type") == "sha-256"]
-            if len(hashes) != 1 or hashes[0].get("value") != row["sha256"]:
-                raise ValueError("Canonical publisher digest differs from selected PHAR bytes")
+            verify_phpunit_digest(row, evidence)
         elif authority["state"] != "missing-full-fingerprint-binding":
             raise ValueError("PHPUnit signature authentication is outside the selected source authority")
     return catalog
@@ -140,7 +164,7 @@ def identity(row: dict) -> dict:
     if (row.get("name") not in PROFILES
             or (row.get("version"), row.get("url")) != PROFILES[row["name"]]
             or type(row.get("size")) is not int or not 0 < row["size"] <= MAX_TOOL
-            or not re.fullmatch(r"[a-f0-9]{64}", row.get("sha256", ""))):
+            or not re.fullmatch(SHA256_PATTERN, row.get("sha256", ""))):
         raise ValueError("Tool identity has no exact reviewed name/version/URL")
     return {"name": row["name"], "version": row["version"], "url": row["url"],
             "size": row["size"], "digest": "sha256:" + row["sha256"]}
