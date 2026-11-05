@@ -6,6 +6,12 @@ on:
       - conformance/cancellation/**
       - .github/workflows/cancellation-competitors.yml
   workflow_dispatch:
+    inputs:
+      run_fixtures:
+        description: Run fixtures under a separately reviewed runtime admission
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
@@ -17,6 +23,7 @@ concurrency:
 jobs:
   restate:
     name: Restate published behavior
+    if: github.event_name == 'workflow_dispatch' && inputs.run_fixtures == true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -55,6 +62,7 @@ jobs:
           retention-days: 90
   temporal:
     name: Temporal published behavior
+    if: github.event_name == 'workflow_dispatch' && inputs.run_fixtures == true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -93,6 +101,7 @@ jobs:
           retention-days: 90
   dbos:
     name: DBOS published behavior
+    if: github.event_name == 'workflow_dispatch' && inputs.run_fixtures == true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
