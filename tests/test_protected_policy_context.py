@@ -24,6 +24,16 @@ class ProtectedContextTest(unittest.TestCase):
                  for path in (ROOT / ".github/workflows").glob("*.y*ml")}
         context.validate_context(files)
 
+    def test_updated_fixture_and_test_workflows_still_require_exact_reviewed_bytes(self):
+        for path in (".github/workflows/ci.yml", ".github/workflows/sonar.yml",
+                     ".github/workflows/cancellation-competitors.yml"):
+            raw = (ROOT / path).read_bytes()
+            with self.subTest(path=path):
+                context.validate_context({path: raw})
+                changed = raw + b"\n# not part of the reviewed workflow\n"
+                with self.assertRaisesRegex(InputRefused, "closed literal"):
+                    context.validate_context({path: changed})
+
     def test_plain_root_helper_and_literal_root_overrides_are_supported(self):
         for directory in (".", "./", "${{ github.workspace }}"):
             with self.subTest(directory=directory):
