@@ -288,11 +288,16 @@ def qualify(path, runner_temp, environment, publish, *, validate=validate_succes
     evidence = {"schema": "durable-workflow.php-linux-terminal/v1", "outcome": "refused", "stage": "capture"}
     try:
         with capture_receipt(path, runner_temp) as (report, held, unchanged):
-            evidence["stage"] = "validate"
+            evidence.update(receipt_sha256=held.identity["digest"], receipt_object=held.effective,
+                            stage="validate")
+            if isinstance(report, dict):
+                evidence["producer_terminal"] = {
+                    key: value for key, value in report.items()
+                    if key in {"outcome", "stage", "failure_type", "cause_type", "http_status", "returncode"}
+                    and (type(value) is int or isinstance(value, str) and len(value) <= 100)}
             plan = validate(report, state)
             subjects(report, plan)
-            evidence.update(receipt_sha256=held.identity["digest"], receipt_object=held.effective,
-                            stage="probes")
+            evidence["stage"] = "probes"
             try:
                 evidence["probes"] = probes(plan, environment)
             finally:
