@@ -85,12 +85,20 @@ def reexec(parent: dict, execute=os.execve):
             environment)
 
 
+def capture_setup_subjects(members, php, required, selected_tools):
+    installed, manifest = archive.capture_subjects(members, php, required)
+    for row in selected_tools:
+        tools.append_subject(manifest, row)
+    archive.require_subject_bound(manifest)
+    return installed, manifest
+
+
 def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
               asset_fetch=bootstrap.download_held, tool_fetch=tools.download_held,
               inspect_archive=archive.inspect_held, install_php=bootstrap.run_held_installer,
               verify_php=archive.verify_installed, confirm_extensions=archive.verify_enabled,
               install_tool=tools.install_held, execute=subprocess.run,
-              capture_subjects=archive.capture_subjects, append_subject=tools.append_subject):
+              capture_subjects=capture_setup_subjects):
     """Complete effect recipe; focused tests substitute all external effects."""
     if environment != bootstrap.clean_environment(environment, str(state / "home")) or dict(os.environ) != environment:
         raise ValueError("Setup requires an already closed parent environment before reading inputs")
@@ -161,10 +169,7 @@ def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
                 report["tools"].append(install_tool(held, row, environment))
             report["stage"] = "subject-manifest"
             report["installed"], report["subjects"] = capture_subjects(
-                members, request["inputs"]["php-version"], plan["required_extensions"])
-            for row in plan["tools"]:
-                append_subject(report["subjects"], row)
-            archive.require_subject_bound(report["subjects"])
+                members, request["inputs"]["php-version"], plan["required_extensions"], plan["tools"])
             report.update(outcome="pass", stage="complete")
             return report
     except Exception as error:

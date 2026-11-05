@@ -19,6 +19,7 @@ from scripts import setup_php_linux as setup
 
 
 MAX_RECEIPT = setup.MAX_RECEIPT
+TOOL_DIRECTORY = "/usr/local/bin/"
 PASS_FIELDS = frozenset(("schema", "outcome", "stage", "host", "image", "apt", "ca_sha256",
     "request", "host_tool", "setup_php_commit", "source_hashes", "preinstalled_authority",
     "tools", "installer", "archive", "installed", "configured", "subjects"))
@@ -46,7 +47,7 @@ def file_identity(value):
     if (value["type"] != "regular" or type(value["size"]) is not int
             or not 0 <= value["size"] <= archive.MAX_UNPACKED
             or not isinstance(value["sha256"], str)
-            or not re.fullmatch(r"[a-f0-9]{64}", value["sha256"])):
+            or not re.fullmatch(tools.SHA256_PATTERN, value["sha256"])):
         raise ValueError("Terminal subject has an invalid regular-file identity")
 
 
@@ -89,7 +90,7 @@ def validate_manifest_tools(manifest, selected):
     for row in selected:
         expected = {"type": "regular", "size": row["size"], "sha256": row["sha256"],
                     "authority": {"kind": "tool", "name": row["name"]}}
-        if manifest["files"].get("/usr/local/bin/" + row["name"]) != expected:
+        if manifest["files"].get(TOOL_DIRECTORY + row["name"]) != expected:
             raise ValueError("Both literal PHAR subjects are mandatory")
 
 
@@ -101,7 +102,7 @@ def validate_subject_authority(path, identity, selected, php):
     if kind == "tool":
         bootstrap.exact_keys(authority, {"kind", "name"})
         row = selected.get(authority["name"])
-        if (row is None or path != "/usr/local/bin/" + row["name"]
+        if (row is None or path != TOOL_DIRECTORY + row["name"]
                 or identity["size"] != row["size"] or identity["sha256"] != row["sha256"]):
             raise ValueError("PHAR subject lacks literal tool-catalog authority")
         return
@@ -148,7 +149,7 @@ def validate_image_tool(report):
     bootstrap.exact_keys(host_tool, {"node", "node_version", "node_sha256"})
     canonical_path(host_tool["node"])
     if (not re.fullmatch(r"v24\.\d+\.\d+", host_tool["node_version"])
-            or not re.fullmatch(r"[a-f0-9]{64}", host_tool["node_sha256"])):
+            or not re.fullmatch(tools.SHA256_PATTERN, host_tool["node_sha256"])):
         raise ValueError("Producer Node identity is incomplete")
 
 
@@ -189,7 +190,7 @@ def validate_source_receipts(report, state, plan, catalog):
                         recipe.derive_source(recipe.verified_source(), state / "refusal").items()}
     if report["source_hashes"] != expected_sources:
         raise ValueError("Derived source closure differs from the original setup recipe")
-    expected_tools = [{"target": "/usr/local/bin/" + row["name"], **tools.identity(row)} for row in plan["tools"]]
+    expected_tools = [{"target": TOOL_DIRECTORY + row["name"], **tools.identity(row)} for row in plan["tools"]]
     if report["tools"] != expected_tools:
         raise ValueError("Installed tool receipts differ from both literal catalogs")
 
@@ -262,7 +263,7 @@ def run_probes(plan, environment, execute=subprocess.run):
     binary = "/usr/bin/php" + plan["request"]["inputs"]["php-version"]
     observations = []
     for row in plan["tools"]:
-        arguments = [binary, "/usr/local/bin/" + row["name"]]
+        arguments = [binary, TOOL_DIRECTORY + row["name"]]
         if row["name"] == "composer":
             arguments += ["--no-plugins", "--no-scripts", "--version", "--no-ansi", "--no-interaction"]
         else:
