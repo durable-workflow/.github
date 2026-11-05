@@ -1,0 +1,43 @@
+name: Central required workflow policy
+
+on:
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  policy:
+    name: Validate native policy subject
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out only the reviewed central runtime
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: durable-workflow/.github
+          ref: 840cca5aa39e9a86bbd2db3d75d15af65ce03541
+          path: .native-policy-control
+          persist-credentials: false
+      - name: Set up the policy interpreter
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Create an isolated policy runtime
+        run: python -I .native-policy-control/scripts/native_policy_check.py --prepare-runtime
+      - name: Select verified dependency and API trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7 # clean-trust
+        with:
+          clients: pip,python,curl,git
+      - name: Install the protected hash-locked parser
+        run: >-
+          python -I -m pip --isolated install --require-hashes
+          --only-binary=:all: --no-deps
+          -r .native-policy-control/qualification/requirements.lock
+      - name: Validate the exact event subject as inert data
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python -I .native-policy-control/scripts/native_policy_check.py

@@ -1,0 +1,21 @@
+{
+  "name": "Central workflow policy pilot",
+  "target": "branch",
+  "enforcement": "disabled",
+  "bypass_actors": [],
+  "conditions": {
+    "repository_id": {"repository_ids": [575230056]},
+    "ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}
+  },
+  "rules": [{
+    "type": "workflows",
+    "parameters": {
+      "do_not_enforce_on_create": true,
+      "workflows": [{
+        "repository_id": 575230056,
+        "path": ".github/workflows/native-policy.yml",
+        "ref": "refs/heads/main"
+      }]
+    }
+  }]
+}
