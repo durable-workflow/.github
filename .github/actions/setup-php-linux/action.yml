@@ -1,0 +1,33 @@
+name: Bound initial Linux PHP setup
+description: Proposed no-APT Ubuntu26.04/x64 PHP8.3 setup with both literal PHARs and coverage none.
+inputs:
+  php-version:
+    description: The initial profile requires the literal PHP minor 8.3.
+    required: true
+  extensions:
+    description: Initial profile requires no explicit extension override.
+    required: false
+  ini-file:
+    description: Existing upstream base INI selection.
+    default: production
+    required: false
+  ini-values:
+    description: Existing upstream INI values.
+    required: false
+  coverage:
+    description: Initial profile requires none; an omitted value remains distinct and refuses.
+    required: false
+  tools:
+    description: Initial profile requires explicit composer:2.10.3 and phpunit:11.5.57.
+    required: false
+  fail-fast:
+    description: Existing upstream fail-fast input, with omission preserved.
+    required: false
+outputs:
+  php-version:
+    description: Actual full version observed by pinned upstream setup.
+  bootstrap-receipt:
+    description: Owned captured-input and installed-file receipt path.
+runs:
+  using: node24
+  main: bootstrap.js

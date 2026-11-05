@@ -1,0 +1,76 @@
+{
+  "kind": "source-data-two-phars",
+  "outcome": "fail",
+  "objects": {
+    "composer-2.10.3.phar": {
+      "url": "https://getcomposer.org/download/2.10.3/composer.phar",
+      "effective_url": "https://getcomposer.org/download/2.10.3/composer.phar",
+      "size": 3642137,
+      "sha256": "7a2d379d5b8ffdaa028580ef26494c36d2feef4b178d3dd1473a4dbc5e17c8d6"
+    },
+    "phpunit-11.5.57.phar": {
+      "url": "https://phar.phpunit.de/phpunit-11.5.57.phar",
+      "effective_url": "https://phar.phpunit.de/phpunit-11.5.57.phar",
+      "size": 5779999,
+      "sha256": "c704fdd37c6c6ab7adb386f31b4e186cd51156801fa9028b5ea8099a2cd7f106"
+    },
+    "composer.sha256sum": {
+      "url": "https://getcomposer.org/download/2.10.3/composer.phar.sha256sum",
+      "effective_url": "https://getcomposer.org/download/2.10.3/composer.phar.sha256sum",
+      "size": 80,
+      "sha256": "1eb0f2c859011ab4b422a77d3ee4a56f97c83bd20d96299f07bee006409f4822"
+    },
+    "composer.sig.json": {
+      "url": "https://getcomposer.org/download/2.10.3/composer.phar.sig",
+      "effective_url": "https://getcomposer.org/download/2.10.3/composer.phar.sig",
+      "size": 697,
+      "sha256": "8a319e39e20ff12c4299d78b5bd49e268a5dace62dca5525c695c290a280ea42"
+    },
+    "composer-pubkeys.html": {
+      "url": "https://composer.github.io/pubkeys.html",
+      "effective_url": "https://composer.github.io/pubkeys.html",
+      "size": 2727,
+      "sha256": "37fb790fd32a39833f2c95f99c63fc8846c724a9285dd4c882d711698d9f31f9"
+    },
+    "phpunit.asc": {
+      "url": "https://phar.phpunit.de/phpunit-11.5.57.phar.asc",
+      "effective_url": "https://phar.phpunit.de/phpunit-11.5.57.phar.asc",
+      "size": 870,
+      "sha256": "6a2599c00931bba1895c73290a95a11774625a979baf6cdcfa85b4b9db651045"
+    },
+    "phpunit-phive.xml": {
+      "url": "https://phar.phpunit.de/phive.xml",
+      "effective_url": "https://phar.phpunit.de/phive.xml",
+      "size": 395100,
+      "sha256": "7b93ccac385b281f7ab7a5129a60816ecdc0b9c63198388173143c17090b1247"
+    },
+    "phpunit-installation.html": {
+      "url": "https://docs.phpunit.de/en/11.5/installation.html",
+      "effective_url": "https://docs.phpunit.de/en/11.5/installation.html",
+      "size": 129466,
+      "sha256": "cc37a1ec271df0bf867ba4ce0660c9f8466e925c180b8e13088143510a71d84c"
+    }
+  },
+  "signatures": {
+    "composer": {
+      "verification": "Verified OK",
+      "public_key_pem_sha256": "d8f3e350437bf3b5342dbf046064ebd1f017ebc720955433194360a01cfd074f",
+      "signature_sha256": "7cf890513611b123cd589076f09cfe524b85b9528e60a51e4bcf016e773bec33",
+      "public_key_role": "Tags Public Key"
+    },
+    "phpunit": {
+      "issuer_fingerprint": "D8406D0D82947747293778314AA394086372C20A",
+      "publisher_document_binding": false
+    }
+  },
+  "php_executed": false,
+  "phar_stub_executed": false,
+  "setup_executed": false,
+  "apt_executed": false,
+  "failure_type": "ValueError",
+  "failure": "Publisher documentation does not bind this key authority",
+  "duration_seconds": 5.428,
+  "total_output_bytes": 9952845,
+  "authority_ca_sha256": "50f79f98dac192b20dbf73f35c56f0b0c557ab267ff5199d1117cc1180b70785",
+  "work_record": "https://github.com/durable-workflow/.github/issues/297#issuecomment-6664345134"
+}

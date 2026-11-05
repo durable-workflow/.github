@@ -1,0 +1,439 @@
+{
+  "schema": "durable-workflow.php-linux-bootstrap/v1",
+  "repository": "shivammathur/php-ubuntu",
+  "release_id": 39619287,
+  "release_tag": "builds",
+  "setup_php_commit": "f3e473d116dcccaddc5834248c87452386958240",
+  "upstream_sources": {
+    "unix.sh": "e7517fad2eb177744cbc58f38fe3f5d281c13db23c30dd071c292fdda6d9984c",
+    "linux.sh": "ca008f4915695bc9760019ddb51c613ba0bfaf14376c18673b7e0149f6901222"
+  },
+  "installer": {
+    "id": 713206915,
+    "name": "install.sh",
+    "size": 3406,
+    "digest": "sha256:7bc5bfea71696b0927367eb887e2710d44c6f17216fbd47add5a4cb181543e99"
+  },
+  "archives": [
+    {
+      "os": "ubuntu",
+      "release": "22.04",
+      "arch": "aarch64",
+      "php": "8.1",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 712500507,
+        "name": "php_8.1-nts+ubuntu22.04_arm64.tar.zst",
+        "size": 19877726,
+        "digest": "sha256:2a8f6a87a380a7473a0fd8de78c49401933e8d90af665cf51d81a2b5c1cc4351"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "22.04",
+      "arch": "aarch64",
+      "php": "8.2",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 672927294,
+        "name": "php_8.2-nts+ubuntu22.04_arm64.tar.zst",
+        "size": 30445951,
+        "digest": "sha256:52245fe59c69e62bdd28a702cb912238eee36687fec796f96cc008ed466630bc"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "22.04",
+      "arch": "aarch64",
+      "php": "8.3",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 672920660,
+        "name": "php_8.3-nts+ubuntu22.04_arm64.tar.zst",
+        "size": 30615244,
+        "digest": "sha256:227d97fe699bc15785d76b5455282ddc67c6c27566198be22d07bd7d33d53a4f"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "22.04",
+      "arch": "aarch64",
+      "php": "8.4",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 672920799,
+        "name": "php_8.4-nts+ubuntu22.04_arm64.tar.zst",
+        "size": 31270489,
+        "digest": "sha256:5b8b0837c5cc713b30e54b5b5311fe4f00847f6922e940756fd5ed611be69456"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "22.04",
+      "arch": "aarch64",
+      "php": "8.5",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 672923462,
+        "name": "php_8.5-nts+ubuntu22.04_arm64.tar.zst",
+        "size": 29388006,
+        "digest": "sha256:c3818d1b8ce8a08d1803249de4a8df7b88d1dd887690c82edc7935822279218e"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "22.04",
+      "arch": "x86_64",
+      "php": "8.1",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 712496244,
+        "name": "php_8.1-nts+ubuntu22.04.tar.zst",
+        "size": 20112793,
+        "digest": "sha256:5972f8cdfec23153bc819ed5069fbcecf9443988fa2912c330abaff108c875a7"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "22.04",
+      "arch": "x86_64",
+      "php": "8.2",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 672925970,
+        "name": "php_8.2-nts+ubuntu22.04.tar.zst",
+        "size": 30673765,
+        "digest": "sha256:8ece23a86f1539ba14b10411e05ab37287bb6358934f16b1c3342b9442f23d47"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "22.04",
+      "arch": "x86_64",
+      "php": "8.3",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 672919766,
+        "name": "php_8.3-nts+ubuntu22.04.tar.zst",
+        "size": 30824973,
+        "digest": "sha256:1b04518681428bc25acbc8c3f3b08d3325d89e12886526a10febec71f1fd2513"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "22.04",
+      "arch": "x86_64",
+      "php": "8.4",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 672919810,
+        "name": "php_8.4-nts+ubuntu22.04.tar.zst",
+        "size": 31788164,
+        "digest": "sha256:c05a3e8a5cd1c5dd0e34c889e44ce2307cefa8053bc0583ffc3e78b53dda43d8"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "22.04",
+      "arch": "x86_64",
+      "php": "8.5",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 672922221,
+        "name": "php_8.5-nts+ubuntu22.04.tar.zst",
+        "size": 29828535,
+        "digest": "sha256:65b8ed45fad348e21f36497d338132b89168cbb292ff773e26bed0ac1039176d"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "24.04",
+      "arch": "aarch64",
+      "php": "8.1",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 672921822,
+        "name": "php_8.1-nts+ubuntu24.04_arm64.tar.zst",
+        "size": 40260544,
+        "digest": "sha256:df794a235c906c21717bd09824eb3ed7982cf66c617a77a56084329a625bd3c1"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "24.04",
+      "arch": "aarch64",
+      "php": "8.2",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 672929807,
+        "name": "php_8.2-nts+ubuntu24.04_arm64.tar.zst",
+        "size": 40594086,
+        "digest": "sha256:f680ab98f12b581dc3e382d872af722bea16ff7bdd0c165335dd2666c39d65e0"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "24.04",
+      "arch": "aarch64",
+      "php": "8.3",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 672922688,
+        "name": "php_8.3-nts+ubuntu24.04_arm64.tar.zst",
+        "size": 40777945,
+        "digest": "sha256:6aa39487eea6bf22a0da119b41a484693d0f7d3db94e5e0edc6033659b9c4582"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "24.04",
+      "arch": "aarch64",
+      "php": "8.4",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 672922930,
+        "name": "php_8.4-nts+ubuntu24.04_arm64.tar.zst",
+        "size": 41533980,
+        "digest": "sha256:5c732c53f7a7b2adcea458b4d4e37d65d95c80ba43d9724bf2d471b512f1cd3d"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "24.04",
+      "arch": "aarch64",
+      "php": "8.5",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 672926850,
+        "name": "php_8.5-nts+ubuntu24.04_arm64.tar.zst",
+        "size": 40509743,
+        "digest": "sha256:cad1bbaaee89994d12fd89981cfc67ef80aae411771cc9c531cd5ae0bc3b91a9"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "24.04",
+      "arch": "x86_64",
+      "php": "8.1",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 672920778,
+        "name": "php_8.1-nts+ubuntu24.04.tar.zst",
+        "size": 43136858,
+        "digest": "sha256:efde49b1ac289675f0fc9895b9d546924afc76d626e3656689b9835f48797c11"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "24.04",
+      "arch": "x86_64",
+      "php": "8.2",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 672928371,
+        "name": "php_8.2-nts+ubuntu24.04.tar.zst",
+        "size": 43510563,
+        "digest": "sha256:ad02c43c3e494896bad8521fa6c235c415f05f3fb0c9b2152ff4203ec587d3ad"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "24.04",
+      "arch": "x86_64",
+      "php": "8.3",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 672921837,
+        "name": "php_8.3-nts+ubuntu24.04.tar.zst",
+        "size": 43691699,
+        "digest": "sha256:58a7c29b7fcb00e884e947aaae8276a09c9bca18d39fd2a50efd88c5f860ee76"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "24.04",
+      "arch": "x86_64",
+      "php": "8.4",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 672921922,
+        "name": "php_8.4-nts+ubuntu24.04.tar.zst",
+        "size": 44715157,
+        "digest": "sha256:887725807200cd8450b293b1ec9a689859398f4e2511ef2e91a8bdbaf7ad8e07"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "24.04",
+      "arch": "x86_64",
+      "php": "8.5",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 672924952,
+        "name": "php_8.5-nts+ubuntu24.04.tar.zst",
+        "size": 43710841,
+        "digest": "sha256:e1fcc0ffb0cb9616d7d81a1bfa23d4d949b7184a93a11236f9885e71bec1a1be"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "26.04",
+      "arch": "aarch64",
+      "php": "8.1",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 672923740,
+        "name": "php_8.1-nts+ubuntu26.04_arm64.tar.zst",
+        "size": 38863018,
+        "digest": "sha256:bcf24bebb8e2982d72c1a871aaee51b511c52900b1c332f40329e486aedabb87"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "26.04",
+      "arch": "aarch64",
+      "php": "8.2",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 672932317,
+        "name": "php_8.2-nts+ubuntu26.04_arm64.tar.zst",
+        "size": 39232489,
+        "digest": "sha256:809376db4e7547be90b5772395f0db89347bd8f0ede280b66be60edb23bcec9a"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "26.04",
+      "arch": "aarch64",
+      "php": "8.3",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 672924810,
+        "name": "php_8.3-nts+ubuntu26.04_arm64.tar.zst",
+        "size": 39402025,
+        "digest": "sha256:21b740d5c044b52690d664bfbd0cae119e86c78a2ecbdb76d4a667be8260e94f"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "26.04",
+      "arch": "aarch64",
+      "php": "8.4",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 672925247,
+        "name": "php_8.4-nts+ubuntu26.04_arm64.tar.zst",
+        "size": 40181777,
+        "digest": "sha256:f75914bde6658dd832e93ee393b9933176a47d6fc0270fa03d3c7af05c8020c8"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "26.04",
+      "arch": "aarch64",
+      "php": "8.5",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 672930091,
+        "name": "php_8.5-nts+ubuntu26.04_arm64.tar.zst",
+        "size": 39326300,
+        "digest": "sha256:ca437428ab763eee2a7f66a60c5f1accd5d1195448b5684bef86edb913596868"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "26.04",
+      "arch": "x86_64",
+      "php": "8.1",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 713206221,
+        "name": "php_8.1-nts+ubuntu26.04.tar.zst",
+        "size": 40135451,
+        "digest": "sha256:dfda2017075313941138c4075df42c5d80d61d4de83320a81d4bb7de29d9cd3e"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "26.04",
+      "arch": "x86_64",
+      "php": "8.2",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 713136487,
+        "name": "php_8.2-nts+ubuntu26.04.tar.zst",
+        "size": 40419492,
+        "digest": "sha256:3c239f2506d32a00c0c3dea8ad93ad17d5a65d7358f0ca2ec2bb68a519644867"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "26.04",
+      "arch": "x86_64",
+      "php": "8.3",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 672923785,
+        "name": "php_8.3-nts+ubuntu26.04.tar.zst",
+        "size": 41840918,
+        "digest": "sha256:846f69bcf56fc25f672ab888415c12d40122b684c8fb9f1de87b7ddb64fa4272"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "26.04",
+      "arch": "x86_64",
+      "php": "8.4",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 672924093,
+        "name": "php_8.4-nts+ubuntu26.04.tar.zst",
+        "size": 42918097,
+        "digest": "sha256:8631de71a8d1682d74ce09d8b2077278a6f81a442bb0c77ea560a08da6464b1e"
+      }
+    },
+    {
+      "os": "ubuntu",
+      "release": "26.04",
+      "arch": "x86_64",
+      "php": "8.5",
+      "thread_safety": "nts",
+      "build": "release",
+      "asset": {
+        "id": 672928311,
+        "name": "php_8.5-nts+ubuntu26.04.tar.zst",
+        "size": 39322493,
+        "digest": "sha256:e82cf2d2f99e1061cbafea7427799bea077c40bf2bfe534f0e6e1014d2f7a851"
+      }
+    }
+  ]
+}

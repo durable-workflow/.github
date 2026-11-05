@@ -128,7 +128,7 @@ class ProtectedContextTest(unittest.TestCase):
         path = ".github/workflows/protected-policy.yml"
         # The workflow is exact; the referenced Python file cannot disguise a
         # shell program behind its extension to inherit the workflow exception.
-        files = {path: (ROOT / path).read_bytes(),
+        files = {path: (ROOT / "tests/fixtures/retired-protected-policy.yml").read_bytes(),
                  "scripts/protected_policy_issue.py": b"#!/bin/bash\nx=cd; $x /tmp\n"}
         with self.assertRaisesRegex(InputRefused, "helper"):
             context.validate_context(files)
