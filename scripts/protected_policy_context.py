@@ -34,8 +34,8 @@ PYTHON_MODULES = {"unittest", "pip", "venv", "http.server"}
 # Filled with explicit reviewed workflow-byte identities, never derived from
 # candidate text. A changed complex workflow needs a separate source review.
 REVIEWED_COMPLEX_WORKFLOWS = {
-    ".github/workflows/ci.yml": "d5b32d7b2868638e09b7deea1d3cab4bcbd3b4601fd9120da0be55319540eff7",
-    ".github/workflows/sonar.yml": "0dd432a52b1dcb6ef10b6e25404163b285deaa651a92219456eabec18514067b",
+    ".github/workflows/ci.yml": "c7571c568e4fe79a90a9b5dd5c14071f3bbdcaf00acb7b4ca8aa52ac0c26ffdf",
+    ".github/workflows/sonar.yml": "82bf7cd223605c3cc57fd7bfd03888ca226996d70c9249955efd02ae8879a560",
     ".github/workflows/protected-policy.yml": "642d204ea939ca5eba7ef51be9e4ae56a35177413caabe849315086d3d9d2d31",
     ".github/workflows/rust-docs-visual.yml": "69bc0b89cdeacbabd35c345770de86fe9e20bb3f2a53fc1c7a157973c3db31a6",
     ".github/workflows/cancellation-competitors.yml": "9ce25bd480c899e52a7e805fd6e5e6d45fcaa687c8c25b092d1f2163baf0b0b5",
