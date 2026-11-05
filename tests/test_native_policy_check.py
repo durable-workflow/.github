@@ -1,4 +1,8 @@
 from copy import deepcopy
+import io
+import json
+from pathlib import Path
+import tempfile
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -117,3 +121,66 @@ class NativePolicyCheckTest(TestCase):
         with patch.object(native.subprocess, "run") as run, self.assertRaises(InputRefused):
             native.prepare_runtime({"RUNNER_ENVIRONMENT": "self-hosted"})
         run.assert_not_called()
+
+    def test_isolated_runtime_is_created_once_and_exported_to_later_steps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            export = Path(directory) / "path-export"
+            environment = {"RUNNER_ENVIRONMENT": "github-hosted", "RUNNER_TEMP": directory,
+                           "GITHUB_PATH": str(export)}
+            with patch.object(native.sys, "version_info", (3, 13)), patch.object(native.subprocess, "run") as run:
+                native.prepare_runtime(environment)
+                runtime = Path(directory) / "native-policy-python"
+                run.assert_called_once_with([native.sys.executable, "-I", "-m", "venv", str(runtime)], check=True)
+                self.assertEqual(str(runtime / "bin") + "\n", export.read_text())
+                runtime.mkdir()
+                with self.assertRaisesRegex(InputRefused, "already exists"):
+                    native.prepare_runtime(environment)
+                self.assertEqual(1, run.call_count)
+
+    def test_runtime_rejects_relative_or_multiline_temporary_paths_before_execution(self):
+        for directory in ("relative", "/tmp/line\nbreak"):
+            with self.subTest(directory=directory), patch.object(native.sys, "version_info", (3, 13)), \
+                    patch.object(native.subprocess, "run") as run, self.assertRaises(InputRefused):
+                native.prepare_runtime({"RUNNER_ENVIRONMENT": "github-hosted", "RUNNER_TEMP": directory})
+            run.assert_not_called()
+
+    def invoke(self, raw, arguments=(), environment=None):
+        with tempfile.TemporaryDirectory() as directory:
+            event_path = Path(directory) / "event.json"
+            event_path.write_bytes(raw)
+            values = dict(self.environment, GITHUB_EVENT_PATH=str(event_path), CURL_CA_BUNDLE="/verified/ca.pem",
+                          SSL_CERT_DIR="/verified/empty", DW_CI_CA_SHA256="a" * 64, GITHUB_TOKEN="read-token")
+            values.update(environment or {})
+            output, errors = io.StringIO(), io.StringIO()
+            with patch.dict(native.os.environ, values, clear=True), \
+                    patch.object(native.sys, "argv", ["native-policy", *arguments]), \
+                    patch("scripts.protected_policy_check.GitHubReadClient", return_value=self.fixture.read), \
+                    patch.object(native.sys, "stdout", output), patch.object(native.sys, "stderr", errors):
+                result = native.main()
+            return result, output.getvalue(), errors.getvalue()
+
+    def test_command_reads_the_event_and_reports_the_exact_fork_subject(self):
+        result, output, errors = self.invoke(json.dumps(self.event).encode())
+        self.assertEqual(0, result)
+        self.assertEqual("", errors)
+        report = json.loads(output)
+        self.assertEqual(inputs.HEAD, report["head_sha"])
+        self.assertEqual(inputs.FORK, report["head_repository"])
+
+    def test_command_refuses_arguments_invalid_and_oversized_events_without_a_report(self):
+        cases = ((b"{}", ("candidate-option",)), (b"{", ()), (b"\xff", ()),
+                 (b" " * (8 * 1024 * 1024 + 1), ()), (b"{}", ()))
+        for raw, arguments in cases:
+            with self.subTest(arguments=arguments, length=len(raw)):
+                result, output, errors = self.invoke(raw, arguments)
+                self.assertEqual(1, result)
+                self.assertEqual("", output)
+                self.assertIn("policy_refused", json.loads(errors))
+
+    def test_prepare_command_does_not_allocate_an_api_client(self):
+        with patch.object(native.sys, "argv", ["native-policy", "--prepare-runtime"]), \
+                patch.object(native, "prepare_runtime") as prepare, \
+                patch("scripts.protected_policy_check.GitHubReadClient") as client:
+            self.assertEqual(0, native.main())
+        prepare.assert_called_once_with(native.os.environ)
+        client.assert_not_called()
