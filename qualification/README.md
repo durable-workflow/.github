@@ -45,6 +45,14 @@ unconditional, unprivileged plan job and carries the exact
 condition, so a release runs from its own tag ref and a wrong ref fails in the
 plan job. The workflow may have no other trigger.
 
+An explicitly optional binding can be absent; every present job still satisfies
+its full trust binding. `optional_jobs` allows only named, registered jobs to be
+absent. These presence exceptions support the Server alias-promotion rollout:
+accepted Server retains its legacy release alias job while the successor moves
+that job into a separate protected workflow. Tighten the bindings after Server
+accepts the successor. Neither option admits an unregistered privileged job or
+relaxes ref, environment, plan verifier or failed-plan checks.
+
 Product repositories own their tests, documentation deployment, publication,
 and deployment workflows. Editorial wording is outside this policy.
 

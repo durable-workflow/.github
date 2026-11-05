@@ -877,5 +877,104 @@ class TagDispatchPolicyTest(unittest.TestCase):
             validate_policy(policy)
 
 
+
+class NativePromotionTransitionTest(unittest.TestCase):
+    """Presence exceptions cannot relax any present workflow's trust binding."""
+
+    def setUp(self) -> None:
+        self.policy = policy_fixture()
+        self.path = ".github/workflows/native-alias-promotion.yml"
+        binding = self.policy["workflow_trust"]["privileged_tag_dispatch_workflows"]["server/native-alias-promotion.yml"]
+        env = "\n".join(f"          {name}: {value}" for name, value in binding["plan_verifier"]["env"].items())
+        self.promotion = f"""name: Native alias promotion
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        required: true
+        type: string
+      evidence:
+        required: true
+        type: string
+permissions: {{}}
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+{CHECKOUT_STEP}      - name: Validate dispatch
+        env:
+{env}
+        run: python3 scripts/ci/native_alias_promote.py plan
+  promote:
+    needs: plan
+    if: {TAG_GATE}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: dockerhub-native
+    permissions:
+      packages: write
+    steps:
+      - run: echo synthetic-promotion
+"""
+
+    def sources(self, promotion: str | None, legacy_aliases: bool = True) -> dict[str, str]:
+        release = tag_dispatch_workflow()
+        if not legacy_aliases:
+            release = release.split("  aliases:\n", 1)[0]
+        sources = {".github/workflows/native-release.yml": release}
+        if promotion is not None:
+            sources[self.path] = promotion
+        return sources
+
+    def test_accepted_legacy_and_successor_topologies_share_one_policy(self) -> None:
+        for promotion, legacy in ((None, True), (self.promotion, True), (self.promotion, False)):
+            with self.subTest(promotion=promotion is not None, legacy=legacy):
+                evidence = scan_workflow_sources(self.policy, "server", self.sources(promotion, legacy))
+                if promotion is not None:
+                    self.assertEqual(evidence[self.path]["privileged_jobs"], ["promote"])
+
+    def test_optional_workflow_still_requires_exact_plan_ref_environment_and_jobs_when_present(self) -> None:
+        for before, after in (
+            (f"if: {TAG_GATE}", "if: github.ref == 'refs/heads/main' || true"),
+            ("needs: plan", "needs: []"),
+            ("environment: dockerhub-native", "environment: other"),
+            ("native_alias_promote.py plan", "native_alias_promote.py promote"),
+            ("  promote:\n", "  unregistered:\n"),
+            ("  plan:\n", "  plan:\n    if: false\n"),
+        ):
+            source = self.promotion.replace(before, after)
+            with self.subTest(after=after), self.assertRaises(PolicyError):
+                scan_workflow_sources(self.policy, "server", self.sources(source, False))
+
+    def test_optional_legacy_alias_job_is_fully_checked_if_present(self) -> None:
+        sources = self.sources(None)
+        path = ".github/workflows/native-release.yml"
+        sources[path] = sources[path].replace("  aliases:\n", "  aliases:\n    continue-on-error: true\n")
+        with self.assertRaisesRegex(PolicyError, "must not continue on error"):
+            scan_workflow_sources(self.policy, "server", sources)
+
+    def test_presence_exception_cannot_name_unregistered_jobs_or_nonboolean_flags(self) -> None:
+        for field, value in (("optional", "true"), ("optional", 1), ("optional_jobs", ["unknown"]),
+                             ("optional_jobs", ["aliases", "aliases"]), ("optional_jobs", "aliases")):
+            policy = copy.deepcopy(self.policy)
+            policy["workflow_trust"]["privileged_tag_dispatch_workflows"]["server/native-release.yml"][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(PolicyError):
+                validate_policy(policy)
+
+    def test_tightened_post_transition_policy_requires_promotion_and_refuses_legacy_aliases(self) -> None:
+        policy = copy.deepcopy(self.policy)
+        bindings = policy["workflow_trust"]["privileged_tag_dispatch_workflows"]
+        del bindings["server/native-alias-promotion.yml"]["optional"]
+        del bindings["server/native-release.yml"]["optional_jobs"]
+        bindings["server/native-release.yml"]["jobs"].remove("aliases")
+        scan_workflow_sources(policy, "server", self.sources(self.promotion, False))
+        for promotion, legacy in ((None, False), (self.promotion, True)):
+            with self.subTest(promotion=promotion is not None, legacy=legacy), self.assertRaises(PolicyError):
+                scan_workflow_sources(policy, "server", self.sources(promotion, legacy))
+
+
 if __name__ == "__main__":
     unittest.main()
