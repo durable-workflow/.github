@@ -851,9 +851,34 @@ def _verify_legacy_policy_steps(target_name, label, steps, approved_bootstraps):
 
 
 
-def _verify_policy_result_gate(label, jobs, gate_job_name):
+def _verify_pinned_policy_context(label, document):
+    if (set(document) - {"name", "on", "permissions", "concurrency", "jobs"}
+            or document.get("permissions") != {"contents": "read"}):
+        raise PolicyError(f"{label} pinned central preflight has an unreviewed workflow context")
+
+
+def _verify_pinned_policy_gate(label, gate):
+    if (set(gate) - {"name", "needs", "if", "runs-on", "timeout-minutes", "steps"}
+            or _condition_without_expression_wrapper(gate.get("if", "")) != "always()"):
+        raise PolicyError(f"{label} pinned central preflight requires an unconditional closed result gate")
+    assertion = {
+        "env": {"ACTION_POLICY_RESULT": "${{ needs.action-policy.result }}"},
+        "run": 'test "$ACTION_POLICY_RESULT" = success',
+    }
+    if not any(
+        isinstance(step, dict) and not set(step) - {"name", "env", "run"}
+        and step.get("env") == assertion["env"]
+        and _normalized_shell(step.get("run")) == assertion["run"]
+        for step in gate.get("steps") or []
+    ):
+        raise PolicyError(f"{label} pinned central preflight requires a closed unconditional result assertion")
+
+
+def _verify_policy_result_gate(label, jobs, gate_job_name, pinned=False):
     accepted_conditions = {"", "github.server_url == 'https://github.com'"}
     gate = jobs[gate_job_name]
+    if pinned:
+        _verify_pinned_policy_gate(label, gate)
     if "action-policy" not in _job_needs(gate, f"{label} required check gate"):
         raise PolicyError(f"{label} required check does not depend on the central action policy preflight")
     condition = gate.get("if")
@@ -879,14 +904,16 @@ def _verify_action_policy_preflight(
     jobs: dict[str, Any],
     gate_job_name: str,
     approved_bootstraps: set[str] | None = None,
-) -> None:
+) -> bool:
     preflight = _policy_preflight_job(label, jobs)
     steps = preflight.get("steps")
-    if isinstance(steps, list) and len(steps) == 8 and all(isinstance(step, dict) for step in steps):
+    pinned = isinstance(steps, list) and len(steps) == 8 and all(isinstance(step, dict) for step in steps)
+    if pinned:
         _verify_pinned_policy_steps(target_name, label, preflight, steps, approved_bootstraps)
     else:
         _verify_legacy_policy_steps(target_name, label, steps, approved_bootstraps)
-    _verify_policy_result_gate(label, jobs, gate_job_name)
+    _verify_policy_result_gate(label, jobs, gate_job_name, pinned)
+    return pinned
 
 
 def _stable_check_jobs(jobs: dict[str, Any], required_check: str) -> list[str]:
@@ -929,7 +956,8 @@ def verify_workflow_source(name: str, branch: str, workflow: dict[str, Any], sou
             f"matching jobs={stable_jobs}"
         )
     if workflow.get("action_policy_preflight") is True:
-        _verify_action_policy_preflight(name, label, jobs, stable_jobs[0], approved_bootstraps)
+        if _verify_action_policy_preflight(name, label, jobs, stable_jobs[0], approved_bootstraps):
+            _verify_pinned_policy_context(label, document)
 
 
 def _parse_yaml(source: str, label: str) -> Any:

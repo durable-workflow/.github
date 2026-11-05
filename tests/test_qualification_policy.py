@@ -323,6 +323,60 @@ class QualificationPolicyTest(unittest.TestCase):
             verify_workflow_source("cloud", "main", definition, changed,
                                    {"75587fc33ff40c34f32ef777293dad56bb6f48c7"})
 
+    def pinned_workflow_document(self):
+        jobs = self.pinned_policy_preflight()
+        jobs["gate"]["name"] = "Source qualification"
+        return {"name": "fixture", "permissions": {"contents": "read"}, "jobs": jobs}
+
+    def verify_pinned_document(self, document):
+        triggers = "on:\n  push:\n    branches: [main]\n  pull_request:\n  workflow_dispatch:\n"
+        definition = {"path": "fixture.yml", "required_check": "Source qualification",
+                      "matrix_independent": False, "action_policy_preflight": True}
+        verify_workflow_source("cloud", "main", definition,
+            triggers + yaml.safe_dump(document, sort_keys=False),
+            {"75587fc33ff40c34f32ef777293dad56bb6f48c7"})
+
+    def pinned_context_mutations(self):
+        changes = []
+        for key, value in (
+            ("env", {"BASH_ENV": "/tmp/foreign-startup"}),
+            ("defaults", {"run": {"shell": "true {0}"}}),
+            ("permissions", {"contents": "write"}),
+            ("unreviewed", "context"),
+        ):
+            document = self.pinned_workflow_document()
+            document[key] = value
+            changes.append(document)
+        for key, value in (
+            ("env", {"BASH_ENV": "/tmp/foreign-startup"}),
+            ("defaults", {"run": {"shell": "true {0}"}}),
+            ("continue-on-error", True), ("container", "foreign"),
+            ("services", {"foreign": {"image": "foreign"}}),
+            ("permissions", {"contents": "write"}),
+        ):
+            document = self.pinned_workflow_document()
+            document["jobs"]["gate"][key] = value
+            changes.append(document)
+        for condition in ("always() || true", "always() && false", "false || always()"):
+            document = self.pinned_workflow_document()
+            document["jobs"]["gate"]["if"] = condition
+            changes.append(document)
+        for key, value in (
+            ("if", "false"), ("if", "github.server_url == 'https://github.com'"),
+            ("continue-on-error", True), ("shell", "true {0}"),
+            ("working-directory", "/tmp/foreign"), ("timeout-minutes", 1),
+        ):
+            document = self.pinned_workflow_document()
+            document["jobs"]["gate"]["steps"][0][key] = value
+            changes.append(document)
+        return changes
+
+    def test_pinned_workflow_and_result_gate_contexts_are_closed_through_actual_parser(self):
+        self.verify_pinned_document(self.pinned_workflow_document())
+        for index, document in enumerate(self.pinned_context_mutations()):
+            with self.subTest(change=index), self.assertRaises(PolicyError):
+                self.verify_pinned_document(document)
+
     def test_pinned_preflight_refuses_missing_malformed_late_and_collapsed_head_checks(self):
         changes = []
         for position in (2, 4, 6):
@@ -393,7 +447,7 @@ class QualificationPolicyTest(unittest.TestCase):
                 _verify_action_policy_preflight("cloud", "fixture", jobs, "gate")
         jobs = self.pinned_policy_preflight()
         jobs["gate"]["steps"][0]["run"] = "echo passed"
-        with self.assertRaisesRegex(PolicyError, "fail closed"):
+        with self.assertRaisesRegex(PolicyError, "closed unconditional"):
             _verify_action_policy_preflight("cloud", "fixture", jobs, "gate")
 
     def test_pinned_preflight_inline_head_check_refuses_actual_mismatch_before_following_code(self):
