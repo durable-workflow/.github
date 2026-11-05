@@ -1723,7 +1723,8 @@ def _validate_tag_dispatch_bindings(policy: dict[str, Any], bindings: object) ->
             raise PolicyError(f"invalid privileged tag dispatch workflow path {path!r}")
         if path.split("/", 1)[0] not in policy.get("targets", {}):
             raise PolicyError(f"{path} names an unknown workflow trust target")
-        if not isinstance(binding, dict) or set(binding) != TAG_DISPATCH_BINDING_FIELDS:
+        if (not isinstance(binding, dict) or not TAG_DISPATCH_BINDING_FIELDS <= set(binding)
+                or set(binding) - TAG_DISPATCH_BINDING_FIELDS - {"optional", "optional_jobs"}):
             raise PolicyError(f"{path} must declare the complete tag dispatch trust binding")
         jobs = binding["jobs"]
         if (
@@ -1733,6 +1734,13 @@ def _validate_tag_dispatch_bindings(policy: dict[str, Any], bindings: object) ->
             or jobs != sorted(set(jobs))
         ):
             raise PolicyError(f"{path} tag dispatch jobs must be a sorted list of unique job names")
+        if type(binding.get("optional", False)) is not bool:
+            raise PolicyError(f"{path} optional workflow presence must be boolean")
+        optional_jobs = binding.get("optional_jobs", [])
+        if (not isinstance(optional_jobs, list)
+                or not all(isinstance(job, str) and job in jobs for job in optional_jobs)
+                or optional_jobs != sorted(set(optional_jobs))):
+            raise PolicyError(f"{path} optional jobs must be a sorted unique subset of bound jobs")
         plan_job = binding["plan_job"]
         if not isinstance(plan_job, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", plan_job) or plan_job in jobs:
             raise PolicyError(f"{path} tag dispatch plan job must be a separate job name")
@@ -1856,7 +1864,7 @@ def _check_tag_dispatch_workflow(
         job = jobs.get(job_name)
         if isinstance(job, dict) and "continue-on-error" in job:
             raise PolicyError(f"{label} tag dispatch job {job_name!r} must not continue on error")
-    missing = sorted(set(binding["jobs"]) - set(jobs))
+    missing = sorted(set(binding["jobs"]) - set(binding.get("optional_jobs", [])) - set(jobs))
     if missing:
         raise PolicyError(f"{label} is missing policy-bound tag dispatch jobs {missing}")
 
@@ -2133,6 +2141,7 @@ def scan_workflow_sources(
         key.rsplit("/", 1)[1]
         for key in policy["workflow_trust"]["privileged_tag_dispatch_workflows"]
         if key.startswith(f"{target_name}/")
+        and not policy["workflow_trust"]["privileged_tag_dispatch_workflows"][key].get("optional", False)
     }
     missing_tag_dispatch = expected_tag_dispatch - present
     if missing_tag_dispatch:
