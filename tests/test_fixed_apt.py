@@ -155,7 +155,7 @@ class FixedAptTest(unittest.TestCase):
             workflow = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())
             job = workflow["jobs"]["contracts" if filename == "ci.yml" else "analysis"]
             steps = job["steps"]
-            position = next(index for index, step in enumerate(steps) if step.get("run") == "/usr/bin/python3 -I scripts/require_fixed_apt.py")
+            position = next(index for index, step in enumerate(steps) if step.get("run") == "/usr/bin/python3 -I -S -B scripts/require_fixed_apt.py")
             self.assertEqual(1, position)
             self.assertTrue(steps[0]["uses"].startswith("actions/checkout@"))
             self.assertNotIn("continue-on-error", steps[position])
@@ -167,7 +167,7 @@ class FixedAptTest(unittest.TestCase):
         self.assertNotIn("inputs", action)
         self.assertEqual("composite", action["runs"]["using"])
         step, = action["runs"]["steps"]
-        self.assertEqual('/usr/bin/python3 -I "$FIXED_APT_PROGRAM"', step["run"])
+        self.assertEqual('/usr/bin/python3 -I -S -B "$FIXED_APT_PROGRAM"', step["run"])
         source = step["env"]["FIXED_APT_PROGRAM"]
         self.assertEqual("${{ github.action_path }}/../../../scripts/require_fixed_apt.py", source)
         self.assertEqual(ROOT / "scripts/require_fixed_apt.py",

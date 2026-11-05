@@ -7,4 +7,4 @@ runs:
       shell: bash
       env:
         FIXED_APT_PROGRAM: ${{ github.action_path }}/../../../scripts/require_fixed_apt.py
-      run: /usr/bin/python3 -I "$FIXED_APT_PROGRAM"
+      run: /usr/bin/python3 -I -S -B "$FIXED_APT_PROGRAM"
