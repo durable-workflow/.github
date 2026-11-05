@@ -245,13 +245,17 @@ def _wheel_inventory(contents):
         expected = HASH_PREFIX + base64.urlsafe_b64encode(hashlib.sha256(data).digest()).decode().rstrip("=")
         if rows[name][1:] != [expected, str(len(data))]:
             raise ValueError("Wheel member does not match its RECORD")
+    validate_wheel_distribution(files)
+    return files
+
+
+def validate_wheel_distribution(files):
     metadata = files.get(DIST_INFO + "/METADATA", b"").decode("utf-8")
     if (re.findall(r"^Name: (.+)$", metadata, re.M) != ["pip"]
             or re.findall(r"^Version: (.+)$", metadata, re.M) != [VERSION]):
         raise ValueError("Wheel distribution identity is not the authorized pip version")
     if CERTIFI_CA not in files or PIP_MODULE not in files:
         raise ValueError("Wheel module or vendored certifi origin is missing")
-    return files
 
 
 def authenticated_wheel(path):
