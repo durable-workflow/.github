@@ -24,6 +24,25 @@ class ProtectedContextTest(unittest.TestCase):
                  for path in (ROOT / ".github/workflows").glob("*.y*ml")}
         context.validate_context(files)
 
+    def test_initial_qualification_is_only_the_exact_reviewed_future_workflow(self):
+        path=".github/workflows/qualify-linux-php-initial.yml"
+        raw=(ROOT/"tests/fixtures/qualify-linux-php-initial.yml").read_bytes()
+        context.validate_context({path:raw})
+        mutations=[
+            raw+b"\n# changed workflow\n",
+            raw.replace(b"test \"$EXPECTED_WORKFLOW_SHA\" = \"$GITHUB_SHA\"",b"true"),
+            raw.replace(b"timeout-minutes: 15",b"timeout-minutes: 60"),
+            raw.replace(b"workflow_dispatch:\n",b"push:\n"),
+            raw.replace(b"1b194dd945b72019f701e94472134135f584f652",b"a"*40),
+            raw.replace(b"steps.admission.outcome == 'success'",b"true"),
+        ]
+        for index,changed in enumerate(mutations):
+            self.assertNotEqual(raw,changed)
+            with self.subTest(change=index),self.assertRaises(InputRefused):
+                context.validate_context({path:changed})
+        with self.assertRaises(InputRefused):
+            context.validate_context({WORKFLOW:raw})
+
     def test_updated_fixture_and_test_workflows_still_require_exact_reviewed_bytes(self):
         for path in (".github/workflows/ci.yml", ".github/workflows/sonar.yml",
                      ".github/workflows/cancellation-competitors.yml"):
