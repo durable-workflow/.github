@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+
+get() {
+  file_path=$1
+  shift
+  links=("$@")
+  for link in "${links[@]}"; do
+    status_code=$(sudo curl -w "%{http_code}" -o "$file_path" -L "$link")
+    [ "$status_code" = "200" ] && break
+  done
+}
+
+install() {
+  get /tmp/"$tar_file" "https://github.com/shivammathur/php-ubuntu/releases/download/builds/$tar_file" "https://artifacts.php-ubuntu.setup-php.com/$tar_file" "https://artifacts.setup-php.com/php-ubuntu/$tar_file" "https://dl.cloudsmith.io/public/shivammathur/php-ubuntu/raw/files/$tar_file"
+  sudo cp /var/lib/dpkg/status /var/lib/dpkg/status-orig
+  sudo rm -rf /var/lib/apt/lists/*ondrej*
+  sudo tar -I zstd -xf /tmp/"$tar_file" -C /
+  sudo LC_ALL=C.UTF-8 python3 /usr/sbin/merge_status && sudo rm -f /usr/sbin/merge_status
+  sudo mv /var/lib/dpkg/status-orig /var/lib/dpkg/status
+}
+
+fix_service() {
+  sudo systemctl daemon-reload 2>/dev/null || true
+  sudo systemctl start php"$version"-fpm 2>/dev/null || true
+}
+
+fix_packages() {
+  # Check installed dependencies without rebuilding the repository package caches.
+  # Repairs still use the runner's sources and caches below.
+  if ! sudo apt-get check -o Dir::Etc::sourcelist=/dev/null -o Dir::Etc::sourceparts=- \
+    -o Dir::Cache::pkgcache= -o Dir::Cache::srcpkgcache= 2>/dev/null; then
+    sudo apt --fix-broken install -y || (sudo apt-get update && sudo apt --fix-broken install -y)
+  fi
+}
+
+fix_list() {
+  ppa_list="/etc/apt/sources.list.d/ondrej-ubuntu-php-$VERSION_CODENAME"
+  if [[ -e "$ppa_list.sources" && -e "$ppa_list.list" ]]; then
+    [ -e "/etc/apt/sources.list.d/ubuntu.sources" ] && sudo rm "$ppa_list.list" || sudo rm "$ppa_list.sources"
+  fi
+  if [ "$builds" = "debug" ]; then
+    list="$(grep -lr "ondrej/php" /etc/apt/sources.list.d 2>/dev/null | head -n 1)"
+    [ -n "$list" ] && sudo apt-get update -o Dir::Etc::sourcelist="$list" -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0"
+  fi
+}
+
+fix_alternatives() {
+  to_wait=()
+  sudo update-alternatives --force --install /usr/lib/cgi-bin/php php-cgi-bin /usr/lib/cgi-bin/php"$version" "${version/./}" & to_wait+=($!)
+  sudo update-alternatives --force --install /usr/sbin/php-fpm php-fpm /usr/sbin/php-fpm"$version" "${version/./}" & to_wait+=($!)
+  sudo update-alternatives --force --install /run/php/php-fpm.sock php-fpm.sock /run/php/php"$version"-fpm.sock "${version/./}" & to_wait+=($!)
+  for tool in phpize php-config phpdbg php-cgi php phar.phar phar; do
+    sudo update-alternatives --force --install /usr/bin/"$tool" "$tool" /usr/bin/"$tool$version" "${version/./}" \
+                             --slave /usr/share/man/man1/"$tool".1.gz "$tool".1.gz /usr/share/man/man1/"$tool$version".1.gz &
+    to_wait+=($!)
+  done
+  wait "${to_wait[@]}"
+}
+
+fix_redis_linking() {
+  echo -e "; priority=25\nextension=redis.so" | sudo tee /etc/php/"$version"/mods-available/redis.ini
+  [ "$(find /etc/php/"$version" -name "25-redis.ini" | wc -l)" -gt 0 ] && sudo find /etc/php/"$version" -name "20-redis.ini" -delete || true
+}
+
+export DEBIAN_FRONTEND=noninteractive
+. /etc/os-release
+version=$1
+builds=${2:-release}
+ts=${3:-nts}
+[ "${builds:?}" = "debug" ] && PHP_PKG_SUFFIX=-dbgsym
+arch="$(arch)"
+[[ "$arch" = "aarch64" || "$arch" = "arm64" ]] && ARCH_SUFFIX='_arm64' || ARCH_SUFFIX=''
+tar_file=php_"$version-$ts$PHP_PKG_SUFFIX"+ubuntu"$VERSION_ID$ARCH_SUFFIX".tar.zst
+install
+fix_alternatives
+fix_service
+fix_list
+fix_packages
+fix_redis_linking
