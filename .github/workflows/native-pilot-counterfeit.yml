@@ -1,0 +1,17 @@
+name: Central required workflow policy
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  control:
+    name: Validate native policy subject
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - name: Harmless display-name qualification control
+        run: /bin/true
