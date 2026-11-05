@@ -85,7 +85,7 @@ class FixedAptTest(unittest.TestCase):
             workflow = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())
             job = workflow["jobs"]["contracts" if filename == "ci.yml" else "analysis"]
             steps = job["steps"]
-            position = next(index for index, step in enumerate(steps) if step.get("run") == "python3 -I scripts/require_fixed_apt.py")
+            position = next(index for index, step in enumerate(steps) if step.get("run") == "/usr/bin/python3 -I scripts/require_fixed_apt.py")
             self.assertEqual(1, position)
             self.assertTrue(steps[0]["uses"].startswith("actions/checkout@"))
             self.assertNotIn("continue-on-error", steps[position])

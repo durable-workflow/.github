@@ -25,7 +25,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Require fixed APT before package setup
-        run: python3 -I scripts/require_fixed_apt.py
+        run: /usr/bin/python3 -I scripts/require_fixed_apt.py
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13'
