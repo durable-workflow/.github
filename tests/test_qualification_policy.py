@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import copy
+import contextlib
+import io
 import json
+import secrets
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.qualification_policy import (
+    GitHubClient,
     PolicyError,
     _verify_action_policy_preflight,
     scan_workflow_sources,
@@ -15,6 +22,74 @@ from scripts.qualification_policy import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class GitHubRedirectBoundaryTest(unittest.TestCase):
+    def setUp(self):
+        self.environment = patch.dict("os.environ", {"NO_PROXY": "127.0.0.1,localhost"})
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+        self.token = "synthetic-" + secrets.token_hex(8)
+        self.api, self.api_url = self.server()
+        self.other, self.other_url = self.server()
+
+    def server(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                authorization = self.headers.get("Authorization")
+                self.server.seen.append((self.path, authorization))
+                redirect = self.server.redirects.get(self.path)
+                if redirect:
+                    self.send_response(302)
+                    self.send_header("Location", redirect)
+                    self.end_headers()
+                    return
+                body = b'{"ok":true}'
+                limited = self.path == "/fallback" and authorization is not None
+                self.send_response(429 if limited else 200)
+                if limited:
+                    self.send_header("X-RateLimit-Remaining", "0")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_arguments):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.seen, server.redirects = [], {}
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+        thread.start()
+
+        def close():
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=1)
+
+        self.addCleanup(close)
+        return server, f"http://127.0.0.1:{server.server_port}"
+
+    def client(self, token=None):
+        return GitHubClient(token, self.api_url, max_attempts=1,
+                            request_timeout_seconds=2, audit_timeout_seconds=5)
+
+    def test_cross_origin_redirect_refuses_before_any_destination_request(self):
+        self.api.redirects["/redirect"] = self.other_url + "/destination"
+        client = self.client(self.token)
+        with self.assertRaisesRegex(PolicyError, "redirect.*origin"):
+            client.json("/redirect")
+        self.assertEqual([], self.other.seen)
+
+    def test_same_origin_redirect_retains_the_authenticated_api_request(self):
+        self.api.redirects["/redirect"] = "/destination"
+        self.assertEqual({"ok": True}, self.client(self.token).json("/redirect"))
+        self.assertEqual([("/redirect", "Bearer " + self.token),
+                          ("/destination", "Bearer " + self.token)], self.api.seen)
+
+    def test_rate_limit_fallback_stays_on_the_selected_origin_without_credentials(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual({"ok": True}, self.client(self.token).json("/fallback"))
+        self.assertEqual([("/fallback", "Bearer " + self.token), ("/fallback", None)], self.api.seen)
 
 
 def policy_fixture() -> dict[str, object]:
