@@ -224,6 +224,25 @@ sudo() {
         self.assertNotIn("network-admission", new.stdout)
         self.assertIn("refuses network APT repair", new.stderr)
 
+    def test_initial_profile_removes_package_repair_merge_and_service_phases(self):
+        derived = bootstrap.no_apt_installer_source(self.original, self.catalog)
+        self.assertNotIn(b'apt-get ', derived)
+        self.assertNotIn(b'sudo apt --', derived)
+        self.assertNotIn(b'sudo systemctl', derived)
+        self.assertNotIn(b'sudo LC_ALL=', derived)
+        self.assertNotIn(b'cp /var/lib/dpkg', derived)
+        self.assertIn(b'--exclude=var/lib/dpkg', derived)
+        self.assertIn(b'--exclude=./usr/sbin/merge_status', derived)
+        self.assertIn(b'-xf - -C / <&"$DW_VERIFIED_ARCHIVE_FD"', derived)
+        phases = ('install', 'fix_alternatives', 'fix_service', 'fix_list', 'fix_packages', 'fix_redis_linking')
+        stubs = ''.join(name + '() { printf "%s\\n" ' + name + '; }\n' for name in phases)
+        old_calls = self.original.decode().split('\ninstall\n', 1)[1]
+        new_calls = derived.decode().split('\ninstall\n', 1)[1]
+        old = self.shell(stubs + '\ninstall\n' + old_calls)
+        new = self.shell(stubs + '\ninstall\n' + new_calls)
+        self.assertEqual(list(phases), old.stdout.splitlines())
+        self.assertEqual(['install', 'fix_alternatives', 'fix_redis_linking'], new.stdout.splitlines())
+
     def test_closed_environment_excludes_credentials_and_shell_injection(self):
         parent = dict(GITHUB_TOKEN="inert", GH_TOKEN="inert", ACTIONS_RUNTIME_TOKEN="inert", SONAR_TOKEN="inert",
                       AWS_SECRET_ACCESS_KEY="inert", COMPOSER_AUTH="inert", SSH_AUTH_SOCK="inert",
@@ -261,6 +280,31 @@ sudo() {
                 with self.assertRaises(ValueError):
                     bootstrap.run_held_installer(script, archive, ("8.3", "release", "nts"),
                                                 dict(environment, GH_TOKEN="inert"), catalog, execute, host)
+        self.assertEqual(1, len(calls))
+
+    def test_initial_effect_primitive_requires_the_exact_no_apt_derived_bytes(self):
+        data = b'inert first-profile archive; never extracted'
+        catalog = copy.deepcopy(self.catalog)
+        row = next(row for row in catalog['archives'] if row == self.row)
+        row['asset'] = self.identity(row['asset']['name'], data, row['asset']['id'])
+        derived = bootstrap.no_apt_installer_source(self.original, catalog)
+        script_id = self.identity('bound-install.sh', derived, catalog['installer']['id'])
+        environment = bootstrap.clean_environment({}, '/tmp/inert-no-apt-home')
+        calls = []
+        def execute(command, **options):
+            calls.append(command)
+            held_script = os.pread(options['pass_fds'][0], len(derived), 0)
+            self.assertEqual(derived, held_script)
+            self.assertNotIn(b'sudo apt', held_script)
+        with bootstrap.hold_bytes(io.BytesIO(derived), script_id, {}) as script:
+            with bootstrap.hold_bytes(io.BytesIO(data), row['asset'], {}) as held_archive:
+                with patch.dict(os.environ, environment, clear=True):
+                    host = dict(operating_system='ubuntu', release='26.04', architecture='x86_64')
+                    bootstrap.run_held_installer(script, held_archive, ('8.3','release','nts'),
+                        environment, catalog, execute, host, no_apt=True)
+                    with self.assertRaises(ValueError):
+                        bootstrap.run_held_installer(script, held_archive, ('8.3','release','nts'),
+                            environment, catalog, execute, host, no_apt=False)
         self.assertEqual(1, len(calls))
 
 

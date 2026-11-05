@@ -26,7 +26,7 @@ class PhpLinuxRecipeTest(unittest.TestCase):
         request = recipe.capture_request({"INPUT_PHP-VERSION": " 8.3 ", "PHP-VERSION": "8.4",
             "INPUT_TOOLS": "composer:2.10.3", "COVERAGE": "none", "FAIL-FAST": "true"})
         self.assertEqual("8.3", request["inputs"]["php-version"])
-        self.assertEqual("with", request["origins"]["php-version"])
+        self.assertEqual("input", request["origins"]["php-version"])
         self.assertEqual("env", request["origins"]["coverage"])
         self.assertEqual("true", request["inputs"]["fail-fast"])
         omitted = recipe.capture_request({"INPUT_PHP-VERSION": "8.3", "INPUT_TOOLS": "composer:2.10.3"})

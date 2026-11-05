@@ -26,7 +26,7 @@ CUSTOM_EXTENSIONS = frozenset(("relay", "blackfire", "pdo_cubrid", "cubrid", "co
 GUARDS = {
     "src/scripts/unix.sh": ("get", "run_script", "self_hosted_setup"),
     "src/scripts/linux.sh": ("self_hosted_helper", "install_packages", "fix_broken_packages",
-        "add_extension_helper", "add_php", "add_pecl", "setup_php_builder", "add_packaged_php"),
+        "add_extension_helper", "add_php", "add_pecl", "setup_php_builder", "add_packaged_php", "check_package"),
     "src/scripts/extensions/add_extensions.sh": ("configure_pecl", "pecl_install", "get_pecl_version",
         "add_pecl_extension", "add_unstable_extension", "enable_cache_extension_dependencies"),
     "src/scripts/extensions/source.sh": ("fetch_extension", "add_extension_from_source", "add_libs"),
@@ -47,11 +47,15 @@ def capture_request(environment: dict) -> dict:
     inputs, origins = {}, {}
     if environment.get("INPUT_GITHUB-TOKEN", "").strip() or upstream_env(environment, "github-token"):
         raise ValueError("This companion has no credential-bearing github-token input")
+    if environment.get("INPUT_PHP-VERSION-FILE", "").strip() or upstream_env(environment, "php-version-file"):
+        raise ValueError("Initial profile requires an explicit PHP minor instead of version-file discovery")
     for name in INPUTS:
         direct = environment.get("INPUT_" + name.upper(), "").strip()
         indirect = upstream_env(environment, name)
         inputs[name] = direct or indirect
-        origins[name] = "with" if direct else "env" if indirect else "omitted"
+        # INPUT_* also includes action metadata defaults. It cannot prove
+        # that a caller explicitly wrote a with: field.
+        origins[name] = "input" if direct else "env" if indirect else "omitted"
     overrides = {name: environment.get(name.lower()) or environment.get(name.upper()) or ""
                  for name in ("update", "debug", "phpts", "runner", "setup_php_tools_dir",
                               "setup_php_tool_cache_dir")}
@@ -69,7 +73,7 @@ def validate_request(request: dict, catalog: dict, tool_catalog: dict, host: dic
                                                "setup_php_tools_dir", "setup_php_tool_cache_dir", "FAIL_FAST"})
     values = request["inputs"]
     if (any(not isinstance(value, str) or len(value) > 4096 or "\0" in value for value in values.values())
-            or any(value not in ("with", "env", "omitted") for value in request["origins"].values())):
+            or any(value not in ("input", "env", "omitted") for value in request["origins"].values())):
         raise ValueError("Unknown setup input representation")
     accepted = {"update": ("", "false"), "debug": ("", "false"), "phpts": ("", "nts"),
                 "runner": ("", "github"), "setup_php_tools_dir": ("", "/usr/local/bin"),
@@ -144,6 +148,11 @@ def derive_source(files: dict[str, bytes], refusal: Path) -> dict[str, bytes]:
         for function in functions:
             source = replace_function(source, function, f'  _dw_refuse {shlex.quote(function)}')
         if name == "src/scripts/unix.sh":
+            # The bound archive is already installed. This no-APT profile has
+            # no PPA discovery/update lane and accepts only update=false.
+            start = source.index('  # Set Update to true if the ubuntu github image does not have PHP PPA.\n')
+            finish = source.index('\n  export fail_fast', start)
+            source = source[:start] + source[finish:]
             source = replace_function(source, "self_hosted_setup",
                 '  if [ "$runner" = self-hosted ]; then _dw_refuse self_hosted_setup; fi')
             source = "_dw_refuse() {\n" + guard + "\n}\n" + source
@@ -153,6 +162,8 @@ def derive_source(files: dict[str, bytes], refusal: Path) -> dict[str, bytes]:
         if name == "src/scripts/linux.sh":
             source = replace_function(source, "add_sudo",
                 '  [ -x /usr/bin/sudo ] || { printf "%s\\n" "sudo prerequisite missing" >&2; exit 78; }')
+            source = bootstrap.replace_once(source, 'link_apt_fast >/dev/null 2>&1\n',
+                                             ': "No APT setup or apt-fast link in the initial profile"\n')
         derived[name] = source.encode()
     return derived
 

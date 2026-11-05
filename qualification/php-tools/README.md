@@ -1,10 +1,11 @@
 # Proposed bound PHAR inputs
 
-The initial Linux setup companion accepts explicit `composer:2.10.3` and
+The tool component accepts explicit `composer:2.10.3` and
 `phpunit:11.5.57` selections, or explicit `none`. An omitted tools input retains
 its upstream default meaning and is refused until that exact default is
 selected and qualified. Other tools and mutable version selectors are refused.
-PHPUnit 11 also refuses PHP 8.1.
+PHPUnit 11 also refuses PHP 8.1. The first complete setup profile is narrower:
+it requires both PHARs with PHP 8.3 and coverage `none`.
 
 `data-preparation.json` records the original bounded, credential-free data
 preparation. Both actual PHARs match the literal catalog sizes and SHA-256

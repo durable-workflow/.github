@@ -276,6 +276,35 @@ def installer_source(original: bytes, catalog: dict) -> bytes:
     return source.encode("utf-8")
 
 
+def no_apt_installer_source(original: bytes, catalog: dict) -> bytes:
+    """Initial CLI profile: no APT, package-state merger or service start.
+
+    The exact held upstream archive still supplies PHP. Package-manager state
+    and the merge helper are excluded from root extraction, so no opaque
+    archive helper is executed. Missing host libraries cause refusal; they
+    never trigger a package-manager repair.
+    """
+    source = installer_source(original, catalog).decode()
+    for line in ('  sudo cp /var/lib/dpkg/status /var/lib/dpkg/status-orig\n',
+                 '  sudo rm -rf /var/lib/apt/lists/*ondrej*\n',
+                 '  sudo LC_ALL=C.UTF-8 python3 /usr/sbin/merge_status && sudo rm -f /usr/sbin/merge_status\n',
+                 '  sudo mv /var/lib/dpkg/status-orig /var/lib/dpkg/status\n'):
+        source = replace_once(source, line, '')
+    excludes = ' '.join('--exclude=' + prefix + name for name in
+        ('var/lib/dpkg', 'var/lib/apt', 'etc/apt', 'usr/sbin/merge_status') for prefix in ('', './'))
+    source = replace_once(source, '/usr/bin/tar -I /usr/bin/zstd -xf - -C /',
+                          '/usr/bin/tar -I /usr/bin/zstd ' + excludes + ' -xf - -C /')
+    for name in ('fix_service', 'fix_list', 'fix_packages'):
+        pattern = r'^' + name + r'\(\) \{\n.*?^\}\n'
+        matches = list(re.finditer(pattern, source, re.M | re.S))
+        if len(matches) != 1:
+            raise ValueError("Exact initial installer phase is absent or ambiguous")
+        match = matches[0]
+        source = source[:match.start()] + source[match.end():]
+        source = replace_once(source, '\n' + name + '\n', '\n')
+    return source.encode()
+
+
 def clean_environment(parent: dict[str, str], private_home: str) -> dict[str, str]:
     """Used before execve, so no credential-bearing wrapper parent remains."""
     home = Path(private_home)
@@ -287,6 +316,8 @@ def clean_environment(parent: dict[str, str], private_home: str) -> dict[str, st
                "GIT_SSL_CAINFO", "GIT_SSL_CAPATH", "COMPOSER_CAFILE", "COMPOSER_CAPATH", "DW_CI_CA_SHA256")
     environment = {name: parent[name] for name in allowed if parent.get(name)}
     environment.update({"PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", "HOME": private_home,
+                        "TMPDIR": str(home.parent / "tmp"), "TMP": str(home.parent / "tmp"),
+                        "TEMP": str(home.parent / "tmp"),
                         "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "GITHUB_ACTIONS": "true"})
     return environment
 
@@ -304,7 +335,8 @@ def observed_host() -> dict:
 
 
 def run_held_installer(script: HeldAsset, archive: HeldAsset, arguments: tuple[str, str, str],
-                       environment: dict[str, str], catalog: dict, execute=subprocess.run, host=None):
+                       environment: dict[str, str], catalog: dict, execute=subprocess.run, host=None,
+                       no_apt=False):
     """Effect primitive only; no shipped CLI/action currently invokes this.
 
     The proposed consumer must first execve into this closed environment and
@@ -318,7 +350,7 @@ def run_held_installer(script: HeldAsset, archive: HeldAsset, arguments: tuple[s
     selected = select(catalog, **(observed_host() if host is None else host),
                       php=arguments[0], build=arguments[1], thread_safety=arguments[2])
     original = (ROOT / "qualification/upstream/php-ubuntu-713206915/install.sh").read_bytes()
-    derived = installer_source(original, catalog)
+    derived = no_apt_installer_source(original, catalog) if no_apt else installer_source(original, catalog)
     derived_identity = dict(catalog["installer"], name="bound-install.sh", size=len(derived),
                             digest="sha256:" + sha256(derived))
     if archive.identity != selected["asset"] or script.identity != derived_identity:
