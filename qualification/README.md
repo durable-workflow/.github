@@ -154,3 +154,53 @@ helpers. It is not a shell sandbox, a multi-language program analyzer or a claim
 about third-party actions' internal requests. Maintainers still review dynamic
 request paths and their actual configuration. Enable the target setting after
 migrating all its request paths so partial rollouts remain visible.
+
+
+## Protected pilot source successor
+
+The selective successor to [the reverted pilot](https://github.com/durable-workflow/.github/pull/240)
+keeps ordinary consumer preflight and Composer helper interpretation at the
+accepted rollback behavior. Its shared-policy changes allow only the pinned
+App-token action and the byte-exact protected workflow. The stricter input
+language lives in `scripts/protected_policy_context.py`, called only by the
+protected reader before the shared validator. Candidate files remain bounded
+nonexecutable data; the reader and issuer run from the protected base.
+
+The pilot accepts new run text only as newline-separated literal commands with
+fixed interpreter forms. Shell expansion, operators, escapes, inline environment
+assignments, evaluator options and constructed command names refuse. Literal
+data flags such as `--source` remain supported. Referenced shell helpers obey the
+same language, including when `bash` reads a file with a misleading extension.
+Python helper text remains data; this is not whole-program behavior analysis.
+
+Five existing control workflows contain complex shell programs. Their complete
+raw file SHA-256 identities are a finite compatibility catalog in the protected
+checker source, not candidate-supplied assertions or a general Bash parser. A
+changed file, changed execution context, relocated copy or new complex program
+cannot inherit that exception; updating the catalog requires exact source
+review. The catalog does not exempt referenced shell-helper bytes, root-directory
+checks or interpreter/startup environment checks. The retained cancellation
+workflow is a source compatibility identity, not admission to run its fixtures.
+
+Relative helper references require the workspace root and a reviewed shell.
+YAML traversal bounds depth and expanded alias work and refuses recursive
+aliases, duplicate keys and merges. These conservative protected-pilot rules do
+not change ordinary caller behavior. Run the dedicated controls with:
+
+```sh
+python -m unittest tests.test_protected_policy_context tests.test_protected_policy_check tests.test_protected_policy_inputs tests.test_protected_policy_issue
+```
+
+Integration also requires the Rust analytics checker's source-root correction
+and actual old/new execution controls. The visual workflow keeps the candidate
+build in its existing directory, then invokes that checker from the workspace
+root with an explicit build directory. The SDK owner must prove that the checker
+resolves its own source assets and preserves all content assertions. A passing
+central context test does not substitute for that upstream compatibility proof.
+
+The source remains inactive. No App/key, protected variable or secret,
+environment, event-policy setting, required rule or live check is provisioned.
+The existing [AI contribution issue](https://github.com/durable-workflow/ai/issues/27)
+waits for accepted source and a separately qualified one-repository pilot. Human
+account/key authorization and the live positive/negative, expected-issuer,
+concurrency and rollback controls remain separate prerequisites.
