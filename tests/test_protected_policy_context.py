@@ -69,6 +69,67 @@ class ProtectedContextTest(unittest.TestCase):
                 "scripts/nested.sh": b"cd other\ncomposer install\n",
             })
 
+    def test_shell_construction_and_startup_bypasses_refuse_direct_and_nested(self):
+        programs = (
+            "x=cd; $x /tmp; python scripts/validate.py",
+            "$'cd' /tmp; python scripts/validate.py",
+            'x=c; y=d; "$x$y" /tmp; python scripts/validate.py',
+            "bash -c 'cd /tmp; python scripts/validate.py'",
+            "BASH_ENV=/tmp/startup bash scripts/validate.sh",
+        )
+        for program in programs:
+            with self.subTest(program=program):
+                raw = workflow("|") + ("          " + program + "\n").encode()
+                with self.assertRaisesRegex(InputRefused, "closed literal"):
+                    self.validate(raw)
+                files = {"scripts/entry.sh": b"bash scripts/nested.py\n",
+                         "scripts/nested.py": (program + "\n").encode()}
+                with self.assertRaisesRegex(InputRefused, "helper"):
+                    self.validate(workflow("bash scripts/entry.sh"), **files)
+
+    def test_indirect_hidden_helpers_and_evaluator_options_refuse(self):
+        for run in ('bash "$SCRIPT"', '"$RUNNER" "$TARGET"',
+                    "python -c 'print(1)'", "node --eval data", "env bash scripts/ok.sh",
+                    "bash -O extglob scripts/ok.sh", "python scripts/ok.py > result",
+                    "python scripts/ok.py && python scripts/other.py",
+                    "python scripts/ok.py\\\n scripts/other.py"):
+            raw = workflow(run)
+            with self.subTest(run=run), self.assertRaises(InputRefused):
+                self.validate(raw)
+
+    def test_literal_multiple_commands_flags_and_nested_shell_helpers_pass(self):
+        raw = workflow("|") + b"          python scripts/validate.py --source=scripts --source-repository project\n          bash scripts/entry.sh\n"
+        self.validate(raw, **{"scripts/entry.sh": b"#!/bin/sh\n# source is data here\nbash scripts/nested.sh\n",
+                              "scripts/nested.sh": b"composer install --no-interaction\n"})
+
+    def test_exact_complex_workflow_binding_cannot_be_supplied_by_candidate(self):
+        path = ".github/workflows/rust-docs-visual.yml"
+        raw = (ROOT / path).read_bytes()
+        context.validate_context({path: raw})
+        changed = raw.replace(b"python visual-controller/scripts/visual_evidence.py classify",
+                              b"x=cd; $x /tmp; python visual-controller/scripts/visual_evidence.py classify")
+        with self.assertRaisesRegex(InputRefused, "closed literal"):
+            context.validate_context({path: changed})
+        with self.assertRaises(InputRefused):
+            context.validate_context({WORKFLOW: raw})
+
+    def test_exact_workflow_binding_does_not_exempt_changed_shell_helpers(self):
+        path = ".github/workflows/protected-policy.yml"
+        # The workflow is exact; the referenced Python file cannot disguise a
+        # shell program behind its extension to inherit the workflow exception.
+        with self.assertRaisesRegex(InputRefused, "helper"):
+            context.validate_context({path: (ROOT / path).read_bytes(),
+                                      "scripts/protected_policy_issue.py": b"#!/bin/bash\nx=cd; $x /tmp\n"})
+
+    def test_interpreter_startup_and_exported_functions_refuse(self):
+        for name in ("BASH_ENV", "PATH", "CDPATH", "BASH_FUNC_python%%"):
+            raw = workflow(step=f"        env:\n          {name}: injected\n")
+            with self.subTest(name=name), self.assertRaises(InputRefused):
+                self.validate(raw)
+        raw = workflow("bash scripts/entry.sh")
+        with self.assertRaises(InputRefused):
+            self.validate(raw, **{"scripts/entry.sh": b"#!/usr/bin/env -S bash -c\ncomposer install\n"})
+
     def test_python_helper_text_is_data_and_not_a_shell_program(self):
         self.validate(**{"scripts/candidate.py": b"message = 'cd elsewhere'\n"})
 

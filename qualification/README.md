@@ -166,11 +166,26 @@ language lives in `scripts/protected_policy_context.py`, called only by the
 protected reader before the shared validator. Candidate files remain bounded
 nonexecutable data; the reader and issuer run from the protected base.
 
-The pilot refuses relative helper references with a non-root execution context,
-unreviewed shell, directory changes or dynamic shell evaluation. YAML traversal
-bounds depth and expanded alias work and refuses recursive aliases, duplicate
-keys and merges. These refusals are deliberately conservative and do not change
-ordinary caller behavior. Run the dedicated controls with:
+The pilot accepts new run text only as newline-separated literal commands with
+fixed interpreter forms. Shell expansion, operators, escapes, inline environment
+assignments, evaluator options and constructed command names refuse. Literal
+data flags such as `--source` remain supported. Referenced shell helpers obey the
+same language, including when `bash` reads a file with a misleading extension.
+Python helper text remains data; this is not whole-program behavior analysis.
+
+Five existing control workflows contain complex shell programs. Their complete
+raw file SHA-256 identities are a finite compatibility catalog in the protected
+checker source, not candidate-supplied assertions or a general Bash parser. A
+changed file, changed execution context, relocated copy or new complex program
+cannot inherit that exception; updating the catalog requires exact source
+review. The catalog does not exempt referenced shell-helper bytes, root-directory
+checks or interpreter/startup environment checks. The retained cancellation
+workflow is a source compatibility identity, not admission to run its fixtures.
+
+Relative helper references require the workspace root and a reviewed shell.
+YAML traversal bounds depth and expanded alias work and refuses recursive
+aliases, duplicate keys and merges. These conservative protected-pilot rules do
+not change ordinary caller behavior. Run the dedicated controls with:
 
 ```sh
 python -m unittest tests.test_protected_policy_context tests.test_protected_policy_check tests.test_protected_policy_inputs tests.test_protected_policy_issue
