@@ -28,6 +28,8 @@ from scripts import php_linux_tools as tools
 
 
 RECEIPT_NAME = "receipt.json"
+RECEIPT_SCHEMA = "durable-workflow.php-linux-setup-receipt/v2"
+MAX_RECEIPT = 60 * 1024
 CA_SHA256 = "50f79f98dac192b20dbf73f35c56f0b0c557ab267ff5199d1117cc1180b70785"
 
 
@@ -87,7 +89,8 @@ def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
               asset_fetch=bootstrap.download_held, tool_fetch=tools.download_held,
               inspect_archive=archive.inspect_held, install_php=bootstrap.run_held_installer,
               verify_php=archive.verify_installed, confirm_extensions=archive.verify_enabled,
-              install_tool=tools.install_held, execute=subprocess.run):
+              install_tool=tools.install_held, execute=subprocess.run,
+              capture_subjects=archive.capture_subjects, append_subject=tools.append_subject):
     """Complete effect recipe; focused tests substitute all external effects."""
     if environment != bootstrap.clean_environment(environment, str(state / "home")) or dict(os.environ) != environment:
         raise ValueError("Setup requires an already closed parent environment before reading inputs")
@@ -111,7 +114,7 @@ def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
     runtime = state / "upstream"
     derived = recipe.derive_source(files, refusal)
     source_hashes = recipe.write_runtime(runtime, derived)
-    report = {"schema": "durable-workflow.php-linux-setup-receipt/v1", "outcome": "running",
+    report = {"schema": RECEIPT_SCHEMA, "outcome": "running",
               "host": host, "image": {key: environment.get(key) for key in ("ImageOS", "ImageVersion")},
               "apt": {"invoked": False, "profile": "no-apt"}, "ca_sha256": CA_SHA256,
               "request": request, "host_tool": node,
@@ -156,6 +159,12 @@ def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
             for row, held in held_tools:
                 report["stage"] = "tool-install-" + row["name"]
                 report["tools"].append(install_tool(held, row, environment))
+            report["stage"] = "subject-manifest"
+            report["installed"], report["subjects"] = capture_subjects(
+                members, request["inputs"]["php-version"], plan["required_extensions"])
+            for row in plan["tools"]:
+                append_subject(report["subjects"], row)
+            archive.require_subject_bound(report["subjects"])
             report.update(outcome="pass", stage="complete")
             return report
     except Exception as error:
@@ -164,7 +173,10 @@ def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
         report.update(outcome="refused", **failure_details(error))
         raise
     finally:
-        (state / RECEIPT_NAME).write_text(json.dumps(report, sort_keys=True) + "\n")
+        encoded = json.dumps(report, sort_keys=True) + "\n"
+        if len(encoded.encode()) > MAX_RECEIPT:
+            raise ValueError("Setup receipt exceeds its bounded terminal evidence profile")
+        (state / RECEIPT_NAME).write_text(encoded)
         shutil.rmtree(runtime)
 
 
@@ -185,14 +197,15 @@ def main(arguments):
     node = request.pop("host_tool")
     try:
         run_setup(state, request, node, environment)
-        with Path(environment["GITHUB_OUTPUT"]).open("a") as output:
-            output.write(f"bootstrap-receipt={state / RECEIPT_NAME}\n")
     except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
         if not (state / RECEIPT_NAME).exists():
             (state / RECEIPT_NAME).write_text(json.dumps({"outcome": "refused", "stage": "preflight",
                 **failure_details(error)}) + "\n")
         raise
     finally:
+        if (state / RECEIPT_NAME).is_file():
+            with Path(environment["GITHUB_OUTPUT"]).open("a") as output:
+                output.write(f"bootstrap-receipt={state / RECEIPT_NAME}\n")
         request_path.unlink()
         shutil.rmtree(state / "home")
         shutil.rmtree(state / "tmp")

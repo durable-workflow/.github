@@ -118,6 +118,25 @@ class PhpLinuxArchiveTest(unittest.TestCase):
         self.assertEqual("usr/bin/php8.3", result["extensions"]["json"]["source"])
         self.assertEqual("usr/lib/php/20230831/redis.so", result["extensions"]["redis"]["source"])
 
+    def test_producer_manifest_derives_every_subject_from_the_archive(self):
+        contents, files, read, command, probe = self.fixture()
+        name = "etc/php/8.3/cli/php.ini"
+        contents[name] = b"extension=redis.so\n"
+        files[name] = {"size": len(contents[name]), "sha256": bootstrap.sha256(contents[name])}
+        options = dict(execute=probe, read=read, command_path=command,
+            shared=[Path("/usr/lib/php/20230831/redis.so")],
+            active_configs=[Path("/" + name)], resolve=lambda path:path)
+        _, manifest = archive.capture_subjects(files,"8.3",[],**options)
+        self.assertEqual(archive.SUBJECT_SCHEMA,manifest["schema"])
+        self.assertEqual({"/etc/php/8.3/cli/php.ini":"/etc/php/8.3/cli/php.ini"},manifest["configs"])
+        self.assertEqual({"php":"/usr/bin/php8.3","php-config":"/usr/bin/php-config8.3"},manifest["commands"])
+        for path, record in manifest["files"].items():
+            self.assertEqual({"kind":"archive","member":path.lstrip("/")},record["authority"])
+            self.assertEqual(files[path.lstrip("/")]["sha256"],record["sha256"])
+        contents["usr/lib/php/20230831/redis.so"] = b"changed actual module"
+        with self.assertRaises(ValueError):
+            archive.capture_subjects(files,"8.3",[],**options)
+
     def test_modified_binary_or_default_path_refuses_before_the_php_probe(self):
         contents, files, read, command, _ = self.fixture()
         def forbidden(*args, **options):

@@ -98,9 +98,17 @@ class SetupPhpLinuxTest(unittest.TestCase):
             self.assertEqual(environment, child)
             return {"name": row["name"], "executor": "inert"}
 
+        def capture_subjects(*args):
+            calls.append("capture-subjects")
+            return {"source": "inert verified-file substitute"}, {"files": {}}
+
+        def append_subject(manifest, row):
+            calls.append("subject-" + row["name"])
+
         effects = dict(asset_fetch=fetch, tool_fetch=tool_fetch, inspect_archive=inspect,
             install_php=install, verify_php=verify, confirm_extensions=confirm_extensions,
-            install_tool=install_tool, execute=execute)
+            install_tool=install_tool, execute=execute, capture_subjects=capture_subjects,
+            append_subject=append_subject)
         return state, node, environment, request, host, catalog_path, calls, effects
 
     def run_fixture(self, data):
@@ -115,7 +123,9 @@ class SetupPhpLinuxTest(unittest.TestCase):
             data = self.fixture(Path(directory))
             report = self.run_fixture(data)
             self.assertEqual(["read-installer", "read-archive", "read-composer", "read-phpunit",
-                "inspect-archive", "install-php", "verify-installed", "upstream", "confirm-extensions", "install-composer", "install-phpunit"], data[6])
+                "inspect-archive", "install-php", "verify-installed", "upstream", "confirm-extensions",
+                "install-composer", "install-phpunit", "capture-subjects", "subject-composer",
+                "subject-phpunit"], data[6])
             self.assertEqual("pass", report["outcome"])
             self.assertIs(False, report["preinstalled_authority"])
             self.assertEqual("complete", json.loads((data[0] / "receipt.json").read_text())["stage"])

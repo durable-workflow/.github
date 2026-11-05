@@ -217,3 +217,16 @@ def install_held(held: bootstrap.HeldAsset, row: dict, environment: dict,
             or len(contents) != row["size"] or bootstrap.sha256(contents) != row["sha256"]):
         raise ValueError("Installed tool differs from the held verified input")
     return {"target": str(target), **held.identity}
+
+
+def append_subject(manifest, row, inspect=None):
+    """Producer tool entry derives only from the literal qualified tool catalog."""
+    target = Path("/usr/local/bin") / row["name"]
+    if inspect is None:
+        inspect = lambda path: (path.lstat(), path.read_bytes())
+    metadata, contents = inspect(target)
+    if (not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o755
+            or len(contents) != row["size"] or bootstrap.sha256(contents) != row["sha256"]):
+        raise ValueError("Installed PHAR subject differs from the exact tool catalog")
+    manifest["files"][str(target)] = {"type": "regular", "size": row["size"],
+        "sha256": row["sha256"], "authority": {"kind": "tool", "name": row["name"]}}

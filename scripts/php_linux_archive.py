@@ -2,6 +2,7 @@
 
 import hashlib
 import io
+import json
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -17,6 +18,8 @@ from scripts import php_linux_bootstrap as bootstrap
 
 MAX_UNPACKED = 2 * 1024 * 1024 * 1024
 MAX_MEMBERS = 100000
+SUBJECT_SCHEMA = "durable-workflow.php-linux-subjects/v1"
+MAX_SUBJECT_BYTES = 48 * 1024
 
 
 class BoundedPipe(io.RawIOBase):
@@ -205,6 +208,13 @@ def verify_config_modules(text, directory, files, root, read):
         verify_file(root / member, files[member], read)
 
 
+def configuration_members(files, php):
+    configs = dict(files)
+    redis = b"; priority=25\nextension=redis.so\n"
+    configs[f"etc/php/{php}/mods-available/redis.ini"] = {"size": len(redis), "sha256": bootstrap.sha256(redis)}
+    return configs
+
+
 def verify_configs(files, php, result, directory, root, read, active_configs, resolve):
     # Default startup must not load an ambient .ini or a module from outside
     # the held archive before pinned upstream starts. Redis's one INI rewrite
@@ -212,9 +222,7 @@ def verify_configs(files, php, result, directory, root, read, active_configs, re
     if (result["config_path"] != f"/etc/php/{php}/cli"
             or result["scan_dir"] != f"/etc/php/{php}/cli/conf.d"):
         raise ValueError("PHP default configuration paths have no reviewed CLI profile")
-    configs = dict(files)
-    redis = b"; priority=25\nextension=redis.so\n"
-    configs[f"etc/php/{php}/mods-available/redis.ini"] = {"size": len(redis), "sha256": bootstrap.sha256(redis)}
+    configs = configuration_members(files, php)
     if active_configs is None:
         active_configs = [root / result["config_path"].lstrip("/") / "php.ini",
                           *(root / result["scan_dir"].lstrip("/")).glob("*.ini")]
@@ -256,6 +264,53 @@ def verify_installed(files: dict, php: str, required: list[str], execute=subproc
     checked = verify_required(files, required, result, directory, binary_name, root, read)
     return {"binary": {"source": binary_name, **files[binary_name]}, "extensions": checked,
             "version": result["version"], "zts": result["zts"], "debug": result["debug"]}
+
+
+def capture_subjects(files, php, required, *, root=Path("/"), read=None, resolve=None,
+                     command_path=None, **checks):
+    """Producer manifest: each file identity comes from held archive/derived bytes."""
+    manifest = {"schema": SUBJECT_SCHEMA, "files": {}, "commands": {}, "configs": {}}
+    configs = configuration_members(files, php)
+    native_read = read or (lambda path: (path.lstat(), path.read_bytes()))
+    native_resolve = resolve or (lambda path: path.resolve(strict=True))
+    native_command = command_path or (
+        lambda name: Path(shutil.which(name, path=os.environ["PATH"]) or "/missing-command").resolve())
+
+    def canonical(path):
+        return "/" + path.relative_to(root).as_posix()
+
+    def observed_read(path):
+        name = path.relative_to(root).as_posix()
+        expected = configs.get(name)
+        if expected is None:
+            raise ValueError("Subject lacks held-archive/derived authority")
+        metadata, contents = native_read(path)
+        verify_file(path, expected, lambda _: (metadata, contents))
+        authority = ({"kind": "derived-redis", "member": name}
+                     if name == f"etc/php/{php}/mods-available/redis.ini"
+                     else {"kind": "archive", "member": name})
+        manifest["files"][canonical(path)] = {"type": "regular", **expected, "authority": authority}
+        return metadata, contents
+
+    def observed_resolve(path):
+        target = native_resolve(path)
+        manifest["configs"][canonical(path)] = canonical(target)
+        return target
+
+    def observed_command(name):
+        target = native_command(name)
+        manifest["commands"][name] = canonical(target)
+        return target
+
+    installed = verify_installed(files, php, required, root=root, read=observed_read,
+        resolve=observed_resolve, command_path=observed_command, **checks)
+    require_subject_bound(manifest)
+    return installed, manifest
+
+
+def require_subject_bound(manifest):
+    if len(manifest["files"]) > 256 or len(json.dumps(manifest, sort_keys=True).encode()) > MAX_SUBJECT_BYTES:
+        raise ValueError("Installed subject manifest exceeds the bounded profile")
 
 
 def verify_enabled(files: dict, php: str, required: list[str], coverage: str,
