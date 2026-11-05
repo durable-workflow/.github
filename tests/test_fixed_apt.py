@@ -91,6 +91,18 @@ class FixedAptTest(unittest.TestCase):
             self.assertNotIn("continue-on-error", steps[position])
             self.assertNotIn("if", steps[position])
 
+    def test_reusable_action_uses_its_own_canonical_script_without_a_consumer_checkout(self):
+        path = ROOT / ".github/actions/require-fixed-apt/action.yml"
+        action = yaml.safe_load(path.read_text())
+        self.assertNotIn("inputs", action)
+        self.assertEqual("composite", action["runs"]["using"])
+        step, = action["runs"]["steps"]
+        self.assertEqual('/usr/bin/python3 -I "$FIXED_APT_PROGRAM"', step["run"])
+        source = step["env"]["FIXED_APT_PROGRAM"]
+        self.assertEqual("${{ github.action_path }}/../../../scripts/require_fixed_apt.py", source)
+        self.assertEqual(ROOT / "scripts/require_fixed_apt.py",
+                         (path.parent / "../../../scripts/require_fixed_apt.py").resolve())
+
 
 if __name__ == "__main__":
     unittest.main()
