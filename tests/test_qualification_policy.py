@@ -4,6 +4,7 @@ import copy
 import contextlib
 import io
 import json
+import subprocess
 import secrets
 import tempfile
 import threading
@@ -265,6 +266,140 @@ class QualificationPolicyTest(unittest.TestCase):
         steps[3], steps[4] = steps[4], steps[3]
         with self.assertRaisesRegex(PolicyError, "unreviewed pip bootstrap"):
             _verify_action_policy_preflight("ai", "fixture", jobs, "gate")
+
+    def pinned_policy_preflight(self):
+        checkout, _ = self.approved_action("actions/checkout")
+        setup_python, _ = self.approved_action("actions/setup-python")
+        bootstrap = "75587fc33ff40c34f32ef777293dad56bb6f48c7"
+        steps = [
+            {"uses": f"actions/checkout@{checkout}", "with": {"persist-credentials": "false"}},
+            {"uses": f"actions/checkout@{checkout}", "with": {
+                "repository": "durable-workflow/.github", "ref": "main",
+                "path": ".central-action-policy", "persist-credentials": "false"}},
+            {"env": {"POLICY_CENTRAL_SHA": "58893e29b535d49cdbfd262c2cabf57b32212f6e"},
+             "run": 'set -euo pipefail\n'
+                    'test "$(git -C .central-action-policy rev-parse HEAD)" = "$POLICY_CENTRAL_SHA"'},
+            {"uses": f"actions/setup-python@{setup_python}", "with": {"python-version": "3.13.18"}},
+            {"uses": "durable-workflow/.github/.github/actions/bootstrap-patched-pip@" + bootstrap},
+            {"run": "python -I -m pip --disable-pip-version-check install --require-hashes --no-deps "
+                    "--only-binary=:all: -r .central-action-policy/qualification/requirements.lock"},
+            {"run": "python -I -c 'import sys, yaml; assert sys.version_info[:3] == (3, 13, 18); "
+                    'assert yaml.__version__ == "6.0.2"; print(sys.version.split()[0], yaml.__version__)\''},
+            {"run": "python -I .central-action-policy/scripts/qualification_policy.py validate "
+                    "--policy .central-action-policy/qualification/policy.json --target cloud "
+                    "--workflow-directory .github/workflows"},
+        ]
+        return {
+            "action-policy": {"name": "Central action policy preflight", "runs-on": "ubuntu-latest",
+                              "timeout-minutes": "5", "steps": steps},
+            "gate": {"needs": ["action-policy"], "if": "${{ always() }}", "steps": [{
+                "env": {"ACTION_POLICY_RESULT": "${{ needs.action-policy.result }}"},
+                "run": 'test "$ACTION_POLICY_RESULT" = success'}]},
+        }
+
+    def test_pinned_preflight_accepts_only_the_complete_ordered_profile(self):
+        jobs = self.pinned_policy_preflight()
+        _verify_action_policy_preflight("cloud", "fixture", jobs, "gate")
+        jobs["action-policy"]["steps"][4]["with"] = {"clients": "pip,python"}
+        _verify_action_policy_preflight("cloud", "fixture", jobs, "gate",
+                                        {"75587fc33ff40c34f32ef777293dad56bb6f48c7"})
+        with self.assertRaisesRegex(PolicyError, "clean-trust"):
+            _verify_action_policy_preflight("cloud", "fixture", jobs, "gate", set())
+
+    def test_pinned_preflight_refuses_missing_malformed_late_and_collapsed_head_checks(self):
+        changes = []
+        for position in (2, 4, 6):
+            jobs = self.pinned_policy_preflight()
+            jobs["action-policy"]["steps"].pop(position)
+            changes.append(jobs)
+        for value in ("", "abc", "g" * 40, "${{ github.sha }}", "a" * 40 + "\n"):
+            jobs = self.pinned_policy_preflight()
+            jobs["action-policy"]["steps"][2]["env"]["POLICY_CENTRAL_SHA"] = value
+            changes.append(jobs)
+        for changed_run in (
+            'set -euo pipefail test "$(git -C .central-action-policy rev-parse HEAD)" = "$POLICY_CENTRAL_SHA"',
+            'set -euo pipefail\necho "$POLICY_CENTRAL_SHA"',
+            'set -euo pipefail\ntest "$(git -C .central-action-policy rev-parse HEAD)" != "$POLICY_CENTRAL_SHA"',
+        ):
+            jobs = self.pinned_policy_preflight()
+            jobs["action-policy"]["steps"][2]["run"] = changed_run
+            changes.append(jobs)
+        for index in range(7):
+            jobs = self.pinned_policy_preflight()
+            steps = jobs["action-policy"]["steps"]
+            steps[index], steps[index + 1] = steps[index + 1], steps[index]
+            changes.append(jobs)
+        jobs = self.pinned_policy_preflight()
+        jobs["action-policy"]["steps"].insert(2, {"run": "python .central-action-policy/unbound.py"})
+        changes.append(jobs)
+        for index, jobs in enumerate(changes):
+            with self.subTest(change=index), self.assertRaises(PolicyError):
+                _verify_action_policy_preflight("cloud", "fixture", jobs, "gate")
+
+    def test_pinned_preflight_refuses_looser_source_runtime_dependency_and_readback(self):
+        changes = []
+        for key, value in (("repository", "other/policy"), ("ref", "a" * 40),
+                           ("ref", "develop"), ("path", "other"), ("persist-credentials", "true")):
+            jobs = self.pinned_policy_preflight()
+            jobs["action-policy"]["steps"][1]["with"][key] = value
+            changes.append(jobs)
+        jobs = self.pinned_policy_preflight()
+        jobs["action-policy"]["steps"][3]["with"]["python-version"] = "3.13"
+        changes.append(jobs)
+        for position, old, new in (
+            (4, "75587fc33ff40c34f32ef777293dad56bb6f48c7", "ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10"),
+            (5, " -I", ""), (5, "--require-hashes ", ""), (5, "--no-deps ", ""),
+            (5, "--only-binary=:all: ", ""), (5, "requirements.lock", "requirements.txt"),
+            (6, " -I", ""), (6, "(3, 13, 18)", "(3, 13)"), (6, "6.0.2", "6.0"),
+            (7, " -I", ""), (7, "--target cloud", "--target ai"),
+        ):
+            jobs = self.pinned_policy_preflight()
+            field = "uses" if position == 4 else "run"
+            step = jobs["action-policy"]["steps"][position]
+            step[field] = step[field].replace(old, new)
+            changes.append(jobs)
+        for index, jobs in enumerate(changes):
+            with self.subTest(change=index), self.assertRaises(PolicyError):
+                _verify_action_policy_preflight("cloud", "fixture", jobs, "gate")
+
+    def test_pinned_preflight_does_not_allow_skips_context_changes_or_gate_bypass(self):
+        for position in range(8):
+            jobs = self.pinned_policy_preflight()
+            jobs["action-policy"]["steps"][position]["if"] = "false"
+            with self.subTest(step=position), self.assertRaises(PolicyError):
+                _verify_action_policy_preflight("cloud", "fixture", jobs, "gate")
+        for key, value in (("defaults", {"run": {"shell": "true {0}"}}),
+                           ("continue-on-error", "true"), ("container", "unreviewed")):
+            jobs = self.pinned_policy_preflight()
+            jobs["action-policy"][key] = value
+            with self.subTest(key=key), self.assertRaises(PolicyError):
+                _verify_action_policy_preflight("cloud", "fixture", jobs, "gate")
+        jobs = self.pinned_policy_preflight()
+        jobs["gate"]["steps"][0]["run"] = "echo passed"
+        with self.assertRaisesRegex(PolicyError, "fail closed"):
+            _verify_action_policy_preflight("cloud", "fixture", jobs, "gate")
+
+    def test_pinned_preflight_inline_head_check_refuses_actual_mismatch_before_following_code(self):
+        with tempfile.TemporaryDirectory(prefix="policy-head-inert-") as directory:
+            root = Path(directory)
+            central = root / ".central-action-policy"
+            environment = {"PATH": "/usr/bin:/bin", "GIT_CONFIG_GLOBAL": "/dev/null",
+                           "GIT_CONFIG_SYSTEM": "/dev/null", "LC_ALL": "C"}
+            subprocess.run(["/usr/bin/git", "init", "-q", str(central)], env=environment, check=True)
+            subprocess.run(["/usr/bin/git", "-C", str(central), "-c", "user.name=Inert Test",
+                "-c", "user.email=test@example.invalid", "-c", "core.hooksPath=/dev/null",
+                "commit", "-q", "--allow-empty", "-m", "inert HEAD fixture"], env=environment, check=True)
+            head = subprocess.check_output(["/usr/bin/git", "-C", str(central), "rev-parse", "HEAD"],
+                                            env=environment, text=True).strip()
+            step = self.pinned_policy_preflight()["action-policy"]["steps"][2]
+            for expected, succeeds in ((head, True), ("0" * 40, False)):
+                marker = root / "following-code"
+                marker.unlink(missing_ok=True)
+                result = subprocess.run(["/usr/bin/bash", "--noprofile", "--norc", "-c",
+                    step["run"] + '\nprintf bound > following-code'], cwd=root,
+                    env={**environment, "POLICY_CENTRAL_SHA": expected}, check=False)
+                self.assertEqual(succeeds, result.returncode == 0)
+                self.assertEqual(succeeds, marker.exists())
 
     def test_approved_immutable_action_with_version_comment_is_accepted(self) -> None:
         commit, version = self.approved_action("actions/checkout")

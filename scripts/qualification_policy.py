@@ -719,13 +719,22 @@ def _is_action_step(step: object, repository: str) -> bool:
     )
 
 
-def _verify_action_policy_preflight(
-    target_name: str,
-    label: str,
-    jobs: dict[str, Any],
-    gate_job_name: str,
-    approved_bootstraps: set[str] | None = None,
-) -> None:
+PINNED_POLICY_HEAD_CHECK = (
+    'set -euo pipefail\n'
+    'test "$(git -C .central-action-policy rev-parse HEAD)" = "$POLICY_CENTRAL_SHA"'
+)
+PINNED_POLICY_INSTALL = (
+    "python -I -m pip --disable-pip-version-check install --require-hashes --no-deps "
+    "--only-binary=:all: -r .central-action-policy/qualification/requirements.lock"
+)
+PINNED_POLICY_READBACK = (
+    "python -I -c 'import sys, yaml; assert sys.version_info[:3] == (3, 13, 18); "
+    'assert yaml.__version__ == "6.0.2"; print(sys.version.split()[0], yaml.__version__)\''
+)
+CLEAN_POLICY_BOOTSTRAP = "75587fc33ff40c34f32ef777293dad56bb6f48c7"
+
+
+def _policy_preflight_job(label, jobs):
     preflight = jobs.get("action-policy")
     if not isinstance(preflight, dict):
         raise PolicyError(f"{label} has no central action policy preflight job")
@@ -741,22 +750,10 @@ def _verify_action_policy_preflight(
     ):
         raise PolicyError(f"{label} central action policy preflight job is not the reviewed read-only shape")
 
-    steps = preflight.get("steps")
-    if isinstance(steps, list) and len(steps) == 6:
-        bootstrap = steps[3]
-        revisions = approved_bootstraps if approved_bootstraps is not None else {"ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10"}
-        references = {"durable-workflow/.github/.github/actions/bootstrap-patched-pip@" + sha for sha in revisions}
-        if (
-            not isinstance(bootstrap, dict)
-            or set(bootstrap) - {"name", "uses"}
-            or bootstrap.get("uses")
-            not in references
-        ):
-            raise PolicyError(f"{label} central action policy preflight has an unreviewed pip bootstrap")
-        steps = steps[:3] + steps[4:]
-    if not isinstance(steps, list) or len(steps) != 5 or not all(isinstance(step, dict) for step in steps):
-        raise PolicyError(f"{label} central action policy preflight must contain the five reviewed steps")
-    candidate, central, setup_python, install, validate = steps
+    return preflight
+
+
+def _verify_policy_checkouts(label, candidate, central):
     if (
         not _is_action_step(candidate, "actions/checkout")
         or candidate.get("with") != {"persist-credentials": "false"}
@@ -773,25 +770,89 @@ def _verify_action_policy_preflight(
         }
     ):
         raise PolicyError(f"{label} central action policy preflight must use protected central policy source")
+
+
+def _verify_policy_python(label, setup_python, version):
     if (
         not _is_action_step(setup_python, "actions/setup-python")
-        or setup_python.get("with") != {"python-version": "3.13"}
+        or setup_python.get("with") != {"python-version": version}
     ):
         raise PolicyError(f"{label} central action policy preflight must use the reviewed Python runtime")
+
+
+def _verify_policy_validation(label, validate, target_name, interpreter):
+    expected = (
+        f"{interpreter} .central-action-policy/scripts/qualification_policy.py validate "
+        f"--policy .central-action-policy/qualification/policy.json --target {target_name} "
+        "--workflow-directory .github/workflows"
+    )
+    if set(validate) - {"name", "run"} or _normalized_shell(validate.get("run")) != expected:
+        raise PolicyError(f"{label} central action policy preflight does not invoke the reviewed validator")
+
+
+def _verify_pinned_policy_head(label, step):
+    expected = step.get("env")
+    source = step.get("run")
+    lines = "\n".join(line.strip() for line in source.strip().splitlines()) if isinstance(source, str) else ""
+    if (set(step) - {"name", "run", "env"} or not isinstance(expected, dict)
+            or set(expected) != {"POLICY_CENTRAL_SHA"}
+            or not isinstance(expected["POLICY_CENTRAL_SHA"], str)
+            or COMMIT_PATTERN.fullmatch(expected["POLICY_CENTRAL_SHA"]) is None
+            or lines != PINNED_POLICY_HEAD_CHECK):
+        raise PolicyError(f"{label} requires immediate exact effective central HEAD binding")
+
+
+def _verify_pinned_policy_steps(target_name, label, preflight, steps, approved_bootstraps):
+    if set(preflight) - {"name", "if", "runs-on", "timeout-minutes", "steps"}:
+        raise PolicyError(f"{label} pinned central preflight has an unreviewed job context")
+    candidate, central, head_check, setup_python, bootstrap, install, readback, validate = steps
+    if any(set(step) - {"name", "uses", "with"} for step in (candidate, central, setup_python)):
+        raise PolicyError(f"{label} pinned central preflight has an unreviewed action context")
+    _verify_policy_checkouts(label, candidate, central)
+    _verify_pinned_policy_head(label, head_check)
+    _verify_policy_python(label, setup_python, "3.13.18")
+    revisions = {CLEAN_POLICY_BOOTSTRAP} if approved_bootstraps is None else approved_bootstraps
+    expected = "durable-workflow/.github/.github/actions/bootstrap-patched-pip@" + CLEAN_POLICY_BOOTSTRAP
+    if (CLEAN_POLICY_BOOTSTRAP not in revisions or set(bootstrap) - {"name", "uses", "with"}
+            or bootstrap.get("uses") != expected
+            or bootstrap.get("with") not in (None, {"clients": "pip,python"})):
+        raise PolicyError(f"{label} pinned central preflight requires the reviewed clean-trust bootstrap")
+    for step, command in ((install, PINNED_POLICY_INSTALL), (readback, PINNED_POLICY_READBACK)):
+        if set(step) - {"name", "run"} or _normalized_shell(step.get("run")) != command:
+            raise PolicyError(f"{label} pinned central dependency install/readback is not the reviewed isolated shape")
+    _verify_policy_validation(label, validate, target_name, "python -I")
+
+
+def _verify_legacy_policy_steps(target_name, label, steps, approved_bootstraps):
+    if isinstance(steps, list) and len(steps) == 6:
+        bootstrap = steps[3]
+        revisions = approved_bootstraps if approved_bootstraps is not None else {"ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10"}
+        references = {"durable-workflow/.github/.github/actions/bootstrap-patched-pip@" + sha for sha in revisions}
+        if (
+            not isinstance(bootstrap, dict)
+            or set(bootstrap) - {"name", "uses"}
+            or bootstrap.get("uses")
+            not in references
+        ):
+            raise PolicyError(f"{label} central action policy preflight has an unreviewed pip bootstrap")
+        steps = steps[:3] + steps[4:]
+    if not isinstance(steps, list) or len(steps) != 5 or not all(isinstance(step, dict) for step in steps):
+        raise PolicyError(f"{label} central action policy preflight must contain the five reviewed steps")
+    candidate, central, setup_python, install, validate = steps
+    _verify_policy_checkouts(label, candidate, central)
+    _verify_policy_python(label, setup_python, "3.13")
     reviewed_install_commands = {
         "python -m pip install PyYAML==6.0.2",
         "python -m pip install --only-binary :all: PyYAML==6.0.2",
     }
     if set(install) - {"name", "run"} or _normalized_shell(install.get("run")) not in reviewed_install_commands:
         raise PolicyError(f"{label} central action policy preflight must install the reviewed policy dependency")
-    expected_validation = (
-        "python .central-action-policy/scripts/qualification_policy.py validate "
-        f"--policy .central-action-policy/qualification/policy.json --target {target_name} "
-        "--workflow-directory .github/workflows"
-    )
-    if set(validate) - {"name", "run"} or _normalized_shell(validate.get("run")) != expected_validation:
-        raise PolicyError(f"{label} central action policy preflight does not invoke the reviewed validator")
+    _verify_policy_validation(label, validate, target_name, "python")
 
+
+
+def _verify_policy_result_gate(label, jobs, gate_job_name):
+    accepted_conditions = {"", "github.server_url == 'https://github.com'"}
     gate = jobs[gate_job_name]
     if "action-policy" not in _job_needs(gate, f"{label} required check gate"):
         raise PolicyError(f"{label} required check does not depend on the central action policy preflight")
@@ -810,6 +871,22 @@ def _verify_action_policy_preflight(
         for step in gate.get("steps") or []
     ):
         raise PolicyError(f"{label} required check does not fail closed on the central action policy result")
+
+
+def _verify_action_policy_preflight(
+    target_name: str,
+    label: str,
+    jobs: dict[str, Any],
+    gate_job_name: str,
+    approved_bootstraps: set[str] | None = None,
+) -> None:
+    preflight = _policy_preflight_job(label, jobs)
+    steps = preflight.get("steps")
+    if isinstance(steps, list) and len(steps) == 8 and all(isinstance(step, dict) for step in steps):
+        _verify_pinned_policy_steps(target_name, label, preflight, steps, approved_bootstraps)
+    else:
+        _verify_legacy_policy_steps(target_name, label, steps, approved_bootstraps)
+    _verify_policy_result_gate(label, jobs, gate_job_name)
 
 
 def _stable_check_jobs(jobs: dict[str, Any], required_check: str) -> list[str]:
