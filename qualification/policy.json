@@ -147,7 +147,6 @@
       "server/native-release.yml": {
         "environment": "dockerhub-native",
         "jobs": [
-          "aliases",
           "build-amd64",
           "build-arm64",
           "publish"
@@ -164,17 +163,13 @@
           "run": "scripts/ci/verify-native-release-dispatch.sh"
         },
         "tag_input": "tag",
-        "tag_ref_condition": "github.ref == format('refs/tags/{0}', inputs.tag)",
-        "optional_jobs": [
-          "aliases"
-        ]
+        "tag_ref_condition": "github.ref == format('refs/tags/{0}', inputs.tag)"
       },
       "server/native-alias-promotion.yml": {
         "environment": "dockerhub-native",
         "jobs": [
           "promote"
         ],
-        "optional": true,
         "plan_job": "plan",
         "plan_verifier": {
           "env": {
