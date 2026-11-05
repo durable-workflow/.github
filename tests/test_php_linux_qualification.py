@@ -181,7 +181,7 @@ class PhpLinuxQualificationTest(unittest.TestCase):
                     elif mutation=="subject":
                         changed=True
                 def publish(evidence):
-                    self.assertTrue(path.parent.exists())
+                    self.assertFalse(path.parent.exists())
                     events.append("publish-"+evidence["outcome"])
                 if mutation=="none":
                     self.closed_qualify(path,root,environment,publish,subjects=subjects,probes=probes)
@@ -226,6 +226,25 @@ class PhpLinuxQualificationTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,"evidence sink"):
                 self.closed_qualify(path,root,environment,publish,subjects=lambda *_:None,probes=lambda *_:[])
             self.assertFalse(path.parent.exists())
+
+    def test_exact_predecessor_publishes_pass_before_cleanup_refusal_and_successor_never_does(self):
+        fixture=Path(__file__).parent/"fixtures/php_terminal_qualify_682e8da.py"
+        namespace=dict(vars(qualification))
+        exec(compile(fixture.read_bytes(),str(fixture),"exec"),namespace)
+        predecessor=namespace["qualify"]
+        for old in (True,False):
+            with self.subTest(predecessor=old),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);path,_,_,environment=self.fixture(root);published=[]
+                function=predecessor if old else qualification.qualify
+                with patch.dict(os.environ,environment,clear=True), \
+                        patch.object(qualification.shutil,"rmtree",side_effect=OSError("Inert cleanup refusal")):
+                    with self.assertRaises(OSError):
+                        function(path,root,environment,lambda evidence:published.append(copy.deepcopy(evidence)),
+                                 subjects=lambda *_:None,probes=lambda *_:[])
+                self.assertTrue(path.parent.exists())
+                self.assertEqual("pass" if old else "refused",published[0]["outcome"])
+                if not old:
+                    self.assertEqual("cleanup",published[0]["stage"])
 
     def test_native_probe_argv_and_outputs_are_bounded_without_executing_php(self):
         with tempfile.TemporaryDirectory() as directory:

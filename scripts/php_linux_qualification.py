@@ -286,6 +286,7 @@ def qualify(path, runner_temp, environment, publish, *, validate=validate_succes
     state = checked_state(path, runner_temp)
     state_identity = object_identity(state.lstat())[:4]
     evidence = {"schema": "durable-workflow.php-linux-terminal/v1", "outcome": "refused", "stage": "capture"}
+    verified = False
     try:
         with capture_receipt(path, runner_temp) as (report, held, unchanged):
             evidence.update(receipt_sha256=held.identity["digest"], receipt_object=held.effective,
@@ -304,15 +305,33 @@ def qualify(path, runner_temp, environment, publish, *, validate=validate_succes
                 unchanged()
                 held.assert_sealed()
                 subjects(report, plan)
-            evidence.update(outcome="pass", stage="complete", receipt=report)
+            evidence["receipt"] = report
+            verified = True
     except Exception as error:
         evidence.update(**setup.failure_details(error))
         raise
     finally:
-        try:
-            publish(evidence)
-        finally:
-            if object_identity(state.lstat())[:4] != state_identity:
-                raise ValueError("Exact owned setup state changed; cleanup refused")
-            setup.checked_root(state)
-            shutil.rmtree(state)
+        finish_terminal(state, state_identity, evidence, verified, publish)
+
+
+def cleanup_state(state, expected):
+    if object_identity(state.lstat())[:4] != expected:
+        raise ValueError("Exact owned setup state changed; cleanup refused")
+    setup.checked_root(state)
+    shutil.rmtree(state)
+    if os.path.lexists(state):
+        raise ValueError("Exact owned setup state remains after cleanup")
+
+
+def finish_terminal(state, expected, evidence, verified, publish):
+    try:
+        cleanup_state(state, expected)
+    except Exception as error:
+        evidence.update(outcome="refused", stage="cleanup", cleanup="refused",
+                        cleanup_failure=setup.failure_details(error))
+        publish(evidence)
+        raise
+    evidence["cleanup"] = "pass"
+    if verified:
+        evidence.update(outcome="pass", stage="complete")
+    publish(evidence)
