@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import re
 import subprocess
@@ -7,10 +9,12 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import yaml
 from jsonschema import Draft202012Validator
 
+from scripts import visual_evidence
 from scripts.visual_evidence import (
     VisualEvidenceError,
     changed_paths,
@@ -74,6 +78,50 @@ class VisualEvidenceGitBoundaryTest(unittest.TestCase):
                 with self.subTest(reference=reference, function=function.__name__):
                     with self.assertRaises(VisualEvidenceError):
                         function(*arguments)
+
+    def deleted_stylesheets(self, contents):
+        for name, content in contents.items():
+            (self.root / name).write_text(content)
+        self.git("add", ".")
+        self.git("commit", "-qm", "comparison stylesheets")
+        self.git("branch", "-f", "comparison-base")
+        for name in contents:
+            (self.root / name).unlink()
+        self.git("add", ".")
+        self.git("commit", "-qm", "remove comparison stylesheets")
+
+    def move_branch_after_resolution(self):
+        original = visual_evidence.comparison_commit
+
+        def resolve(root, reference):
+            commit = original(root, reference)
+            if reference == "comparison-base":
+                self.git("update-ref", "refs/heads/comparison-base", "HEAD")
+            return commit
+
+        return patch.object(visual_evidence, "comparison_commit", side_effect=resolve)
+
+    def modal_policy(self):
+        return {"customer_facing_extensions": [".css"],
+                "interactions": {"modal": {"content_patterns": [r"\.modal"]}}}
+
+    def test_cli_keeps_deleted_content_when_branch_moves_after_diff_resolution(self):
+        self.deleted_stylesheets({"source.css": ".modal { display: block; }\n"})
+        policy = self.output / "policy.json"
+        policy.write_text(json.dumps(self.modal_policy()))
+        arguments = ["visual_evidence", "--policy", str(policy), "classify",
+                     "--root", str(self.root), "--base-ref", "comparison-base"]
+        output = io.StringIO()
+        with self.move_branch_after_resolution(), patch("sys.argv", arguments), contextlib.redirect_stdout(output):
+            visual_evidence.main()
+        self.assertEqual({"classification": {"modal": ["source.css"]}}, json.loads(output.getvalue()))
+
+    def test_classifier_keeps_one_baseline_when_branch_moves_between_files(self):
+        self.deleted_stylesheets({"a.css": "body { color: black; }\n",
+                                  "b.css": ".modal { display: block; }\n"})
+        with self.move_branch_after_resolution():
+            result = classify_changes(self.root, ["a.css", "b.css"], self.modal_policy(), "comparison-base")
+        self.assertEqual({"modal": ["b.css"]}, result)
 
 
 class VisualEvidencePolicyTest(unittest.TestCase):
