@@ -209,7 +209,7 @@ def require_receipt_metadata(metadata):
 @contextmanager
 def capture_receipt(path, runner_temp):
     """Use the exact action output, retaining its original object and sealed bytes."""
-    state = checked_state(path, runner_temp)
+    checked_state(path, runner_temp)
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         metadata = os.fstat(descriptor)
