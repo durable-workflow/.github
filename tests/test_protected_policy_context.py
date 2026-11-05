@@ -53,6 +53,27 @@ class ProtectedContextTest(unittest.TestCase):
                 with self.assertRaisesRegex(InputRefused, "closed literal"):
                     context.validate_context({path: changed})
 
+    def test_private_pip_source_ci_successors_are_exact_inert_reviewed_workflows(self):
+        for name in ("ci", "sonar"):
+            path = f".github/workflows/{name}.yml"
+            raw = (ROOT / f"tests/fixtures/{name}-private-pip-source.yml").read_bytes()
+            current = (ROOT / path).read_bytes()
+            expected = current.replace(b"uses: ./.github/actions/bootstrap-patched-pip # local",
+                b"uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7 # clean-trust")
+            self.assertEqual(expected, raw)
+            with self.subTest(workflow=name):
+                with patch.object(context, "REVIEWED_SOURCE_CI_SUCCESSORS", {}), self.assertRaises(InputRefused):
+                    context.validate_context({path: raw})
+                context.validate_context({path: raw})
+                for changed in (raw + b"\n# unreviewed\n",
+                                raw.replace(b"75587fc33ff40c34f32ef777293dad56bb6f48c7", b"a" * 40),
+                                raw.replace(b"clients: pip,python,composer,curl,git,npm,cargo", b"clients: pip")):
+                    self.assertNotEqual(raw, changed)
+                    with self.assertRaises(InputRefused):
+                        context.validate_context({path: changed})
+                with self.assertRaises(InputRefused):
+                    context.validate_context({WORKFLOW: raw})
+
     def test_plain_root_helper_and_literal_root_overrides_are_supported(self):
         for directory in (".", "./", "${{ github.workspace }}"):
             with self.subTest(directory=directory):
