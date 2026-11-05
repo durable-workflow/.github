@@ -15,6 +15,7 @@ from scripts.visual_evidence import (
     VisualEvidenceError,
     changed_paths,
     classify_changes,
+    file_content,
     load_json,
     validate_manifest,
     validate_report,
@@ -23,6 +24,56 @@ from scripts.visual_evidence import (
 ROOT = Path(__file__).resolve().parents[1]
 POLICY_PATH = ROOT / "visual-evidence" / "policy.json"
 SCHEMA_PATH = ROOT / "visual-evidence" / "schema.json"
+
+
+class VisualEvidenceGitBoundaryTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name) / "repository"
+        self.output = Path(temporary.name) / "outside"
+        self.root.mkdir()
+        self.output.mkdir()
+        self.git("init", "-q")
+        (self.root / "source.css").write_text("old selector\n")
+        self.git("add", "source.css")
+        self.git("commit", "-qm", "baseline")
+        self.base = self.git("rev-parse", "HEAD").stdout.strip()
+        self.git("branch", "comparison-base")
+        (self.root / "source.css").unlink()
+        self.git("add", "source.css")
+        self.git("commit", "-qm", "remove source")
+
+    def git(self, *arguments):
+        return subprocess.run(
+            ["git", "-c", "user.name=Visual Evidence Test", "-c",
+             "user.email=visual-evidence@example.invalid", "-c", "commit.gpgsign=false", *arguments],
+            cwd=self.root, check=True, capture_output=True, text=True,
+        )
+
+    def test_sha_branch_and_relative_commit_keep_diff_and_deleted_content(self):
+        for reference in (self.base, "comparison-base", "HEAD~1"):
+            with self.subTest(reference=reference):
+                self.assertEqual(["source.css"], changed_paths(self.root, reference))
+                self.assertEqual("old selector\n", file_content(self.root, "source.css", reference))
+
+    def test_option_shaped_refs_refuse_without_writing_outside_repository(self):
+        reference = "--output=" + str(self.output / "injected")
+        calls = ((changed_paths, (self.root, reference)),
+                 (file_content, (self.root, "source.css", reference)))
+        for function, arguments in calls:
+            with self.subTest(function=function.__name__):
+                with self.assertRaises(VisualEvidenceError):
+                    function(*arguments)
+        self.assertEqual([], list(self.output.iterdir()))
+
+    def test_missing_and_noncommit_refs_refuse(self):
+        for reference in ("missing-reference", self.base + ":source.css"):
+            for function, arguments in ((changed_paths, (self.root, reference)),
+                                        (file_content, (self.root, "source.css", reference))):
+                with self.subTest(reference=reference, function=function.__name__):
+                    with self.assertRaises(VisualEvidenceError):
+                        function(*arguments)
 
 
 class VisualEvidencePolicyTest(unittest.TestCase):

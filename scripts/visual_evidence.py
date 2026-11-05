@@ -31,7 +31,19 @@ def load_json(path: Path, label: str) -> dict[str, Any]:
     return value
 
 
+def comparison_commit(root: Path, reference: str) -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "--end-of-options", f"{reference}^{{commit}}"],
+        cwd=root, check=False, capture_output=True, text=True,
+    )
+    commit = result.stdout.strip()
+    if result.returncode or re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit) is None:
+        raise VisualEvidenceError("The comparison base must resolve to one Git commit")
+    return commit
+
+
 def changed_paths(root: Path, base_ref: str) -> list[str]:
+    commit = comparison_commit(root, base_ref)
     result = subprocess.run(
         [
             "git",
@@ -40,7 +52,7 @@ def changed_paths(root: Path, base_ref: str) -> list[str]:
             "--no-renames",
             "--diff-filter=ACDMRTUXB",
             "-z",
-            f"{base_ref}...HEAD",
+            f"{commit}...HEAD",
         ],
         cwd=root,
         check=True,
@@ -55,8 +67,9 @@ def file_content(root: Path, path: str, base_ref: str | None = None) -> str:
     if candidate.is_file():
         contents.append(candidate.read_text(encoding="utf-8", errors="replace"))
     if base_ref:
+        commit = comparison_commit(root, base_ref)
         result = subprocess.run(
-            ["git", "show", f"{base_ref}:{path}"],
+            ["git", "show", f"{commit}:{path}"],
             cwd=root,
             check=False,
             capture_output=True,
