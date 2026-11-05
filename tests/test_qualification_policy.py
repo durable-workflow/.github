@@ -11,6 +11,7 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import yaml
 from unittest.mock import patch
 
 from scripts.qualification_policy import (
@@ -20,6 +21,7 @@ from scripts.qualification_policy import (
     scan_workflow_sources,
     validate_local_action_references,
     validate_policy,
+    verify_workflow_source,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -305,6 +307,21 @@ class QualificationPolicyTest(unittest.TestCase):
                                         {"75587fc33ff40c34f32ef777293dad56bb6f48c7"})
         with self.assertRaisesRegex(PolicyError, "clean-trust"):
             _verify_action_policy_preflight("cloud", "fixture", jobs, "gate", set())
+
+    def test_pinned_profile_is_checked_through_the_actual_workflow_source_parser(self):
+        jobs = self.pinned_policy_preflight()
+        jobs["gate"]["name"] = "Source qualification"
+        prefix = "name: fixture\non:\n  push:\n    branches: [main]\n  pull_request:\n  workflow_dispatch:\npermissions:\n  contents: read\n"
+        definition = {"path": "fixture.yml", "required_check": "Source qualification",
+                      "matrix_independent": False, "action_policy_preflight": True}
+        source = prefix + yaml.safe_dump({"jobs": jobs}, sort_keys=False)
+        verify_workflow_source("cloud", "main", definition, source,
+                               {"75587fc33ff40c34f32ef777293dad56bb6f48c7"})
+        jobs["action-policy"]["steps"][3]["with"]["python-version"] = "3.13"
+        changed = prefix + yaml.safe_dump({"jobs": jobs}, sort_keys=False)
+        with self.assertRaisesRegex(PolicyError, "Python runtime"):
+            verify_workflow_source("cloud", "main", definition, changed,
+                                   {"75587fc33ff40c34f32ef777293dad56bb6f48c7"})
 
     def test_pinned_preflight_refuses_missing_malformed_late_and_collapsed_head_checks(self):
         changes = []
