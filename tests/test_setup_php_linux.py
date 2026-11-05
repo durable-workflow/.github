@@ -98,9 +98,14 @@ class SetupPhpLinuxTest(unittest.TestCase):
             self.assertEqual(environment, child)
             return {"name": row["name"], "executor": "inert"}
 
+        def capture_subjects(members, php, required, selected_tools):
+            calls.append("capture-subjects")
+            calls.extend("subject-" + row["name"] for row in selected_tools)
+            return {"source": "inert verified-file substitute"}, {"files": {}}
+
         effects = dict(asset_fetch=fetch, tool_fetch=tool_fetch, inspect_archive=inspect,
             install_php=install, verify_php=verify, confirm_extensions=confirm_extensions,
-            install_tool=install_tool, execute=execute)
+            install_tool=install_tool, execute=execute, capture_subjects=capture_subjects)
         return state, node, environment, request, host, catalog_path, calls, effects
 
     def run_fixture(self, data):
@@ -110,12 +115,25 @@ class SetupPhpLinuxTest(unittest.TestCase):
                 patch.object(bootstrap, "explicit_trust", return_value=object()):
             return setup.run_setup(state, request, node, environment, **effects)
 
+    def test_real_producer_manifest_glue_binds_both_tools_before_returning(self):
+        manifest={"files":{}}
+        installed={"binary":"inert"}
+        rows=[{"name":"composer"},{"name":"phpunit"}]
+        with patch.object(setup.archive,"capture_subjects",return_value=(installed,manifest)) as capture, \
+                patch.object(setup.tools,"append_subject") as append:
+            result=setup.capture_setup_subjects({},"8.3",[],rows)
+        self.assertEqual((installed,manifest),result)
+        capture.assert_called_once_with({},"8.3",[])
+        self.assertEqual(rows,[call.args[1] for call in append.call_args_list])
+
     def test_all_reads_precede_the_first_install_and_pinned_setup_precedes_bound_tools(self):
         with tempfile.TemporaryDirectory(prefix="php-inert-composed-") as directory:
             data = self.fixture(Path(directory))
             report = self.run_fixture(data)
             self.assertEqual(["read-installer", "read-archive", "read-composer", "read-phpunit",
-                "inspect-archive", "install-php", "verify-installed", "upstream", "confirm-extensions", "install-composer", "install-phpunit"], data[6])
+                "inspect-archive", "install-php", "verify-installed", "upstream", "confirm-extensions",
+                "install-composer", "install-phpunit", "capture-subjects", "subject-composer",
+                "subject-phpunit"], data[6])
             self.assertEqual("pass", report["outcome"])
             self.assertIs(False, report["preinstalled_authority"])
             self.assertEqual("complete", json.loads((data[0] / "receipt.json").read_text())["stage"])

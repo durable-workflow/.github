@@ -17,6 +17,18 @@ from scripts import php_linux_tools as tools
 
 
 class PhpLinuxToolsTest(unittest.TestCase):
+    def test_producer_phar_manifest_uses_catalog_identity_and_refuses_modified_files(self):
+        row,payload=self.fixture()
+        manifest={"files":{}}
+        metadata=SimpleNamespace(st_mode=stat.S_IFREG|0o755)
+        tools.append_subject(manifest,row,inspect=lambda _:(metadata,payload))
+        entry=manifest["files"]["/usr/local/bin/"+row["name"]]
+        self.assertEqual(row["sha256"],entry["sha256"])
+        self.assertEqual({"kind":"tool","name":row["name"]},entry["authority"])
+        inspect=lambda _:(metadata,payload+b"changed")
+        with self.assertRaises(ValueError):
+            tools.append_subject(manifest,row,inspect=inspect)
+
     def setUp(self):
         self.catalog = json.loads(tools.CATALOG.read_text())
         self.composer = tools.select_tools(self.catalog, "composer:2.10.3", "8.3")[0]
