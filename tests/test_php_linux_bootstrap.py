@@ -6,10 +6,13 @@ import io
 import json
 import os
 from pathlib import Path
+import ssl
 import subprocess
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+from urllib.request import Request
 
 from scripts import php_linux_bootstrap as bootstrap
 
@@ -76,6 +79,72 @@ class PhpLinuxBootstrapTest(unittest.TestCase):
                        "https://user@github.com/shivammathur/php-ubuntu/x", "https://github.com:8443/x"):
             with self.subTest(target=target), self.assertRaises(ValueError):
                 bootstrap.effective_url(target)
+
+    def test_redirect_handler_refuses_before_requesting_a_fallback_authority(self):
+        request = Request(bootstrap.asset_url(self.catalog["installer"]))
+        handler = bootstrap.ClosedRedirects()
+        with self.assertRaises(ValueError):
+            handler.redirect_request(request, None, 302, "redirect", {}, "https://cdn.jsdelivr.net/foreign")
+        allowed = handler.redirect_request(request, None, 302, "redirect", {},
+                                           "https://release-assets.githubusercontent.com/held?signature=inert")
+        self.assertEqual("release-assets.githubusercontent.com", bootstrap.urlsplit(allowed.full_url).hostname)
+        self.assertEqual(4, handler.max_redirections)
+
+    def test_explicit_ca_loader_has_no_ambient_store_or_mutated_bundle_fallback(self):
+        # This host public CA file is only a parser fixture; no network runs
+        # and it is not adopted as production trust by this test.
+        fixture = Path("/etc/ssl/certs/ca-certificates.crt").read_bytes()
+        with tempfile.TemporaryDirectory(prefix="php-bound-ca-") as directory:
+            bundle = Path(directory) / "fixture.pem"
+            bundle.write_bytes(fixture)
+            context = bootstrap.explicit_trust(bundle, bootstrap.sha256(fixture))
+            self.assertEqual(ssl.CERT_REQUIRED, context.verify_mode)
+            self.assertTrue(context.check_hostname)
+            self.assertGreater(len(context.get_ca_certs()), 0)
+            with self.assertRaises(ValueError):
+                bootstrap.explicit_trust(bundle, "0" * 64)
+            alias = Path(directory) / "alias.pem"
+            alias.symlink_to(bundle)
+            with self.assertRaises(ValueError):
+                bootstrap.explicit_trust(alias, bootstrap.sha256(fixture))
+
+    def test_inert_exact_id_download_has_no_auth_proxy_retry_or_name_lookup(self):
+        data = b"inert downloader payload"
+        identity = self.identity("fixture.tar.zst", data)
+        calls = []
+        class Response(io.BytesIO):
+            status = 200
+            def geturl(self):
+                return "https://release-assets.githubusercontent.com/closed?signature=inert"
+        def factory(*handlers):
+            self.assertEqual({}, handlers[0].proxies)
+            self.assertIsInstance(handlers[-1], bootstrap.ClosedRedirects)
+            def open_request(request, **options):
+                calls.append((request, options))
+                return Response(data)
+            return SimpleNamespace(open=open_request)
+        context = SimpleNamespace(verify_mode=ssl.CERT_REQUIRED, check_hostname=True)
+        with bootstrap.download_held(identity, context, factory) as held:
+            self.assertEqual(data, os.pread(held.descriptor, len(data), 0))
+            self.assertNotIn("signature", json.dumps(held.effective))
+        self.assertEqual(1, len(calls))
+        self.assertEqual(bootstrap.asset_url(identity), calls[0][0].full_url)
+        self.assertNotIn("authorization", {key.lower() for key in calls[0][0].headers})
+        self.assertEqual({"timeout": 15}, calls[0][1])
+        with self.assertRaises(ValueError):
+            with bootstrap.download_held(dict(identity, digest="sha256:" + "0" * 64), context, factory):
+                self.fail("Fresh endpoint cannot authorize changed archive bytes")
+        self.assertEqual(2, len(calls))
+        with self.assertRaises(ValueError):
+            with bootstrap.download_held(identity, SimpleNamespace(verify_mode=ssl.CERT_NONE,
+                                         check_hostname=False), factory):
+                self.fail("Unverified trust cannot make a request")
+        self.assertEqual(2, len(calls))
+
+    def test_stream_deadline_refuses_without_another_read(self):
+        source = SimpleNamespace(read=lambda size: self.fail("Deadline exhausted before source read"))
+        with self.assertRaises(ValueError):
+            bootstrap.DeadlineInput(source, 60, clock=lambda: 60).read(1)
 
     def test_real_sealed_descriptor_refuses_mutation_and_has_no_path_reopen(self):
         data = b"inert archive bytes; never extracted"

@@ -15,9 +15,13 @@ import hashlib
 import os
 from pathlib import Path
 import re
+import ssl
 import subprocess
+import time
 from typing import BinaryIO
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -116,6 +120,69 @@ def effective_url(url: str) -> dict:
     # Preserve exact URL binding without disclosing a signed query string.
     return {"scheme": parsed.scheme, "host": parsed.hostname, "path": parsed.path,
             "url_sha256": sha256(url.encode("utf-8"))}
+
+
+class ClosedRedirects(HTTPRedirectHandler):
+    max_redirections = 4
+
+    def redirect_request(self, request, response, code, message, headers, target):
+        effective_url(target)
+        if code not in (301, 302, 303, 307, 308):
+            raise ValueError("Unsupported bootstrap redirect status")
+        return super().redirect_request(request, response, code, message, headers, target)
+
+
+def explicit_trust(bundle: Path, expected_sha256: str, context_factory=ssl.SSLContext):
+    """Consume the existing authenticated-bootstrap trust output exclusively.
+
+    The caller binds expected_sha256 to that predecessor's reviewed output;
+    there is no host-store fallback, new trust root or native-store mutation.
+    """
+    if (not re.fullmatch(r"[a-f0-9]{64}", expected_sha256) or bundle.is_symlink()
+            or not bundle.is_file() or not 0 < bundle.stat().st_size <= 1024 * 1024):
+        raise ValueError("Authenticated bootstrap CA input is missing or invalid")
+    contents = bundle.read_bytes()
+    if sha256(contents) != expected_sha256:
+        raise ValueError("Bootstrap CA differs from its authenticated predecessor")
+    context = context_factory(ssl.PROTOCOL_TLS_CLIENT)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_verify_locations(cadata=contents.decode("ascii"))
+    return context
+
+
+class DeadlineInput:
+    def __init__(self, response, deadline, clock=time.monotonic):
+        self.response = response
+        self.deadline = deadline
+        self.clock = clock
+
+    def read(self, size):
+        if self.clock() >= self.deadline:
+            raise ValueError("Bound bootstrap asset read deadline exhausted")
+        return self.response.read(size)
+
+
+@contextmanager
+def download_held(identity: dict, context, opener_factory=build_opener, clock=time.monotonic):
+    """Proposed anonymous exact-ID fetch; no live metadata or retry/fallback.
+
+    This function is not wired into an action. Its source controls substitute
+    an inert opener; no installer/archive acquisition runs in those controls.
+    """
+    asset_identity(identity, identity["name"], MAX_ARCHIVE)
+    if context.verify_mode != ssl.CERT_REQUIRED or not context.check_hostname:
+        raise ValueError("Verified explicit HTTPS trust is required")
+    client = opener_factory(ProxyHandler({}), HTTPSHandler(context=context), ClosedRedirects())
+    request = Request(asset_url(identity), headers={"Accept": "application/octet-stream",
+                                                 "User-Agent": "durable-workflow-php-bootstrap"})
+    deadline = clock() + 60
+    with client.open(request, timeout=15) as response:
+        if response.status != 200:
+            raise HTTPError(request.full_url, response.status, "Bootstrap asset response refused", None, None)
+        final = response.geturl()
+        effective_url(final)
+        with hold_verified(DeadlineInput(response, deadline, clock), identity, final) as held:
+            yield held
 
 
 @dataclass
