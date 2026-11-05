@@ -185,12 +185,9 @@ def require_protected_base(read, base_sha: str) -> None:
         raise InputRefused("Incomplete protected-branch metadata") from error
 
 
-def validate_snapshot(read, number: int, base_sha: str, *, validator=None) -> dict[str, Any]:
+def validate_files(files: dict[str, bytes], *, validator=None) -> dict[str, Any]:
     from scripts.qualification_policy import PolicyError, load_policy, validate_local_action_references
 
-    require_protected_base(read, base_sha)
-    identity = read_identity(read, PILOT_REPOSITORY, PILOT_REPOSITORY_ID, number, base_sha)
-    files = collect_inputs(read, identity)
     validate_context(files)
     policy_path = ROOT / "qualification/policy.json"
     try:
@@ -205,17 +202,27 @@ def validate_snapshot(read, number: int, base_sha: str, *, validator=None) -> di
             actions = check(policy, candidate / ".github/workflows", "github-control-plane")
         except (PolicyError, RecursionError) as error:
             raise InputRefused(str(error)) from error
+    digests = {name: hashlib.sha256(raw).hexdigest() for name, raw in sorted(files.items())}
+    return {
+        "policy_sha256": hashlib.sha256(policy_path.read_bytes()).hexdigest(),
+        "inputs_sha256": hashlib.sha256(json.dumps(digests, sort_keys=True).encode()).hexdigest(),
+        "input_count": len(files), "approved_action_count": len(actions),
+    }
+
+
+def validate_snapshot(read, number: int, base_sha: str, *, validator=None) -> dict[str, Any]:
+    require_protected_base(read, base_sha)
+    identity = read_identity(read, PILOT_REPOSITORY, PILOT_REPOSITORY_ID, number, base_sha)
+    files = collect_inputs(read, identity)
+    statistics = validate_files(files, validator=validator)
     require_protected_base(read, base_sha)
     require_current(read, identity)
-    digests = {name: hashlib.sha256(raw).hexdigest() for name, raw in sorted(files.items())}
     return {
         "schema": "durable-workflow.protected-policy-read/v1", "repository": identity.repository,
         "repository_id": identity.repository_id, "pull_request": identity.number,
         "base_sha": identity.base_sha, "head_sha": identity.head_sha,
         "head_repository": identity.head_repository, "head_repository_id": identity.head_repository_id,
-        "policy_sha256": hashlib.sha256(policy_path.read_bytes()).hexdigest(),
-        "inputs_sha256": hashlib.sha256(json.dumps(digests, sort_keys=True).encode()).hexdigest(),
-        "input_count": len(files), "approved_action_count": len(actions),
+        **statistics,
     }
 
 

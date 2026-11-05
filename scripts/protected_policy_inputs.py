@@ -74,6 +74,12 @@ class PullIdentity:
     head_repository_id: int
 
 
+@dataclass(frozen=True)
+class CommitIdentity:
+    head_repository: str
+    head_sha: str
+
+
 def read_identity(
     read: ReadJson, repository: str, repository_id: int, number: int, expected_base_sha: str,
 ) -> PullIdentity:
@@ -112,7 +118,7 @@ def require_current(read: ReadJson, identity: PullIdentity) -> None:
         raise InputRefused("PR head, base or repository changed during policy validation")
 
 
-def _tree_entries(read: ReadJson, identity: PullIdentity) -> dict[str, dict]:
+def _tree_entries(read: ReadJson, identity: PullIdentity | CommitIdentity) -> dict[str, dict]:
     prefix = f"/repos/{identity.head_repository}/git"
     commit = read(f"{prefix}/commits/{identity.head_sha}")
     try:
@@ -178,7 +184,7 @@ def _referenced_inputs(raw: bytes, entries: dict[str, dict], collected: dict[str
     return result
 
 
-def collect_inputs(read: ReadJson, identity: PullIdentity) -> dict[str, bytes]:
+def _collect_inputs(read: ReadJson, identity: PullIdentity | CommitIdentity) -> dict[str, bytes]:
     entries = _tree_entries(read, identity)
     pending = sorted(
         path for path in entries
@@ -200,8 +206,18 @@ def collect_inputs(read: ReadJson, identity: PullIdentity) -> dict[str, bytes]:
             raise InputRefused("Workflow and helper inputs exceed the total byte bound")
         collected[path] = raw
         pending.extend(_referenced_inputs(raw, entries, collected))
-    require_current(read, identity)
     return collected
+
+
+def collect_inputs(read: ReadJson, identity: PullIdentity) -> dict[str, bytes]:
+    files = _collect_inputs(read, identity)
+    require_current(read, identity)
+    return files
+
+
+def collect_commit_inputs(read: ReadJson, repository: str, sha: str) -> dict[str, bytes]:
+    """Read the exact immutable merge-group commit, without a checkout."""
+    return _collect_inputs(read, CommitIdentity(checked_slug(repository), checked_sha(sha)))
 
 
 def write_inputs(files: dict[str, bytes], destination: Path) -> None:
