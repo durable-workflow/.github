@@ -7,10 +7,13 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import ssl
+import tarfile
 import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError, URLError
 
 from scripts import php_linux_bootstrap as bootstrap
 from scripts import php_linux_recipe as recipe
@@ -175,13 +178,91 @@ class SetupPhpLinuxTest(unittest.TestCase):
             self.assertFalse(any(call in ("install-composer", "install-phpunit") for call in data[6]))
             self.assertEqual("installed-file-binding", json.loads((data[0] / "receipt.json").read_text())["stage"])
 
+    def test_invalid_tar_refuses_terminally_with_original_cause_before_any_root_executor(self):
+        from scripts import php_linux_archive as archive
+        with tempfile.TemporaryDirectory(prefix='php-inert-invalid-tar-') as directory:
+            data = self.fixture(Path(directory))
+            data[7]['inspect_archive'] = lambda held: archive.inventory(io.BytesIO(b'inert invalid tar'))
+            with self.assertRaises(ValueError):
+                self.run_fixture(data)
+            report = json.loads((data[0]/'receipt.json').read_text())
+            self.assertEqual(('refused','archive-inspection','ReadError'),
+                             (report['outcome'],report['stage'],report['cause_type']))
+            self.assertNotIn('install-php',data[6])
+            self.assertFalse((data[0]/'upstream').exists())
+        with tempfile.TemporaryDirectory(prefix='php-inert-library-error-') as directory:
+            data = self.fixture(Path(directory))
+            def malformed_header(held):
+                raise KeyError('inert malformed extended-header field')
+            data[7]['inspect_archive'] = malformed_header
+            with self.assertRaises(KeyError):
+                self.run_fixture(data)
+            report=json.loads((data[0]/'receipt.json').read_text())
+            self.assertEqual(('refused','archive-inspection','KeyError'),
+                             (report['outcome'],report['stage'],report['failure_type']))
+            self.assertNotIn('install-php',data[6])
+
+    def test_native_network_cause_is_recorded_without_signed_url_or_credentials(self):
+        http = HTTPError('https://example.invalid/?signature=inert-sensitive-query',403,'Forbidden',{},None)
+        tls = ssl.SSLCertVerificationError(1,'inert TLS refusal')
+        tls.verify_code = 20
+        tls.verify_message = 'unable to get local issuer certificate'
+        report = setup.failure_details(http)
+        self.assertEqual(403,report['http_status'])
+        self.assertNotIn('signature',json.dumps(report))
+        http.close()
+        report = setup.failure_details(URLError(tls))
+        self.assertEqual(('URLError','SSLCertVerificationError',20),
+                         (report['failure_type'],report['cause_type'],report['verify_code']))
+
+    def test_both_source_transitions_use_absolute_isolated_no_site_no_bytecode_python(self):
+        root = bootstrap.ROOT
+        probe = "import sys; seen='site' in sys.modules; import json; print(json.dumps({'site':seen,'isolated':sys.flags.isolated,'no_site':sys.flags.no_site,'no_bytecode':sys.flags.dont_write_bytecode}))"
+        # Execute the exact wrapper sources in a Node VM with execve replaced
+        # by a native Python flag probe. No setup target is executed. The local
+        # Node version is not claimed as a native Node24 qualification.
+        javascript = '''
+const fs=require('node:fs'),vm=require('node:vm'),child=require('node:child_process');
+const [source,dir,probe]=process.argv.slice(1);
+const fake={platform:'linux',version:'v24.inert',execPath:process.execPath,env:{GITHUB_TOKEN:'inert'},
+ execve:(binary,args,env)=>{
+  if(binary!=='/usr/bin/python3')throw Error('non-absolute interpreter');
+  const flags=args.slice(1,args.findIndex(x=>x.endsWith('setup_php_linux.py')));
+  const r=child.spawnSync(binary,[...flags,'-c',probe],{env,encoding:'utf8'});
+  if(r.status!==0)throw Error(r.stderr); process.stdout.write(r.stdout);
+ }};
+vm.runInNewContext(fs.readFileSync(source,'utf8'),{require,process:fake,__dirname:dir});
+'''
+        current = root/'.github/actions/setup-php-linux/bootstrap.js'
+        old = root/'tests/fixtures/php_linux_bootstrap_65753c1.js'
+        results = []
+        for source in (old,current):
+            result = subprocess.run(['node','-e',javascript,str(source),str(current.parent),probe],
+                env={'PATH':'/usr/bin:/usr/local/bin:/bin'},capture_output=True,text=True,timeout=5,check=True)
+            results.append(json.loads(result.stdout))
+        self.assertEqual({'site':True,'isolated':1,'no_site':0,'no_bytecode':0},results[0])
+        self.assertEqual({'site':False,'isolated':1,'no_site':1,'no_bytecode':1},results[1])
+        with tempfile.TemporaryDirectory(prefix='php-inert-startup-') as directory:
+            state=Path(directory)
+            node=state/'inert-node';node.write_bytes(b'inert identity')
+            parent={'RUNNER_TEMP':str(state),'DW_SETUP_NODE_BINARY':str(node),'DW_SETUP_NODE_VERSION':'v24.inert'}
+            calls=[]
+            def execute(binary,args,environment):
+                self.assertEqual('/usr/bin/python3',binary)
+                flags=args[1:args.index(str(Path(setup.__file__).resolve()))]
+                result=subprocess.run([binary,*flags,'-c',probe],env=environment,
+                    capture_output=True,text=True,timeout=5,check=True)
+                calls.append(json.loads(result.stdout))
+            setup.reexec(parent,execute)
+            self.assertEqual([results[1]],calls)
+
     def test_inherited_parent_token_refuses_before_request_file_is_read(self):
         with tempfile.TemporaryDirectory(prefix="php-inert-parent-") as directory:
             state = Path(directory)
             state.chmod(0o700)
             (state / "request.json").write_text("inert deliberately invalid JSON; must not be read")
             environment = dict(bootstrap.clean_environment({}, str(state / "home")), GITHUB_TOKEN="inert")
-            result = subprocess.run(["/usr/bin/python3", "-I", str(Path(setup.__file__)), "setup", str(state)],
+            result = subprocess.run(["/usr/bin/python3", "-I", "-S", "-B", str(Path(setup.__file__)), "setup", str(state)],
                 env=environment, capture_output=True, text=True, timeout=5)
             self.assertEqual(1, result.returncode)
             self.assertIn("Inherited environment is not closed", result.stderr)
@@ -199,7 +280,7 @@ sys.path.insert(0,{str(bootstrap.ROOT)!r})
 from scripts import setup_php_linux as setup
 print(os.getpid(),flush=True)
 def execute(binary,args,environment):
- os.execve('/usr/bin/python3',['/usr/bin/python3','-I','-c',{probe!r}],environment)
+ os.execve('/usr/bin/python3',['/usr/bin/python3','-I','-S','-B','-c',{probe!r}],environment)
 setup.reexec(dict(os.environ),execute)
 '''
             environment = {"PATH": "/usr/bin:/bin", "RUNNER_TEMP": str(root), "INPUT_PHP-VERSION": "8.3",

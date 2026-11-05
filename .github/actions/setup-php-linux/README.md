@@ -25,7 +25,9 @@ stronger data controller's refusal remains its terminal result.
 The trusted Node24 action replaces itself with trusted Python. Python captures
 only known inputs, then replaces itself with a closed-environment process and
 private HOME/TMP before reading those inputs or running upstream code. The
-receipt distinguishes effective action inputs, environment inputs and omitted
+two absolute Python transitions both use `-I -S -B`, suppressing ambient Python
+configuration, system/user site initialization and bytecode writes before the
+source import boundary. The receipt distinguishes effective action inputs, environment inputs and omitted
 values. Action metadata defaults cannot be distinguished from explicit caller
 fields. Empty coverage/tools inputs keep their upstream meanings and refuse
 this first profile. No GitHub-token input/default is exposed.
@@ -41,7 +43,10 @@ literal URLs with no redirects. No tag discovery, retry or fallback exists.
 Every installer/archive/tool stream must match its independent size and digest
 before it is sealed. All four streams are held before the first installation.
 The same sealed archive descriptor feeds inspection and root extraction. The
-derived installer excludes APT/dpkg input state and the package-state merge
+inspector accepts only canonical directory/regular-file members; links,
+sparse/special members, unknown PAX semantics and canonical/parent/type
+collisions refuse. Directory and implicit-parent identities are tracked as
+well as file identities. The derived installer excludes APT/dpkg input state and the package-state merge
 helper; it never runs APT, that helper or a service start. It retains the
 upstream archive's root file extraction, alternatives and Redis INI effects.
 Host library/prerequisite failures refuse without package repair. This always
@@ -58,6 +63,8 @@ handled separately using held-FD installs and target byte/mode checks. Actual
 configured extensions and coverage are checked before success.
 
 The normal script owns private runtime cleanup and a stage-specific receipt.
+Malformed archive/library failures are terminal refusals, with native HTTP/TLS
+cause/status fields retained without recording signed URLs or credentials.
 Existing host Node/Python/sudo/tar/zstd and native libraries remain host-tool
 prerequisites, not software this action provisions. Source controls do not
 qualify that host tuple, archive contents or any installed executable.
@@ -70,8 +77,10 @@ python3 -m unittest tests.test_php_linux_bootstrap tests.test_php_linux_tools te
 
 The controls use inert transports, root/PHP executors and in-memory archives.
 The credential boundary additionally uses real Python `execve` into an inert
-probe; it keeps the PID and removes credential variables. These controls do
-not run the installer, PHP/PHAR, APT, root extraction or an actual setup.
+probe; it keeps the PID and removes credential variables. The controls also
+compare the exact predecessor's archive admissions and Python startup to
+the corrected refusals/isolated startup without changing system site files.
+They do not run the installer, PHP/PHAR, APT, root extraction or an actual setup.
 
 Before any future effect, independently review the exact source/tree and this
 candidate tuple. A proposed first qualification is one ephemeral native

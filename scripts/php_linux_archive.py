@@ -41,35 +41,61 @@ class BoundedPipe(io.RawIOBase):
 
 def inventory(stream) -> dict:
     """Stream regular file hashes, never extract or execute archive members."""
-    files, seen, total = {}, set(), 0
-    with tarfile.open(fileobj=stream, mode="r|") as archive:
-        for count, member in enumerate(archive, 1):
-            if count > MAX_MEMBERS:
-                raise ValueError("Bound archive member limit exceeded")
-            name = member.name
-            while name.startswith("./"):
-                name = name[2:]
-            path = PurePosixPath(name)
-            if path.is_absolute() or ".." in path.parts:
-                raise ValueError("Bound archive contains an unscoped member path")
-            if member.isdir():
-                continue
-            if not name or name in seen:
-                raise ValueError("Bound archive member identity is ambiguous")
-            seen.add(name)
-            if not member.isfile():
-                continue
-            total += member.size
-            if member.size < 0 or total > MAX_UNPACKED:
-                raise ValueError("Bound archive file-size limit exceeded")
-            digest, size = hashlib.sha256(), 0
-            source = archive.extractfile(member)
-            while chunk := source.read(65536):
-                digest.update(chunk)
-                size += len(chunk)
-            if size != member.size:
-                raise ValueError("Bound archive regular member is truncated")
-            files[path.as_posix()] = {"size": size, "sha256": digest.hexdigest()}
+    try:
+        with tarfile.open(fileobj=stream, mode="r|") as archive:
+            return inventory_members(archive)
+    except tarfile.TarError as error:
+        raise ValueError("Bound archive structure is invalid; no extraction authority") from error
+
+
+def canonical_member(member) -> str:
+    name = member.name
+    if member.isdir() and name in (".", "./"):
+        return ""
+    if name.startswith("./"):
+        name = name[2:]
+    if len(name.encode('utf-8')) > 4096 or len(name.split('/')) > 128:
+        raise ValueError("Bound archive member path exceeds the inspection scope")
+    path = PurePosixPath(name)
+    if (not name or name != path.as_posix() or path.is_absolute()
+            or any(part in ("", ".", "..") for part in name.split("/"))
+            or any(character in name for character in "\0\r\n\\")):
+        raise ValueError("Bound archive member path is not canonical and scoped")
+    return name
+
+
+def inventory_members(archive) -> dict:
+    files, seen, parents, total = {}, {}, set(), 0
+    for count, member in enumerate(archive, 1):
+        if count > MAX_MEMBERS:
+            raise ValueError("Bound archive member limit exceeded")
+        if (member.type not in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.DIRTYPE)
+                or member.issparse() or set(member.pax_headers) -
+                {"path", "mtime", "atime", "ctime", "uid", "gid", "uname", "gname"}):
+            raise ValueError("Bound archive links/sparse/special members are unsupported")
+        name = canonical_member(member)
+        ancestors = {parent.as_posix() for parent in PurePosixPath(name).parents if parent.as_posix() != "."}
+        kind = "directory" if member.isdir() else "file"
+        if (name in seen or any(seen.get(parent) == "file" for parent in ancestors)
+                or (kind == "file" and name in parents)):
+            raise ValueError("Bound archive canonical member/parent/type collision")
+        seen[name] = kind
+        parents.update(ancestors)
+        if len(seen) + len(parents) > MAX_MEMBERS:
+            raise ValueError("Bound archive explicit/implicit member limit exceeded")
+        if member.isdir():
+            continue
+        total += member.size
+        if member.size < 0 or total > MAX_UNPACKED:
+            raise ValueError("Bound archive file-size limit exceeded")
+        digest, size = hashlib.sha256(), 0
+        source = archive.extractfile(member)
+        while chunk := source.read(65536):
+            digest.update(chunk)
+            size += len(chunk)
+        if size != member.size:
+            raise ValueError("Bound archive regular member is truncated")
+        files[name] = {"size": size, "sha256": digest.hexdigest()}
     return files
 
 

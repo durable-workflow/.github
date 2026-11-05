@@ -16,6 +16,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from urllib.error import HTTPError, URLError
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -27,6 +28,22 @@ from scripts import php_linux_tools as tools
 
 
 CA_SHA256 = "50f79f98dac192b20dbf73f35c56f0b0c557ab267ff5199d1117cc1180b70785"
+
+
+def failure_details(error):
+    """Keep native failure cause/status without URLs, commands or credentials."""
+    cause = (error.reason if isinstance(error, URLError) and isinstance(error.reason, BaseException)
+             else error.__cause__ or error)
+    result = {"failure_type": type(error).__name__, "cause_type": type(cause).__name__}
+    for name in ("errno", "verify_code", "verify_message", "returncode"):
+        value = getattr(cause, name, None)
+        if type(value) in (int, str):
+            result[name] = value[:240] if isinstance(value, str) else value
+    if isinstance(error, HTTPError):
+        result["http_status"] = error.code
+    if isinstance(error, ValueError):
+        result["reason"] = str(error).replace("\r", " ").replace("\n", " ")[:300]
+    return result
 
 
 def initial_profile(plan, host):
@@ -61,7 +78,7 @@ def reexec(parent: dict, execute=os.execve):
                             "node_sha256": bootstrap.sha256(node.read_bytes())}
     (state / "request.json").write_text(json.dumps(request))
     environment = bootstrap.clean_environment(parent, str(state / "home"))
-    execute("/usr/bin/python3", ["/usr/bin/python3", "-I", str(Path(__file__).resolve()), "setup", str(state)],
+    execute("/usr/bin/python3", ["/usr/bin/python3", "-I", "-S", "-B", str(Path(__file__).resolve()), "setup", str(state)],
             environment)
 
 
@@ -140,8 +157,10 @@ def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
                 report["tools"].append(install_tool(held, row, environment))
             report.update(outcome="pass", stage="complete")
             return report
-    except (ValueError, OSError, subprocess.SubprocessError) as error:
-        report.update(outcome="refused", failure_type=type(error).__name__)
+    except Exception as error:
+        # Record all terminal failures, then propagate them. A library-format
+        # error must not leave a receipt claiming the attempt is still running.
+        report.update(outcome="refused", **failure_details(error))
         raise
     finally:
         (state / "receipt.json").write_text(json.dumps(report, sort_keys=True) + "\n")
@@ -170,8 +189,7 @@ def main(arguments):
     except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
         if not (state / "receipt.json").exists():
             (state / "receipt.json").write_text(json.dumps({"outcome": "refused", "stage": "preflight",
-                "failure_type": type(error).__name__, "reason": str(error) if isinstance(error, ValueError)
-                else "Required source/host input unavailable"}) + "\n")
+                **failure_details(error)}) + "\n")
         raise
     finally:
         request_path.unlink()
@@ -183,6 +201,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main(sys.argv[1:]))
     except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
-        reason = str(error) if isinstance(error, ValueError) else "Required source/host operation failed"
-        print(f"Bound PHP setup refused ({type(error).__name__}): {reason}; no retry or fallback", file=sys.stderr)
+        print("Bound PHP setup refused: " + json.dumps(failure_details(error), sort_keys=True), file=sys.stderr)
         raise SystemExit(1)

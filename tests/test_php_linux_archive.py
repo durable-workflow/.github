@@ -1,6 +1,7 @@
 """In-memory tar and installed-file controls. No PHP or extraction runs."""
 
 import io
+import importlib.util
 import json
 from pathlib import Path
 import stat
@@ -14,6 +15,23 @@ from scripts import php_linux_bootstrap as bootstrap
 
 
 class PhpLinuxArchiveTest(unittest.TestCase):
+    def predecessor(self):
+        path = Path(__file__).parent / 'fixtures/php_linux_archive_65753c1.py'
+        spec = importlib.util.spec_from_file_location('inert_predecessor_inventory', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.inventory
+
+    def typed_tar(self, members):
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode='w', format=tarfile.GNU_FORMAT) as output:
+            for name, kind in members:
+                item = tarfile.TarInfo(name)
+                item.type = kind
+                item.linkname = '../../inert-outside'
+                output.addfile(item)
+        return stream.getvalue()
+
     def tar(self, members):
         stream = io.BytesIO()
         with tarfile.open(fileobj=stream, mode="w") as output:
@@ -35,6 +53,44 @@ class PhpLinuxArchiveTest(unittest.TestCase):
                         [('/usr/bin/php8.3', b'absolute')], [('../outside', b'escape')]):
             with self.subTest(members=members), self.assertRaises(ValueError):
                 archive.inventory(self.tar(members))
+
+    def test_exact_predecessor_accepts_links_special_and_sparse_while_successor_refuses(self):
+        old = self.predecessor()
+        for kind in (tarfile.SYMTYPE, tarfile.LNKTYPE, tarfile.FIFOTYPE, tarfile.CHRTYPE,
+                     tarfile.BLKTYPE, tarfile.GNUTYPE_SPARSE, tarfile.CONTTYPE):
+            payload = self.typed_tar([('usr/bin/inert',kind)])
+            with self.subTest(kind=kind):
+                old(io.BytesIO(payload))
+                with self.assertRaisesRegex(ValueError, 'links/sparse/special'):
+                    archive.inventory(io.BytesIO(payload))
+
+    def test_exact_predecessor_collapses_aliases_and_accepts_parent_type_collisions(self):
+        old = self.predecessor()
+        cases = [
+            [('usr//bin/php',tarfile.REGTYPE),('usr/bin/php',tarfile.REGTYPE)],
+            [('usr/./bin/php',tarfile.REGTYPE)], [('././usr/bin/php',tarfile.REGTYPE)],
+            [('usr/bin/php/',tarfile.REGTYPE)],
+            [('usr',tarfile.REGTYPE),('usr/bin/php',tarfile.REGTYPE)],
+            [('usr/bin/php',tarfile.REGTYPE),('usr',tarfile.REGTYPE)],
+            [('usr',tarfile.DIRTYPE),('usr',tarfile.REGTYPE)],
+            [('usr',tarfile.REGTYPE),('usr',tarfile.DIRTYPE)],
+            [('usr',tarfile.DIRTYPE),('./usr',tarfile.DIRTYPE)],
+        ]
+        for members in cases:
+            payload = self.typed_tar(members)
+            with self.subTest(members=members):
+                old(io.BytesIO(payload))
+                with self.assertRaises(ValueError):
+                    archive.inventory(io.BytesIO(payload))
+        aliases = self.typed_tar(cases[0])
+        self.assertEqual(['usr/bin/php'], list(old(io.BytesIO(aliases))))
+
+    def test_canonical_parent_directories_can_be_explicit_or_implicit(self):
+        for members in ([('.',tarfile.DIRTYPE),('usr',tarfile.DIRTYPE),('usr/bin',tarfile.DIRTYPE),
+                         ('usr/bin/php',tarfile.REGTYPE)],
+                        [('usr/bin/php',tarfile.REGTYPE),('usr',tarfile.DIRTYPE)]):
+            payload = self.typed_tar(members)
+            self.assertEqual(['usr/bin/php'],list(archive.inventory(io.BytesIO(payload))))
 
     def fixture(self):
         contents = {"usr/bin/php8.3": b"inert PHP", "usr/bin/php-config8.3": b"inert config",
