@@ -41,6 +41,13 @@ REVIEWED_COMPLEX_WORKFLOWS = {
     ".github/workflows/rust-docs-visual.yml": "69bc0b89cdeacbabd35c345770de86fe9e20bb3f2a53fc1c7a157973c3db31a6",
     ".github/workflows/cancellation-competitors.yml": "9ce25bd480c899e52a7e805fd6e5e6d45fcaa687c8c25b092d1f2163baf0b0b5",
 }
+# Exact source-CI successors keep the approved immutable trust bootstrap while
+# the new private-pip implementation is qualified separately. These are inert
+# future workflow identities; candidate text never supplies an expected digest.
+REVIEWED_SOURCE_CI_SUCCESSORS = {
+    ".github/workflows/ci.yml": "f0546eeeeec386042088cb5eb2ff36caedf9517726c06d030a0b1e275b94fb55",
+    ".github/workflows/sonar.yml": "10af0ec0dcec58368a8261188e9e2fb1c3c91736d39502863e7aa57914e99fbe",
+}
 
 
 def literal_python(arguments: list[str]) -> bool:
@@ -183,7 +190,8 @@ def validate_context(files: dict[str, bytes]) -> None:
         if PurePosixPath(name).parent.as_posix() != ".github/workflows" or not name.endswith((".yml", ".yaml")):
             continue
         document = bounded_document(raw.decode("utf-8"))
-        reviewed_complex = hashlib.sha256(raw).hexdigest() == REVIEWED_COMPLEX_WORKFLOWS.get(name)
+        digest = hashlib.sha256(raw).hexdigest()
+        reviewed_complex = digest in {REVIEWED_COMPLEX_WORKFLOWS.get(name), REVIEWED_SOURCE_CI_SUCCESSORS.get(name)}
         jobs = document.get("jobs", {})
         if not isinstance(jobs, dict):
             raise InputRefused("Protected pilot requires a jobs mapping")
