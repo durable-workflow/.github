@@ -85,9 +85,9 @@ def main():
         try:
             report = require_fixed_apt(release)
         except ValueError:
-            query = command(["/usr/bin/dpkg-query", "--showformat=${Package} ${db:Status-Status} ${Version}\\n",
+            query = command(["/usr/bin/dpkg-query", "--showformat=${Package} ${Status} ${Version}\\n",
                              "--show", "apt", "libapt-pkg7.0"], run=subprocess.run)
-            if query.stdout != b"apt installed 3.2.0\nlibapt-pkg7.0 installed 3.2.0\n":
+            if query.stdout != b"apt install ok installed 3.2.0\nlibapt-pkg7.0 install ok installed 3.2.0\n":
                 raise ValueError("The affected installed package pair differs from the reviewed runner")
             install(captured)
             report = require_fixed_apt(release)

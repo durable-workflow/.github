@@ -1,7 +1,10 @@
 import io
 import json
+from contextlib import contextmanager
 from pathlib import Path
+import runpy
 import subprocess
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
@@ -10,13 +13,57 @@ import yaml
 from scripts import require_fixed_apt as guard
 
 ROOT = Path(__file__).resolve().parents[1]
+APT_ONLY = runpy.run_path(str(ROOT / "tests/fixtures/apt_only_predecessor.py"))["require_fixed_apt"]
 
 
 class FixedAptTest(unittest.TestCase):
-    def reader(self, version, status="installed"):
+    @contextmanager
+    def native_database(self, *, apt_status="install ok installed", library_status="install ok installed",
+                        library_version="3.2.1ubuntu0.1", include_library=True):
+        with tempfile.TemporaryDirectory() as directory:
+            rows = [("apt", apt_status, "3.2.1ubuntu0.1")]
+            if include_library:
+                rows.append(("libapt-pkg7.0", library_status, library_version))
+            status = "".join(f"Package: {name}\nStatus: {state}\nArchitecture: amd64\nVersion: {version}\n"
+                             "Maintainer: Test <test@example.invalid>\nDescription: Synthetic package state\n\n"
+                             for name, state, version in rows)
+            (Path(directory) / "status").write_text(status)
+
+            def run(argv, **options):
+                if argv[0] == "/usr/bin/dpkg-query":
+                    argv = [argv[0], "--admindir=" + directory, *argv[1:]]
+                return subprocess.run(argv, **options)
+            yield run
+
+    def test_actual_predecessor_accepts_affected_or_missing_library_but_successor_refuses(self):
+        release = {"ID": "ubuntu", "VERSION_ID": "26.04"}
+        for values in ({"library_version": "3.2.0"}, {"include_library": False}):
+            with self.subTest(values=values), self.native_database(**values) as run:
+                self.assertIs(True, APT_ONLY(release, run)["fixed_apt"])
+                with self.assertRaises(ValueError):
+                    guard.require_fixed_apt(release, run)
+
+    def test_native_full_status_closes_eight_actual_predecessor_admissions(self):
+        release = {"ID": "ubuntu", "VERSION_ID": "26.04"}
+        for field in ("apt_status", "library_status"):
+            for state in ("install reinstreq installed", "deinstall ok installed", "purge ok installed", "hold ok installed"):
+                with self.subTest(field=field, state=state), self.native_database(**{field: state}) as run:
+                    self.assertIs(True, APT_ONLY(release, run)["fixed_apt"])
+                    with self.assertRaises(ValueError):
+                        guard.require_fixed_apt(release, run)
+
+    def test_native_clean_pair_is_reported_completely(self):
+        with self.native_database() as run:
+            report = guard.require_fixed_apt({"ID": "ubuntu", "VERSION_ID": "26.04"}, run)
+        self.assertEqual("3.2.1ubuntu0.1", report["apt"])
+        self.assertEqual("3.2.1ubuntu0.1", report["libapt"])
+        self.assertEqual("libapt-pkg7.0", report["libapt_package"])
+
+    def reader(self, version, status="install ok installed", library_version=None):
         def run(argv, **options):
             if argv[0] == "/usr/bin/dpkg-query":
-                return subprocess.CompletedProcess(argv, 0, f"{status}\t{version}\n", "")
+                library = argv[-1]
+                return subprocess.CompletedProcess(argv, 0, f"apt\t{status}\t{version}\n{library}\t{status}\t{library_version or version}\n", "")
             return subprocess.run(argv, **options)
         return run
 
@@ -27,6 +74,8 @@ class FixedAptTest(unittest.TestCase):
                     report = guard.require_fixed_apt({"ID": system, "VERSION_ID": release}, self.reader(version))
                     self.assertIs(True, report["fixed_apt"])
                     self.assertEqual(version, report["apt"])
+                    self.assertEqual(version, report["libapt"])
+                    self.assertEqual(guard.LIBRARIES[system, release], report["libapt_package"])
 
     def test_known_affected_and_partial_ubuntu_versions_refuse(self):
         cases = (("ubuntu", "22.04", "2.4.14"), ("ubuntu", "24.04", "2.8.3"),
@@ -51,17 +100,18 @@ class FixedAptTest(unittest.TestCase):
             self.assertEqual(1, run.call_count)
 
     def test_native_commands_are_absolute_read_only_and_use_a_closed_environment(self):
-        run = Mock(side_effect=[subprocess.CompletedProcess([], 0, "installed\t2.8.4ubuntu0.1\n", ""),
+        run = Mock(side_effect=[subprocess.CompletedProcess([], 0, "apt\tinstall ok installed\t2.8.4ubuntu0.1\nlibapt-pkg6.0t64\tinstall ok installed\t2.8.4ubuntu0.1\n", ""),
+                                subprocess.CompletedProcess([], 0, "", ""),
                                 subprocess.CompletedProcess([], 0, "", "")])
         guard.require_fixed_apt({"ID": "ubuntu", "VERSION_ID": "24.04"}, run)
-        self.assertEqual(["/usr/bin/dpkg-query", "/usr/bin/dpkg"], [call.args[0][0] for call in run.call_args_list])
+        self.assertEqual(["/usr/bin/dpkg-query", "/usr/bin/dpkg", "/usr/bin/dpkg"], [call.args[0][0] for call in run.call_args_list])
         for call in run.call_args_list:
             self.assertEqual({"PATH": "/usr/bin:/bin", "LC_ALL": "C"}, call.kwargs["env"])
             self.assertEqual(10, call.kwargs["timeout"])
 
     def test_native_query_failure_or_comparison_error_cannot_pass(self):
         for first, second in ((1, 0), (0, 2)):
-            run = Mock(side_effect=[subprocess.CompletedProcess([], first, "installed\t2.8.4ubuntu0.1\n", ""),
+            run = Mock(side_effect=[subprocess.CompletedProcess([], first, "apt\tinstall ok installed\t2.8.4ubuntu0.1\nlibapt-pkg6.0t64\tinstall ok installed\t2.8.4ubuntu0.1\n", ""),
                                     subprocess.CompletedProcess([], second, "", "")])
             with self.subTest(first=first, second=second), self.assertRaises(ValueError):
                 guard.require_fixed_apt({"ID": "ubuntu", "VERSION_ID": "24.04"}, run)
