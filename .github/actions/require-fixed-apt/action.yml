@@ -1,0 +1,10 @@
+name: Require fixed APT
+description: Read the effective system APT version before networked package operations.
+runs:
+  using: composite
+  steps:
+    - name: Check the effective package manager
+      shell: bash
+      env:
+        FIXED_APT_PROGRAM: ${{ github.action_path }}/../../../scripts/require_fixed_apt.py
+      run: /usr/bin/python3 -I -S -B "$FIXED_APT_PROGRAM"
