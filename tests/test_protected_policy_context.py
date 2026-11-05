@@ -84,8 +84,9 @@ class ProtectedContextTest(unittest.TestCase):
                     self.validate(raw)
                 files = {"scripts/entry.sh": b"bash scripts/nested.py\n",
                          "scripts/nested.py": (program + "\n").encode()}
+                nested_workflow = workflow("bash scripts/entry.sh")
                 with self.assertRaisesRegex(InputRefused, "helper"):
-                    self.validate(workflow("bash scripts/entry.sh"), **files)
+                    self.validate(nested_workflow, **files)
 
     def test_indirect_hidden_helpers_and_evaluator_options_refuse(self):
         for run in ('bash "$SCRIPT"', '"$RUNNER" "$TARGET"',
@@ -117,9 +118,10 @@ class ProtectedContextTest(unittest.TestCase):
         path = ".github/workflows/protected-policy.yml"
         # The workflow is exact; the referenced Python file cannot disguise a
         # shell program behind its extension to inherit the workflow exception.
+        files = {path: (ROOT / path).read_bytes(),
+                 "scripts/protected_policy_issue.py": b"#!/bin/bash\nx=cd; $x /tmp\n"}
         with self.assertRaisesRegex(InputRefused, "helper"):
-            context.validate_context({path: (ROOT / path).read_bytes(),
-                                      "scripts/protected_policy_issue.py": b"#!/bin/bash\nx=cd; $x /tmp\n"})
+            context.validate_context(files)
 
     def test_interpreter_startup_and_exported_functions_refuse(self):
         for name in ("BASH_ENV", "PATH", "CDPATH", "BASH_FUNC_python%%"):
