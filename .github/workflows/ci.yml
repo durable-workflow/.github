@@ -108,3 +108,14 @@ jobs:
           clients: pip,python
       - name: Exercise the actual isolated hash-locked installer
         run: python -I tests/test_policy_dependency_install.py
+      - name: Install the existing hash-locked source-test parser
+        run: >-
+          python -I -m pip --isolated install --require-hashes
+          --only-binary=:all: --no-deps -r qualification/requirements.lock
+      - name: Test package preflight and offline bootstrap as inert source
+        run: >-
+          python -m unittest tests.test_bootstrap_fixed_apt tests.test_fixed_apt
+          tests.test_native_policy_check tests.test_native_policy_workflow
+          tests.test_protected_policy_inputs tests.test_protected_policy_check
+          tests.test_protected_policy_context tests.test_protected_policy_issue
+          tests.test_qualification_policy

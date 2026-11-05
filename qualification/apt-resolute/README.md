@@ -22,10 +22,19 @@ dependencies or partial installation must fail the job and retain its outcome;
 the dedicated VM lifetime remains the partial-state cleanup boundary. Re-run
 the read-only fixed-version check before any subsequent networked APT operation.
 
-The exact executable/bootstrap source and effect decision remain pending; this
-is the authenticated input packet, not an implemented installer. The separate
-setup-php transitive installer/archive finding #297 also remains open. These
-packages cannot qualify that unrelated executable supply chain.
+`scripts/bootstrap_fixed_apt.py` supplies the unexecuted bootstrap proposal.
+Its default/`--plan` mode only captures and verifies these inputs. No workflow
+calls `--install`. The proposed install mode accepts only the reviewed hosted
+Ubuntu26.04/amd64 subject and observed apt/libapt3.2.0 pair. It sends captured
+bytes over stdin to stock root commands, rehashes root-owned copies, performs
+stock dpkg's dependency dry run and actual install in a network namespace, then
+rechecks fixed APT. It removes only its two files and private directory; failed
+partial installation remains a failed disposable VM, with no shared-host or
+restoration claim. Inert tests mock every root/install command.
+
+Executable-source review and the separate installation effect decision remain
+pending. The setup-php transitive installer/archive finding #297 also remains
+open; these packages cannot qualify that unrelated executable supply chain.
 
 Public source advisories:
 
