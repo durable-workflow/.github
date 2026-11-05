@@ -294,7 +294,8 @@ class QualificationPolicyTest(unittest.TestCase):
         return {
             "action-policy": {"name": "Central action policy preflight", "runs-on": "ubuntu-latest",
                               "timeout-minutes": "5", "steps": steps},
-            "gate": {"needs": ["action-policy"], "if": "${{ always() }}", "steps": [{
+            "gate": {"needs": ["action-policy"], "if": "${{ always() }}",
+                     "runs-on": "ubuntu-latest", "timeout-minutes": "5", "steps": [{
                 "env": {"ACTION_POLICY_RESULT": "${{ needs.action-policy.result }}"},
                 "run": 'test "$ACTION_POLICY_RESULT" = success'}]},
         }
@@ -374,6 +375,30 @@ class QualificationPolicyTest(unittest.TestCase):
     def test_pinned_workflow_and_result_gate_contexts_are_closed_through_actual_parser(self):
         self.verify_pinned_document(self.pinned_workflow_document())
         for index, document in enumerate(self.pinned_context_mutations()):
+            with self.subTest(change=index), self.assertRaises(PolicyError):
+                self.verify_pinned_document(document)
+
+    def pinned_gate_mutations(self):
+        changes = []
+        for step in ({"run": "echo unreviewed"},
+                     {"uses": "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803"}):
+            document = self.pinned_workflow_document()
+            document["jobs"]["gate"]["steps"].insert(0, step)
+            changes.append(document)
+        for key, value in (("runs-on", "self-hosted"), ("runs-on", "ubuntu-24.04"),
+                           ("timeout-minutes", "60"), ("timeout-minutes", None),
+                           ("needs", ["action-policy", "foreign"]),
+                           ("needs", ["action-policy", "action-policy"])):
+            document = self.pinned_workflow_document()
+            document["jobs"]["gate"][key] = value
+            changes.append(document)
+        return changes
+
+    def test_pinned_gate_asserts_first_on_its_exact_runner_timeout_and_dependencies(self):
+        document = self.pinned_workflow_document()
+        document["jobs"]["gate"]["needs"] = "action-policy"
+        self.verify_pinned_document(document)
+        for index, document in enumerate(self.pinned_gate_mutations()):
             with self.subTest(change=index), self.assertRaises(PolicyError):
                 self.verify_pinned_document(document)
 

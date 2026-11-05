@@ -859,18 +859,20 @@ def _verify_pinned_policy_context(label, document):
 
 def _verify_pinned_policy_gate(label, gate):
     if (set(gate) - {"name", "needs", "if", "runs-on", "timeout-minutes", "steps"}
-            or _condition_without_expression_wrapper(gate.get("if", "")) != "always()"):
+            or _condition_without_expression_wrapper(gate.get("if", "")) != "always()"
+            or gate.get("runs-on") != "ubuntu-latest"
+            or gate.get("timeout-minutes") != "5"
+            or gate.get("needs") not in ("action-policy", ["action-policy"])):
         raise PolicyError(f"{label} pinned central preflight requires an unconditional closed result gate")
     assertion = {
         "env": {"ACTION_POLICY_RESULT": "${{ needs.action-policy.result }}"},
         "run": 'test "$ACTION_POLICY_RESULT" = success',
     }
-    if not any(
-        isinstance(step, dict) and not set(step) - {"name", "env", "run"}
-        and step.get("env") == assertion["env"]
-        and _normalized_shell(step.get("run")) == assertion["run"]
-        for step in gate.get("steps") or []
-    ):
+    steps = gate.get("steps")
+    first = steps[0] if isinstance(steps, list) and steps else None
+    if (not isinstance(first, dict) or set(first) - {"name", "env", "run"}
+            or first.get("env") != assertion["env"]
+            or _normalized_shell(first.get("run")) != assertion["run"]):
         raise PolicyError(f"{label} pinned central preflight requires a closed unconditional result assertion")
 
 
