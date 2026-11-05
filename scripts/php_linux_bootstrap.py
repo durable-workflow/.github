@@ -208,15 +208,11 @@ class HeldAsset:
 
 
 @contextmanager
-def hold_verified(source: BinaryIO, identity: dict, final_url: str):
-    """Verify the held bytes, then seal the same descriptor used by the child.
-
-    Networking remains outside this primitive: a future reviewed caller must
-    enforce the same closed redirect set before each request, an explicit
-    verified CA store, response status and bounded connect/read deadlines.
-    """
-    asset_identity(identity, identity["name"], MAX_ARCHIVE)
-    final = effective_url(final_url)
+def hold_bytes(source: BinaryIO, identity: dict, final: dict):
+    """Shared sealed-byte primitive; callers bind provider/catalog authority."""
+    if (type(identity.get("size")) is not int or not 0 < identity["size"] <= MAX_ARCHIVE
+            or not re.fullmatch(r"sha256:[a-f0-9]{64}", identity.get("digest", ""))):
+        raise ValueError("Bound stream size/digest is invalid")
     descriptor = os.memfd_create("durable-php-input", os.MFD_ALLOW_SEALING | os.MFD_CLOEXEC)
     try:
         size = 0
@@ -238,6 +234,15 @@ def hold_verified(source: BinaryIO, identity: dict, final_url: str):
         yield held
     finally:
         os.close(descriptor)
+
+
+
+@contextmanager
+def hold_verified(source: BinaryIO, identity: dict, final_url: str):
+    """Bind a GitHub asset independently before sealing its exact descriptor."""
+    asset_identity(identity, identity["name"], MAX_ARCHIVE)
+    with hold_bytes(source, identity, effective_url(final_url)) as held:
+        yield held
 
 
 def replace_once(source: str, before: str, after: str) -> str:

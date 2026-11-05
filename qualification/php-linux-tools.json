@@ -1,0 +1,65 @@
+{
+  "schema": "durable-workflow.php-linux-tools/v1",
+  "tools": [
+    {
+      "name": "composer",
+      "version": "2.10.3",
+      "url": "https://getcomposer.org/download/2.10.3/composer.phar",
+      "size": 3642137,
+      "sha256": "7a2d379d5b8ffdaa028580ef26494c36d2feef4b178d3dd1473a4dbc5e17c8d6",
+      "minimum_php": "7.2.5",
+      "publisher_digest_url": "https://getcomposer.org/download/2.10.3/composer.phar.sha256sum",
+      "publisher_signature_url": "https://getcomposer.org/download/2.10.3/composer.phar.sig",
+      "evidence": {
+        "digest": {
+          "file": "qualification/php-tools/composer-2.10.3.sha256sum",
+          "sha256": "1eb0f2c859011ab4b422a77d3ee4a56f97c83bd20d96299f07bee006409f4822"
+        },
+        "signature": {
+          "file": "qualification/php-tools/composer-2.10.3.phar.sig",
+          "sha256": "8a319e39e20ff12c4299d78b5bd49e268a5dace62dca5525c695c290a280ea42"
+        },
+        "requirements": {
+          "file": "qualification/php-tools/composer-2.10.3-requirements.json",
+          "sha256": "1a208e8aa74f172527b6ae0774e1e93bd9b66b111afc6f3830c48bd02aabf7be"
+        }
+      },
+      "publisher_authority": {
+        "state": "verified",
+        "receipt": "qualification/php-tools/data-preparation.json",
+        "receipt_sha256": "14afeb40a84237b81eaa21b4f0e9f9a48c097f9d6647037c35f7f15b1d0c6834",
+        "public_key": "qualification/php-tools/composer-tags.pem",
+        "public_key_sha256": "d8f3e350437bf3b5342dbf046064ebd1f017ebc720955433194360a01cfd074f"
+      }
+    },
+    {
+      "name": "phpunit",
+      "version": "11.5.57",
+      "url": "https://phar.phpunit.de/phpunit-11.5.57.phar",
+      "size": 5779999,
+      "sha256": "c704fdd37c6c6ab7adb386f31b4e186cd51156801fa9028b5ea8099a2cd7f106",
+      "minimum_php": "8.2",
+      "publisher_digest_url": "https://phar.phpunit.de/phive.xml",
+      "publisher_signature_url": "https://phar.phpunit.de/phpunit-11.5.57.phar.asc",
+      "evidence": {
+        "digest": {
+          "file": "qualification/php-tools/phpunit-phive.xml",
+          "sha256": "7b93ccac385b281f7ab7a5129a60816ecdc0b9c63198388173143c17090b1247"
+        },
+        "signature": {
+          "file": "qualification/php-tools/phpunit-11.5.57.phar.asc",
+          "sha256": "6a2599c00931bba1895c73290a95a11774625a979baf6cdcfa85b4b9db651045"
+        },
+        "requirements": {
+          "file": "qualification/php-tools/phpunit-11.5.57-requirements.json",
+          "sha256": "40c66425246e12c3c0431d9f198f79ce65448da622ac58fcd0def9ce86d3c4b3"
+        }
+      },
+      "publisher_authority": {
+        "state": "missing-full-fingerprint-binding",
+        "receipt": "qualification/php-tools/data-preparation.json",
+        "receipt_sha256": "14afeb40a84237b81eaa21b4f0e9f9a48c097f9d6647037c35f7f15b1d0c6834"
+      }
+    }
+  ]
+}
