@@ -5,9 +5,11 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from jsonschema import Draft202012Validator
 
+from scripts import regression_corpus as corpus
 from scripts.regression_corpus import CorpusError, validate
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -217,6 +219,34 @@ class RegressionCorpusTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def test_moving_comparison_branch_cannot_replace_resolved_baseline(self) -> None:
+        run(self.root, "git", "branch", "comparison-base", self.base)
+        write_json(self.root, "tests/fixtures/codec/long-zero.json",
+                   codec_fixture("avro-value-v1-long-zero", "wwHioz3/VYAiNwQC"))
+        run(self.root, "git", "add", ".")
+        run(self.root, "git", "commit", "-qm", "changed immutable fixture")
+        replacement = run(self.root, "git", "rev-parse", "HEAD")
+        original = corpus._run
+        policy_path = Path("regression-corpus-policy.json")
+
+        def move_after_resolution(command, root, **options):
+            result = original(command, root, **options)
+            if command[:3] == ["git", "rev-parse", "--verify"]:
+                run(root, "git", "update-ref", "refs/heads/comparison-base", replacement)
+            return result
+
+        with patch.object(corpus, "_run", side_effect=move_after_resolution):
+            with self.assertRaisesRegex(CorpusError, "immutable fixture .* was changed"):
+                validate(self.root, policy_path, "comparison-base")
+
+    def test_option_shaped_comparison_ref_refuses_without_output(self) -> None:
+        output = self.root.parent / (self.root.name + "-unexpected")
+        reference = "--output=" + str(output)
+        policy_path = Path("regression-corpus-policy.json")
+        with self.assertRaises(CorpusError):
+            validate(self.root, policy_path, reference)
+        self.assertFalse(output.exists())
 
     def test_unrelated_change_may_keep_corpus_counts_equal(self) -> None:
         (self.root / "README.md").write_text("Editable prose.\n", encoding="utf-8")

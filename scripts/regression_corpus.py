@@ -947,6 +947,14 @@ def _guard_matches(
     return any(re.search(pattern, changed_content) for pattern in patterns)
 
 
+def _comparison_commit(root: Path, reference: str) -> str:
+    commit = _run(["git", "rev-parse", "--verify", "--end-of-options",
+                   f"{reference}^{{commit}}"], root).strip()
+    if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit) is None:
+        raise CorpusError("comparison base must resolve to one Git commit")
+    return commit
+
+
 def validate(root: Path, policy_path: Path, base_ref: str | None) -> dict[str, Any]:
     policy_file = (policy_path if policy_path.is_absolute() else root / policy_path).resolve()
     try:
@@ -959,7 +967,7 @@ def validate(root: Path, policy_path: Path, base_ref: str | None) -> dict[str, A
     added_paths: set[str] = set()
     base_evidence: list[Evidence] = []
     if base_ref and not ZERO_COMMIT.fullmatch(base_ref):
-        _run(["git", "rev-parse", "--verify", f"{base_ref}^{{commit}}"], root)
+        base_ref = _comparison_commit(root, base_ref)
         changed, added_paths = _changed_paths(root, base_ref)
         base_files = _ref_files(root, base_ref)
         raw_base_policy = base_files.get(policy_relative_path)
