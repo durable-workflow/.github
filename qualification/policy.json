@@ -81,6 +81,7 @@
         "4d407b29186a635f0cc27475ef0bc0ae605a8866": "1.86.0"
       },
       "durable-workflow/.github": {
+        "18783be6bef737cc778e4c7282a8797e39daa61a": "fixed-apt",
         "54cce4c6a814c8137dafbee594a1e0bdcf0ba60c": "clean-trust",
         "699d09d602fc0353160bdecaa2b23f07ef4c7c21": "clean-trust",
         "75587fc33ff40c34f32ef777293dad56bb6f48c7": "clean-trust",
