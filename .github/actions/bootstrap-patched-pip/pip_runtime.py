@@ -303,9 +303,16 @@ def selected_interpreter(path, execute=subprocess.run):
         raise ValueError("Host-default Python is outside its reviewed system location")
     loader = selected_loader(location)
     environment = dict(CLEAN_ENV, **({"LD_LIBRARY_PATH": loader["path"]} if loader else {}))
-    with held_file(canonical, maximum=64 * 1024 * 1024, executable=True) as (_data, identity):
+    with BoundDirectory(path.parent) as alias_parent, \
+            held_file(canonical, maximum=64 * 1024 * 1024, executable=True) as (_data, identity):
+        alias = _identity(path.lstat())
+        if alias["owner"] not in {0, os.getuid()}:
+            raise ValueError("Selected Python alias has an untrusted owner")
         response = execute([str(path), "-I", "-S", "-B", "-c", PYTHON_PROBE],
                            env=environment, capture_output=True, text=True, timeout=10, check=True)
+        alias_parent.check()
+        if _identity(path.lstat()) != alias or path.resolve(strict=True) != canonical:
+            raise ValueError("Selected Python alias changed while held")
     probe = json.loads(response.stdout)
     if (probe["executable"] != str(path) or probe["base_executable"] != str(canonical)
             or probe["version"][0] != 3 or tuple(probe["version"]) < (3, 10, 0)):
