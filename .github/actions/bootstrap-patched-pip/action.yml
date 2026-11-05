@@ -48,6 +48,7 @@ runs:
         TRUST_CLIENTS: ${{ inputs.clients }}
         TRUST_RUNTIME: ${{ steps.runtime.outputs.pip-state }}
         TRUST_CREATED: ${{ steps.runtime.outputs.pip-created }}
+        TRUST_ROOT_IDENTITY: ${{ steps.runtime.outputs.pip-identity }}
         TRUST_CALLER_LD_LIBRARY_PATH: ${{ env.LD_LIBRARY_PATH }}
         LD_LIBRARY_PATH: ''
         LD_PRELOAD: ''

@@ -44,6 +44,18 @@ def directory_identity(metadata):
             "owner": metadata.st_uid, "mode": stat.S_IMODE(metadata.st_mode)}
 
 
+class RuntimeState:
+    """Transfer the producer's exact allocation identity without another lookup."""
+
+    def __init__(self, root, identity):
+        self.root = root
+        self.identity = identity
+
+    @property
+    def receipt(self):
+        return self.root / "runtime.json"
+
+
 def absolute_path(value):
     path = Path(value)
     if any(c in str(path) for c in "\r\n\x00"):
@@ -401,10 +413,13 @@ def _private_root(runner_temp):
             raise ValueError("RUNNER_TEMP is not owned by the job user")
         name = "dw-pip-" + secrets.token_hex(16)
         parent.check()
-        os.mkdir(name, 0o700, dir_fd=parent.fd)
         root = runner_temp / name
-        identity = directory_identity(os.stat(name, dir_fd=parent.fd, follow_symlinks=False))
+        created = False
+        identity = None
         try:
+            os.mkdir(name, 0o700, dir_fd=parent.fd)
+            created = True
+            identity = directory_identity(os.stat(name, dir_fd=parent.fd, follow_symlinks=False))
             with BoundDirectory(root, private=True) as directory:
                 if os.listdir(directory.fd):
                     raise ValueError("New private runtime is not empty")
@@ -412,9 +427,16 @@ def _private_root(runner_temp):
                     os.mkdir(child, 0o700, dir_fd=directory.fd)
                 directory.check()
         except BaseException:
-            cleanup_runtime(root, runner_temp, identity)
+            if created:
+                # The held parent plus successful no-replace mkdir owns this
+                # fresh name even when the first metadata observation fails.
+                parent.check()
+                if identity is None:
+                    with BoundDirectory(root, private=True) as held:
+                        identity = directory_identity(os.fstat(held.fd))
+                cleanup_runtime(root, runner_temp, identity)
             raise
-        return root
+        return RuntimeState(root, identity)
 
 
 def venv_layout(root, interpreter):
@@ -490,27 +512,29 @@ def venv_baseline(root, interpreter):
     return result
 
 
+def unique_pairs(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("Runtime JSON contains a duplicate key")
+        value[key] = item
+    return value
+
+
 def _read_json(path):
-    def unique(pairs):
-        value = {}
-        for key, item in pairs:
-            if key in value:
-                raise ValueError("Runtime JSON contains a duplicate key")
-            value[key] = item
-        return value
     with held_file(path, maximum=MAX_FILE, owned=True) as (contents, _):
-        return json.loads(contents, object_pairs_hook=unique)
+        return json.loads(contents, object_pairs_hook=unique_pairs)
 
 
 def create_runtime(selected, runner_temp, *, execute=subprocess.run):
     interpreter = selected_interpreter(selected, execute)
     manager = manager_snapshot(interpreter)
-    root = _private_root(runner_temp)
-    identity = directory_identity(root.stat(follow_symlinks=False))
+    state = _private_root(runner_temp)
     try:
-        return _seed_runtime(root, interpreter, manager, execute=execute)
+        _seed_runtime(state.root, interpreter, manager, expected_identity=state.identity, execute=execute)
+        return state
     except BaseException:
-        cleanup_runtime(root, runner_temp, identity)
+        cleanup_runtime(state.root, runner_temp, state.identity)
         raise
 
 
@@ -535,9 +559,11 @@ def cleanup_runtime(root, runner_temp, expected_identity):
             raise ValueError("Private pip cleanup did not remove its exact state")
 
 
-def _seed_runtime(root, interpreter, manager, *, execute):
+def _seed_runtime(root, interpreter, manager, *, expected_identity, execute):
     environment = private_environment(root, interpreter)
     with BoundDirectory(root, private=True) as held:
+        if directory_identity(os.fstat(held.fd)) != expected_identity:
+            raise ValueError("New private runtime changed before seeding")
         execute([interpreter["executable"], "-I", "-S", "-B", "-m", "venv", "--without-pip",
                  "--symlinks", str(root / "environment")], env=environment,
                 capture_output=True, text=True, timeout=30, check=True)
@@ -744,12 +770,27 @@ def verify_runtime(path, runner_temp, *, execute=subprocess.run, initial=False, 
 
 
 def runtime_root(path, runner_temp):
+    root = receipt_root(path, runner_temp)
+    with BoundDirectory(root, private=True) as held:
+        return root, directory_identity(os.fstat(held.fd))
+
+
+def receipt_root(path, runner_temp):
     path = absolute_path(path)
     root = path.parent
     if path.name != "runtime.json" or root.parent != absolute_path(runner_temp) or re.fullmatch(r"dw-pip-[0-9a-f]{32}", root.name) is None:
         raise ValueError("Runtime receipt is outside its exact owned state")
-    with BoundDirectory(root, private=True) as held:
-        return root, directory_identity(os.fstat(held.fd))
+    return root
+
+
+def producer_state(path, identity, runner_temp):
+    root = receipt_root(path, runner_temp)
+    value = json.loads(identity, object_pairs_hook=unique_pairs)
+    if (not isinstance(value, dict) or set(value) != {"device", "inode", "owner", "mode"}
+            or any(type(number) is not int or number < 0 for number in value.values())
+            or value["inode"] == 0 or value["owner"] != os.getuid() or value["mode"] != 0o700):
+        raise ValueError("Producer allocation identity is not the closed owned schema")
+    return RuntimeState(root, value)
 
 
 def verify_active_origin(report, selected):
@@ -788,8 +829,8 @@ def main():
                 report, _subjects = verify_runtime(path, runner_temp, require_trust=True)
                 verify_active_origin(report, selected)
             else:
-                path = create_runtime(selected, runner_temp)
-                created = runtime_root(path, runner_temp)
+                created = create_runtime(selected, runner_temp)
+                path = created.receipt
                 report, _subjects = verify_runtime(path, runner_temp, initial=True)
             if operation == "bootstrap":
                 append_path(str(Path(report["python"]).parent) + "\n")
@@ -798,12 +839,13 @@ def main():
                            f"LD_LIBRARY_PATH={report['interpreter']['loader']['path'] if report['interpreter']['loader'] else ''}\n"
                            "LD_PRELOAD=\nLD_AUDIT=\nPIP_CONFIG_FILE=/dev/null\nPIP_KEYRING_PROVIDER=disabled\nPIP_NO_INPUT=1\n")
             append_output(f"pip-state={path}\npip-python={report['python']}\npip-purelib={report['purelib']}\n"
-                          f"pip-created={'true' if created else 'false'}\n")
+                          f"pip-created={'true' if created else 'false'}\n"
+                          f"pip-identity={json.dumps(created.identity if created else report['root_identity'], separators=(',', ':'))}\n")
             print(json.dumps({"private_pip": VERSION, "python_version": report["interpreter"]["version"],
                               "manager_unchanged": True, "operation": operation}, sort_keys=True))
     except BaseException:
         if created is not None:
-            cleanup_runtime(created[0], runner_temp, created[1])
+            cleanup_runtime(created.root, runner_temp, created.identity)
         raise
 
 

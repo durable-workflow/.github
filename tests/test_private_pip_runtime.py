@@ -128,7 +128,7 @@ class PrivatePipRuntimeTest(unittest.TestCase):
                     patch.object(runtime, "create_runtime") as create, self.assertRaisesRegex(ValueError, "explicit"):
                 runtime.main()
             create.assert_not_called()
-            root = runtime._private_root(runner)
+            root = runtime._private_root(runner).root
             identity = runtime.directory_identity(root.stat())
             moved = runner / "retained-original"
             root.rename(moved)
@@ -145,8 +145,8 @@ class PrivatePipRuntimeTest(unittest.TestCase):
         before = runtime.manager_snapshot(interpreter)
         with tempfile.TemporaryDirectory(prefix="cli-pip-inert-") as temporary:
             runner_temp = Path(temporary)
-            old = runtime._private_root(runner_temp)
-            new = runtime._private_root(runner_temp)
+            old = runtime._private_root(runner_temp).root
+            new = runtime._private_root(runner_temp).root
             for directory in (old, new):
                 subprocess.run([interpreter["executable"], "-I", "-S", "-B", "-m", "venv", "--without-pip",
                     "--symlinks", str(directory / "environment")], env=runtime.private_environment(directory),
@@ -295,6 +295,45 @@ class PrivatePipRuntimeTest(unittest.TestCase):
                 runtime._private_root(runner)
             self.assertEqual([], list(runner.iterdir()))
 
+    def test_first_allocation_identity_read_failure_is_reclaimed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            runner = Path(temporary)
+            original_stat = runtime.os.stat
+            failed = False
+            def stat(path, *args, **kwargs):
+                nonlocal failed
+                if not failed and isinstance(path, str) and path.startswith("dw-pip-") and "dir_fd" in kwargs:
+                    failed = True
+                    raise OSError("inert first allocation identity failure")
+                return original_stat(path, *args, **kwargs)
+            with patch.object(runtime.os, "stat", side_effect=stat), self.assertRaisesRegex(OSError, "first allocation identity"):
+                runtime._private_root(runner)
+            self.assertTrue(failed)
+            self.assertEqual([], list(runner.iterdir()))
+
+    def test_identity_handoff_failure_reclaims_created_state_but_not_reused_state(self):
+        for reused in (False, True):
+            with self.subTest(reused=reused), tempfile.TemporaryDirectory() as temporary:
+                runner = Path(temporary)
+                state = runtime._private_root(runner)
+                environment = {"RUNNER_TEMP": str(runner)}
+                for name in ("GITHUB_ENV", "GITHUB_OUTPUT", "GITHUB_PATH"):
+                    path = runner / name
+                    path.touch(mode=0o600)
+                    environment[name] = str(path)
+                if reused:
+                    environment["DW_CI_PIP_STATE"] = str(state.receipt)
+                def verify(path, temp, **_options):
+                    return runtime.runtime_root(path, temp)
+                with patch.dict(os.environ, environment, clear=True), \
+                        patch.object(runtime.sys, "argv", ["runtime", "bootstrap", "/usr/bin/python3"]), \
+                        patch.object(runtime, "create_runtime", return_value=state), \
+                        patch.object(runtime, "verify_runtime", side_effect=verify), \
+                        patch.object(runtime, "runtime_root", side_effect=OSError("inert handoff lookup")), \
+                        self.assertRaisesRegex(OSError, "handoff lookup"):
+                    runtime.main()
+                self.assertEqual(reused, state.root.exists())
+
     def test_post_seed_verification_and_command_append_failure_reclaim_new_state(self):
         for stage in ("verify", "append"):
             with self.subTest(stage=stage), tempfile.TemporaryDirectory() as temporary:
@@ -308,13 +347,15 @@ class PrivatePipRuntimeTest(unittest.TestCase):
                 foreign = runner / "preserved"
                 foreign.write_text("unchanged")
                 def create(_selected, _temporary):
-                    root = runtime._private_root(runner)
+                    state = runtime._private_root(runner)
+                    root = state.root
                     created.append(root)
+                    report["root_identity"] = state.identity
                     if stage == "append":
                         output = Path(environment["GITHUB_OUTPUT"])
                         output.rename(runner / "held-output")
                         output.symlink_to(foreign)
-                    return root / "runtime.json"
+                    return state
                 report = {"python": "/fixture/private/python", "purelib": "/fixture/private/site-packages",
                           "interpreter": {"loader": None, "version": [3, 13, 18]}}
                 with patch.dict(os.environ, environment, clear=True), \

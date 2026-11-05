@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -223,12 +224,14 @@ class CleanBundleTest(unittest.TestCase):
     def test_new_runtime_is_reclaimed_when_trust_validation_or_export_fails(self):
         runner = self.directory
         for stage in ("verify", "export"):
-            root = trust.runtime._private_root(runner)
+            state = trust.runtime._private_root(runner)
+            root = state.root
             receipt = root / "runtime.json"
             receipt.write_text("{}")
             report = {"root": str(root), "purelib": str(root / "site-packages")}
             source = Path(report["purelib"]) / "pip/_vendor/certifi/cacert.pem"
             environment = {"RUNNER_TEMP": str(runner), "TRUST_CREATED": "true",
+                           "TRUST_ROOT_IDENTITY": json.dumps(state.identity),
                            "GITHUB_ENV": str(self.env_file), "GITHUB_OUTPUT": str(self.output_file)}
             with self.subTest(stage=stage), patch.dict(os.environ, environment), \
                     patch.object(trust.sys, "argv", ["export-trust", "--runtime", str(receipt)]), \
@@ -239,6 +242,21 @@ class CleanBundleTest(unittest.TestCase):
                     self.assertRaisesRegex(ValueError, "inert"):
                 trust.main()
             self.assertFalse(root.exists())
+
+    def test_export_identity_lookup_failure_reclaims_only_new_producer_state(self):
+        for created in ("true", "false"):
+            state = trust.runtime._private_root(self.directory)
+            environment = {"RUNNER_TEMP": str(self.directory), "TRUST_CREATED": created,
+                           "TRUST_ROOT_IDENTITY": json.dumps(state.identity)}
+            def verify(path, temp):
+                return trust.runtime.runtime_root(path, temp)
+            with self.subTest(created=created), patch.dict(os.environ, environment), \
+                    patch.object(trust.sys, "argv", ["export-trust", "--runtime", str(state.receipt)]), \
+                    patch.object(trust.runtime, "verify_runtime", side_effect=verify), \
+                    patch.object(trust.runtime, "runtime_root", side_effect=OSError("inert export identity lookup")), \
+                    self.assertRaisesRegex(OSError, "identity lookup"):
+                trust.main()
+            self.assertEqual(created == "false", state.root.exists())
 
 
 if __name__ == "__main__":

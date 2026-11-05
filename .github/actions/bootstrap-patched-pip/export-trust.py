@@ -119,7 +119,7 @@ def main() -> None:
     created = os.environ.get("TRUST_CREATED")
     if created not in {"true", "false"}:
         raise ValueError("An explicit producer-owned allocation marker is required")
-    owned = runtime.runtime_root(sys.argv[2], os.environ["RUNNER_TEMP"]) if created == "true" else None
+    owned = runtime.producer_state(sys.argv[2], os.environ["TRUST_ROOT_IDENTITY"], os.environ["RUNNER_TEMP"]) if created == "true" else None
     try:
         report, subjects = runtime.verify_runtime(sys.argv[2], os.environ["RUNNER_TEMP"])
         runtime.verify_active_origin(report, shutil.which("python"))
@@ -133,7 +133,7 @@ def main() -> None:
         )
     except BaseException:
         if owned is not None:
-            runtime.cleanup_runtime(owned[0], os.environ["RUNNER_TEMP"], owned[1])
+            runtime.cleanup_runtime(owned.root, os.environ["RUNNER_TEMP"], owned.identity)
         raise
 
 
