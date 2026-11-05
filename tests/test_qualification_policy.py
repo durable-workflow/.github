@@ -645,6 +645,19 @@ class QualificationPolicyTest(unittest.TestCase):
             with self.subTest(reference=reference), self.assertRaises(PolicyError):
                 self.scan(workflow(f"- uses: actions/checkout@{reference} # unknown"))
 
+    def test_accepted_shared_apt_guard_pin_is_catalogued_without_mutable_fallback(self) -> None:
+        action = "durable-workflow/.github/.github/actions/require-fixed-apt"
+        commit = "18783be6bef737cc778e4c7282a8797e39daa61a"
+        source = workflow(f"- uses: {action}@{commit} # fixed-apt")
+        predecessor = copy.deepcopy(self.policy)
+        del predecessor["action_runtime"]["allowed_releases"]["durable-workflow/.github"][commit]
+        with self.assertRaisesRegex(PolicyError, "not centrally approved"):
+            scan_workflow_sources(predecessor, "github-control-plane", {".github/workflows/test.yml": source})
+        self.assertEqual([f"{action}@{commit}"], self.scan(source)[".github/workflows/test.yml"]["external_actions"])
+        for ref in ("main", "a" * 40):
+            with self.subTest(ref=ref), self.assertRaises(PolicyError):
+                self.scan(workflow(f"- uses: {action}@{ref} # fixed-apt"))
+
     def test_action_pin_requires_its_reviewed_version_comment(self) -> None:
         commit, _version = self.approved_action("actions/checkout")
         with self.assertRaisesRegex(PolicyError, "readable version comment"):
