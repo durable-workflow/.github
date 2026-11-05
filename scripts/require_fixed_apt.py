@@ -30,26 +30,34 @@ def require_fixed_apt(release, run=subprocess.run):
     if minimum is None:
         raise ValueError("APT release has no reviewed fixed-version floor")
     library = LIBRARIES[subject]
-    query = run(["/usr/bin/dpkg-query", "--show", "--showformat=${Package}\\t${Status}\\t${Version}\\n", "apt", library],
+    query = run(["/usr/bin/dpkg-query", "--show", "--showformat=${Package}\\t${Status}\\t${Version}\\t${Architecture}\\n", "apt", library],
                 env=CLEAN_ENV, capture_output=True, text=True, timeout=10, check=False)
     if query.returncode != 0:
         raise ValueError("Installed APT version query failed")
     versions = {}
+    architectures = set()
     for line in query.stdout.splitlines():
         fields = line.split("\t")
-        if (len(fields) != 3 or fields[0] not in {"apt", library} or fields[0] in versions
+        if (len(fields) != 4 or fields[0] not in {"apt", library} or fields[0] in versions
                 or fields[1] != "install ok installed"
-                or re.fullmatch(r"[0-9][0-9A-Za-z.+:~\-]{0,99}", fields[2]) is None):
+                or re.fullmatch(r"[0-9][0-9A-Za-z.+:~\-]{0,99}", fields[2]) is None
+                or fields[3] not in {"amd64", "arm64"}):
             raise ValueError("Installed APT pair status/version is missing or ambiguous")
         versions[fields[0]] = fields[2]
+        architectures.add(fields[3])
     if set(versions) != {"apt", library}:
         raise ValueError("Installed APT pair is incomplete")
+    native = run(["/usr/bin/dpkg", "--print-architecture"], env=CLEAN_ENV,
+                 capture_output=True, text=True, timeout=10, check=False)
+    architecture = native.stdout.strip()
+    if native.returncode != 0 or architecture not in {"amd64", "arm64"} or architectures != {architecture}:
+        raise ValueError("Installed APT pair architecture does not match the native package manager")
     for package, version in versions.items():
         comparison = run(["/usr/bin/dpkg", "--compare-versions", version, "ge", minimum],
                          env=CLEAN_ENV, capture_output=True, text=True, timeout=10, check=False)
         if comparison.returncode != 0:
             raise ValueError(f"{package} {version} does not prove the fixed {minimum} floor")
-    return {"os": subject[0], "release": subject[1], "apt": versions["apt"],
+    return {"os": subject[0], "release": subject[1], "architecture": architecture, "apt": versions["apt"],
             "libapt_package": library, "libapt": versions[library], "minimum": minimum,
             "fixed_apt": True}
 

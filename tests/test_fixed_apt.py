@@ -19,14 +19,15 @@ APT_ONLY = runpy.run_path(str(ROOT / "tests/fixtures/apt_only_predecessor.py"))[
 class FixedAptTest(unittest.TestCase):
     @contextmanager
     def native_database(self, *, apt_status="install ok installed", library_status="install ok installed",
-                        library_version="3.2.1ubuntu0.1", include_library=True):
+                        library_version="3.2.1ubuntu0.1", include_library=True,
+                        apt_arch="amd64", library_arch="amd64"):
         with tempfile.TemporaryDirectory() as directory:
-            rows = [("apt", apt_status, "3.2.1ubuntu0.1")]
+            rows = [("apt", apt_status, "3.2.1ubuntu0.1", apt_arch)]
             if include_library:
-                rows.append(("libapt-pkg7.0", library_status, library_version))
-            status = "".join(f"Package: {name}\nStatus: {state}\nArchitecture: amd64\nVersion: {version}\n"
+                rows.append(("libapt-pkg7.0", library_status, library_version, library_arch))
+            status = "".join(f"Package: {name}\nStatus: {state}\nArchitecture: {architecture}\nVersion: {version}\n"
                              "Maintainer: Test <test@example.invalid>\nDescription: Synthetic package state\n\n"
-                             for name, state, version in rows)
+                             for name, state, version, architecture in rows)
             (Path(directory) / "status").write_text(status)
 
             def run(argv, **options):
@@ -58,12 +59,24 @@ class FixedAptTest(unittest.TestCase):
         self.assertEqual("3.2.1ubuntu0.1", report["apt"])
         self.assertEqual("3.2.1ubuntu0.1", report["libapt"])
         self.assertEqual("libapt-pkg7.0", report["libapt_package"])
+        self.assertEqual("amd64", report["architecture"])
 
-    def reader(self, version, status="install ok installed", library_version=None):
+    def test_native_database_with_foreign_or_mixed_pair_refuses(self):
+        release = {"ID": "ubuntu", "VERSION_ID": "26.04"}
+        for values in ({"apt_arch": "arm64"}, {"library_arch": "arm64"},
+                       {"apt_arch": "arm64", "library_arch": "arm64"}):
+            with self.subTest(values=values), self.native_database(**values) as run:
+                self.assertIs(True, APT_ONLY(release, run)["fixed_apt"])
+                with self.assertRaisesRegex(ValueError, "architecture"):
+                    guard.require_fixed_apt(release, run)
+
+    def reader(self, version, status="install ok installed", library_version=None, architecture="amd64"):
         def run(argv, **options):
             if argv[0] == "/usr/bin/dpkg-query":
                 library = argv[-1]
-                return subprocess.CompletedProcess(argv, 0, f"apt\t{status}\t{version}\n{library}\t{status}\t{library_version or version}\n", "")
+                return subprocess.CompletedProcess(argv, 0, f"apt\t{status}\t{version}\t{architecture}\n{library}\t{status}\t{library_version or version}\t{architecture}\n", "")
+            if argv[1:] == ["--print-architecture"]:
+                return subprocess.CompletedProcess(argv, 0, architecture + "\n", "")
             return subprocess.run(argv, **options)
         return run
 
@@ -76,6 +89,11 @@ class FixedAptTest(unittest.TestCase):
                     self.assertEqual(version, report["apt"])
                     self.assertEqual(version, report["libapt"])
                     self.assertEqual(guard.LIBRARIES[system, release], report["libapt_package"])
+
+    def test_arm64_pair_passes_with_matching_native_architecture(self):
+        report = guard.require_fixed_apt({"ID": "ubuntu", "VERSION_ID": "26.04"},
+                                         self.reader("3.2.1ubuntu0.1", architecture="arm64"))
+        self.assertEqual("arm64", report["architecture"])
 
     def test_known_affected_and_partial_ubuntu_versions_refuse(self):
         cases = (("ubuntu", "22.04", "2.4.14"), ("ubuntu", "24.04", "2.8.3"),
@@ -100,18 +118,20 @@ class FixedAptTest(unittest.TestCase):
             self.assertEqual(1, run.call_count)
 
     def test_native_commands_are_absolute_read_only_and_use_a_closed_environment(self):
-        run = Mock(side_effect=[subprocess.CompletedProcess([], 0, "apt\tinstall ok installed\t2.8.4ubuntu0.1\nlibapt-pkg6.0t64\tinstall ok installed\t2.8.4ubuntu0.1\n", ""),
+        run = Mock(side_effect=[subprocess.CompletedProcess([], 0, "apt\tinstall ok installed\t2.8.4ubuntu0.1\tamd64\nlibapt-pkg6.0t64\tinstall ok installed\t2.8.4ubuntu0.1\tamd64\n", ""),
+                                subprocess.CompletedProcess([], 0, "amd64\n", ""),
                                 subprocess.CompletedProcess([], 0, "", ""),
                                 subprocess.CompletedProcess([], 0, "", "")])
         guard.require_fixed_apt({"ID": "ubuntu", "VERSION_ID": "24.04"}, run)
-        self.assertEqual(["/usr/bin/dpkg-query", "/usr/bin/dpkg", "/usr/bin/dpkg"], [call.args[0][0] for call in run.call_args_list])
+        self.assertEqual(["/usr/bin/dpkg-query", "/usr/bin/dpkg", "/usr/bin/dpkg", "/usr/bin/dpkg"], [call.args[0][0] for call in run.call_args_list])
         for call in run.call_args_list:
             self.assertEqual({"PATH": "/usr/bin:/bin", "LC_ALL": "C"}, call.kwargs["env"])
             self.assertEqual(10, call.kwargs["timeout"])
 
     def test_native_query_failure_or_comparison_error_cannot_pass(self):
         for first, second in ((1, 0), (0, 2)):
-            run = Mock(side_effect=[subprocess.CompletedProcess([], first, "apt\tinstall ok installed\t2.8.4ubuntu0.1\nlibapt-pkg6.0t64\tinstall ok installed\t2.8.4ubuntu0.1\n", ""),
+            run = Mock(side_effect=[subprocess.CompletedProcess([], first, "apt\tinstall ok installed\t2.8.4ubuntu0.1\tamd64\nlibapt-pkg6.0t64\tinstall ok installed\t2.8.4ubuntu0.1\tamd64\n", ""),
+                                    subprocess.CompletedProcess([], 0, "amd64\n", ""),
                                     subprocess.CompletedProcess([], second, "", "")])
             with self.subTest(first=first, second=second), self.assertRaises(ValueError):
                 guard.require_fixed_apt({"ID": "ubuntu", "VERSION_ID": "24.04"}, run)
