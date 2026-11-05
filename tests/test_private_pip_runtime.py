@@ -52,10 +52,95 @@ def inert_wheel(ca):
 
 
 class PrivatePipRuntimeTest(unittest.TestCase):
+    def setUp(self):
+        # The source fixture uses the absolute distro interpreter. A hosted
+        # caller's toolcache selection is tested separately and never adopted.
+        self.environment = patch.dict(os.environ, {"pythonLocation": ""})
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+
+    def test_full_private_bootstrap_and_read_only_reuse_have_no_ambient_or_network_fallback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            runner = Path(temporary)
+            command_files = {name: runner / name.lower() for name in ("GITHUB_ENV", "GITHUB_OUTPUT", "GITHUB_PATH")}
+            for path in command_files.values():
+                path.touch(mode=0o600)
+            ca = b"inert CA data; exporter parsing has separate real certificate controls\n"
+            contents = inert_wheel(ca)
+            digest = hashlib.sha256(contents).hexdigest()
+            calls = []
+            def execute(arguments, **options):
+                calls.append((arguments, options))
+                if "download" in arguments:
+                    destination = Path(arguments[arguments.index("--dest") + 1])
+                    (destination / runtime.WHEEL_NAME).write_bytes(contents)
+                    return subprocess.CompletedProcess(arguments, 0, "", "")
+                return subprocess.run(arguments, **options)
+            original_create = runtime.create_runtime
+            environment = {name: str(path) for name, path in command_files.items()}
+            environment.update({"RUNNER_TEMP": str(runner), "PATH": "/usr/bin:/bin", "pythonLocation": "",
+                                "PYTHONPATH": "/ambient/ignored", "PIP_INDEX_URL": "https://invalid.invalid",
+                                "PIP_CONFIG_FILE": "/ambient/ignored.conf", "LD_PRELOAD": "/ambient/ignored.so"})
+            with patch.multiple(runtime, WHEEL_SHA256=digest, WHEEL_SIZE=len(contents),
+                                CA_SHA256=hashlib.sha256(ca).hexdigest()), \
+                    patch.dict(os.environ, environment, clear=True), \
+                    patch.object(runtime, "create_runtime", side_effect=lambda selected, temp:
+                                 original_create(selected, temp, execute=execute)), \
+                    patch.object(runtime.sys, "argv", ["runtime", "bootstrap", "/usr/bin/python3"]):
+                runtime.main()
+                values = dict(line.split("=", 1) for line in command_files["GITHUB_ENV"].read_text().splitlines())
+                receipt = Path(values["DW_CI_PIP_STATE"])
+                report, _subjects = runtime.verify_runtime(receipt, runner)
+                self.assertEqual("1", values["PYTHONDONTWRITEBYTECODE"])
+                self.assertEqual("/dev/null", values["PIP_CONFIG_FILE"])
+                self.assertIn("pip-state=" + str(receipt), command_files["GITHUB_OUTPUT"].read_text())
+                self.assertEqual(1, sum("download" in args for args, _options in calls))
+                for args, options in calls:
+                    self.assertNotIn("LD_PRELOAD", options["env"])
+                    self.assertNotIn("PYTHONPATH", options["env"])
+                    self.assertNotIn("PIP_INDEX_URL", options["env"])
+                    self.assertEqual(["-I", "-S", "-B"], args[1:4])
+                root = Path(report["root"])
+                trust = root / "durable-workflow-trust"
+                trust.mkdir(mode=0o700)
+                (trust / "no-additional-roots").mkdir(mode=0o700)
+                (trust / (runtime.CA_SHA256 + ".pem")).write_bytes(ca)
+                active = values | {"PATH": str(Path(report["python"]).parent) + ":/usr/bin:/bin"}
+                with patch.dict(os.environ, active), \
+                        patch.object(runtime.sys, "argv", ["runtime", "verify", report["python"]]), \
+                        patch.object(runtime, "create_runtime") as create:
+                    runtime.main()
+                    create.assert_not_called()
+                runtime.cleanup_runtime(root, runner, report["root_identity"])
+                self.assertFalse(root.exists())
+
+    def test_verification_requires_explicit_state_and_cleanup_rejects_a_changed_object(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            runner = Path(temporary)
+            environment = {"RUNNER_TEMP": str(runner)}
+            for name in ("GITHUB_ENV", "GITHUB_OUTPUT", "GITHUB_PATH"):
+                path = runner / name
+                path.touch(mode=0o600)
+                environment[name] = str(path)
+            with patch.dict(os.environ, environment, clear=True), \
+                    patch.object(runtime.sys, "argv", ["runtime", "verify", "/usr/bin/python3"]), \
+                    patch.object(runtime, "create_runtime") as create, self.assertRaisesRegex(ValueError, "explicit"):
+                runtime.main()
+            create.assert_not_called()
+            root = runtime._private_root(runner)
+            identity = runtime.directory_identity(root.stat())
+            moved = runner / "retained-original"
+            root.rename(moved)
+            root.mkdir(mode=0o700)
+            with self.assertRaisesRegex(ValueError, "identity changed"):
+                runtime.cleanup_runtime(root, runner, identity)
+            self.assertTrue(root.exists())
+            self.assertTrue(moved.exists())
+
     def test_stock_installer_reproduces_no_record_then_seeds_empty_private_target_without_manager_mutation(self):
         # The actual existing pip executable plans/installs only inert local
         # fixtures. No public wheel code, network, global install or uninstall.
-        interpreter = runtime.selected_interpreter(sys.executable)
+        interpreter = runtime.selected_interpreter("/usr/bin/python3")
         before = runtime.manager_snapshot(interpreter)
         with tempfile.TemporaryDirectory(prefix="cli-pip-inert-") as temporary:
             runner_temp = Path(temporary)

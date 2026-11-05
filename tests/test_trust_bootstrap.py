@@ -23,7 +23,7 @@ class TrustBootstrapTest(unittest.TestCase):
     def test_networked_python_installs_bootstrap_pip_first(self) -> None:
         for workflow_name in ("ci.yml", "sonar.yml"):
             workflow = (ROOT / ".github/workflows" / workflow_name).read_text()
-            bootstrap = workflow.index("uses: ./.github/actions/bootstrap-patched-pip")
+            bootstrap = workflow.index("uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7")
             install = workflow.index("python -m pip install")
             self.assertLess(bootstrap, install, workflow_name)
 

@@ -2,6 +2,7 @@
 
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+import hashlib
 import importlib.util
 import os
 from pathlib import Path
@@ -34,10 +35,15 @@ class PipEffectiveTrustTest(unittest.TestCase):
         from pip._vendor import certifi
 
         self.assertEqual("26.2.2", pip.__version__)
-        clean = Path(certifi.where())
-        trust.inspect_bundle(clean)
+        # The fixture transports only hash-bound public CA data from the old
+        # source-CI bootstrap. It does not qualify that toolcache's custody.
+        contents = Path(certifi.where()).read_bytes()
+        self.assertEqual(trust.runtime.CA_SHA256, hashlib.sha256(contents).hexdigest())
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
+            clean = directory / "clean.pem"
+            clean.write_bytes(contents)
+            trust.inspect_bundle(clean)
             roots = []
             for index, subject in enumerate(trust.BLOCKED_SUBJECTS):
                 certificate = directory / f"root-{index}.pem"

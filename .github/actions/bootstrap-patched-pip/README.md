@@ -21,6 +21,12 @@ An unsafe owner, writable parent, foreign link, changed origin or unsupported
 manager refuses without a system fallback. The manager must support pip's stock
 `--python` primitive (22.3 or later).
 
+The current hosted toolcache's writable ancestry is not supported custody. Source
+CI retains the existing approved immutable bootstrap while these inert controls
+test the new implementation using absolute system Python. That source lane does
+not qualify toolcache adoption or relax the new refusal. No consumer pin is
+updated by this source change.
+
 The `pip-state` output identifies the exact private receipt. A later action call
 with `operation: verify` requires that explicit receipt, rechecks private pip,
 interpreter/manager origins and the exported trust clone, and performs no network
