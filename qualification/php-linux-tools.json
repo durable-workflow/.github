@@ -29,7 +29,8 @@
         "receipt": "qualification/php-tools/data-preparation.json",
         "receipt_sha256": "14afeb40a84237b81eaa21b4f0e9f9a48c097f9d6647037c35f7f15b1d0c6834",
         "public_key": "qualification/php-tools/composer-tags.pem",
-        "public_key_sha256": "d8f3e350437bf3b5342dbf046064ebd1f017ebc720955433194360a01cfd074f"
+        "public_key_sha256": "d8f3e350437bf3b5342dbf046064ebd1f017ebc720955433194360a01cfd074f",
+        "decision": "https://github.com/durable-workflow/.github/issues/297#issuecomment-6664627349"
       }
     },
     {
@@ -56,9 +57,10 @@
         }
       },
       "publisher_authority": {
-        "state": "missing-full-fingerprint-binding",
+        "state": "reviewed-publisher-digest",
         "receipt": "qualification/php-tools/data-preparation.json",
-        "receipt_sha256": "14afeb40a84237b81eaa21b4f0e9f9a48c097f9d6647037c35f7f15b1d0c6834"
+        "receipt_sha256": "14afeb40a84237b81eaa21b4f0e9f9a48c097f9d6647037c35f7f15b1d0c6834",
+        "decision": "https://github.com/durable-workflow/.github/issues/297#issuecomment-6664627349"
       }
     }
   ]

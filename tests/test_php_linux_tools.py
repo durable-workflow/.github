@@ -29,8 +29,16 @@ class PhpLinuxToolsTest(unittest.TestCase):
         self.assertIs(self.catalog, tools.validate_catalog(self.catalog))
         self.assertEqual([], tools.select_tools(self.catalog, "none", "8.1"))
         self.assertEqual("composer", tools.select_tools(self.catalog, "composer:2.10.3", "8.1")[0]["name"])
+        selected = tools.select_tools(self.catalog, "composer:2.10.3, phpunit:11.5.57", "8.3")
+        self.assertEqual(["verified", "reviewed-publisher-digest"],
+                         [row["publisher_authority"]["state"] for row in selected])
+        receipt = json.loads((bootstrap.ROOT / selected[1]["publisher_authority"]["receipt"]).read_text())
+        self.assertEqual("fail", receipt["outcome"])
+        self.assertIs(False, receipt["signatures"]["phpunit"]["publisher_document_binding"])
+        unqualified = copy.deepcopy(self.catalog)
+        unqualified["tools"][1]["publisher_authority"]["state"] = "missing-full-fingerprint-binding"
         with self.assertRaisesRegex(ValueError, "authority is incomplete"):
-            tools.select_tools(self.catalog, "composer:2.10.3, phpunit:11.5.57", "8.3")
+            tools.select_tools(unqualified, "phpunit:11.5.57", "8.3")
         with self.assertRaisesRegex(ValueError, "PHP 8.1 remains unsupported"):
             tools.select_tools(self.catalog, "phpunit:11.5.57", "8.1")
 

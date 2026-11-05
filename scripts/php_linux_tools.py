@@ -14,6 +14,7 @@ import ssl
 import stat
 import subprocess
 import time
+import xml.etree.ElementTree as ET
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener
 
 from scripts import php_linux_bootstrap as bootstrap
@@ -23,6 +24,7 @@ CATALOG = bootstrap.ROOT / "qualification/php-linux-tools.json"
 PROFILES = {"composer": ("2.10.3", "https://getcomposer.org/download/2.10.3/composer.phar"),
             "phpunit": ("11.5.57", "https://phar.phpunit.de/phpunit-11.5.57.phar")}
 MAX_TOOL = 10 * 1024 * 1024
+PUBLISHER_STATES = frozenset(("verified", "reviewed-publisher-digest"))
 
 
 def evidence_file(record: dict, root: Path) -> bytes:
@@ -59,34 +61,57 @@ def validate_catalog(catalog: dict, root: Path = bootstrap.ROOT) -> dict:
             raise ValueError("Unsupported or replaced exact tool tuple")
         names.add(row["name"])
         bootstrap.exact_keys(row["evidence"], {"digest", "signature", "requirements"})
-        for record in row["evidence"].values():
-            evidence_file(record, root)
+        evidence = {name: evidence_file(record, root) for name, record in row["evidence"].items()}
         authority = row["publisher_authority"]
-        required = {"state", "receipt", "receipt_sha256"}
+        required = {"state", "receipt", "receipt_sha256", "decision"}
         if row["name"] == "composer":
             required |= {"public_key", "public_key_sha256"}
         bootstrap.exact_keys(authority, required)
-        if authority["state"] not in ("verified", "missing-full-fingerprint-binding"):
+        if authority["state"] not in PUBLISHER_STATES | {"missing-full-fingerprint-binding"}:
             raise ValueError("Unknown publisher authority state")
         receipt = json.loads(evidence_file({"file": authority["receipt"],
                                            "sha256": authority["receipt_sha256"]}, root))
+        if (receipt.get("kind") != "source-data-two-phars"
+                or receipt.get("authority_ca_sha256") != "50f79f98dac192b20dbf73f35c56f0b0c557ab267ff5199d1117cc1180b70785"
+                or any(receipt.get(name) is not False for name in
+                       ("php_executed", "phar_stub_executed", "setup_executed", "apt_executed"))):
+            raise ValueError("Tool evidence lacks the selected data-only client/store provenance")
         obj = receipt["objects"][f"{row['name']}-{row['version']}.phar"]
         if obj != {"url": row["url"], "effective_url": row["url"],
                    "size": row["size"], "sha256": row["sha256"]}:
             raise ValueError("Prepared PHAR differs from its exact catalog identity")
         signature = receipt["signatures"][row["name"]]
+        records = {"composer": ("composer.sha256sum", "composer.sig.json"),
+                   "phpunit": ("phpunit-phive.xml", "phpunit.asc")}[row["name"]]
+        for role, name in zip(("digest", "signature"), records):
+            if (receipt["objects"][name]["url"] != row[f"publisher_{role}_url"]
+                    or receipt["objects"][name]["sha256"] != row["evidence"][role]["sha256"]):
+                raise ValueError("Publisher metadata is not bound to the captured exact authority")
         if row["name"] == "composer":
             public = evidence_file({"file": authority["public_key"],
                                     "sha256": authority["public_key_sha256"]}, root)
-            if (signature.get("verification") != "Verified OK"
+            if (authority["state"] != "verified" or signature.get("verification") != "Verified OK"
                     or signature.get("public_key_role") != "Tags Public Key"
                     or signature.get("public_key_pem_sha256") != bootstrap.sha256(public)):
                 raise ValueError("Composer publisher verification is incomplete")
-        elif authority["state"] == "verified" and not (
-                signature.get("publisher_document_binding") is True
-                and signature.get("verification") == "verified"
-                and re.fullmatch(r"[A-F0-9]{40}", signature.get("issuer_fingerprint", ""))):
-            raise ValueError("PHPUnit full publisher fingerprint and signature are not qualified")
+            if evidence["digest"].decode().split()[0] != row["sha256"]:
+                raise ValueError("Composer publisher digest differs from selected bytes")
+        elif authority["state"] == "reviewed-publisher-digest":
+            if authority["decision"] != "https://github.com/durable-workflow/.github/issues/297#issuecomment-6664627349":
+                raise ValueError("Publisher digest authority lacks its exact source decision")
+            manifest = ET.fromstring(evidence["digest"])
+            if manifest.tag != "{https://phar.io/repository}repository":
+                raise ValueError("Unknown publisher manifest format")
+            releases = [release for phar in manifest if phar.get("name") == "phpunit"
+                        for release in phar if release.get("version") == row["version"]]
+            if len(releases) != 1 or releases[0].get("url") != row["url"]:
+                raise ValueError("Canonical publisher tool/version record is missing or ambiguous")
+            hashes = [item for item in releases[0] if item.tag.rsplit("}", 1)[-1] == "hash"
+                      and item.get("type") == "sha-256"]
+            if len(hashes) != 1 or hashes[0].get("value") != row["sha256"]:
+                raise ValueError("Canonical publisher digest differs from selected PHAR bytes")
+        elif authority["state"] != "missing-full-fingerprint-binding":
+            raise ValueError("PHPUnit signature authentication is outside the selected source authority")
     return catalog
 
 
@@ -106,7 +131,7 @@ def select_tools(catalog: dict, requested: str, php: str, root: Path = bootstrap
     for row in result:
         if row["name"] == "phpunit" and php == "8.1":
             raise ValueError("PHPUnit 11 requires PHP 8.2 or later; PHP 8.1 remains unsupported")
-        if row["publisher_authority"]["state"] != "verified":
+        if row["publisher_authority"]["state"] not in PUBLISHER_STATES:
             raise ValueError("Selected tool publisher authority is incomplete; no download or fallback")
     return result
 
@@ -129,7 +154,7 @@ class NoRedirects(HTTPRedirectHandler):
 @contextmanager
 def download_held(row: dict, context, opener_factory=build_opener, clock=time.monotonic):
     expected = identity(row)
-    if (row["publisher_authority"]["state"] != "verified"
+    if (row["publisher_authority"]["state"] not in PUBLISHER_STATES
             or context.verify_mode != ssl.CERT_REQUIRED or not context.check_hostname):
         raise ValueError("Qualified publisher and exclusive verified HTTPS trust are required")
     client = opener_factory(ProxyHandler({}), HTTPSHandler(context=context), NoRedirects())
@@ -153,7 +178,7 @@ def install_held(held: bootstrap.HeldAsset, row: dict, environment: dict,
     This function does not execute the PHAR or PHP.
     """
     held.assert_sealed()
-    if held.identity != identity(row) or row["publisher_authority"]["state"] != "verified":
+    if held.identity != identity(row) or row["publisher_authority"]["state"] not in PUBLISHER_STATES:
         raise ValueError("Held tool does not match the reviewed qualified tuple")
     if environment != bootstrap.clean_environment(environment, environment.get("HOME", "")) or dict(os.environ) != environment:
         raise ValueError("Tool installation requires an already closed parent environment")
