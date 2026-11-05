@@ -160,6 +160,7 @@ class CleanBundleTest(unittest.TestCase):
         variables = {
             "RUNNER_TEMP": str(self.directory), "GITHUB_ENV": str(self.env_file),
             "GITHUB_OUTPUT": str(self.output_file), "DW_CI_PIP_PYTHON": "/fixture/private/bin/python",
+            "TRUST_CREATED": "false",
         }
         source = self.directory / "pip/_vendor/certifi/cacert.pem"
         source.parent.mkdir(parents=True)
@@ -218,6 +219,26 @@ class CleanBundleTest(unittest.TestCase):
         with patch.dict(os.environ, {"PATH": str(self.directory), "OPENSSL_CONF": str(binary)}):
             self.export()
         self.assertFalse(marker.exists())
+
+    def test_new_runtime_is_reclaimed_when_trust_validation_or_export_fails(self):
+        runner = self.directory
+        for stage in ("verify", "export"):
+            root = trust.runtime._private_root(runner)
+            receipt = root / "runtime.json"
+            receipt.write_text("{}")
+            report = {"root": str(root), "purelib": str(root / "site-packages")}
+            source = Path(report["purelib"]) / "pip/_vendor/certifi/cacert.pem"
+            environment = {"RUNNER_TEMP": str(runner), "TRUST_CREATED": "true",
+                           "GITHUB_ENV": str(self.env_file), "GITHUB_OUTPUT": str(self.output_file)}
+            with self.subTest(stage=stage), patch.dict(os.environ, environment), \
+                    patch.object(trust.sys, "argv", ["export-trust", "--runtime", str(receipt)]), \
+                    patch.object(trust.runtime, "verify_runtime", side_effect=ValueError("inert verification") if stage == "verify" else None,
+                                 return_value=(report, {str(source): {}})), \
+                    patch.object(trust.runtime, "verify_active_origin"), \
+                    patch.object(trust, "export_bundle", side_effect=ValueError("inert export")), \
+                    self.assertRaisesRegex(ValueError, "inert"):
+                trust.main()
+            self.assertFalse(root.exists())
 
 
 if __name__ == "__main__":

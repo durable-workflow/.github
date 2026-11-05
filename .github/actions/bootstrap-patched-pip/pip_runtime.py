@@ -69,7 +69,8 @@ class BoundDirectory:
                 metadata = os.fstat(child)
                 sticky_root = metadata.st_uid == 0 and metadata.st_mode & stat.S_ISVTX
                 if metadata.st_uid not in {0, os.getuid()} or (metadata.st_mode & 0o022 and not sticky_root):
-                    raise ValueError("Runtime directory has an untrusted owner or writable parent")
+                    raise ValueError(f"Runtime directory refused: path={self.path.anchor + '/'.join(self.path.parts[1:len(self.chain)])} "
+                                     f"uid={metadata.st_uid} mode={stat.S_IMODE(metadata.st_mode):04o}")
                 descriptor = child
             self.fd = descriptor
             metadata = os.fstat(self.fd)
@@ -402,12 +403,17 @@ def _private_root(runner_temp):
         parent.check()
         os.mkdir(name, 0o700, dir_fd=parent.fd)
         root = runner_temp / name
-        with BoundDirectory(root, private=True) as directory:
-            if os.listdir(directory.fd):
-                raise ValueError("New private runtime is not empty")
-            for child in ("home", "tmp", "downloads"):
-                os.mkdir(child, 0o700, dir_fd=directory.fd)
-            directory.check()
+        identity = directory_identity(os.stat(name, dir_fd=parent.fd, follow_symlinks=False))
+        try:
+            with BoundDirectory(root, private=True) as directory:
+                if os.listdir(directory.fd):
+                    raise ValueError("New private runtime is not empty")
+                for child in ("home", "tmp", "downloads"):
+                    os.mkdir(child, 0o700, dir_fd=directory.fd)
+                directory.check()
+        except BaseException:
+            cleanup_runtime(root, runner_temp, identity)
+            raise
         return root
 
 
@@ -698,9 +704,7 @@ print(json.dumps({'python':sys.executable,'version':pip.__version__,
 
 def verify_runtime(path, runner_temp, *, execute=subprocess.run, initial=False, require_trust=False):
     path = absolute_path(path)
-    root = path.parent
-    if path.name != "runtime.json" or root.parent != absolute_path(runner_temp) or re.fullmatch(r"dw-pip-[0-9a-f]{32}", root.name) is None:
-        raise ValueError("Runtime receipt is outside its exact owned state")
+    root, _identity = runtime_root(path, runner_temp)
     with BoundDirectory(root, private=True):
         report = _read_json(path)
         if (set(report) != {"schema", "root", "root_identity", "venv_baseline", "interpreter", "manager", "python", "purelib", "wheel", "wheel_identity"}
@@ -739,6 +743,15 @@ def verify_runtime(path, runner_temp, *, execute=subprocess.run, initial=False, 
         return report, subjects
 
 
+def runtime_root(path, runner_temp):
+    path = absolute_path(path)
+    root = path.parent
+    if path.name != "runtime.json" or root.parent != absolute_path(runner_temp) or re.fullmatch(r"dw-pip-[0-9a-f]{32}", root.name) is None:
+        raise ValueError("Runtime receipt is outside its exact owned state")
+    with BoundDirectory(root, private=True) as held:
+        return root, directory_identity(os.fstat(held.fd))
+
+
 def verify_active_origin(report, selected):
     if str(absolute_path(selected)) != report["python"] or shutil.which("python") != report["python"]:
         raise ValueError("Later Python client fell back outside the private runtime")
@@ -762,28 +775,36 @@ def main():
     os.umask(0o077)
     operation, selected = sys.argv[1:]
     runner_temp = absolute_path(os.environ["RUNNER_TEMP"])
-    with github_file(os.environ["GITHUB_ENV"], runner_temp) as append_env, \
-            github_file(os.environ["GITHUB_OUTPUT"], runner_temp) as append_output, \
-            github_file(os.environ["GITHUB_PATH"], runner_temp) as append_path:
-        existing = os.environ.get("DW_CI_PIP_STATE")
-        if operation == "verify" and not existing:
-            raise ValueError("Private pip verification has no explicit producer receipt")
-        if existing:
-            path = absolute_path(existing)
-            report, _subjects = verify_runtime(path, runner_temp, require_trust=True)
-            verify_active_origin(report, selected)
-        else:
-            path = create_runtime(selected, runner_temp)
-            report, _subjects = verify_runtime(path, runner_temp, initial=True)
-        if operation == "bootstrap":
-            append_path(str(Path(report["python"]).parent) + "\n")
-            append_env(f"DW_CI_PIP_STATE={path}\nDW_CI_PIP_PYTHON={report['python']}\n"
-                       f"PYTHONPATH={report['purelib']}\nPYTHONHOME=\nPYTHONNOUSERSITE=1\nPYTHONDONTWRITEBYTECODE=1\n"
-                       f"LD_LIBRARY_PATH={report['interpreter']['loader']['path'] if report['interpreter']['loader'] else ''}\n"
-                       "LD_PRELOAD=\nLD_AUDIT=\nPIP_CONFIG_FILE=/dev/null\nPIP_KEYRING_PROVIDER=disabled\nPIP_NO_INPUT=1\n")
-        append_output(f"pip-state={path}\npip-python={report['python']}\npip-purelib={report['purelib']}\n")
-        print(json.dumps({"private_pip": VERSION, "python_version": report["interpreter"]["version"],
-                          "manager_unchanged": True, "operation": operation}, sort_keys=True))
+    created = None
+    try:
+        with github_file(os.environ["GITHUB_ENV"], runner_temp) as append_env, \
+                github_file(os.environ["GITHUB_OUTPUT"], runner_temp) as append_output, \
+                github_file(os.environ["GITHUB_PATH"], runner_temp) as append_path:
+            existing = os.environ.get("DW_CI_PIP_STATE")
+            if operation == "verify" and not existing:
+                raise ValueError("Private pip verification has no explicit producer receipt")
+            if existing:
+                path = absolute_path(existing)
+                report, _subjects = verify_runtime(path, runner_temp, require_trust=True)
+                verify_active_origin(report, selected)
+            else:
+                path = create_runtime(selected, runner_temp)
+                created = runtime_root(path, runner_temp)
+                report, _subjects = verify_runtime(path, runner_temp, initial=True)
+            if operation == "bootstrap":
+                append_path(str(Path(report["python"]).parent) + "\n")
+                append_env(f"DW_CI_PIP_STATE={path}\nDW_CI_PIP_PYTHON={report['python']}\n"
+                           f"PYTHONPATH={report['purelib']}\nPYTHONHOME=\nPYTHONNOUSERSITE=1\nPYTHONDONTWRITEBYTECODE=1\n"
+                           f"LD_LIBRARY_PATH={report['interpreter']['loader']['path'] if report['interpreter']['loader'] else ''}\n"
+                           "LD_PRELOAD=\nLD_AUDIT=\nPIP_CONFIG_FILE=/dev/null\nPIP_KEYRING_PROVIDER=disabled\nPIP_NO_INPUT=1\n")
+            append_output(f"pip-state={path}\npip-python={report['python']}\npip-purelib={report['purelib']}\n"
+                          f"pip-created={'true' if created else 'false'}\n")
+            print(json.dumps({"private_pip": VERSION, "python_version": report["interpreter"]["version"],
+                              "manager_unchanged": True, "operation": operation}, sort_keys=True))
+    except BaseException:
+        if created is not None:
+            cleanup_runtime(created[0], runner_temp, created[1])
+        raise
 
 
 if __name__ == "__main__":

@@ -55,6 +55,7 @@ class PrivatePipRuntimeTest(unittest.TestCase):
     def setUp(self):
         # The source fixture uses the absolute distro interpreter. A hosted
         # caller's toolcache selection is tested separately and never adopted.
+        self.hosted_location = os.environ.get("pythonLocation", "")
         self.environment = patch.dict(os.environ, {"pythonLocation": ""})
         self.environment.start()
         self.addCleanup(self.environment.stop)
@@ -281,6 +282,69 @@ class PrivatePipRuntimeTest(unittest.TestCase):
             seed.assert_called_once()
             self.assertEqual([unrelated], list(runner.iterdir()))
             self.assertEqual("preserved", unrelated.read_text())
+
+    def test_partial_allocation_is_reclaimed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            runner = Path(temporary)
+            original_mkdir = runtime.os.mkdir
+            def mkdir(name, *args, **kwargs):
+                if name == "tmp" and "dir_fd" in kwargs:
+                    raise OSError("inert partial allocation refusal")
+                return original_mkdir(name, *args, **kwargs)
+            with patch.object(runtime.os, "mkdir", side_effect=mkdir), self.assertRaisesRegex(OSError, "partial allocation"):
+                runtime._private_root(runner)
+            self.assertEqual([], list(runner.iterdir()))
+
+    def test_post_seed_verification_and_command_append_failure_reclaim_new_state(self):
+        for stage in ("verify", "append"):
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as temporary:
+                runner = Path(temporary)
+                environment = {"RUNNER_TEMP": str(runner)}
+                for name in ("GITHUB_ENV", "GITHUB_OUTPUT", "GITHUB_PATH"):
+                    path = runner / name
+                    path.touch(mode=0o600)
+                    environment[name] = str(path)
+                created = []
+                foreign = runner / "preserved"
+                foreign.write_text("unchanged")
+                def create(_selected, _temporary):
+                    root = runtime._private_root(runner)
+                    created.append(root)
+                    if stage == "append":
+                        output = Path(environment["GITHUB_OUTPUT"])
+                        output.rename(runner / "held-output")
+                        output.symlink_to(foreign)
+                    return root / "runtime.json"
+                report = {"python": "/fixture/private/python", "purelib": "/fixture/private/site-packages",
+                          "interpreter": {"loader": None, "version": [3, 13, 18]}}
+                with patch.dict(os.environ, environment, clear=True), \
+                        patch.object(runtime.sys, "argv", ["runtime", "bootstrap", "/usr/bin/python3"]), \
+                        patch.object(runtime, "create_runtime", side_effect=create), \
+                        patch.object(runtime, "verify_runtime", return_value=(report, {}),
+                                     side_effect=ValueError("inert post-seed verification") if stage == "verify" else None), \
+                        self.assertRaises(ValueError):
+                    runtime.main()
+                self.assertEqual(1, len(created))
+                self.assertFalse(created[0].exists())
+                self.assertEqual("unchanged", foreign.read_text())
+
+    def test_actual_hosted_custody_is_reported_and_never_relaxed(self):
+        # This is a read-only source-CI observation, not execution of the new
+        # action on toolcache Python or an installed qualification receipt.
+        location = self.hosted_location
+        if not location:
+            self.skipTest("No hosted toolcache selection in this local source control")
+        target = Path(location) / "lib"
+        observations = []
+        for path in reversed([target, *target.parents]):
+            metadata = path.lstat()
+            observations.append({"path": str(path), "uid": metadata.st_uid, "mode": format(metadata.st_mode & 0o7777, "04o")})
+        print("Hosted Python custody (read-only): " + json.dumps(observations, sort_keys=True))
+        unsafe = [entry for entry in observations if int(entry["mode"], 8) & 0o022 and not
+                  (entry["uid"] == 0 and int(entry["mode"], 8) & 0o1000)]
+        if unsafe:
+            with self.assertRaisesRegex(ValueError, "Runtime directory refused: path=.*uid=.*mode="):
+                runtime.selected_loader(location)
 
     def test_held_output_parent_and_object_redirects_refuse_before_writing(self):
         with tempfile.TemporaryDirectory() as temporary:
