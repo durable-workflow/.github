@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import stat
@@ -94,3 +95,63 @@ class CancellationWorkflowPolicyTest(unittest.TestCase):
                 for step in job["steps"]:
                     if step.get("if", "").startswith("always()"):
                         self.assertEqual("always() && steps.evidence.outcome == 'success'", step["if"])
+
+    def cleanup_case(self, name, mode):
+        workflow = yaml.safe_load(WORKFLOW.read_text())
+        step = next(s for s in workflow['jobs'][name]['steps'] if s.get('name') in
+                    ('Collect observations and remove the fixture', 'Remove the fixture'))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'evidence').mkdir()
+            outside = root / 'outside.log'
+            outside.write_text('unchanged')
+            if mode == 'symlink':
+                (root / 'evidence/runtime.log').symlink_to(outside)
+            executable = root / 'docker'
+            executable.write_text('''#!/usr/bin/python3
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ['CALLS'], 'a') as output:
+    output.write(json.dumps(args) + '\\n')
+mode = os.environ['CASE']
+if 'logs' in args and mode == 'log-failure':
+    sys.exit(23)
+if 'down' in args and mode == 'down-failure':
+    sys.exit(37)
+if args[:2] == ['ps', '-aq'] and mode == 'survivor':
+    print('remaining-container')
+if args[:2] == ['network', 'ls'] and mode == 'unavailable':
+    sys.exit(19)
+''')
+            executable.chmod(0o700)
+            calls = root / 'calls.jsonl'
+            result = subprocess.run(['bash', '-e', '-c', step['run']], cwd=root,
+                                    env={'PATH': str(root) + os.pathsep + os.defpath,
+                                         'CALLS': str(calls), 'CASE': mode},
+                                    capture_output=True, text=True)
+            observed = [json.loads(line) for line in calls.read_text().splitlines()]
+            self.assertEqual('unchanged', outside.read_text())
+            self.assertIn(['compose', '-p', 'cancellation-' + name, 'down', '-v', '--remove-orphans'], observed)
+            return result, observed
+
+    def test_log_failure_still_tears_down_and_preserves_the_failed_status(self):
+        for name in ('restate', 'temporal'):
+            with self.subTest(job=name):
+                result, _ = self.cleanup_case(name, 'log-failure')
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn('log_status=23 down_status=0 absence_status=0', result.stdout)
+
+    def test_log_symlink_is_not_followed_and_does_not_skip_teardown(self):
+        for name in ('restate', 'temporal'):
+            with self.subTest(job=name):
+                result, _ = self.cleanup_case(name, 'symlink')
+                self.assertNotEqual(0, result.returncode)
+
+    def test_success_requires_available_empty_container_network_and_volume_queries(self):
+        for name in ('restate', 'temporal', 'dbos'):
+            for mode in ('success', 'survivor', 'unavailable', 'down-failure'):
+                with self.subTest(job=name, mode=mode):
+                    result, calls = self.cleanup_case(name, mode)
+                    self.assertEqual(mode == 'success', result.returncode == 0)
+                    for query in (['ps', '-aq'], ['network', 'ls'], ['volume', 'ls']):
+                        self.assertTrue(any(row[:2] == query for row in calls))

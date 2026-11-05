@@ -56,8 +56,19 @@ jobs:
       - name: Collect observations and remove the fixture
         if: always() && steps.evidence.outcome == 'success'
         run: |
-          docker compose -p cancellation-restate logs runtime > evidence/runtime.log
-          docker compose -p cancellation-restate down -v --remove-orphans
+          set -uo pipefail
+          set -C
+          log_status=0
+          down_status=0
+          absence_status=0
+          docker compose -p cancellation-restate logs runtime > evidence/runtime.log || log_status=$?
+          docker compose -p cancellation-restate down -v --remove-orphans || down_status=$?
+          containers=$(docker ps -aq --filter label=com.docker.compose.project=cancellation-restate) || absence_status=1
+          networks=$(docker network ls -q --filter label=com.docker.compose.project=cancellation-restate) || absence_status=1
+          volumes=$(docker volume ls -q --filter label=com.docker.compose.project=cancellation-restate) || absence_status=1
+          test -z "$containers$networks$volumes" || absence_status=1
+          printf 'log_status=%s down_status=%s absence_status=%s\n' "$log_status" "$down_status" "$absence_status"
+          test "$log_status:$down_status:$absence_status" = '0:0:0'
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always() && steps.evidence.outcome == 'success'
         with:
@@ -100,8 +111,19 @@ jobs:
       - name: Collect observations and remove the fixture
         if: always() && steps.evidence.outcome == 'success'
         run: |
-          docker compose -p cancellation-temporal logs runtime > evidence/runtime.log
-          docker compose -p cancellation-temporal down -v --remove-orphans
+          set -uo pipefail
+          set -C
+          log_status=0
+          down_status=0
+          absence_status=0
+          docker compose -p cancellation-temporal logs runtime > evidence/runtime.log || log_status=$?
+          docker compose -p cancellation-temporal down -v --remove-orphans || down_status=$?
+          containers=$(docker ps -aq --filter label=com.docker.compose.project=cancellation-temporal) || absence_status=1
+          networks=$(docker network ls -q --filter label=com.docker.compose.project=cancellation-temporal) || absence_status=1
+          volumes=$(docker volume ls -q --filter label=com.docker.compose.project=cancellation-temporal) || absence_status=1
+          test -z "$containers$networks$volumes" || absence_status=1
+          printf 'log_status=%s down_status=%s absence_status=%s\n' "$log_status" "$down_status" "$absence_status"
+          test "$log_status:$down_status:$absence_status" = '0:0:0'
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always() && steps.evidence.outcome == 'success'
         with:
@@ -143,7 +165,17 @@ jobs:
           ' | tee evidence/run.log
       - name: Remove the fixture
         if: always() && steps.evidence.outcome == 'success'
-        run: docker compose -p cancellation-dbos down -v --remove-orphans
+        run: |
+          set -uo pipefail
+          down_status=0
+          absence_status=0
+          docker compose -p cancellation-dbos down -v --remove-orphans || down_status=$?
+          containers=$(docker ps -aq --filter label=com.docker.compose.project=cancellation-dbos) || absence_status=1
+          networks=$(docker network ls -q --filter label=com.docker.compose.project=cancellation-dbos) || absence_status=1
+          volumes=$(docker volume ls -q --filter label=com.docker.compose.project=cancellation-dbos) || absence_status=1
+          test -z "$containers$networks$volumes" || absence_status=1
+          printf 'down_status=%s absence_status=%s\n' "$down_status" "$absence_status"
+          test "$down_status:$absence_status" = '0:0'
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always() && steps.evidence.outcome == 'success'
         with:

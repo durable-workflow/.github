@@ -34,11 +34,11 @@ PYTHON_MODULES = {"unittest", "pip", "venv", "http.server"}
 # Filled with explicit reviewed workflow-byte identities, never derived from
 # candidate text. A changed complex workflow needs a separate source review.
 REVIEWED_COMPLEX_WORKFLOWS = {
-    ".github/workflows/ci.yml": "03500c9892214253cdc7d41d5a35243e63ce3e670b6c97aa81bd87519c2df838",
-    ".github/workflows/sonar.yml": "d34e7917760baa6f82770b37df3c0cbe1efe01e96e45c16be6a93790f4c48304",
+    ".github/workflows/ci.yml": "7d7d80076b84ee2ccc0a7c6449f3617acd9c399ac4395cd26a0cc6a82a176330",
+    ".github/workflows/sonar.yml": "2b84ee275c5eb97da970cd810623bc64b78ce7a58d65a826c2f42e5c9f868475",
     ".github/workflows/protected-policy.yml": "642d204ea939ca5eba7ef51be9e4ae56a35177413caabe849315086d3d9d2d31",
     ".github/workflows/rust-docs-visual.yml": "69bc0b89cdeacbabd35c345770de86fe9e20bb3f2a53fc1c7a157973c3db31a6",
-    ".github/workflows/cancellation-competitors.yml": "05e17afb377ae5e1ca3c20295cea27704d95763a36ac61d8b9cae39a2c5ce324",
+    ".github/workflows/cancellation-competitors.yml": "9ce25bd480c899e52a7e805fd6e5e6d45fcaa687c8c25b092d1f2163baf0b0b5",
 }
 
 
