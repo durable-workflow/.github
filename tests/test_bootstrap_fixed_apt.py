@@ -35,7 +35,7 @@ class FixedAptBootstrapTest(unittest.TestCase):
                 with self.assertRaises((ValueError, OSError)):
                     bootstrap.capture_packages(root)
 
-    def runner(self, *, wrong_hash=False, dry_failure=False):
+    def runner(self, *, wrong_hash=False, transaction_failure=False):
         calls = []
         private = "/run/dw-fixed-apt.aB123456"
         rows = [("lib.deb", b"immutable-library", "a" * 64), ("apt.deb", b"immutable-apt", "b" * 64)]
@@ -49,26 +49,26 @@ class FixedAptBootstrapTest(unittest.TestCase):
                 output = "".join(digest + "  " + private + "/" + name + "\n" for name, _, digest in rows).encode()
                 if wrong_hash:
                     output = output.replace(b"a", b"c", 1)
-            if dry_failure and "--no-act" in arguments:
-                raise subprocess.CalledProcessError(1, arguments)
+            if "/usr/bin/python3" in arguments:
+                if transaction_failure:
+                    raise subprocess.CalledProcessError(1, arguments)
+                output = b'{"installed":true}'
             return subprocess.CompletedProcess(arguments, 0, output, b"")
         return run, calls, rows
 
-    def test_verified_bytes_are_staged_via_stdin_and_dpkg_has_no_network(self):
+    def test_verified_bytes_are_staged_before_captured_isolated_transaction(self):
         run, calls, rows = self.runner()
         bootstrap.install(rows, run=run)
         writes = [(argv, options) for argv, options in calls if "/usr/bin/tee" in argv]
         self.assertEqual([row[1] for row in rows], [options["input"] for _, options in writes])
-        installs = [argv for argv, _ in calls if "/usr/bin/dpkg" in argv]
-        self.assertEqual(2, len(installs))
-        self.assertIn("--no-act", installs[0])
-        self.assertNotIn("--no-act", installs[1])
+        transaction = [argv for argv, _ in calls if "/usr/bin/python3" in argv]
+        self.assertEqual(1, len(transaction))
+        self.assertEqual(["/usr/bin/sudo", "-n", "/usr/bin/python3", "-I", "-S", "-B", "-c"], transaction[0][:7])
+        self.assertEqual(bootstrap.capture_transaction(), transaction[0][7])
         for argv, options in calls:
             self.assertEqual(bootstrap.CLEAN_ENV, options["env"])
             self.assertTrue(options["check"])
-            if "/usr/bin/dpkg" in argv:
-                self.assertEqual(["/usr/bin/sudo", "-n", "/usr/bin/unshare", "--net", "--"], argv[:5])
-            self.assertFalse(any("apt-get" in word for word in argv))
+            self.assertNotIn("/usr/bin/apt-get", argv)
         self.assertIn("/usr/bin/rm", calls[-2][0])
         self.assertIn("/usr/bin/rmdir", calls[-1][0])
 
@@ -79,13 +79,19 @@ class FixedAptBootstrapTest(unittest.TestCase):
         self.assertFalse(any("/usr/bin/dpkg" in argv for argv, _ in calls))
         self.assertIn("/usr/bin/rm", calls[-2][0])
 
-    def test_dependency_dry_run_failure_never_reaches_real_install(self):
-        run, calls, rows = self.runner(dry_failure=True)
+    def test_transaction_refusal_is_not_retried_and_cleans_exact_staging(self):
+        run, calls, rows = self.runner(transaction_failure=True)
         with self.assertRaises(subprocess.CalledProcessError):
             bootstrap.install(rows, run=run)
-        installs = [argv for argv, _ in calls if "/usr/bin/dpkg" in argv]
-        self.assertEqual(1, len(installs))
-        self.assertIn("--no-act", installs[0])
+        self.assertEqual(1, sum("/usr/bin/python3" in argv for argv, _ in calls))
+        self.assertIn("/usr/bin/rm", calls[-2][0])
+
+    def test_changed_transaction_source_refuses_before_root_effect(self):
+        run, calls, rows = self.runner()
+        with patch.object(bootstrap, "TRANSACTION_SHA256", "0" * 64), \
+                self.assertRaisesRegex(ValueError, "captured source differs"):
+            bootstrap.install(rows, run=run)
+        self.assertEqual([], calls)
 
     def test_default_plan_has_no_root_effect(self):
         with patch.object(bootstrap.sys, "argv", ["bootstrap"]), \

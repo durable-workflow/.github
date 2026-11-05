@@ -23,6 +23,24 @@ PACKAGES = (
     ("apt_3.2.1ubuntu0.1_amd64.deb", 1506688,
      "0de729b8fe0e1c67c04e8e8d5bd6e0420dbd47f75b93f0b71c8e740edc2d5ffc"),
 )
+TRANSACTION_SHA256 = "e8fa9a19d8d28ac4d0e577de3d6113d1881a907ae74846d235dd8259c138cd62"
+
+
+def capture_transaction():
+    descriptor = os.open(ROOT / "scripts/fixed_apt_transaction.py",
+                         os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as stream:
+        before = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                or before.st_size > 16384):
+            raise ValueError("Offline transaction source identity differs")
+        data = stream.read(16385)
+        after = os.fstat(stream.fileno())
+    identity = lambda value: (value.st_dev, value.st_ino, value.st_size,
+                              value.st_mtime_ns, value.st_ctime_ns, value.st_mode, value.st_nlink)
+    if identity(before) != identity(after) or hashlib.sha256(data).hexdigest() != TRANSACTION_SHA256:
+        raise ValueError("Offline transaction captured source differs")
+    return data.decode("utf-8")
 
 
 def capture_packages(directory):
@@ -46,6 +64,7 @@ def command(arguments, *, run, data=None, timeout=30):
 
 
 def install(captured, *, run=subprocess.run):
+    transaction = capture_transaction()
     # Root receives only the already-captured immutable bytes through stdin.
     # The unprivileged checkout cannot replace files inside this /run directory.
     result = command(["/usr/bin/sudo", "-n", "/usr/bin/mktemp", "-d", "/run/dw-fixed-apt.XXXXXXXX"], run=run)
@@ -60,9 +79,13 @@ def install(captured, *, run=subprocess.run):
         expected = "".join(digest + "  " + path + "\n" for path, (_, _, digest) in zip(paths, captured))
         if hashes.stdout.decode("ascii") != expected:
             raise ValueError("Root-owned package copy differs")
-        prefix = ["/usr/bin/sudo", "-n", "/usr/bin/unshare", "--net", "--", "/usr/bin/dpkg"]
-        command([*prefix, "--no-act", "--install", *paths], run=run, timeout=60)
-        command([*prefix, "--install", *paths], run=run, timeout=120)
+        # Execute captured source, not a root reopen of the mutable checkout.
+        result = command(["/usr/bin/sudo", "-n", "/usr/bin/python3", "-I", "-S", "-B",
+                          "-c", transaction, private], run=run, timeout=240)
+        receipt = json.loads(result.stdout)
+        if receipt.get("installed") is not True:
+            raise ValueError("Offline transaction did not return a fixed-pair receipt")
+        return receipt
     finally:
         command(["/usr/bin/sudo", "-n", "/usr/bin/rm", "-f", "--", *paths], run=run)
         command(["/usr/bin/sudo", "-n", "/usr/bin/rmdir", "--", private], run=run)
@@ -89,8 +112,9 @@ def main():
                              "--show", "apt", "libapt-pkg7.0"], run=subprocess.run)
             if query.stdout != b"apt install ok installed 3.2.0\nlibapt-pkg7.0 install ok installed 3.2.0\n":
                 raise ValueError("The affected installed package pair differs from the reviewed runner")
-            install(captured)
+            receipt = install(captured)
             report = require_fixed_apt(release)
+            report["bootstrap"] = receipt
         print(json.dumps(report, sort_keys=True))
         return 0
     except (ValueError, OSError, subprocess.SubprocessError, UnicodeError) as error:
