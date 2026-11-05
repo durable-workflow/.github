@@ -154,3 +154,37 @@ helpers. It is not a shell sandbox, a multi-language program analyzer or a claim
 about third-party actions' internal requests. Maintainers still review dynamic
 request paths and their actual configuration. Enable the target setting after
 migrating all its request paths so partial rollouts remain visible.
+
+
+## Protected pilot source successor
+
+The selective successor to [the reverted pilot](https://github.com/durable-workflow/.github/pull/240)
+keeps ordinary consumer preflight and Composer helper interpretation at the
+accepted rollback behavior. Its shared-policy changes allow only the pinned
+App-token action and the byte-exact protected workflow. The stricter input
+language lives in `scripts/protected_policy_context.py`, called only by the
+protected reader before the shared validator. Candidate files remain bounded
+nonexecutable data; the reader and issuer run from the protected base.
+
+The pilot refuses relative helper references with a non-root execution context,
+unreviewed shell, directory changes or dynamic shell evaluation. YAML traversal
+bounds depth and expanded alias work and refuses recursive aliases, duplicate
+keys and merges. These refusals are deliberately conservative and do not change
+ordinary caller behavior. Run the dedicated controls with:
+
+```sh
+python -m unittest tests.test_protected_policy_context tests.test_protected_policy_check tests.test_protected_policy_inputs tests.test_protected_policy_issue
+```
+
+Current integration is incomplete: the Rust visual workflow's candidate-root
+analytics check is outside this supported root-context language. Its acceptance
+control remains failing until a reviewed compatibility correction preserves the
+actual checker semantics. Do not weaken the guard, waive the control or claim a
+complete pilot qualification from the other passing controls.
+
+The source remains inactive. No App/key, protected variable or secret,
+environment, event-policy setting, required rule or live check is provisioned.
+The existing [AI contribution issue](https://github.com/durable-workflow/ai/issues/27)
+waits for accepted source and a separately qualified one-repository pilot. Human
+account/key authorization and the live positive/negative, expected-issuer,
+concurrency and rollback controls remain separate prerequisites.

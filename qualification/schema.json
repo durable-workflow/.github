@@ -316,7 +316,17 @@
           "type": "object"
         },
         "pull_request_target_exceptions": {
-          "maxItems": 0,
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "target": {"const": "github-control-plane"},
+              "path": {"const": ".github/workflows/protected-policy.yml"},
+              "sha256": {"const": "642d204ea939ca5eba7ef51be9e4ae56a35177413caabe849315086d3d9d2d31"}
+            },
+            "required": ["target", "path", "sha256"],
+            "type": "object"
+          },
+          "maxItems": 1,
           "type": "array"
         }
       },

@@ -1,0 +1,77 @@
+name: Protected workflow policy
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  protected-policy:
+    name: Validate bounded workflow inputs
+    if: >-
+      github.repository == 'durable-workflow/.github' &&
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'pull_request_target'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: protected-policy-gate
+    steps:
+      - name: Check out the immutable protected base
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Create the isolated policy runtime
+        run: |
+          python -I -m venv "$RUNNER_TEMP/protected-policy-python"
+          printf '%s\n' "$RUNNER_TEMP/protected-policy-python/bin" >> "$GITHUB_PATH"
+      - name: Select verified dependency and API trust
+        uses: ./.github/actions/bootstrap-patched-pip # local
+        with:
+          clients: pip,python,curl,git
+      - name: Install only the protected hash-locked parser
+        run: >-
+          python -I -m pip --isolated install --require-hashes
+          --only-binary=:all: --no-deps -r qualification/requirements.lock
+      - name: Require protected source and the configured App identity
+        env:
+          POLICY_GATE_APP_ID: ${{ vars.POLICY_GATE_APP_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_WORKFLOW_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          [[ "$POLICY_GATE_APP_ID" =~ ^[1-9][0-9]{0,18}$ ]]
+      - name: Create the pilot-only checks token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        env:
+          NODE_OPTIONS: --use-openssl-ca
+          NODE_EXTRA_CA_CERTS: ''
+          NODE_USE_SYSTEM_CA: '0'
+          NODE_TLS_REJECT_UNAUTHORIZED: '1'
+        with:
+          app-id: ${{ vars.POLICY_GATE_APP_ID }}
+          private-key: ${{ secrets.POLICY_GATE_APP_KEY }}
+          owner: durable-workflow
+          repositories: .github
+          permission-checks: write
+      - name: Validate data and issue the bound App check
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          POLICY_CHECKS_TOKEN: ${{ steps.app.outputs.token }}
+          POLICY_GATE_APP_ID: ${{ vars.POLICY_GATE_APP_ID }}
+          POLICY_PULL_REQUEST: ${{ github.event.pull_request.number }}
+          POLICY_BASE_SHA: ${{ github.sha }}
+          POLICY_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: >-
+          python -I scripts/protected_policy_issue.py
+          --pull-request "$POLICY_PULL_REQUEST" --base-sha "$POLICY_BASE_SHA"
+          --expected-head "$POLICY_HEAD_SHA"
