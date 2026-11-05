@@ -880,8 +880,12 @@ def _verify_cloud_hotfix_dependencies(label, jobs):
             or hotfix.get("needs") not in ("action-policy", ["action-policy"])):
         raise PolicyError(f"{label} Cloud hotfix must retain its separate successful policy dependency")
     for job in jobs.values():
-        if (isinstance(job, dict) and "inputs.hotfix_build" in str(job.get("if", ""))
-                and job.get("needs") not in ("action-policy", ["action-policy"])):
+        condition = _condition_without_expression_wrapper(job.get("if", "")) if isinstance(job, dict) else ""
+        if ("inputs.hotfix_build" not in condition
+                or condition in {"!inputs.hotfix_build", "always() && !inputs.hotfix_build"}):
+            continue
+        if (condition != "github.event_name == 'workflow_dispatch' && inputs.hotfix_build"
+                or job.get("needs") not in ("action-policy", ["action-policy"])):
             raise PolicyError(f"{label} Cloud hotfix path lost its separate policy dependency")
 
 

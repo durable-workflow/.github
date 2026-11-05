@@ -418,6 +418,9 @@ class QualificationPolicyTest(unittest.TestCase):
             "if": "${{ github.event_name == 'workflow_dispatch' && inputs.hotfix_build }}",
             "needs": "action-policy", "runs-on": "ubuntu-24.04", "timeout-minutes": "60",
             "steps": [{"run": "echo inert-public-fixture"}]}
+        document["jobs"]["ordinary-source"] = {
+            "if": "${{ !inputs.hotfix_build }}", "runs-on": "ubuntu-latest",
+            "timeout-minutes": "5", "steps": [{"run": "echo inert-ordinary-source"}]}
         return document
 
     def cloud_environment_digest(self, document):
