@@ -26,6 +26,7 @@ while IFS= read -r line || [ -n "$line" ]; do
             [ -z "$release" ] || refuse
             case "$line" in VERSION_ID=12|VERSION_ID=\"12\") release=12 ;; *) refuse ;; esac
             ;;
+        *) : ;;
     esac
 done < "$RELEASE"
 [ "$os:$release" = debian:12 ] || refuse
@@ -41,7 +42,7 @@ while IFS= read -r line; do
 $line
 EOF
     [ "$status" = 'install ok installed' ] || refuse
-    case "$version" in ''|[!0-9]*|*[!0-9A-Za-z.+:~\-]*) refuse ;; esac
+    case "$version" in ''|[!0-9]*|*[!0-9A-Za-z.+:~\-]*) refuse ;; *) : ;; esac
     [ "${#version}" -le 100 ] || refuse
     case "$arch" in amd64|arm64) ;; *) refuse ;; esac
     [ -z "$architecture" ] || [ "$architecture" = "$arch" ] || refuse
