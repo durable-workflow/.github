@@ -86,6 +86,8 @@ def classify_changes(
     base_ref: str | None = None,
     profile_name: str | None = None,
 ) -> dict[str, list[str]]:
+    if base_ref:
+        base_ref = comparison_commit(root, base_ref)
     extensions = tuple(policy["customer_facing_extensions"])
     matches: dict[str, set[str]] = {}
     for path in paths:
@@ -329,6 +331,7 @@ def main() -> None:
     policy = load_json(args.policy, "visual evidence policy")
     paths = list(args.changed_file)
     if args.base_ref:
+        args.base_ref = comparison_commit(root, args.base_ref)
         paths.extend(changed_paths(root, args.base_ref))
     if not paths:
         raise SystemExit("provide --base-ref or at least one --changed-file")
