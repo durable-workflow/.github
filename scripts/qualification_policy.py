@@ -125,6 +125,28 @@ class _AuditDeadlineExceeded(RuntimeError):
     """The shared qualification API deadline elapsed during one request."""
 
 
+def _http_origin(url: str) -> tuple[str, str, int]:
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None):
+            raise ValueError("unsupported authority")
+        port = parsed.port if parsed.port is not None else (443 if parsed.scheme == "https" else 80)
+        return parsed.scheme, parsed.hostname, port
+    except ValueError as error:
+        raise PolicyError("GitHub API redirect has an invalid origin") from error
+
+
+class _APIOriginRedirect(urllib.request.HTTPRedirectHandler):
+    def __init__(self, api_url: str):
+        self.origin = _http_origin(api_url)
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if _http_origin(newurl) != self.origin:
+            raise PolicyError("GitHub API redirect changed origin")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 class GitHubClient:
     def __init__(
         self,
@@ -149,6 +171,7 @@ class GitHubClient:
         ):
             raise ValueError("invalid GitHub API retry configuration")
         self.api_url = api_url.rstrip("/")
+        self.opener = urllib.request.build_opener(_APIOriginRedirect(self.api_url))
         self.max_attempts = max_attempts
         self.retry_base_seconds = retry_base_seconds
         self.retry_max_seconds = retry_max_seconds
@@ -289,7 +312,7 @@ class GitHubClient:
             raise _AuditDeadlineExceeded
         timeout = min(self.request_timeout_seconds, remaining)
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with self.opener.open(request, timeout=timeout) as response:
                 payload = response.read()
             if self._remaining_time() <= 0:
                 raise _AuditDeadlineExceeded
