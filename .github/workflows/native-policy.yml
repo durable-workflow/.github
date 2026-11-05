@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: durable-workflow/.github
-          ref: 58893e29b535d49cdbfd262c2cabf57b32212f6e
+          ref: 4ec448782e8e8e38f87e3b29bd98a350f67e6b51
           path: .native-policy-control
           persist-credentials: false
       - name: Set up the policy interpreter
