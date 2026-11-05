@@ -33,14 +33,20 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+      - name: Prepare private evidence directory
+        id: evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(pwd -P)" = "$GITHUB_WORKSPACE/conformance/cancellation/restate"
+          umask 077
+          mkdir -- evidence
       - name: Run documented cancellation cases
         run: |
           set -euo pipefail
-          mkdir -p evidence
-          chmod 0777 evidence
           git rev-parse HEAD > evidence/source.txt
           docker compose -p cancellation-restate up -d --wait
-          docker compose -p cancellation-restate exec -T sdk sh -ec '
+          docker compose -p cancellation-restate exec --user "$(id -u):$(id -g)" -T sdk sh -ec '
             python -m venv /tmp/venv
             /tmp/venv/bin/pip install --disable-pip-version-check --no-deps --upgrade "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
             /tmp/venv/bin/pip install --no-cache-dir --report /evidence/packages.json -r requirements.txt
@@ -48,13 +54,12 @@ jobs:
             /tmp/venv/bin/python scenario.py duplicate
           ' | tee evidence/run.log
       - name: Collect observations and remove the fixture
-        if: always()
+        if: always() && steps.evidence.outcome == 'success'
         run: |
-          mkdir -p evidence
           docker compose -p cancellation-restate logs runtime > evidence/runtime.log
           docker compose -p cancellation-restate down -v --remove-orphans
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: always()
+        if: always() && steps.evidence.outcome == 'success'
         with:
           name: restate-cancellation-behavior
           path: conformance/cancellation/restate/evidence
@@ -72,28 +77,33 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+      - name: Prepare private evidence directory
+        id: evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(pwd -P)" = "$GITHUB_WORKSPACE/conformance/cancellation/temporal"
+          umask 077
+          mkdir -- evidence
       - name: Run documented cancellation cases
         run: |
           set -euo pipefail
-          mkdir -p evidence
-          chmod 0777 evidence
           git rev-parse HEAD > evidence/source.txt
-          sha256sum *.py requirements.txt versions.json compose.yml > evidence/source-files.txt
+          sha256sum -- *.py requirements.txt versions.json compose.yml > evidence/source-files.txt
           docker compose -p cancellation-temporal up -d
-          docker compose -p cancellation-temporal exec -T sdk sh -ec '
+          docker compose -p cancellation-temporal exec --user "$(id -u):$(id -g)" -T sdk sh -ec '
             python -m venv /tmp/venv
             /tmp/venv/bin/pip install --disable-pip-version-check --no-deps --upgrade "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
             /tmp/venv/bin/pip install --no-cache-dir --report /evidence/packages.json -r requirements.txt
             /tmp/venv/bin/python scenario.py
           ' | tee evidence/run.log
       - name: Collect observations and remove the fixture
-        if: always()
+        if: always() && steps.evidence.outcome == 'success'
         run: |
-          mkdir -p evidence
           docker compose -p cancellation-temporal logs runtime > evidence/runtime.log
           docker compose -p cancellation-temporal down -v --remove-orphans
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: always()
+        if: always() && steps.evidence.outcome == 'success'
         with:
           name: temporal-cancellation-behavior
           path: conformance/cancellation/temporal/evidence
@@ -111,25 +121,31 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+      - name: Prepare private evidence directory
+        id: evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(pwd -P)" = "$GITHUB_WORKSPACE/conformance/cancellation/dbos"
+          umask 077
+          mkdir -- evidence
       - name: Run supported cancellation and compensation cases
         run: |
           set -euo pipefail
-          mkdir -p evidence
-          chmod 0777 evidence
           git rev-parse HEAD > evidence/source.txt
-          sha256sum *.py requirements.txt compose.yml > evidence/source-files.txt
+          sha256sum -- *.py requirements.txt compose.yml > evidence/source-files.txt
           docker compose -p cancellation-dbos up -d
-          docker compose -p cancellation-dbos exec -T sdk sh -ec '
+          docker compose -p cancellation-dbos exec --user "$(id -u):$(id -g)" -T sdk sh -ec '
             python -m venv /tmp/venv
             /tmp/venv/bin/pip install --disable-pip-version-check --no-deps --upgrade "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
             /tmp/venv/bin/pip install --no-cache-dir --report /evidence/packages.json -r requirements.txt
             /tmp/venv/bin/python scenario.py
           ' | tee evidence/run.log
       - name: Remove the fixture
-        if: always()
+        if: always() && steps.evidence.outcome == 'success'
         run: docker compose -p cancellation-dbos down -v --remove-orphans
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: always()
+        if: always() && steps.evidence.outcome == 'success'
         with:
           name: dbos-cancellation-behavior
           path: conformance/cancellation/dbos/evidence
