@@ -1072,9 +1072,19 @@ on:
 {publishing_job("aliases", gate + " && needs.plan.outputs.dockerhub == 'true'")}{extra_job}"""
 
 
+def native_promotion_transition_policy() -> dict[str, object]:
+    """Retain the legacy topology only in explicit transition controls."""
+    policy = policy_fixture()
+    bindings = policy["workflow_trust"]["privileged_tag_dispatch_workflows"]
+    bindings["server/native-release.yml"]["jobs"].insert(0, "aliases")
+    bindings["server/native-release.yml"]["optional_jobs"] = ["aliases"]
+    bindings["server/native-alias-promotion.yml"]["optional"] = True
+    return policy
+
+
 class TagDispatchPolicyTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.policy = policy_fixture()
+        self.policy = native_promotion_transition_policy()
 
     def scan(self, source: str, policy: dict[str, object] | None = None) -> dict[str, dict[str, object]]:
         return scan_workflow_sources(
@@ -1248,7 +1258,7 @@ class NativePromotionTransitionTest(unittest.TestCase):
     """Presence exceptions cannot relax any present workflow's trust binding."""
 
     def setUp(self) -> None:
-        self.policy = policy_fixture()
+        self.policy = native_promotion_transition_policy()
         self.path = ".github/workflows/native-alias-promotion.yml"
         binding = self.policy["workflow_trust"]["privileged_tag_dispatch_workflows"]["server/native-alias-promotion.yml"]
         env = "\n".join(f"          {name}: {value}" for name, value in binding["plan_verifier"]["env"].items())
@@ -1331,11 +1341,7 @@ jobs:
                 validate_policy(policy)
 
     def test_tightened_post_transition_policy_requires_promotion_and_refuses_legacy_aliases(self) -> None:
-        policy = copy.deepcopy(self.policy)
-        bindings = policy["workflow_trust"]["privileged_tag_dispatch_workflows"]
-        del bindings["server/native-alias-promotion.yml"]["optional"]
-        del bindings["server/native-release.yml"]["optional_jobs"]
-        bindings["server/native-release.yml"]["jobs"].remove("aliases")
+        policy = policy_fixture()
         scan_workflow_sources(policy, "server", self.sources(self.promotion, False))
         for promotion, legacy in ((None, False), (self.promotion, True)):
             with self.subTest(promotion=promotion is not None, legacy=legacy), self.assertRaises(PolicyError):
