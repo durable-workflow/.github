@@ -176,11 +176,12 @@ ordinary caller behavior. Run the dedicated controls with:
 python -m unittest tests.test_protected_policy_context tests.test_protected_policy_check tests.test_protected_policy_inputs tests.test_protected_policy_issue
 ```
 
-Current integration is incomplete: the Rust visual workflow's candidate-root
-analytics check is outside this supported root-context language. Its acceptance
-control remains failing until a reviewed compatibility correction preserves the
-actual checker semantics. Do not weaken the guard, waive the control or claim a
-complete pilot qualification from the other passing controls.
+Integration also requires the Rust analytics checker's source-root correction
+and actual old/new execution controls. The visual workflow keeps the candidate
+build in its existing directory, then invokes that checker from the workspace
+root with an explicit build directory. The SDK owner must prove that the checker
+resolves its own source assets and preserves all content assertions. A passing
+central context test does not substitute for that upstream compatibility proof.
 
 The source remains inactive. No App/key, protected variable or secret,
 environment, event-policy setting, required rule or live check is provisioned.

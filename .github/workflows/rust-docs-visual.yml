@@ -97,7 +97,10 @@ jobs:
           cp docs/layout.css target/doc/layout.css
           mkdir -p target/doc/analytics
           cp docs/analytics/analytics.js target/doc/analytics/
-          python3 scripts/check-docs-analytics.py target/doc
+
+      - name: Check candidate analytics from the workspace root
+        if: steps.classify.outputs.required == 'true'
+        run: python3 candidate/scripts/check-docs-analytics.py candidate/target/doc
 
       - name: Capture candidate state matrix
         if: steps.classify.outputs.required == 'true'
