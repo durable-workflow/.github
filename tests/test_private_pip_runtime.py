@@ -165,10 +165,10 @@ class PrivatePipRuntimeTest(unittest.TestCase):
             wheel.write_bytes(contents)
             digest = hashlib.sha256(contents).hexdigest()
             requirement = "pip @ " + wheel.as_uri() + "#sha256=" + digest
+            old_arguments = ["--python", str(old_python), "install", "--no-index", "--no-deps", "--no-compile", "--upgrade", requirement]
+            old_environment = runtime.private_environment(old)
             with self.assertRaises(subprocess.CalledProcessError) as refused:
-                runtime.manager_command(interpreter, before, ["--python", str(old_python), "install",
-                    "--no-index", "--no-deps", "--no-compile", "--upgrade", requirement],
-                    runtime.private_environment(old))
+                runtime.manager_command(interpreter, before, old_arguments, old_environment)
             self.assertIn("uninstall-no-record-file", refused.exception.stderr)
             self.assertEqual(old_contents, runtime._tree_files(old_site))
             private_python, purelib = runtime.venv_layout(new, interpreter)
@@ -309,6 +309,23 @@ class PrivatePipRuntimeTest(unittest.TestCase):
             with patch.object(runtime.os, "stat", side_effect=stat), self.assertRaisesRegex(OSError, "first allocation identity"):
                 runtime._private_root(runner)
             self.assertTrue(failed)
+            self.assertEqual([], list(runner.iterdir()))
+
+    def test_persistent_first_metadata_failure_removes_empty_child_without_another_lookup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            runner = Path(temporary)
+            original_stat, original_open = runtime.os.stat, runtime.os.open
+            def stat(path, *args, **kwargs):
+                if isinstance(path, str) and path.startswith("dw-pip-") and "dir_fd" in kwargs:
+                    raise OSError("inert persistent allocation metadata refusal")
+                return original_stat(path, *args, **kwargs)
+            def open(path, *args, **kwargs):
+                if isinstance(path, str) and path.startswith("dw-pip-"):
+                    raise OSError("inert persistent recovery open refusal")
+                return original_open(path, *args, **kwargs)
+            with patch.object(runtime.os, "stat", side_effect=stat), patch.object(runtime.os, "open", side_effect=open), \
+                    self.assertRaisesRegex(OSError, "persistent allocation metadata"):
+                runtime._private_root(runner)
             self.assertEqual([], list(runner.iterdir()))
 
     def test_identity_handoff_failure_reclaims_created_state_but_not_reused_state(self):

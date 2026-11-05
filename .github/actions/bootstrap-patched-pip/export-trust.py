@@ -71,11 +71,12 @@ def write_bundle(bundle: Path, contents: bytes) -> None:
 def export_bundle(source: Path, runner_temp: Path, env_file: Path, output_file: Path, clients=("pip",), *, expected_identity=None, trust_root=None) -> dict:
     if not clients or set(clients) - CLIENT_VARIABLES.keys():
         raise ValueError("Select only supported CI trust clients")
-    with runtime.github_file(env_file, runner_temp) as append_env, runtime.github_file(output_file, runner_temp) as append_output:
-        with runtime.held_file(source, maximum=1024 * 1024) as (contents, identity):
-            if expected_identity is not None and identity != expected_identity:
-                raise ValueError("Private certifi CA object changed before export")
-            return _export_bundle(contents, trust_root or runner_temp, clients, append_env, append_output)
+    with runtime.github_file(env_file, runner_temp) as append_env, \
+            runtime.github_file(output_file, runner_temp) as append_output, \
+            runtime.held_file(source, maximum=1024 * 1024) as (contents, identity):
+        if expected_identity is not None and identity != expected_identity:
+            raise ValueError("Private certifi CA object changed before export")
+        return _export_bundle(contents, trust_root or runner_temp, clients, append_env, append_output)
 
 
 def _export_bundle(contents, trust_root, clients, append_env, append_output):

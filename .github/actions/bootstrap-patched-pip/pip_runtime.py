@@ -26,6 +26,12 @@ WHEEL_SHA256 = "fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70
 WHEEL_SIZE = 1819850
 CA_SHA256 = "50f79f98dac192b20dbf73f35c56f0b0c557ab267ff5199d1117cc1180b70785"
 DIST_INFO = "pip-26.2.2.dist-info"
+RUNTIME_RECEIPT = "runtime.json"
+HASH_PREFIX = "sha256="
+PIP_MODULE = "pip/__init__.py"
+CERTIFI_CA = "pip/_vendor/certifi/cacert.pem"
+VENV_CONFIG = "pyvenv.cfg"
+SCM_IGNORE = ".gitignore"
 MAX_FILE = 16 * 1024 * 1024
 MAX_FILES = 8192
 MAX_TREE = 64 * 1024 * 1024
@@ -53,7 +59,7 @@ class RuntimeState:
 
     @property
     def receipt(self):
-        return self.root / "runtime.json"
+        return self.root / RUNTIME_RECEIPT
 
 
 def absolute_path(value):
@@ -200,8 +206,7 @@ def github_file(path, runner_temp):
             os.close(descriptor)
 
 
-def _wheel_inventory(contents):
-    """Parse only data from an already authenticated wheel."""
+def _wheel_files(contents):
     files = {}
     with zipfile.ZipFile(io.BytesIO(contents)) as archive:
         total = 0
@@ -218,6 +223,12 @@ def _wheel_inventory(contents):
             if len(files) >= MAX_FILES or total > MAX_TREE:
                 raise ValueError("Wheel inventory exceeds its bound")
             files[name] = archive.read(member)
+    return files
+
+
+def _wheel_inventory(contents):
+    """Parse only data from an already authenticated wheel."""
+    files = _wheel_files(contents)
     record_name = DIST_INFO + "/RECORD"
     if record_name not in files:
         raise ValueError("Wheel RECORD is missing")
@@ -231,14 +242,14 @@ def _wheel_inventory(contents):
     for name, data in files.items():
         if name == record_name:
             continue
-        expected = "sha256=" + base64.urlsafe_b64encode(hashlib.sha256(data).digest()).decode().rstrip("=")
+        expected = HASH_PREFIX + base64.urlsafe_b64encode(hashlib.sha256(data).digest()).decode().rstrip("=")
         if rows[name][1:] != [expected, str(len(data))]:
             raise ValueError("Wheel member does not match its RECORD")
     metadata = files.get(DIST_INFO + "/METADATA", b"").decode("utf-8")
     if (re.findall(r"^Name: (.+)$", metadata, re.M) != ["pip"]
             or re.findall(r"^Version: (.+)$", metadata, re.M) != [VERSION]):
         raise ValueError("Wheel distribution identity is not the authorized pip version")
-    if "pip/_vendor/certifi/cacert.pem" not in files or "pip/__init__.py" not in files:
+    if CERTIFI_CA not in files or PIP_MODULE not in files:
         raise ValueError("Wheel module or vendored certifi origin is missing")
     return files
 
@@ -248,7 +259,7 @@ def authenticated_wheel(path):
         if len(contents) != WHEEL_SIZE or identity["sha256"] != WHEEL_SHA256:
             raise ValueError("Private wheel does not match the authorized exact bytes")
         files = _wheel_inventory(contents)
-        if hashlib.sha256(files["pip/_vendor/certifi/cacert.pem"]).hexdigest() != CA_SHA256:
+        if hashlib.sha256(files[CERTIFI_CA]).hexdigest() != CA_SHA256:
             raise ValueError("Vendored CA does not match its reviewed authority")
         return files, identity
 
@@ -358,28 +369,33 @@ def manager_snapshot(interpreter):
     candidates = []
     for value in interpreter["roots"]:
         root = absolute_path(value)
-        if not (root / "pip/__init__.py").exists():
+        if not (root / PIP_MODULE).exists():
             continue
         with BoundDirectory(root):
-            metadata = []
-            for entry in root.glob("pip-*.dist-info"):
-                with held_file(entry / "METADATA") as (contents, _):
-                    text = contents.decode("utf-8")
-                if re.findall(r"^Name: (.+)$", text, re.M) == ["pip"]:
-                    versions = re.findall(r"^Version: (.+)$", text, re.M)
-                    if len(versions) != 1 or not re.fullmatch(r"\d+\.\d+(?:\.\d+)?", versions[0]):
-                        raise ValueError("Manager pip version is ambiguous")
-                    metadata.append((entry, versions[0]))
-            if len(metadata) != 1:
-                raise ValueError("Manager pip distribution is missing or ambiguous")
-            directory, version = metadata[0]
-            if tuple(map(int, version.split(".")[:2])) < (22, 3):
-                raise ValueError("Manager pip does not support the reviewed --python primitive")
+            directory, version = manager_distribution(root)
             candidates.append({"root": str(root), "version": version, "distribution": str(directory),
                 "module_files": _tree_files(root / "pip"), "metadata_files": _tree_files(directory)})
     if len(candidates) != 1:
         raise ValueError("Manager pip has no single bound module/distribution origin")
     return candidates[0]
+
+
+def manager_distribution(root):
+    metadata = []
+    for entry in root.glob("pip-*.dist-info"):
+        with held_file(entry / "METADATA") as (contents, _):
+            text = contents.decode("utf-8")
+        if re.findall(r"^Name: (.+)$", text, re.M) == ["pip"]:
+            versions = re.findall(r"^Version: (.+)$", text, re.M)
+            if len(versions) != 1 or not re.fullmatch(r"\d+\.\d+(?:\.\d+)?", versions[0]):
+                raise ValueError("Manager pip version is ambiguous")
+            metadata.append((entry, versions[0]))
+    if len(metadata) != 1:
+        raise ValueError("Manager pip distribution is missing or ambiguous")
+    directory, version = metadata[0]
+    if tuple(map(int, version.split(".")[:2])) < (22, 3):
+        raise ValueError("Manager pip does not support the reviewed --python primitive")
+    return directory, version
 
 
 MANAGER_MAIN = """import sys
@@ -430,11 +446,16 @@ def _private_root(runner_temp):
             if created:
                 # The held parent plus successful no-replace mkdir owns this
                 # fresh name even when the first metadata observation fails.
-                parent.check()
                 if identity is None:
-                    with BoundDirectory(root, private=True) as held:
-                        identity = directory_identity(os.fstat(held.fd))
-                cleanup_runtime(root, runner_temp, identity)
+                    # No child contents have been created yet. Removal needs
+                    # no second lookup of the metadata that just failed.
+                    os.rmdir(name, dir_fd=parent.fd)
+                    if name in os.listdir(parent.fd):
+                        raise ValueError("Empty private allocation cleanup did not remove its exact name")
+                    parent.check()
+                else:
+                    parent.check()
+                    cleanup_runtime(root, runner_temp, identity)
             raise
         return RuntimeState(root, identity)
 
@@ -442,7 +463,7 @@ def _private_root(runner_temp):
 def venv_layout(root, interpreter):
     environment = root / "environment"
     private_python = environment / "bin/python"
-    with held_file(environment / "pyvenv.cfg", maximum=8192, owned=True) as (contents, _):
+    with held_file(environment / VENV_CONFIG, maximum=8192, owned=True) as (contents, _):
         values = {}
         for line in contents.decode("utf-8").splitlines():
             key, separator, value = line.partition(" = ")
@@ -464,8 +485,7 @@ def venv_layout(root, interpreter):
     major, minor = interpreter["version"][:2]
     purelib = environment / f"lib/python{major}.{minor}/site-packages"
     with BoundDirectory(purelib):
-        pass
-    return private_python, purelib
+        return private_python, purelib
 
 
 def python_aliases(interpreter):
@@ -479,19 +499,19 @@ def python_aliases(interpreter):
 def venv_baseline(root, interpreter):
     python, purelib = venv_layout(root, interpreter)
     environment = root / "environment"
-    expected = {"bin", "include", "lib", "lib64", "pyvenv.cfg"}
+    expected = {"bin", "include", "lib", "lib64", VENV_CONFIG}
     if tuple(interpreter["version"]) >= (3, 13, 0):
-        expected.add(".gitignore")
+        expected.add(SCM_IGNORE)
     if set(os.listdir(environment)) != expected:
         raise ValueError("Private environment has an unexpected top-level entry")
     alias = environment / "lib64"
     if not alias.is_symlink() or os.readlink(alias) != "lib":
         raise ValueError("Private environment lib64 alias changed")
     result = {}
-    generated = [environment / "pyvenv.cfg", *(python.parent / name for name in
+    generated = [environment / VENV_CONFIG, *(python.parent / name for name in
                  ("activate", "activate.csh", "activate.fish", "Activate.ps1"))]
-    if ".gitignore" in expected:
-        generated.append(environment / ".gitignore")
+    if SCM_IGNORE in expected:
+        generated.append(environment / SCM_IGNORE)
     for path in generated:
         with held_file(path, owned=True) as (_contents, identity):
             result[str(path.relative_to(environment))] = identity
@@ -595,8 +615,8 @@ def _seed_runtime(root, interpreter, manager, *, expected_identity, execute):
             "venv_baseline": baseline,
             "interpreter": interpreter, "manager": manager, "python": str(private_python),
             "purelib": str(purelib), "wheel": str(wheel), "wheel_identity": wheel_identity}
-        held.create("runtime.json", (json.dumps(report, sort_keys=True) + "\n").encode())
-    return root / "runtime.json"
+        held.create(RUNTIME_RECEIPT, (json.dumps(report, sort_keys=True) + "\n").encode())
+    return root / RUNTIME_RECEIPT
 
 
 SCRIPT_BODY_OLD = r'''# -*- coding: utf-8 -*-
@@ -651,6 +671,14 @@ def validate_install(root, interpreter, wheel_files, *, initial=False):
             if contents != expected:
                 raise ValueError("Installed pip module/data differs from its authenticated wheel")
             expected_files[path] = identity
+    expected_files.update(installed_provenance(root, purelib, private_python, interpreter, initial=initial))
+    validate_pip_inventory(purelib, expected_files)
+    expected_files[purelib / record] = validate_installed_record(purelib, record, expected_files)
+    return {str(path): identity for path, identity in expected_files.items()}
+
+
+def installed_provenance(root, purelib, private_python, interpreter, *, initial):
+    expected_files = {}
     extra = {DIST_INFO + "/INSTALLER": b"pip\n", DIST_INFO + "/REQUESTED": b""}
     for name, expected in extra.items():
         path = purelib / name
@@ -660,7 +688,7 @@ def validate_install(root, interpreter, wheel_files, *, initial=False):
             expected_files[path] = identity
     direct = purelib / DIST_INFO / "direct_url.json"
     expected_direct = {"url": (root / "downloads" / WHEEL_NAME).as_uri(), "archive_info": {
-        "hash": "sha256=" + WHEEL_SHA256, "hashes": {"sha256": WHEEL_SHA256}}}
+        "hash": HASH_PREFIX + WHEEL_SHA256, "hashes": {"sha256": WHEEL_SHA256}}}
     if _read_json(direct) != expected_direct:
         raise ValueError("Private pip provenance does not bind the authorized held wheel")
     with held_file(direct, owned=True) as (_contents, identity):
@@ -677,6 +705,10 @@ def validate_install(root, interpreter, wheel_files, *, initial=False):
         path = private_python.parent / name
         _contents, identity = _entrypoint(path, private_python)
         expected_files[path] = identity
+    return expected_files
+
+
+def validate_pip_inventory(purelib, expected_files):
     for subdirectory in ("pip", DIST_INFO):
         actual = _tree_files(purelib / subdirectory, owned=True)
         expected_names = {str(path.relative_to(purelib / subdirectory))
@@ -686,6 +718,9 @@ def validate_install(root, interpreter, wheel_files, *, initial=False):
         if set(actual) != expected_names:
             raise ValueError("Private pip module/dist-info inventory is not closed")
         closed_directories(purelib / subdirectory, expected_names)
+
+
+def validate_installed_record(purelib, record, expected_files):
     with held_file(purelib / record, owned=True) as (contents, record_identity):
         rows = {}
         for row in csv.reader(io.StringIO(contents.decode("utf-8"))):
@@ -699,10 +734,9 @@ def validate_install(root, interpreter, wheel_files, *, initial=False):
             raise ValueError("Installed RECORD is incomplete or self-hashed")
         for path, identity in expected_files.items():
             digest = base64.urlsafe_b64encode(bytes.fromhex(identity["sha256"])).decode().rstrip("=")
-            if rows[path] != ["sha256=" + digest, str(identity["size"])]:
+            if rows[path] != [HASH_PREFIX + digest, str(identity["size"])]:
                 raise ValueError("Installed RECORD does not bind its actual subject")
-    expected_files[purelib / record] = record_identity
-    return {str(path): identity for path, identity in expected_files.items()}
+    return record_identity
 
 
 def freeze_pip(root, interpreter):
@@ -753,20 +787,24 @@ def verify_runtime(path, runner_temp, *, execute=subprocess.run, initial=False, 
         result = execute([str(python), "-I", "-S", "-B", "-c", ORIGIN_PROBE, str(purelib)],
             env=private_environment(root, interpreter), capture_output=True, text=True, timeout=10, check=True)
         origin = json.loads(result.stdout)
-        expected = {"python": str(python), "version": VERSION, "module": str(purelib / "pip/__init__.py"),
+        expected = {"python": str(python), "version": VERSION, "module": str(purelib / PIP_MODULE),
             "certifi": str(purelib / "pip/_vendor/certifi/__init__.py"),
-            "ca": str(purelib / "pip/_vendor/certifi/cacert.pem")}
+            "ca": str(purelib / CERTIFI_CA)}
         if origin != expected or validate_install(root, interpreter, files) != subjects:
             raise ValueError("Private pip/certifi module origin changed at use")
         if require_trust:
-            trust = root / "durable-workflow-trust"
-            with BoundDirectory(trust, private=True), BoundDirectory(trust / "no-additional-roots", private=True) as empty:
-                if os.listdir(empty.fd):
-                    raise ValueError("Private exported additional-root directory is not empty")
-                with held_file(trust / (CA_SHA256 + ".pem"), maximum=1024 * 1024, owned=True) as (_data, identity):
-                    if identity["sha256"] != CA_SHA256:
-                        raise ValueError("Exported CA clone changed its exact wheel authority")
+            verify_exported_trust(root)
         return report, subjects
+
+
+def verify_exported_trust(root):
+    trust = root / "durable-workflow-trust"
+    with BoundDirectory(trust, private=True), BoundDirectory(trust / "no-additional-roots", private=True) as empty:
+        if os.listdir(empty.fd):
+            raise ValueError("Private exported additional-root directory is not empty")
+        with held_file(trust / (CA_SHA256 + ".pem"), maximum=1024 * 1024, owned=True) as (_data, identity):
+            if identity["sha256"] != CA_SHA256:
+                raise ValueError("Exported CA clone changed its exact wheel authority")
 
 
 def runtime_root(path, runner_temp):
@@ -778,7 +816,7 @@ def runtime_root(path, runner_temp):
 def receipt_root(path, runner_temp):
     path = absolute_path(path)
     root = path.parent
-    if path.name != "runtime.json" or root.parent != absolute_path(runner_temp) or re.fullmatch(r"dw-pip-[0-9a-f]{32}", root.name) is None:
+    if path.name != RUNTIME_RECEIPT or root.parent != absolute_path(runner_temp) or re.fullmatch(r"dw-pip-[0-9a-f]{32}", root.name) is None:
         raise ValueError("Runtime receipt is outside its exact owned state")
     return root
 
