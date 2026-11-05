@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import contextlib
 import io
+import hashlib
 import json
 import subprocess
 import secrets
@@ -18,6 +19,7 @@ from scripts.qualification_policy import (
     GitHubClient,
     PolicyError,
     _verify_action_policy_preflight,
+    _verify_cloud_route_environment,
     scan_workflow_sources,
     validate_local_action_references,
     validate_policy,
@@ -401,6 +403,136 @@ class QualificationPolicyTest(unittest.TestCase):
         for index, document in enumerate(self.pinned_gate_mutations()):
             with self.subTest(change=index), self.assertRaises(PolicyError):
                 self.verify_pinned_document(document)
+
+    def cloud_profile_document(self):
+        document = self.pinned_workflow_document()
+        gate = document["jobs"].pop("gate")
+        gate.update(name="Route Drift Guard", **{
+            "if": "${{ always() && !inputs.hotfix_build }}", "timeout-minutes": "20",
+            "env": {"APP_ENV": "testing", "APP_KEY": "synthetic-public-fixture",
+                "BCRYPT_ROUNDS": "4", "BROADCAST_CONNECTION": "null", "CACHE_STORE": "array",
+                "DB_CONNECTION": "sqlite", "DB_DATABASE": ":memory:", "MAIL_MAILER": "array",
+                "QUEUE_CONNECTION": "sync", "SESSION_DRIVER": "array"}})
+        document["jobs"]["route-drift-guard"] = gate
+        document["jobs"]["hotfix-build"] = {
+            "if": "${{ github.event_name == 'workflow_dispatch' && inputs.hotfix_build }}",
+            "needs": "action-policy", "runs-on": "ubuntu-24.04", "timeout-minutes": "60",
+            "steps": [{"run": "echo inert-public-fixture"}]}
+        return document
+
+    def cloud_environment_digest(self, document):
+        environment = document["jobs"]["route-drift-guard"]["env"]
+        return hashlib.sha256(json.dumps(environment, sort_keys=True, separators=(",", ":"),
+                                         ensure_ascii=False).encode("utf-8")).hexdigest()
+
+    def verify_cloud_document(self, document, target="cloud", required="Route Drift Guard"):
+        definition = {"path": "ci.yml", "required_check": required,
+                      "matrix_independent": False, "action_policy_preflight": True}
+        triggers = "on:\n  push:\n    branches: [main]\n  pull_request:\n  workflow_dispatch:\n"
+        verify_workflow_source(target, "main", definition,
+            triggers + yaml.safe_dump(document, sort_keys=False),
+            {"75587fc33ff40c34f32ef777293dad56bb6f48c7"})
+
+    def test_cloud_profile_requires_the_exact_private_environment_authority(self):
+        document = self.cloud_profile_document()
+        with self.assertRaisesRegex(PolicyError, "exact reviewed mapping"):
+            self.verify_cloud_document(document)
+        digest = self.cloud_environment_digest(document)
+        with patch("scripts.qualification_policy.CLOUD_ROUTE_ENV_SHA256", digest):
+            self.verify_cloud_document(document)
+            environment = document["jobs"]["route-drift-guard"]["env"]
+            document["jobs"]["route-drift-guard"]["env"] = dict(reversed(list(environment.items())))
+            self.verify_cloud_document(document)
+            for key in environment:
+                for kind in ("missing", "changed"):
+                    changed = copy.deepcopy(environment)
+                    if kind == "missing":
+                        del changed[key]
+                    else:
+                        changed[key] += "changed"
+                    document["jobs"]["route-drift-guard"]["env"] = changed
+                    with self.subTest(key=key, kind=kind), self.assertRaises(PolicyError):
+                        self.verify_cloud_document(document)
+            environment["UNREVIEWED"] = "value"
+            document["jobs"]["route-drift-guard"]["env"] = environment
+            with self.assertRaises(PolicyError):
+                self.verify_cloud_document(document)
+
+    def test_cloud_environment_rejects_types_and_alternate_unicode_normalization(self):
+        document = self.cloud_profile_document()
+        environment = document["jobs"]["route-drift-guard"]["env"]
+        environment["APP_ENV"] = "caf\u00e9"
+        digest = self.cloud_environment_digest(document)
+        with patch("scripts.qualification_policy.CLOUD_ROUTE_ENV_SHA256", digest):
+            _verify_cloud_route_environment("fixture", environment)
+            for value in (4, True, None, [], {}, "cafe\u0301"):
+                changed = dict(environment, APP_ENV=value)
+                with self.subTest(value=value), self.assertRaises(PolicyError):
+                    _verify_cloud_route_environment("fixture", changed)
+
+    def test_cloud_profile_refuses_target_job_and_required_check_substitution(self):
+        document = self.cloud_profile_document()
+        digest = self.cloud_environment_digest(document)
+        with patch("scripts.qualification_policy.CLOUD_ROUTE_ENV_SHA256", digest):
+            changed = copy.deepcopy(document)
+            changed["jobs"]["action-policy"]["steps"][-1]["run"] = (
+                changed["jobs"]["action-policy"]["steps"][-1]["run"].replace("--target cloud", "--target server"))
+            with self.assertRaises(PolicyError):
+                self.verify_cloud_document(changed, target="server")
+            changed = copy.deepcopy(document)
+            changed["jobs"]["other"] = changed["jobs"].pop("route-drift-guard")
+            with self.assertRaises(PolicyError):
+                self.verify_cloud_document(changed)
+            document["jobs"]["route-drift-guard"]["name"] = "Other check"
+            with self.assertRaises(PolicyError):
+                self.verify_cloud_document(document, required="Other check")
+
+    def test_cloud_profile_refuses_gate_drift_and_preassertion_execution(self):
+        original = self.cloud_profile_document()
+        digest = self.cloud_environment_digest(original)
+        with patch("scripts.qualification_policy.CLOUD_ROUTE_ENV_SHA256", digest):
+            for key, value in (("runs-on", "self-hosted"), ("timeout-minutes", "21"),
+                ("if", "always()"), ("if", "always() || !inputs.hotfix_build"),
+                ("needs", ["action-policy", "other"]), ("continue-on-error", True),
+                ("defaults", {"run": {"shell": "true {0}"}})):
+                document = copy.deepcopy(original)
+                document["jobs"]["route-drift-guard"][key] = value
+                with self.subTest(key=key, value=value), self.assertRaises(PolicyError):
+                    self.verify_cloud_document(document)
+            document = copy.deepcopy(original)
+            document["jobs"]["route-drift-guard"]["steps"].insert(0, {"run": "echo unreviewed"})
+            with self.assertRaises(PolicyError):
+                self.verify_cloud_document(document)
+
+    def test_cloud_profile_preserves_every_hotfix_policy_dependency(self):
+        original = self.cloud_profile_document()
+        digest = self.cloud_environment_digest(original)
+        with patch("scripts.qualification_policy.CLOUD_ROUTE_ENV_SHA256", digest):
+            for value in (None, [], "other", ["action-policy", "other"]):
+                document = copy.deepcopy(original)
+                document["jobs"]["hotfix-build"]["needs"] = value
+                with self.subTest(needs=value), self.assertRaises(PolicyError):
+                    self.verify_cloud_document(document)
+            document = copy.deepcopy(original)
+            document["jobs"]["extra-hotfix"] = copy.deepcopy(document["jobs"]["hotfix-build"])
+            del document["jobs"]["extra-hotfix"]["needs"]
+            with self.assertRaises(PolicyError):
+                self.verify_cloud_document(document)
+            document = copy.deepcopy(original)
+            document["jobs"]["hotfix-build"]["if"] = "always()"
+            with self.assertRaises(PolicyError):
+                self.verify_cloud_document(document)
+
+    def test_pinned_parser_refuses_duplicate_equivalent_mapping_keys(self):
+        jobs = self.pinned_policy_preflight()
+        jobs["gate"]["name"] = "Source qualification"
+        prefix = "on:\n  push:\n    branches: [main]\n  pull_request:\n  workflow_dispatch:\n"
+        source = prefix + yaml.safe_dump({"permissions": {"contents": "read"}, "jobs": jobs}, sort_keys=False)
+        source = source.replace("contents: read", "contents: read\n  'contents': read")
+        definition = {"path": "fixture.yml", "required_check": "Source qualification",
+                      "matrix_independent": False, "action_policy_preflight": True}
+        with self.assertRaisesRegex(PolicyError, "duplicate"):
+            verify_workflow_source("cloud", "main", definition, source)
 
     def test_pinned_preflight_refuses_missing_malformed_late_and_collapsed_head_checks(self):
         changes = []

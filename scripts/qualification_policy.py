@@ -732,6 +732,12 @@ PINNED_POLICY_READBACK = (
     'assert yaml.__version__ == "6.0.2"; print(sys.version.split()[0], yaml.__version__)\''
 )
 CLEAN_POLICY_BOOTSTRAP = "75587fc33ff40c34f32ef777293dad56bb6f48c7"
+CLOUD_ROUTE_ENV_KEYS = frozenset((
+    "APP_ENV", "APP_KEY", "BCRYPT_ROUNDS", "BROADCAST_CONNECTION", "CACHE_STORE",
+    "DB_CONNECTION", "DB_DATABASE", "MAIL_MAILER", "QUEUE_CONNECTION", "SESSION_DRIVER",
+))
+# Bind the private consumer's finite synthetic mapping without publishing its values.
+CLOUD_ROUTE_ENV_SHA256 = "e2cf2b25c8d4e5096b87acee26f0b10b95f4bf2e9ec3b0b5d0bf49e7ad161c5f"
 
 
 def _policy_preflight_job(label, jobs):
@@ -857,11 +863,39 @@ def _verify_pinned_policy_context(label, document):
         raise PolicyError(f"{label} pinned central preflight has an unreviewed workflow context")
 
 
-def _verify_pinned_policy_gate(label, gate):
-    if (set(gate) - {"name", "needs", "if", "runs-on", "timeout-minutes", "steps"}
-            or _condition_without_expression_wrapper(gate.get("if", "")) != "always()"
+def _verify_cloud_route_environment(label, environment):
+    if (not isinstance(environment, dict) or set(environment) != CLOUD_ROUTE_ENV_KEYS
+            or any(not isinstance(value, str) for value in environment.values())):
+        raise PolicyError(f"{label} Cloud route gate has an unreviewed environment shape")
+    encoded = json.dumps(environment, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    if hashlib.sha256(encoded).hexdigest() != CLOUD_ROUTE_ENV_SHA256:
+        raise PolicyError(f"{label} Cloud route gate environment differs from the exact reviewed mapping")
+
+
+def _verify_cloud_hotfix_dependencies(label, jobs):
+    hotfix = jobs.get("hotfix-build")
+    if (not isinstance(hotfix, dict)
+            or _condition_without_expression_wrapper(hotfix.get("if", "")) !=
+                "github.event_name == 'workflow_dispatch' && inputs.hotfix_build"
+            or hotfix.get("needs") not in ("action-policy", ["action-policy"])):
+        raise PolicyError(f"{label} Cloud hotfix must retain its separate successful policy dependency")
+    for job in jobs.values():
+        if (isinstance(job, dict) and "inputs.hotfix_build" in str(job.get("if", ""))
+                and job.get("needs") not in ("action-policy", ["action-policy"])):
+            raise PolicyError(f"{label} Cloud hotfix path lost its separate policy dependency")
+
+
+def _verify_pinned_policy_gate(label, gate, cloud_route=False):
+    allowed = {"name", "needs", "if", "runs-on", "timeout-minutes", "steps"}
+    condition, timeout = "always()", "5"
+    if cloud_route:
+        allowed.add("env")
+        condition, timeout = "always() && !inputs.hotfix_build", "20"
+        _verify_cloud_route_environment(label, gate.get("env"))
+    if (set(gate) - allowed
+            or _condition_without_expression_wrapper(gate.get("if", "")) != condition
             or gate.get("runs-on") != "ubuntu-latest"
-            or gate.get("timeout-minutes") != "5"
+            or gate.get("timeout-minutes") != timeout
             or gate.get("needs") not in ("action-policy", ["action-policy"])):
         raise PolicyError(f"{label} pinned central preflight requires an unconditional closed result gate")
     assertion = {
@@ -876,11 +910,15 @@ def _verify_pinned_policy_gate(label, gate):
         raise PolicyError(f"{label} pinned central preflight requires a closed unconditional result assertion")
 
 
-def _verify_policy_result_gate(label, jobs, gate_job_name, pinned=False):
+def _verify_policy_result_gate(label, jobs, gate_job_name, pinned=False, target_name=None):
     accepted_conditions = {"", "github.server_url == 'https://github.com'"}
     gate = jobs[gate_job_name]
     if pinned:
-        _verify_pinned_policy_gate(label, gate)
+        cloud_route = (target_name == "cloud" and gate_job_name == "route-drift-guard"
+                       and gate.get("name") == "Route Drift Guard")
+        _verify_pinned_policy_gate(label, gate, cloud_route)
+        if cloud_route:
+            _verify_cloud_hotfix_dependencies(label, jobs)
     if "action-policy" not in _job_needs(gate, f"{label} required check gate"):
         raise PolicyError(f"{label} required check does not depend on the central action policy preflight")
     condition = gate.get("if")
@@ -914,7 +952,7 @@ def _verify_action_policy_preflight(
         _verify_pinned_policy_steps(target_name, label, preflight, steps, approved_bootstraps)
     else:
         _verify_legacy_policy_steps(target_name, label, steps, approved_bootstraps)
-    _verify_policy_result_gate(label, jobs, gate_job_name, pinned)
+    _verify_policy_result_gate(label, jobs, gate_job_name, pinned, target_name)
     return pinned
 
 
@@ -960,11 +998,24 @@ def verify_workflow_source(name: str, branch: str, workflow: dict[str, Any], sou
     if workflow.get("action_policy_preflight") is True:
         if _verify_action_policy_preflight(name, label, jobs, stable_jobs[0], approved_bootstraps):
             _verify_pinned_policy_context(label, document)
+            _parse_yaml(source, label, reject_duplicates=True)
 
 
-def _parse_yaml(source: str, label: str) -> Any:
+class PinnedPolicyLoader(yaml.BaseLoader):
+    def construct_mapping(self, node, deep=False):
+        result = {}
+        for key_node, value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if not isinstance(key, str) or key in result:
+                raise PolicyError("Pinned policy mapping has a duplicate or non-string key")
+            result[key] = self.construct_object(value_node, deep=deep)
+        return result
+
+
+def _parse_yaml(source: str, label: str, reject_duplicates=False) -> Any:
     try:
-        return yaml.load(source, Loader=yaml.BaseLoader)
+        loader = PinnedPolicyLoader if reject_duplicates else yaml.BaseLoader
+        return yaml.load(source, Loader=loader)
     except yaml.YAMLError as error:
         raise PolicyError(f"cannot parse {label} as YAML: {error}") from error
 
