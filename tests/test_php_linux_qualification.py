@@ -223,7 +223,7 @@ class PhpLinuxQualificationTest(unittest.TestCase):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 path, _, _, environment = self.fixture(root)
-                pip_state, data, _, _ = self.pip_fixture(root)
+                pip_state, data, report, subjects = self.pip_fixture(root)
                 setup_state = path.parent
                 if mutation == "empty-output":
                     path = Path("")
@@ -235,7 +235,8 @@ class PhpLinuxQualificationTest(unittest.TestCase):
                 else:
                     qualification.shutil.rmtree(setup_state)
                 evidence, probes = [], []
-                with self.assertRaises((ValueError, FileNotFoundError)):
+                with patch.object(qualification.private_pip, "verify_runtime", return_value=(report, subjects)), \
+                        self.assertRaises((ValueError, FileNotFoundError)):
                     self.closed_qualify(path, root, environment, evidence.append,
                         pip_state=data, probes=lambda *_: probes.append("unexpected"))
                 self.assertEqual([], probes)
