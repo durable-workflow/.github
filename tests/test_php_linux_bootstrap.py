@@ -310,7 +310,7 @@ sudo() {
             with patch.dict(os.environ, environment, clear=True), patch.object(alternatives, 'verify') as verify:
                 bootstrap.run_held_installer(script, original, ('8.3', 'release', 'nts'), environment,
                     catalog, execute, host, no_apt=True, normalized=result)
-                verify.assert_called_once_with(result.files)
+                verify.assert_called_once_with(result.files, original=original.identity)
                 forged = SimpleNamespace(held=result.held)
                 with self.assertRaises(ValueError):
                     bootstrap.run_held_installer(script, original, ('8.3', 'release', 'nts'), environment,

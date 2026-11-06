@@ -377,5 +377,5 @@ def run_held_installer(script: HeldAsset, archive: HeldAsset, arguments: tuple[s
                      pass_fds=(script.descriptor, installation_archive.descriptor), timeout=120, check=True)
     if normalized is not None:
         from scripts import php_linux_alternatives as alternatives
-        alternatives.verify(normalized.files)
+        alternatives.verify(normalized.files, original=normalized.original.identity)
     return result

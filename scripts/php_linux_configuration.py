@@ -20,6 +20,10 @@ from scripts import php_linux_normalize as normalization
 
 SCHEMA = "durable-workflow.php-linux-cli-configuration/v1"
 PROFILE = "ubuntu26.04-x64-php8.3-production-coverage-none"
+PROFILES = {
+    672923785: PROFILE,
+    672921837: "ubuntu24.04-x64-php8.3-production-coverage-none",
+}
 TEMPLATE = "usr/lib/php/8.3/php.ini-production.cli"
 CLI = "etc/php/8.3/cli/php.ini"
 PECL = "etc/php/8.3/cli/conf.d/99-pecl.ini"
@@ -54,7 +58,13 @@ def removed_members(files):
     return sorted(selected)
 
 
-def derive(template, files, source):
+def selected_profile(original):
+    if original is None:
+        return PROFILE
+    return PROFILES[normalization.profile(original).metadata['asset']['id']]
+
+
+def derive(template, files, source, *, original=None):
     if (not isinstance(template, bytes) or not 0 < len(template) <= MAX_TEMPLATE
             or files.get(TEMPLATE) != identity(template)):
         raise ValueError("CLI production template lacks held archive authority")
@@ -67,7 +77,7 @@ def derive(template, files, source):
         CURRENT: b"production\n",
     }
     document = {
-        "schema": SCHEMA, "profile": PROFILE, "setup_php_commit": bootstrap.SOURCE_COMMIT,
+        "schema": SCHEMA, "profile": selected_profile(original), "setup_php_commit": bootstrap.SOURCE_COMMIT,
         "input": {"member": TEMPLATE, **identity(template),
                   "base64": base64.b64encode(template).decode("ascii")},
         "components": {name: identity(raw) for name, raw in components.items()},
@@ -89,7 +99,7 @@ def validate_file_identities(components, outputs, incoming):
         raise ValueError("CLI configuration preimage identity has invalid field types")
 
 
-def validate(document, files, source=None):
+def validate(document, files, source=None, *, original=None):
     bootstrap.exact_keys(document, {"schema", "profile", "setup_php_commit", "input", "components", "outputs", "removed"})
     incoming = document["input"]
     bootstrap.exact_keys(incoming, {"member", "size", "sha256", "base64"})
@@ -100,14 +110,15 @@ def validate(document, files, source=None):
         template = base64.b64decode(incoming["base64"], validate=True)
     except (ValueError, TypeError) as error:
         raise ValueError("CLI configuration preimage is not canonical base64") from error
-    expected, outputs = derive(template, files, recipe.verified_source() if source is None else source)
+    expected, outputs = derive(template, files, recipe.verified_source() if source is None else source,
+                               original=original)
     if document != expected:
         raise ValueError("CLI configuration differs from its independently derived source recipe")
     return outputs
 
 
-def subject_plan(document, files):
-    outputs = validate(document, files)
+def subject_plan(document, files, *, original=None):
+    outputs = validate(document, files, original=original)
     prefix = "etc/php/8.3/cli/conf.d/"
     active = {name for name in files if name.startswith(prefix)
               and "/" not in name[len(prefix):] and name.endswith('.ini')}
@@ -141,21 +152,21 @@ def capture_member(files, member, root):
         os.close(descriptor)
 
 
-def write_manifest(state, document, files):
-    validate(document, files)
+def write_manifest(state, document, files, *, original=None):
+    validate(document, files, original=original)
     return normalization.write_document(state, MANIFEST_NAME, document, MAX_DOCUMENT)
 
 
 @contextmanager
-def capture_manifest(state, record, files):
+def capture_manifest(state, record, files, *, original=None):
     with normalization.capture_document(state, record, MANIFEST_NAME, MAX_DOCUMENT) as (document, held, unchanged):
-        outputs = validate(document, files)
+        outputs = validate(document, files, original=original)
         yield document, outputs, held, unchanged
 
 
-def apply(document, files, environment, *, root=Path("/"), execute=subprocess.run, source=None):
+def apply(document, files, environment, *, root=Path("/"), execute=subprocess.run, source=None, original=None):
     """Write only three literal outputs and remove exact held coverage entries."""
-    outputs = validate(document, files, source)
+    outputs = validate(document, files, source, original=original)
     if environment != bootstrap.clean_environment(environment, environment.get("HOME", "")) or dict(os.environ) != environment:
         raise ValueError("CLI configuration requires the already closed parent environment")
     for member in outputs:

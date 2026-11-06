@@ -34,6 +34,7 @@ RECEIPT_SCHEMA = "durable-workflow.php-linux-setup-receipt/v2"
 NORMALIZED_RECEIPT_SCHEMA = "durable-workflow.php-linux-setup-receipt/v3"
 CONFIGURED_RECEIPT_SCHEMA = "durable-workflow.php-linux-setup-receipt/v4"
 MAX_RECEIPT = 60 * 1024
+HOST_ARCHIVES = {'26.04': 672923785, '24.04': 672921837}
 CA_SHA256 = "50f79f98dac192b20dbf73f35c56f0b0c557ab267ff5199d1117cc1180b70785"
 
 
@@ -55,10 +56,14 @@ def failure_details(error):
 
 def initial_profile(plan, host):
     values = plan["request"]["inputs"]
-    if (host != {"operating_system": "ubuntu", "release": "26.04", "architecture": "x86_64"}
+    release = host.get('release')
+    asset = plan.get('archive', {}).get('asset', {})
+    if (host != {"operating_system": "ubuntu", "release": release, "architecture": "x86_64"}
+            or release not in HOST_ARCHIVES or asset.get('id') != HOST_ARCHIVES.get(release)
             or values["php-version"] != "8.3" or values["extensions"] or values["coverage"] != "none"
             or {row["name"] for row in plan["tools"]} != {"composer", "phpunit"}):
-        raise ValueError("Initial no-APT profile is Ubuntu26.04/x64 PHP8.3, both literal PHARs, coverage none and no extension override")
+        raise ValueError("Initial no-APT profile is Ubuntu24.04 or26.04/x64 PHP8.3, both literal PHARs, coverage none and no extension override")
+    normalization.profile(asset)
 
 
 def checked_root(path: Path):
@@ -101,12 +106,12 @@ def capture_setup_subjects(members, php, required, selected_tools, *, normalizat
     return installed, manifest
 
 
-def configure_cli(state, members, source, environment):
+def configure_cli(state, members, source, environment, *, original=None):
     template = configuration.capture_template(members)
-    document, _outputs = configuration.derive(template, members, source)
-    record = configuration.write_manifest(state, document, members)
-    configuration.apply(document, members, environment, source=source)
-    plan = configuration.subject_plan(document, members)
+    document, _outputs = configuration.derive(template, members, source, original=original)
+    record = configuration.write_manifest(state, document, members, original=original)
+    configuration.apply(document, members, environment, source=source, original=original)
+    plan = configuration.subject_plan(document, members, original=original)
     archive.verify_installed(members, '8.3', [], configuration=plan)
     return document, record, plan
 
@@ -183,7 +188,8 @@ def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
                         environment, catalog, no_apt=True, normalized=normalized)
             bind_installed_files(report, members, plan, verify_php)
             report['stage'] = 'bound-cli-configuration'
-            config_document, config_record, config_plan = configure_cli(state, members, files, environment)
+            config_document, config_record, config_plan = configure_cli(state, members, files, environment,
+                                                                      original=held_archive.identity)
             report['configuration_manifest'] = config_record
             if bootstrap.sha256(Path(node["node"]).read_bytes()) != node["node_sha256"]:
                 raise ValueError("Runner action Node executable changed after the closed reexec")
@@ -206,7 +212,8 @@ def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
                 if document != normalization.document(normalized):
                     raise ValueError('Pre-install normalization manifest changed during setup')
                 unchanged()
-            with configuration.capture_manifest(state, config_record, members) as (document, _outputs, _held, unchanged):
+            with configuration.capture_manifest(state, config_record, members,
+                    original=held_archive.identity) as (document, _outputs, _held, unchanged):
                 if document != config_document:
                     raise ValueError('CLI configuration document changed during setup')
                 unchanged()

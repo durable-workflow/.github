@@ -15,10 +15,11 @@ from scripts import php_linux_bootstrap as bootstrap
 from scripts import php_linux_configuration as configuration
 
 
-def initial_subject_shape(writer=archive.subject_record, schema=archive.NORMALIZED_SUBJECT_SCHEMA):
+def initial_subject_shape(writer=archive.subject_record, schema=archive.NORMALIZED_SUBJECT_SCHEMA,
+                          *, profile_name='initial'):
     """Fixed catalog names/sizes with inert hashes; no payload or installed claim."""
-    metadata = json.loads((bootstrap.ROOT / 'qualification/php-linux-initial-archive.json').read_text())
-    profile = json.loads((bootstrap.ROOT / 'qualification/php-linux-initial-normalization.json').read_text())
+    metadata = json.loads((bootstrap.ROOT / f'qualification/php-linux-{profile_name}-archive.json').read_text())
+    profile = json.loads((bootstrap.ROOT / f'qualification/php-linux-{profile_name}-normalization.json').read_text())
     files = {row[0].removeprefix('./'): {'size': row[3], 'sha256': '0' * 64}
         for row in metadata['members'] if row[1] == '0'}
     targets = {}
