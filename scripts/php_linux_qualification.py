@@ -64,9 +64,13 @@ def file_identity(value):
 def validate_manifest(report, plan):
     manifest = report["subjects"]
     bootstrap.exact_keys(manifest, {"schema", "files", "commands", "configs"})
-    if (manifest["schema"] != archive.SUBJECT_SCHEMA or not isinstance(manifest["files"], dict)
+    if (manifest["schema"] not in (archive.SUBJECT_SCHEMA, archive.NORMALIZED_SUBJECT_SCHEMA)
+            or not isinstance(manifest["files"], dict)
             or not manifest["files"] or not isinstance(manifest["configs"], dict)):
         raise ValueError("Producer subject manifest is incomplete")
+    if (report['schema'] == setup.CONFIGURED_RECEIPT_SCHEMA
+            and manifest['schema'] != archive.NORMALIZED_SUBJECT_SCHEMA):
+        raise ValueError('Configured CLI subjects require the bounded versioned references')
     archive.require_subject_bound(manifest)
     php = plan["request"]["inputs"]["php-version"]
     if manifest["commands"] != {"php": f"/usr/bin/php{php}", "php-config": f"/usr/bin/php-config{php}"}:
@@ -83,7 +87,8 @@ def validate_manifest_files(manifest, selected, php, *, normalized=False, config
     for path, identity in manifest["files"].items():
         canonical_path(path)
         file_identity(identity)
-        validate_subject_authority(path, identity, selected, php, normalized=normalized, configured=configured)
+        validate_subject_authority(path, identity, selected, php, normalized=normalized, configured=configured,
+            subject_schema=manifest['schema'])
     for path, target in manifest["configs"].items():
         canonical_path(path)
         canonical_path(target)
@@ -134,7 +139,14 @@ def validate_normalized_authority(path, identity, normalized):
         raise ValueError('Normalized subject lacks its exact source-target authority')
 
 
-def validate_subject_authority(path, identity, selected, php, *, normalized=False, configured=False):
+def validate_subject_reference(authority, normalized):
+    bootstrap.exact_keys(authority, {'kind'})
+    if not normalized:
+        raise ValueError('Subject reference requires the complete held normalization document')
+
+
+def validate_subject_authority(path, identity, selected, php, *, normalized=False, configured=False,
+                               subject_schema=archive.SUBJECT_SCHEMA):
     authority = identity["authority"]
     if not isinstance(authority, dict):
         raise ValueError("Subject authority is missing")
@@ -144,7 +156,11 @@ def validate_subject_authority(path, identity, selected, php, *, normalized=Fals
     if kind == "tool":
         return validate_tool_authority(path, identity, selected)
     if kind == 'normalized-archive':
+        if subject_schema == archive.NORMALIZED_SUBJECT_SCHEMA:
+            return validate_subject_reference(authority, normalized)
         return validate_normalized_authority(path, identity, normalized)
+    if kind == 'archive' and subject_schema == archive.NORMALIZED_SUBJECT_SCHEMA:
+        return validate_subject_reference(authority, normalized)
     bootstrap.exact_keys(authority, {"kind", "member"})
     if authority["member"] != path.lstrip("/") or kind not in ("archive", "derived-redis"):
         raise ValueError("Subject lacks canonical held-archive member authority")
@@ -196,7 +212,7 @@ def validate_configured_inventory(manifest, configuration):
         raise ValueError('CLI subjects require independent configuration recomputation')
 
 
-def validate_normalized_identity(path, identity, document, configuration):
+def validate_normalized_identity(path, identity, document, configuration, subject_schema):
     authority = identity['authority']
     if authority['kind'] == 'derived-cli-configuration':
         name = path.lstrip('/')
@@ -216,6 +232,8 @@ def validate_normalized_identity(path, identity, document, configuration):
         expected = {'kind': 'normalized-archive', 'member': name, 'source_member': target['target'],
             'target_size': target['size'], 'target_sha256': target['sha256'],
             'target_metadata_sha256': bootstrap.sha256(normalization.canonical_json(target['metadata']))}
+    if subject_schema == archive.NORMALIZED_SUBJECT_SCHEMA:
+        expected = {'kind': expected['kind']}
     if authority != expected:
         raise ValueError('Installed subject lost its original archive-target provenance')
 
@@ -223,7 +241,7 @@ def validate_normalized_identity(path, identity, document, configuration):
 def validate_normalized_subjects(manifest, document, configuration=None):
     validate_configured_inventory(manifest, configuration)
     for path, identity in manifest['files'].items():
-        validate_normalized_identity(path, identity, document, configuration)
+        validate_normalized_identity(path, identity, document, configuration, manifest['schema'])
 
 
 def validate_runtime_receipt(report, plan):
@@ -344,6 +362,8 @@ def revalidate_subjects(report, plan, *, capture=archive.capture_subjects, appen
              if identity["authority"]["kind"] != "tool"}
     php = plan["request"]["inputs"]["php-version"]
     options = {} if normalization_targets is None else {'normalization_targets': normalization_targets}
+    if normalization_targets is not None:
+        options['subject_schema'] = report['subjects']['schema']
     if configuration is not None:
         options['configuration'] = configuration
     installed, manifest = capture(files, php, plan["required_extensions"], **options)

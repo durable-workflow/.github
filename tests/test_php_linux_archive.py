@@ -12,9 +12,67 @@ from unittest.mock import patch
 
 from scripts import php_linux_archive as archive
 from scripts import php_linux_bootstrap as bootstrap
+from scripts import php_linux_configuration as configuration
+
+
+def initial_subject_shape(writer=archive.subject_record, schema=archive.NORMALIZED_SUBJECT_SCHEMA):
+    """Fixed catalog names/sizes with inert hashes; no payload or installed claim."""
+    metadata = json.loads((bootstrap.ROOT / 'qualification/php-linux-initial-archive.json').read_text())
+    profile = json.loads((bootstrap.ROOT / 'qualification/php-linux-initial-normalization.json').read_text())
+    files = {row[0].removeprefix('./'): {'size': row[3], 'sha256': '0' * 64}
+        for row in metadata['members'] if row[1] == '0'}
+    targets = {}
+    for name, target in profile['materialize_regular_aliases']:
+        files[name] = files[target]
+        targets[name] = {'target': target, **files[target], 'metadata': {}}
+    outputs = {configuration.CLI: {'size': 73769, 'sha256': '0' * 64},
+               configuration.PECL: {'size': 64, 'sha256': '0' * 64},
+               configuration.CURRENT: {'size': 11, 'sha256': '0' * 64}}
+    configs = {name for name in files if name.startswith('etc/php/8.3/cli/conf.d/') and name.endswith('.ini')}
+    configs.difference_update(configuration.removed_members(files))
+    configs.update((configuration.CLI, configuration.PECL))
+    plan = {'schema': configuration.SCHEMA, 'outputs': outputs, 'active': sorted(configs)}
+    names = {name for name in files if name.startswith('usr/lib/php/20230831/') and name.endswith('.so')}
+    names.update(('usr/bin/php8.3', 'usr/bin/php-config8.3', *configs, *outputs))
+    expected = {**files, **outputs}
+    manifest = {'schema': schema, 'files': {'/' + name: writer(name, expected[name], '8.3', plan, targets)
+        for name in sorted(names)}, 'commands': {'php': '/usr/bin/php8.3', 'php-config': '/usr/bin/php-config8.3'},
+        'configs': {'/' + name: '/' + name for name in sorted(configs)}}
+    return manifest, {'files': files, 'targets': targets}, plan
 
 
 class PhpLinuxArchiveTest(unittest.TestCase):
+    def test_fixed_initial_inventory_refuses_v1_and_fits_v2_without_larger_limits_or_omissions(self):
+        path = Path(__file__).parent / 'fixtures/php_subjects_153f.py'
+        spec = importlib.util.spec_from_file_location('inert_subject_writer_153f', path)
+        old = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(old)
+        before, _, _ = initial_subject_shape(old.subject_record, archive.SUBJECT_SCHEMA)
+        after, _, _ = initial_subject_shape()
+        self.assertEqual(172, len(after['files']))
+        self.assertEqual(69, len(after['configs']))
+        self.assertEqual(63472, len(json.dumps(before, sort_keys=True).encode()))
+        self.assertGreater(len(json.dumps(before, separators=(',', ':')).encode()), archive.MAX_SUBJECT_BYTES)
+        self.assertEqual(old.MAX_SUBJECT_BYTES, archive.MAX_SUBJECT_BYTES)
+        with self.assertRaisesRegex(ValueError, 'exceeds the bounded profile'):
+            old.require_subject_bound(before)
+        archive.require_subject_bound(after)
+        self.assertEqual(before['commands'], after['commands'])
+        self.assertEqual(before['configs'], after['configs'])
+        self.assertEqual(set(before['files']), set(after['files']))
+        for name in before['files']:
+            self.assertEqual({key: before['files'][name][key] for key in ('type', 'size', 'sha256')},
+                             {key: after['files'][name][key] for key in ('type', 'size', 'sha256')})
+
+    def test_subject_count_and_bytes_still_refuse_at_the_original_bounds(self):
+        manifest, _, _ = initial_subject_shape()
+        manifest['files'].update({f'/inert/{n}': {} for n in range(257)})
+        with self.assertRaisesRegex(ValueError, 'exceeds the bounded profile'):
+            archive.require_subject_bound(manifest)
+        manifest = {'files': {}, 'configs': {'/inert': 'x' * archive.MAX_SUBJECT_BYTES}}
+        with self.assertRaisesRegex(ValueError, 'exceeds the bounded profile'):
+            archive.require_subject_bound(manifest)
+
     def predecessor(self):
         path = Path(__file__).parent / 'fixtures/php_linux_archive_65753c1.py'
         spec = importlib.util.spec_from_file_location('inert_predecessor_inventory', path)
@@ -136,10 +194,17 @@ class PhpLinuxArchiveTest(unittest.TestCase):
         origin = {'target': 'etc/php/8.3/mods-available/inert.ini', **files[name], 'metadata': {'mode': 0o644}}
         _, normalized = archive.capture_subjects(files, '8.3', [], normalization_targets={name: origin}, **options)
         authority = normalized['files']['/' + name]['authority']
-        self.assertEqual('normalized-archive', authority['kind'])
-        self.assertEqual(origin['target'], authority['source_member'])
+        self.assertEqual(archive.NORMALIZED_SUBJECT_SCHEMA, normalized['schema'])
+        self.assertEqual({'kind': 'normalized-archive'}, authority)
+        _, historical = archive.capture_subjects(files, '8.3', [], normalization_targets={name: origin},
+            subject_schema=archive.SUBJECT_SCHEMA, **options)
+        self.assertEqual(archive.SUBJECT_SCHEMA, historical['schema'])
+        self.assertEqual(origin['target'], historical['files']['/' + name]['authority']['source_member'])
         self.assertEqual(bootstrap.sha256(json.dumps(origin['metadata'], sort_keys=True,
-            separators=(',', ':')).encode()), authority['target_metadata_sha256'])
+            separators=(',', ':')).encode()), historical['files']['/' + name]['authority']['target_metadata_sha256'])
+        for schema in (archive.NORMALIZED_SUBJECT_SCHEMA, 'unknown', '', False, 0):
+            with self.subTest(schema=schema), self.assertRaises(ValueError):
+                archive.capture_subjects(files, '8.3', [], subject_schema=schema, **options)
         origin['size'] += 1
         with self.assertRaisesRegex(ValueError, 'original contained target'):
             archive.capture_subjects(files, '8.3', [], normalization_targets={name: origin}, **options)

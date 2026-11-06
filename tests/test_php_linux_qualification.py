@@ -23,6 +23,70 @@ from scripts import php_linux_configuration as configuration
 
 
 class PhpLinuxQualificationTest(unittest.TestCase):
+    def test_full_initial_subject_receipt_and_terminal_shape_fit_original_bounds(self):
+        from tests.test_php_linux_archive import initial_subject_shape
+        with tempfile.TemporaryDirectory() as directory:
+            _, report, _, _, _ = self.normalized_fixture(Path(directory), configured=True)
+            manifest, document, configured = initial_subject_shape()
+            for name, identity in report['subjects']['files'].items():
+                if identity['authority']['kind'] == 'tool':
+                    manifest['files'][name] = identity
+            report['subjects'] = manifest
+            archive.require_subject_bound(manifest)
+            qualification.validate_normalized_subjects(manifest, document, configured)
+            self.assertEqual(174, len(manifest['files']))
+            self.assertLessEqual(len((json.dumps(report, sort_keys=True) + '\n').encode()), setup.MAX_RECEIPT - 8192)
+            # Reserve more than the bounded control/provenance/cleanup envelope,
+            # without substituting a source test for real installed evidence.
+            terminal = {'receipt': report, 'metadata-reserve': 'x' * 8192}
+            self.assertLess(len(json.dumps(terminal, sort_keys=True).encode()), 65536)
+
+    def test_v2_references_require_complete_unchanged_provenance_and_cleanup_both_states(self):
+        mutations = ('none', 'document-bytes', 'document-object', 'target-digest',
+                     'post-probe', 'legacy-schema', 'foreign-reference', 'file-digest', 'wrong-kind')
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                path, report, _, environment, selected = self.normalized_fixture(root, configured=True)
+                pip_state, pip_data, pip_report, pip_subjects = self.pip_fixture(root)
+                document = path.parent / normalization.MANIFEST_NAME
+                if mutation in ('document-bytes', 'document-object'):
+                    raw = document.read_bytes()
+                    document.unlink()
+                    document.write_bytes(raw if mutation == 'document-object' else b'{}')
+                    document.chmod(0o400)
+                elif mutation == 'target-digest':
+                    report['normalization']['target_manifest_sha256'] = '0' * 64
+                elif mutation == 'legacy-schema':
+                    report['subjects']['schema'] = archive.SUBJECT_SCHEMA
+                elif mutation == 'foreign-reference':
+                    report['subjects']['files']['/usr/bin/php8.3']['authority']['member'] = 'foreign'
+                elif mutation == 'file-digest':
+                    report['subjects']['files']['/usr/bin/php-config8.3']['sha256'] = '0' * 64
+                elif mutation == 'wrong-kind':
+                    report['subjects']['files']['/usr/bin/php-config8.3']['authority']['kind'] = 'normalized-archive'
+                path.write_text(json.dumps(report))
+                calls, evidence = [], []
+                def probes(*_args):
+                    calls.append('probe')
+                    if mutation == 'post-probe':
+                        document.chmod(0o600)
+                        document.write_bytes(b'{}')
+                        document.chmod(0o400)
+                    return []
+                expected = contextlib.nullcontext() if mutation == 'none' else self.assertRaises((ValueError, OSError))
+                with patch.object(normalization, 'profile', return_value=selected), patch.object(
+                        qualification.private_pip, 'verify_runtime', return_value=(pip_report, pip_subjects)), expected:
+                    self.closed_qualify(path, root, environment, evidence.append,
+                        required_schema=setup.CONFIGURED_RECEIPT_SCHEMA, pip_state=pip_data,
+                        subjects=lambda *_args, **_kw: None, probes=probes)
+                self.assertEqual(['probe'] if mutation in ('none', 'post-probe') else [], calls)
+                self.assertEqual('pass' if mutation == 'none' else 'refused', evidence[0]['outcome'])
+                self.assertEqual('pass', evidence[0]['cleanup'])
+                self.assertEqual('pass', evidence[0]['private_pip_cleanup'])
+                self.assertFalse(path.parent.exists())
+                self.assertFalse(pip_state.root.exists())
+
     def closed_qualify(self, path, root, environment, publish, **options):
         options.setdefault('alternatives', lambda _files: {'count': 9, 'inventory_sha256': 'a' * 64})
         # Retained legacy-receipt controls exercise the historical validators.
@@ -130,6 +194,10 @@ class PhpLinuxQualificationTest(unittest.TestCase):
             'source_member': target, 'target_size': files[target]['size'], 'target_sha256': files[target]['sha256'],
             'target_metadata_sha256': bootstrap.sha256(normalization.canonical_json(metadata))}
         if configured:
+            report['subjects']['schema'] = archive.NORMALIZED_SUBJECT_SCHEMA
+            for value in report['subjects']['files'].values():
+                if value['authority']['kind'] in ('archive', 'normalized-archive'):
+                    value['authority'] = {'kind': value['authority']['kind']}
             config_document, outputs = configuration.derive(template, files, recipe.verified_source())
             report.update(schema=setup.CONFIGURED_RECEIPT_SCHEMA,
                           configuration_manifest=configuration.write_manifest(path.parent, config_document, files))
