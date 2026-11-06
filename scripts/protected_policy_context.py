@@ -33,10 +33,11 @@ COMMAND = re.compile(rf"{WORD}(?:[ \t]+{WORD})*[ \t]*")
 PYTHON_MODULES = {"unittest", "pip", "venv", "http.server"}
 CI_WORKFLOW = ".github/workflows/ci.yml"
 SONAR_WORKFLOW = ".github/workflows/sonar.yml"
+INITIAL_PHP_WORKFLOW = ".github/workflows/qualify-linux-php-initial.yml"
 # Filled with explicit reviewed workflow-byte identities, never derived from
 # candidate text. A changed complex workflow needs a separate source review.
 REVIEWED_COMPLEX_WORKFLOWS = {
-    ".github/workflows/qualify-linux-php-initial.yml": "c94aa78f856940b71ce21476caf1f9f826375f11499d54759c81a79467acd1eb",
+    INITIAL_PHP_WORKFLOW: "c94aa78f856940b71ce21476caf1f9f826375f11499d54759c81a79467acd1eb",
     CI_WORKFLOW: "d5b32d7b2868638e09b7deea1d3cab4bcbd3b4601fd9120da0be55319540eff7",
     SONAR_WORKFLOW: "0dd432a52b1dcb6ef10b6e25404163b285deaa651a92219456eabec18514067b",
     ".github/workflows/protected-policy.yml": "642d204ea939ca5eba7ef51be9e4ae56a35177413caabe849315086d3d9d2d31",
@@ -53,10 +54,10 @@ REVIEWED_SOURCE_CI_SUCCESSORS = {
 # The successor remains inert until its separate runtime pin and manual-only
 # workflow integration. Keep the consumed predecessor's identity unchanged.
 REVIEWED_INITIAL_PROFILE_SUCCESSORS = {
-    ".github/workflows/qualify-linux-php-initial.yml": "d3eefa3cce62b0c92ae07d6e6a1617342b843e9b5fb0ddad6ad6be4c1c4a2f9f",
+    INITIAL_PHP_WORKFLOW: "d3eefa3cce62b0c92ae07d6e6a1617342b843e9b5fb0ddad6ad6be4c1c4a2f9f",
 }
 REVIEWED_NORMALIZED_PROFILE_SUCCESSORS = {
-    ".github/workflows/qualify-linux-php-initial.yml": "52fa0e223464e06bd7e10f0b57076557f350353dcfedb1235b0829e0121134ac",
+    INITIAL_PHP_WORKFLOW: "52fa0e223464e06bd7e10f0b57076557f350353dcfedb1235b0829e0121134ac",
 }
 
 # AI's existing matrix commands are reviewed only for that repository. They do
