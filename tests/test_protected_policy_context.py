@@ -150,6 +150,22 @@ class ProtectedContextTest(unittest.TestCase):
         self.checked_initial_profile('qualify-linux-php-subject-references.yml',
             'REVIEWED_SUBJECT_REFERENCE_PROFILE_SUCCESSORS', current)
 
+    def test_ubuntu24_manual_profile_is_exact_separate_and_target_scoped(self):
+        path = '.github/workflows/qualify-linux-php-ubuntu24.yml'
+        raw = (ROOT / 'tests/fixtures/qualify-linux-php-ubuntu24.yml').read_bytes()
+        self.assertEqual(context.REVIEWED_UBUNTU24_PROFILE_WORKFLOWS[path], hashlib.sha256(raw).hexdigest())
+        self.checked_initial_profile('qualify-linux-php-ubuntu24.yml',
+            'REVIEWED_UBUNTU24_PROFILE_WORKFLOWS', b'8ba5caae2546f3d5f41b7616c5722b9b337b8fc0', path=path)
+        with self.assertRaises(InputRefused):
+            context.validate_context({'.github/workflows/qualify-linux-php-initial.yml':raw})
+        for old, new in ((b'ubuntu-24.04', b'ubuntu-latest'), (b"release='24.04'", b"release='26.04'"),
+                         (b'qualify-linux-php-ubuntu24.yml@refs/heads/main',
+                          b'qualify-linux-php-initial.yml@refs/heads/main')):
+            changed = raw.replace(old, new)
+            self.assertNotEqual(raw, changed)
+            with self.assertRaises(InputRefused):
+                context.validate_context({path:changed})
+
     def test_private_pip_manual_successor_is_exact_and_keeps_php_and_control_sources_separate(self):
         path = ".github/workflows/qualify-linux-php-initial.yml"
         raw = (ROOT / "tests/fixtures/qualify-linux-php-private-pip.yml").read_bytes()
@@ -173,8 +189,8 @@ class ProtectedContextTest(unittest.TestCase):
         with self.assertRaises(InputRefused):
             context.validate_context({WORKFLOW: raw})
 
-    def checked_initial_profile(self, fixture, registry, source):
-        path = ".github/workflows/qualify-linux-php-initial.yml"
+    def checked_initial_profile(self, fixture, registry, source,
+                                *, path=".github/workflows/qualify-linux-php-initial.yml"):
         raw = (ROOT / "tests/fixtures" / fixture).read_bytes()
         with patch.object(context, registry, {}), self.assertRaises(InputRefused):
             context.validate_context({path: raw})
@@ -199,7 +215,7 @@ class ProtectedContextTest(unittest.TestCase):
                 context.validate_context({path: changed})
 
         from scripts.protected_policy_check import validate_files
-        files = {'.github/workflows/qualify-linux-php-initial.yml': raw}
+        files = {path: raw}
         for name in ('action.yml', 'bootstrap.js'):
             path = '.github/actions/setup-php-linux/' + name
             files[path] = (ROOT / path).read_bytes()

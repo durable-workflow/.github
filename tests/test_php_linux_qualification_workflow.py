@@ -65,7 +65,8 @@ class PhpLinuxQualificationWorkflowTest(unittest.TestCase):
         environment={"PATH":"/usr/bin:/bin","LC_ALL":"C","EXPECTED_WORKFLOW_SHA":"a"*40,
             "GITHUB_SHA":"a"*40,"GITHUB_WORKFLOW_SHA":"a"*40,"GITHUB_REPOSITORY":"durable-workflow/.github",
             "GITHUB_EVENT_NAME":"workflow_dispatch","GITHUB_REF":"refs/heads/main","GITHUB_RUN_ATTEMPT":"1",
-            "GITHUB_WORKFLOW_REF":"durable-workflow/.github/.github/workflows/qualify-linux-php-initial.yml@refs/heads/main"}
+            "GITHUB_WORKFLOW_REF":getattr(self, 'workflow_ref',
+                "durable-workflow/.github/.github/workflows/qualify-linux-php-initial.yml@refs/heads/main")}
         variants=[({},True)]
         variants += [({key:value},False) for key,value in (
             ("EXPECTED_WORKFLOW_SHA",""),("EXPECTED_WORKFLOW_SHA","bad"),("EXPECTED_WORKFLOW_SHA","b"*40),
@@ -327,3 +328,37 @@ class ReferencedSubjectsQualificationWorkflowTest(ConfiguredCliQualificationWork
     predecessor_fixture = ConfiguredCliQualificationWorkflowTest.fixture
     predecessor_source = ConfiguredCliQualificationWorkflowTest.source
     expected_subject_schema = 'durable-workflow.php-linux-subjects/v2'
+
+
+class Ubuntu24QualificationWorkflowTest(unittest.TestCase):
+    def setUp(self):
+        self.raw = (ROOT / 'tests/fixtures/qualify-linux-php-ubuntu24.yml').read_bytes()
+        self.document = yaml.load(self.raw, Loader=yaml.BaseLoader)
+        self.job = self.document['jobs']['qualify-initial-linux-php']
+        self.workflow_ref = 'durable-workflow/.github/.github/workflows/qualify-linux-php-ubuntu24.yml@refs/heads/main'
+
+    def test_only_closed_host_path_labels_and_six_source_literals_differ_from_accepted_initial_profile(self):
+        previous = (ROOT / 'tests/fixtures/qualify-linux-php-subject-references.yml').read_bytes()
+        self.assertEqual(6, previous.count(b'140f937cf245f39a495467fe6bab2bd30f93a17a'))
+        changes = (
+            (b'140f937cf245f39a495467fe6bab2bd30f93a17a', b'8ba5caae2546f3d5f41b7616c5722b9b337b8fc0'),
+            (b'name: Qualify initial bound Linux PHP setup', b'name: Qualify bound Ubuntu 24 Linux PHP setup'),
+            (b'group: initial-bound-linux-php', b'group: bound-ubuntu24-linux-php'),
+            (b'name: Original initial Linux PHP setup qualification', b'name: Original Ubuntu 24 Linux PHP setup qualification'),
+            (b'runs-on: ubuntu-latest', b'runs-on: ubuntu-24.04'),
+            (b'.github/workflows/qualify-linux-php-initial.yml@refs/heads/main',
+             b'.github/workflows/qualify-linux-php-ubuntu24.yml@refs/heads/main'),
+            (b"release='26.04'", b"release='24.04'"),
+            (b"'host':'ubuntu26.04/x86_64'", b"'host':'ubuntu24.04/x86_64'"))
+        for old, new in changes:
+            previous = previous.replace(old, new)
+        self.assertEqual(previous, self.raw)
+        self.assertEqual({'workflow_dispatch'}, set(self.document['on']))
+        self.assertEqual('ubuntu-24.04', self.job['runs-on'])
+        self.assertEqual('15', self.job['timeout-minutes'])
+        self.assertEqual({'contents':'read'}, self.job['permissions'])
+        self.assertEqual('242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5',
+                         self.job['steps'][4]['uses'].rsplit('@', 1)[1])
+
+    def test_actual_inline_gate_keeps_exact_original_admission_for_the_new_path(self):
+        PhpLinuxQualificationWorkflowTest.test_actual_inline_gate_refuses_wrong_head_ref_event_repo_or_rerun_before_following_code(self)
