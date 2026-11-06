@@ -328,8 +328,19 @@ def stamp(metadata, raw):
 
 def write_manifest(state, result):
     """Capture the archive-derived document before any installer/PHP effect."""
-    raw = canonical_json(document(result)) + b'\n'
-    if not 0 < len(raw) <= MAX_MANIFEST:
+    return write_document(state, MANIFEST_NAME, document(result), MAX_MANIFEST)
+
+
+def document_parameters(name, limit):
+    if (not isinstance(name, str) or re.fullmatch(r'[a-z][a-z0-9_-]*\.json', name) is None
+            or type(limit) is not int or not 0 < limit <= MAX_MANIFEST):
+        raise ValueError('Invalid bounded producer document name or limit')
+
+
+def write_document(state, name, value, limit):
+    document_parameters(name, limit)
+    raw = canonical_json(value) + b'\n'
+    if not 0 < len(raw) <= limit:
         raise ValueError('Normalization manifest exceeds its fixed bound')
     parent = os.open(state, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     descriptor, created, complete = None, False, False
@@ -337,7 +348,7 @@ def write_manifest(state, result):
         directory = os.fstat(parent)
         if directory.st_uid != os.getuid() or stat.S_IMODE(directory.st_mode) != 0o700:
             raise ValueError('Normalization manifest requires the exact private setup state')
-        descriptor = os.open(MANIFEST_NAME, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent)
+        descriptor = os.open(name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent)
         created = True
         write_all(descriptor, raw)
         os.fsync(descriptor)
@@ -349,12 +360,12 @@ def write_manifest(state, result):
         if (observed.st_dev, observed.st_ino) != (directory.st_dev, directory.st_ino):
             raise ValueError('Normalization state changed during the producer handoff')
         complete = True
-        return {'name': MANIFEST_NAME, 'object': stamp(metadata, raw)}
+        return {'name': name, 'object': stamp(metadata, raw)}
     finally:
         if descriptor is not None:
             os.close(descriptor)
         if created and not complete:
-            os.unlink(MANIFEST_NAME, dir_fd=parent)
+            os.unlink(name, dir_fd=parent)
         os.close(parent)
 
 
@@ -377,23 +388,30 @@ def validate_stamp(value):
 
 @contextmanager
 def capture_manifest(state, record):
+    with capture_document(state, record, MANIFEST_NAME, MAX_MANIFEST) as captured:
+        yield captured
+
+
+@contextmanager
+def capture_document(state, record, name, limit):
+    document_parameters(name, limit)
     bootstrap.exact_keys(record, {'name', 'object'})
-    if record['name'] != MANIFEST_NAME:
+    if record['name'] != name:
         raise ValueError('Only the exact producer normalization manifest is supported')
     validate_stamp(record['object'])
-    path = state / MANIFEST_NAME
+    path = state / name
     parent = os.open(state, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     descriptor = None
     try:
         directory = os.fstat(parent)
         if directory.st_uid != os.getuid() or stat.S_IMODE(directory.st_mode) != 0o700:
             raise ValueError('Normalization manifest parent is not the private setup root')
-        descriptor = os.open(MANIFEST_NAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
         metadata = os.fstat(descriptor)
         manifest_metadata(metadata)
-        raw = os.read(descriptor, MAX_MANIFEST + 1)
+        raw = os.read(descriptor, limit + 1)
         original = stamp(metadata, raw)
-        if len(raw) != metadata.st_size or record['object'] != original:
+        if len(raw) > limit or len(raw) != metadata.st_size or record['object'] != original:
             raise ValueError('Normalization manifest differs from its pre-install producer identity')
         def unchanged():
             current = os.fstat(descriptor)
@@ -401,7 +419,7 @@ def capture_manifest(state, record):
             current_parent = os.stat(state, follow_symlinks=False)
             manifest_metadata(current)
             manifest_metadata(located)
-            contents = os.pread(descriptor, MAX_MANIFEST + 1, 0)
+            contents = os.pread(descriptor, limit + 1, 0)
             if ((current_parent.st_dev, current_parent.st_ino, current_parent.st_mode, current_parent.st_uid)
                     != (directory.st_dev, directory.st_ino, directory.st_mode, directory.st_uid)
                     or stamp(current, contents) != original or stamp(located, contents) != original or contents != raw):

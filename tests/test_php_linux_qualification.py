@@ -19,11 +19,15 @@ from scripts import php_linux_tools as tools
 from scripts import php_linux_qualification as qualification
 from scripts import setup_php_linux as setup
 from scripts import php_linux_normalize as normalization
+from scripts import php_linux_configuration as configuration
 
 
 class PhpLinuxQualificationTest(unittest.TestCase):
     def closed_qualify(self, path, root, environment, publish, **options):
         options.setdefault('alternatives', lambda _files: {'count': 9, 'inventory_sha256': 'a' * 64})
+        # Retained legacy-receipt controls exercise the historical validators.
+        # The live collector uses the new strict default, checked separately.
+        options.setdefault('required_schema', None)
         with patch.dict(os.environ, environment, clear=True):
             return qualification.qualify(path, root, environment, publish, **options)
 
@@ -85,10 +89,13 @@ class PhpLinuxQualificationTest(unittest.TestCase):
         report = {"root_identity": state.identity, "interpreter": {"version": [3, 14, 4]}}
         return state, data, report, {"inert-module": identity}
 
-    def normalized_fixture(self, root):
+    def normalized_fixture(self, root, *, configured=False):
         path, report, plan, environment = self.fixture(root)
         files = {name.lstrip('/'): {key: value[key] for key in ('size', 'sha256')}
             for name, value in report['subjects']['files'].items() if value['authority']['kind'] == 'archive'}
+        template = b'; inert held CLI production template\n'
+        if configured:
+            files[configuration.TEMPLATE] = configuration.identity(template)
         alias = 'etc/php/8.3/cli/php.ini'
         target = 'etc/php/8.3/mods-available/inert.ini'
         files[target] = dict(files[alias])
@@ -122,8 +129,69 @@ class PhpLinuxQualificationTest(unittest.TestCase):
         report['subjects']['files']['/' + alias]['authority'] = {'kind': 'normalized-archive', 'member': alias,
             'source_member': target, 'target_size': files[target]['size'], 'target_sha256': files[target]['sha256'],
             'target_metadata_sha256': bootstrap.sha256(normalization.canonical_json(metadata))}
+        if configured:
+            config_document, outputs = configuration.derive(template, files, recipe.verified_source())
+            report.update(schema=setup.CONFIGURED_RECEIPT_SCHEMA,
+                          configuration_manifest=configuration.write_manifest(path.parent, config_document, files))
+            config_plan = configuration.subject_plan(config_document, files)
+            for name, raw in outputs.items():
+                report['subjects']['files']['/' + name] = {'type':'regular', **configuration.identity(raw),
+                    'authority':{'kind':'derived-cli-configuration','member':name,'recipe':configuration.SCHEMA}}
+            report['subjects']['configs'] = {'/' + name:'/' + name for name in config_plan['active']}
         path.write_text(json.dumps(report))
         return path, report, plan, environment, selected
+
+    def test_configured_terminal_recomputes_before_probes_and_holds_document_through_cleanup(self):
+        for mutation in ('none', 'missing', 'forged-final-digest', 'post-probe'):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                path, report, _plan, environment, selected = self.normalized_fixture(root, configured=True)
+                evidence, calls = [], []
+                manifest = path.parent / configuration.MANIFEST_NAME
+                if mutation == 'missing':
+                    manifest.unlink()
+                if mutation == 'forged-final-digest':
+                    value = json.loads(manifest.read_bytes())
+                    value['outputs'][configuration.CLI]['sha256'] = 'f' * 64
+                    raw = normalization.canonical_json(value) + b'\n'
+                    manifest.chmod(0o600)
+                    manifest.write_bytes(raw)
+                    manifest.chmod(0o400)
+                    report['configuration_manifest']['object'] = normalization.stamp(manifest.lstat(), raw)
+                    report['subjects']['files']['/' + configuration.CLI]['sha256'] = 'f' * 64
+                    path.write_text(json.dumps(report))
+                def subjects(_report, _plan, **options):
+                    self.assertEqual({configuration.CLI, configuration.PECL, configuration.CURRENT},
+                                     set(options['configuration']['outputs']))
+                    calls.append('subjects')
+                def probes(*_arguments):
+                    calls.append('probes')
+                    if mutation == 'post-probe':
+                        manifest.chmod(0o600)
+                    return []
+                expectation = contextlib.nullcontext() if mutation == 'none' else self.assertRaises((ValueError, OSError))
+                with patch.object(normalization, 'profile', return_value=selected), expectation:
+                    self.closed_qualify(path, root, environment, evidence.append, subjects=subjects, probes=probes)
+                self.assertEqual([] if mutation in ('missing','forged-final-digest')
+                                 else ['subjects','probes','subjects'], calls)
+                self.assertEqual('pass' if mutation == 'none' else 'refused', evidence[0]['outcome'])
+                if mutation == 'none':
+                    self.assertTrue(evidence[0]['configuration']['revalidated'])
+                self.assertEqual('pass', evidence[0]['cleanup'])
+                self.assertFalse(path.parent.exists())
+
+    def test_default_live_collector_refuses_legacy_receipt_before_probes_and_cleans(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path, _report, _plan, environment = self.fixture(root)
+            evidence, probes = [], []
+            with patch.dict(os.environ, environment, clear=True), \
+                    self.assertRaisesRegex(ValueError, 'configured receipt schema'):
+                qualification.qualify(path, root, environment, evidence.append,
+                    probes=lambda *_arguments:probes.append('must not run'))
+            self.assertEqual([], probes)
+            self.assertEqual('pass', evidence[0]['cleanup'])
+            self.assertFalse(path.parent.exists())
 
     def test_normalized_alternatives_refusal_before_or_after_probes_cleans_without_pass(self):
         for mutation in ('none', 'before', 'after', 'authority-drift'):

@@ -26,11 +26,13 @@ from scripts import php_linux_bootstrap as bootstrap
 from scripts import php_linux_recipe as recipe
 from scripts import php_linux_tools as tools
 from scripts import php_linux_normalize as normalization
+from scripts import php_linux_configuration as configuration
 
 
 RECEIPT_NAME = "receipt.json"
 RECEIPT_SCHEMA = "durable-workflow.php-linux-setup-receipt/v2"
 NORMALIZED_RECEIPT_SCHEMA = "durable-workflow.php-linux-setup-receipt/v3"
+CONFIGURED_RECEIPT_SCHEMA = "durable-workflow.php-linux-setup-receipt/v4"
 MAX_RECEIPT = 60 * 1024
 CA_SHA256 = "50f79f98dac192b20dbf73f35c56f0b0c557ab267ff5199d1117cc1180b70785"
 
@@ -87,13 +89,32 @@ def reexec(parent: dict, execute=os.execve):
             environment)
 
 
-def capture_setup_subjects(members, php, required, selected_tools, *, normalization_targets=None):
+def capture_setup_subjects(members, php, required, selected_tools, *, normalization_targets=None,
+                           configuration=None):
     options = {} if normalization_targets is None else {'normalization_targets': normalization_targets}
+    if configuration is not None:
+        options['configuration'] = configuration
     installed, manifest = archive.capture_subjects(members, php, required, **options)
     for row in selected_tools:
         tools.append_subject(manifest, row)
     archive.require_subject_bound(manifest)
     return installed, manifest
+
+
+def configure_cli(state, members, source, environment):
+    template = configuration.capture_template(members)
+    document, _outputs = configuration.derive(template, members, source)
+    record = configuration.write_manifest(state, document, members)
+    configuration.apply(document, members, environment, source=source)
+    plan = configuration.subject_plan(document, members)
+    archive.verify_installed(members, '8.3', [], configuration=plan)
+    return document, record, plan
+
+
+def bind_installed_files(report, members, plan, verify_php):
+    report['stage'] = 'installed-file-binding'
+    report['installed'] = verify_php(members, plan['request']['inputs']['php-version'],
+                                     plan['required_extensions'])
 
 
 def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
@@ -125,7 +146,7 @@ def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
     runtime = state / "upstream"
     derived = recipe.derive_source(files, refusal)
     source_hashes = recipe.write_runtime(runtime, derived)
-    report = {"schema": NORMALIZED_RECEIPT_SCHEMA, "outcome": "running",
+    report = {"schema": CONFIGURED_RECEIPT_SCHEMA, "outcome": "running",
               "host": host, "image": {key: environment.get(key) for key in ("ImageOS", "ImageVersion")},
               "apt": {"invoked": False, "profile": "no-apt"}, "ca_sha256": CA_SHA256,
               "request": request, "host_tool": node,
@@ -160,9 +181,10 @@ def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
             report["stage"] = "bound-installer"
             install_php(script, held_archive, (request["inputs"]["php-version"], "release", "nts"),
                         environment, catalog, no_apt=True, normalized=normalized)
-            report["stage"] = "installed-file-binding"
-            report["installed"] = verify_php(members, request["inputs"]["php-version"],
-                                               plan["required_extensions"])
+            bind_installed_files(report, members, plan, verify_php)
+            report['stage'] = 'bound-cli-configuration'
+            config_document, config_record, config_plan = configure_cli(state, members, files, environment)
+            report['configuration_manifest'] = config_record
             if bootstrap.sha256(Path(node["node"]).read_bytes()) != node["node_sha256"]:
                 raise ValueError("Runner action Node executable changed after the closed reexec")
             report["stage"] = "pinned-upstream"
@@ -179,10 +201,14 @@ def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
             report["stage"] = "subject-manifest"
             report["installed"], report["subjects"] = capture_subjects(
                 members, request["inputs"]["php-version"], plan["required_extensions"], plan["tools"],
-                normalization_targets=normalized.targets)
+                normalization_targets=normalized.targets, configuration=config_plan)
             with normalization.capture_manifest(state, report['normalization_manifest']) as (document, _sealed, unchanged):
                 if document != normalization.document(normalized):
                     raise ValueError('Pre-install normalization manifest changed during setup')
+                unchanged()
+            with configuration.capture_manifest(state, config_record, members) as (document, _outputs, _held, unchanged):
+                if document != config_document:
+                    raise ValueError('CLI configuration document changed during setup')
                 unchanged()
             report.update(outcome="pass", stage="complete")
             return report
