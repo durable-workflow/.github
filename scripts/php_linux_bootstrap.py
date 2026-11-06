@@ -306,6 +306,8 @@ def no_apt_installer_source(original: bytes, catalog: dict) -> bytes:
         match = matches[0]
         source = source[:match.start()] + source[match.end():]
         source = replace_once(source, '\n' + name + '\n', '\n')
+    source = replace_once(source, '  wait "${to_wait[@]}"\n}',
+        '  wait "${to_wait[@]}"\n' + alternatives.selection_source() + '\n}')
     return source.encode()
 
 

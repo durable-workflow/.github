@@ -18,7 +18,11 @@ Nine archive-materialized alternatives paths are master links created by
 `fix_alternatives`. Extraction excludes those exact paths, leaving their
 creation to the existing updater after extraction. Both link hops and the
 held versioned target bytes are verified before PHP and again before and after
-the terminal probes. The other eight alternatives aliases remain regular
+the terminal probes. Registration alone retains higher-priority automatic or
+preselected manual alternatives. After registration completes, the initial
+recipe explicitly selects only those nine held versioned targets with the
+stock updater and refuses any selection failure. Other registered options and
+unrelated groups remain intact. The other eight alternatives aliases remain regular
 copies: the library alias and seven plain manpage aliases have no writer in
 that function. Its seven gzip-manpage slave operations use different names;
 the socket operation has no contained regular target. Those existing operations
@@ -26,7 +30,8 @@ are retained without treating them as authority for another archive alias.
 
 The focused source controls use inert archives, the stock alternatives updater
 and temporary paths. They reproduce the regular-alternatives failure and check
-the corrected extraction/updater order, but do not establish installed PHP
+the corrected extraction/updater/selection order, including higher-priority,
+manual and already-selected choices, but do not establish installed PHP
 configuration, module, loader or PHAR behavior. Historical installed originals
 remain NONPASS. The live manual workflow keeps its immutable helpers; successor
 adoption and a fresh installed qualification require their separate source and
