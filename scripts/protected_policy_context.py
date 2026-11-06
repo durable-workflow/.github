@@ -74,6 +74,10 @@ REVIEWED_SELECTED_ALTERNATIVES_PROFILE_SUCCESSORS = {
     INITIAL_PHP_WORKFLOW: "5aff02167297f88d20700ea270adb7ee68ce20d7aa7c884a6a3bcb789b0cc7cc",
 }
 
+REVIEWED_CONFIGURED_CLI_PROFILE_SUCCESSORS = {
+    INITIAL_PHP_WORKFLOW: "d0e0816d8b0a41900a7b522dfda5120bdade3496eadfa122a14b8cd058b262f2",
+}
+
 # AI's existing matrix commands are reviewed only for that repository. They do
 # not enlarge the control repository's complex-workflow exceptions.
 REVIEWED_AI_WORKFLOWS = {
@@ -88,7 +92,8 @@ def reviewed_context_hashes(policy_target: str) -> dict[str, set[str]]:
                       REVIEWED_PHP_CONFIGURATION_SOURCE_CI_SUCCESSORS,
                       REVIEWED_INITIAL_PROFILE_SUCCESSORS, REVIEWED_NORMALIZED_PROFILE_SUCCESSORS,
                       REVIEWED_ALTERNATIVES_PROFILE_SUCCESSORS,
-                      REVIEWED_SELECTED_ALTERNATIVES_PROFILE_SUCCESSORS)
+                      REVIEWED_SELECTED_ALTERNATIVES_PROFILE_SUCCESSORS,
+                      REVIEWED_CONFIGURED_CLI_PROFILE_SUCCESSORS)
     elif policy_target == "ai":
         registries = (REVIEWED_AI_WORKFLOWS,)
     else:

@@ -114,6 +114,29 @@ class ProtectedContextTest(unittest.TestCase):
             with self.assertRaises(InputRefused):
                 context.validate_context({path: raw}, policy_target='ai')
 
+    def test_configured_cli_manual_successor_remains_exact_inert_and_target_scoped(self):
+        path = '.github/workflows/qualify-linux-php-initial.yml'
+        raw = (ROOT / 'tests/fixtures/qualify-linux-php-configured-cli.yml').read_bytes()
+        previous = (ROOT / 'tests/fixtures/qualify-linux-php-selected-alternatives.yml').read_bytes()
+        old = b'fd390417973902bae3ac4847fb67ae778c854786'
+        current = b'153f409e36002b2ae5f010f247a03b8830898e3c'
+        self.assertEqual(6, previous.count(old))
+        self.assertEqual(previous.replace(old, current), raw)
+        self.assertEqual(context.REVIEWED_CONFIGURED_CLI_PROFILE_SUCCESSORS[path], hashlib.sha256(raw).hexdigest())
+        context.validate_context({path:raw})
+        with patch.object(context, 'REVIEWED_CONFIGURED_CLI_PROFILE_SUCCESSORS', {}), self.assertRaises(InputRefused):
+            context.validate_context({path:raw})
+        for changed in (raw + b'\n# drift\n', raw.replace(current, b'a' * 40, 1),
+                        raw.replace(b'workflow_dispatch:\n', b'push:\n'),
+                        raw.replace(b'timeout-minutes: 15', b'timeout-minutes: 60')):
+            self.assertNotEqual(raw, changed)
+            with self.assertRaises(InputRefused):
+                context.validate_context({path:changed})
+        with self.assertRaises(InputRefused):
+            context.validate_context({WORKFLOW:raw})
+        with self.assertRaises(InputRefused):
+            context.validate_context({path:raw}, policy_target='ai')
+
     def test_private_pip_manual_successor_is_exact_and_keeps_php_and_control_sources_separate(self):
         path = ".github/workflows/qualify-linux-php-initial.yml"
         raw = (ROOT / "tests/fixtures/qualify-linux-php-private-pip.yml").read_bytes()

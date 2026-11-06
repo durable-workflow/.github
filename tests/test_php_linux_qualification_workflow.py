@@ -185,6 +185,7 @@ class PrivatePipQualificationWorkflowTest(unittest.TestCase):
 class NormalizedQualificationWorkflowTest(unittest.TestCase):
     fixture = "qualify-linux-php-normalized.yml"
     source = '45a7863dbc425ecf19a5a4038a84a9443c23a9a9'
+    configured_receipt = False
 
     def setUp(self):
         self.raw = (ROOT / "tests/fixtures" / self.fixture).read_bytes()
@@ -212,14 +213,32 @@ class NormalizedQualificationWorkflowTest(unittest.TestCase):
         self.assertIn("evidence['source']='" + self.source + "'", terminal)
         self.assertIn("evidence['php_helper_source']='" + self.source + "'", terminal)
 
+    def terminal_receipt(self, fixture, root, mutation):
+        receipt, _, _, _, profile = fixture.normalized_fixture(root,
+            configured=self.configured_receipt and mutation != 'legacy-schema')
+        if mutation in ('manifest-bytes', 'configuration-bytes'):
+            name = 'cli-configuration.json' if mutation == 'configuration-bytes' else normalization.MANIFEST_NAME
+            manifest = receipt.parent / name
+            manifest.chmod(0o600)
+            manifest.write_bytes(b'{}')
+            manifest.chmod(0o400)
+        return receipt, profile
+
+    def reader_options(self):
+        # Old fixtures replay their historical source reader; v4 uses the live default.
+        if self.configured_receipt:
+            return {}
+        return {'required_schema': None}
+
     def test_actual_normalized_terminal_revalidates_document_and_cleans_both_proven_states(self):
         script = self.job['steps'][6]['run'].split("<<'PYCODE'\n", 1)[1].rsplit('\nPYCODE', 1)[0]
         code = compile(script, 'inert-normalized-terminal', 'exec')
         fixture = test_php_linux_qualification.PhpLinuxQualificationTest()
-        for mutation in ('none', 'manifest-bytes'):
+        mutations = ('none', 'manifest-bytes', 'configuration-bytes', 'legacy-schema') if self.configured_receipt else ('none', 'manifest-bytes')
+        for mutation in mutations:
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
-                receipt, _, _, _, profile = fixture.normalized_fixture(root)
+                receipt, profile = self.terminal_receipt(fixture, root, mutation)
                 pip_state, pip_data, pip_report, pip_subjects = fixture.pip_fixture(root)
                 summary = root / 'summary'
                 environment = {'RUNNER_TEMP': str(root), 'GITHUB_STEP_SUMMARY': str(summary),
@@ -229,17 +248,10 @@ class NormalizedQualificationWorkflowTest(unittest.TestCase):
                     'GITHUB_REPOSITORY': 'durable-workflow/.github', 'GITHUB_WORKFLOW_SHA': 'a' * 40,
                     'GITHUB_SHA': 'a' * 40, 'GITHUB_REF': 'refs/heads/main', 'GITHUB_EVENT_NAME': 'workflow_dispatch',
                     'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '1'}
-                if mutation != 'none':
-                    manifest = receipt.parent / normalization.MANIFEST_NAME
-                    manifest.chmod(0o600)
-                    manifest.write_bytes(b'{}')
-                    manifest.chmod(0o400)
                 probes = []
                 original = qualification.qualify
                 def qualify(*args, **options):
-                    # Replay the retained v3 collector as a legacy source control.
-                    # Current live qualification separately requires v4 by default.
-                    options['required_schema'] = None
+                    options.update(self.reader_options())
                     options['subjects'] = lambda *_args, **_options: None
                     options['alternatives'] = lambda _files: {'count': 9, 'inventory_sha256': 'a' * 64}
                     options['probes'] = lambda *_args: probes.append('inert PHAR substitute')
@@ -259,6 +271,8 @@ class NormalizedQualificationWorkflowTest(unittest.TestCase):
                 self.assertEqual(self.source, terminal['php_helper_source'])
                 self.assertEqual('pass', terminal['cleanup'])
                 self.assertEqual('pass', terminal['private_pip_cleanup'])
+                if self.configured_receipt and mutation == 'none':
+                    self.assertTrue(terminal['configuration']['revalidated'])
                 self.assertEqual(['inert PHAR substitute'] if mutation == 'none' else [], probes)
                 self.assertFalse(receipt.parent.exists())
                 self.assertFalse(pip_state.root.exists())
@@ -288,3 +302,11 @@ class SelectedAlternativesQualificationWorkflowTest(AlternativesQualificationWor
     source = 'fd390417973902bae3ac4847fb67ae778c854786'
     predecessor_fixture = AlternativesQualificationWorkflowTest.fixture
     predecessor_source = AlternativesQualificationWorkflowTest.source
+
+
+class ConfiguredCliQualificationWorkflowTest(SelectedAlternativesQualificationWorkflowTest):
+    fixture = 'qualify-linux-php-configured-cli.yml'
+    source = '153f409e36002b2ae5f010f247a03b8830898e3c'
+    predecessor_fixture = SelectedAlternativesQualificationWorkflowTest.fixture
+    predecessor_source = SelectedAlternativesQualificationWorkflowTest.source
+    configured_receipt = True
