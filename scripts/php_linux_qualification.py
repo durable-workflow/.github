@@ -233,6 +233,8 @@ def capture_receipt(path, runner_temp):
 
 
 def checked_state(path, runner_temp):
+    if path is None:
+        raise ValueError("Exact steps.setup output receipt is missing; no discovery/fallback")
     state = path.parent
     if (not runner_temp.is_absolute() or runner_temp.is_symlink() or not runner_temp.is_dir()
             or path.name != setup.RECEIPT_NAME or state.parent != runner_temp

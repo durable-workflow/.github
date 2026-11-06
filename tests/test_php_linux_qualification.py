@@ -226,7 +226,7 @@ class PhpLinuxQualificationTest(unittest.TestCase):
                 pip_state, data, report, subjects = self.pip_fixture(root)
                 setup_state = path.parent
                 if mutation == "empty-output":
-                    path = Path("")
+                    path = None
                 elif mutation == "foreign-output":
                     path = root / "unproven.json"
                     path.write_text("{}")
