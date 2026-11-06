@@ -28,6 +28,7 @@ import yaml
 SCHEMA = "durable-workflow.github-target-qualification/v1"
 CENTRAL_ACTION_REPOSITORY = "durable-workflow/.github"
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+JOB_STEP_ID_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
 SUPPORTED_JAVASCRIPT_ACTION_RUNTIMES = ["node24"]
 PROTECTED_POLICY_EXCEPTION = {
     "target": "github-control-plane",
@@ -408,6 +409,29 @@ def load_policy(path: Path) -> dict[str, Any]:
     return policy
 
 
+def _validate_composer_scopes(name: str, target: dict[str, Any]) -> None:
+    whole = target.get("composer_trust_required", False)
+    scopes = target.get("composer_trust_scopes", [])
+    if not isinstance(whole, bool) or not isinstance(scopes, list):
+        raise PolicyError(f"{name} has invalid Composer enforcement settings")
+    if whole and scopes:
+        raise PolicyError(f"{name} whole-target Composer enforcement cannot be scoped down")
+    seen = set()
+    for scope in scopes:
+        if not isinstance(scope, dict) or set(scope) != {"workflow", "job", "required"}:
+            raise PolicyError(f"{name} Composer scope requires workflow, job and required")
+        if (not isinstance(scope["workflow"], str)
+                or not re.fullmatch(r"[a-z0-9][a-z0-9.-]*\.yml", scope["workflow"])
+                or not isinstance(scope["job"], str)
+                or not JOB_STEP_ID_PATTERN.fullmatch(scope["job"])
+                or not isinstance(scope["required"], bool)):
+            raise PolicyError(f"{name} has an invalid Composer workflow/job scope")
+        identity = scope["workflow"], scope["job"]
+        if identity in seen:
+            raise PolicyError(f"{name} has duplicate Composer workflow/job scopes")
+        seen.add(identity)
+
+
 def validate_policy(policy: dict[str, Any]) -> None:
     if policy.get("schema") != SCHEMA:
         raise PolicyError(f"qualification policy schema must be {SCHEMA}")
@@ -662,6 +686,7 @@ def validate_policy(policy: dict[str, Any]) -> None:
 
     for name, (expected_repository, expected_branch) in EXPECTED_TARGETS.items():
         target = targets[name]
+        _validate_composer_scopes(name, target)
         if target.get("repository") != expected_repository or target.get("branch") != expected_branch:
             raise PolicyError(
                 f"{name} must target {expected_repository}@{expected_branch}, got "
@@ -2587,22 +2612,84 @@ def _composer_job_sinks(job: dict[str, Any], root: Path, approved: set[str], bou
     return evidence
 
 
-def verify_composer_network_sinks(policy: dict[str, Any], target: str, sources: dict[str, str], root: Path) -> list[str]:
-    enabled = policy["targets"][target].get("composer_trust_required", False) or any(
-        ".github/actions/verify-composer-trust" in source or ".github/actions/verify-composer-container-trust" in source
-        for source in sources.values()
-    )
-    if not enabled:
-        return []
-    approved = {sha for sha, label in policy["action_runtime"]["allowed_releases"][CENTRAL_ACTION_REPOSITORY].items() if label == "clean-trust"}
-    bound_setups = {sha for sha, label in policy["action_runtime"]["allowed_releases"][CENTRAL_ACTION_REPOSITORY].items() if label == "bound-linux-php"}
+COMPOSER_GUARD_PATHS = (".github/actions/verify-composer-trust", ".github/actions/verify-composer-container-trust")
+
+
+def _has_composer_guard(source: str) -> bool:
+    return any(path in source for path in COMPOSER_GUARD_PATHS)
+
+
+def _composer_scope_candidate(scope: dict[str, Any], documents: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    candidates = [(filename, document) for filename, document in documents.items()
+                  if Path(filename).name == scope["workflow"]]
+    if len(candidates) > 1:
+        raise PolicyError("A scoped Composer workflow has ambiguous source identities")
+    if candidates:
+        filename, document = candidates[0]
+        job = (document.get("jobs") or {}).get(scope["job"])
+        if isinstance(job, dict):
+            return filename, job
+    if scope["required"]:
+        raise PolicyError("A required scoped Composer workflow/job is missing")
+    return None
+
+
+def _composer_scoped_jobs(scopes: list[dict[str, Any]], documents: dict[str, Any], bound_setups: set[str], local: bool) -> set[tuple[str, str]]:
+    selected = set()
+    for scope in scopes:
+        candidate = _composer_scope_candidate(scope, documents)
+        if candidate is None:
+            continue
+        filename, job = candidate
+        bound = any(_reviewed_composer_action(step.get("uses", ""), "setup-php-linux", bound_setups, local)
+                    for step in job.get("steps", []))
+        if bound:
+            selected.add((filename, scope["job"]))
+        elif scope["required"]:
+            raise PolicyError("A required scoped Composer job lacks its reviewed bound PHP setup")
+    return selected
+
+
+def _unscoped_composer_guard(documents: dict[str, Any], selected: set[tuple[str, str]]) -> bool:
+    for filename, document in documents.items():
+        remainder = {**document, "jobs": {name: job for name, job in (document.get("jobs") or {}).items()
+                                         if (filename, name) not in selected}}
+        if _has_composer_guard(json.dumps(remainder)):
+            return True
+    return False
+
+
+def _composer_document_sinks(documents: dict[str, Any], root: Path, approved: set[str], bound_setups: set[str], local: bool, selected: set[tuple[str, str]] | None) -> list[str]:
     evidence = []
-    for filename, source in sources.items():
-        document = _parse_yaml(source, filename)
+    for filename, document in documents.items():
+        jobs = {name: job for name, job in (document.get("jobs") or {}).items()
+                if selected is None or (filename, name) in selected}
+        if not jobs:
+            continue
         if set(document.get("env") or {}) & COMPOSER_TRUST_FIELDS:
             raise PolicyError(f"{filename} declares unverified workflow-level Composer trust overrides")
-        for job_name, job in (document.get("jobs") or {}).items():
-            evidence.extend(_composer_job_sinks(job, root, approved, bound_setups, target == "github-control-plane", f"{filename}:{job_name}"))
+        for name, job in jobs.items():
+            requests = _composer_job_sinks(job, root, approved, bound_setups, local, f"{filename}:{name}")
+            if selected is not None and not requests:
+                raise PolicyError("A scoped Composer job has no enumerated dependency request")
+            evidence.extend(requests)
+    return evidence
+
+
+def verify_composer_network_sinks(policy: dict[str, Any], target: str, sources: dict[str, str], root: Path) -> list[str]:
+    configuration = policy["targets"][target]
+    scopes = configuration.get("composer_trust_scopes", [])
+    whole = configuration.get("composer_trust_required", False)
+    if not scopes and not whole and not any(_has_composer_guard(source) for source in sources.values()):
+        return []
+    releases = policy["action_runtime"]["allowed_releases"][CENTRAL_ACTION_REPOSITORY]
+    approved = {sha for sha, label in releases.items() if label == "clean-trust"}
+    bound_setups = {sha for sha, label in releases.items() if label == "bound-linux-php"}
+    documents = {filename: _parse_yaml(source, filename) for filename, source in sources.items()}
+    selected = _composer_scoped_jobs(scopes, documents, bound_setups, target == "github-control-plane")
+    full = whole or not scopes or _unscoped_composer_guard(documents, selected)
+    evidence = _composer_document_sinks(documents, root, approved, bound_setups, target == "github-control-plane",
+                                        None if full else selected)
     catalog = json.loads((Path(__file__).resolve().parents[1] / "qualification/composer-container-trust.json").read_text())
     evidence.extend(verify_composer_container_callers(target, sources, approved, catalog, root))
     return evidence
@@ -2637,7 +2724,7 @@ def _require_bootstrap_binding(steps: list[dict[str, Any]], guard: dict[str, Any
     for bootstrap in candidates:
         identity = bootstrap.get("id", "")
         unconditional = not bootstrap.get("if") and bootstrap.get("continue-on-error", False) in (False, "false")
-        if not unconditional or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", identity):
+        if not unconditional or not JOB_STEP_ID_PATTERN.fullmatch(identity):
             continue
         if all(inputs.get(field) == "${{ steps." + identity + ".outputs." + field + " }}" for field in ("ca-file", "ca-sha256")):
             return
@@ -2664,7 +2751,7 @@ def _require_container_caller(steps: list[dict[str, Any]], request_id: str, requ
     if any(step.get("if") or str(step.get("continue-on-error", "false")) != "false" for step in (guard, build)):
         raise PolicyError(f"{request_id} cannot skip or ignore the verifier or build refusal")
     inputs, identity = guard.get("with", {}), guard.get("id", "")
-    if (inputs.get("request") != request_id or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", identity)
+    if (inputs.get("request") != request_id or not JOB_STEP_ID_PATTERN.fullmatch(identity)
             or not all(inputs.get(field) for field in ("source-directory", "source-commit", "compose-directory", "provenance"))
             or inputs["compose-directory"] != build.get("working-directory")):
         raise PolicyError(f"{request_id} must bind its source and actual Compose directory")

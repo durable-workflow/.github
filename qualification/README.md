@@ -243,6 +243,23 @@ about third-party actions' internal requests. Maintainers still review dynamic
 request paths and their actual configuration. Enable the target setting after
 migrating all its request paths so partial rollouts remain visible.
 
+Before that whole-target migration, `composer_trust_scopes` can name a workflow
+and job for the bound initial PHP profile. The job is checked when it adopts
+the reviewed setup action, including every enumerated dependency request and
+its immediate live verifier. Other jobs retain their previous scope; a verifier
+outside the named migration still enables the existing whole-repository checks.
+Targets already requiring whole-target Composer trust cannot use scoped settings
+to reduce that enforcement.
+
+Workflow's `release-verification.yml` / `published-package` entry is staged with
+`required: false` while its caller wiring is absent. This grants no installed
+caller acceptance. After the reviewed wiring is integrated, tighten it to
+`required: true` before selecting actual caller qualification. A required entry
+refuses a missing workflow, missing job or missing reviewed setup. Ambiguous
+workflow identities, invalid scopes and a migrated job without an enumerated
+dependency request also refuse. The remaining Laravel matrix stays separately
+unqualified until its own applicable profiles and callers are delivered.
+
 
 ## Protected pilot source successor
 
