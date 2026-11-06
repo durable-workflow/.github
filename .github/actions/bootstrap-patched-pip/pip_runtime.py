@@ -880,9 +880,11 @@ def main():
                            f"PYTHONPATH={report['purelib']}\nPYTHONHOME=\nPYTHONNOUSERSITE=1\nPYTHONDONTWRITEBYTECODE=1\n"
                            f"LD_LIBRARY_PATH={report['interpreter']['loader']['path'] if report['interpreter']['loader'] else ''}\n"
                            "LD_PRELOAD=\nLD_AUDIT=\nPIP_CONFIG_FILE=/dev/null\nPIP_KEYRING_PROVIDER=disabled\nPIP_NO_INPUT=1\n")
-            append_output(f"pip-state={path}\npip-python={report['python']}\npip-purelib={report['purelib']}\n"
-                          f"pip-created={'true' if created else 'false'}\n"
-                          f"pip-identity={json.dumps(created.identity if created else report['root_identity'], separators=(',', ':'))}\n")
+            with held_file(path, owned=True) as (_contents, receipt_identity):
+                append_output(f"pip-state={path}\npip-python={report['python']}\npip-purelib={report['purelib']}\n"
+                              f"pip-created={'true' if created else 'false'}\n"
+                              f"pip-identity={json.dumps(created.identity if created else report['root_identity'], separators=(',', ':'))}\n"
+                              f"pip-receipt-identity={json.dumps(receipt_identity, separators=(',', ':'))}\n")
             print(json.dumps({"private_pip": VERSION, "python_version": report["interpreter"]["version"],
                               "manager_unchanged": True, "operation": operation}, sort_keys=True))
     except BaseException:

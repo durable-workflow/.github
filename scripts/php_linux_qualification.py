@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -23,6 +24,10 @@ TOOL_DIRECTORY = "/usr/local/bin/"
 PASS_FIELDS = frozenset(("schema", "outcome", "stage", "host", "image", "apt", "ca_sha256",
     "request", "host_tool", "setup_php_commit", "source_hashes", "preinstalled_authority",
     "tools", "installer", "archive", "installed", "configured", "subjects"))
+_PIP_SPEC = importlib.util.spec_from_file_location("qualification_private_pip",
+    bootstrap.ROOT / ".github/actions/bootstrap-patched-pip/pip_runtime.py")
+private_pip = importlib.util.module_from_spec(_PIP_SPEC)
+_PIP_SPEC.loader.exec_module(private_pip)
 
 
 def unique_mapping(pairs):
@@ -279,17 +284,74 @@ def run_probes(plan, environment, execute=subprocess.run):
     return observations
 
 
+def pip_ownership(data, runner_temp):
+    if data is None:
+        return None
+    bootstrap.exact_keys(data, {"receipt", "root_identity", "receipt_identity", "created"})
+    if data["created"] != "true":
+        raise ValueError("Initial qualification requires its newly created exact private pip state")
+    state = private_pip.producer_state(data["receipt"], data["root_identity"], runner_temp)
+    return {"state": state, "receipt_identity": data["receipt_identity"]}
+
+
+def producer_receipt_identity(raw):
+    if not isinstance(raw, str) or len(raw) > 4096:
+        raise ValueError("Private pip producer receipt identity exceeds its bound")
+    identity = json.loads(raw, object_pairs_hook=unique_mapping)
+    fields = {"device", "inode", "mode", "owner", "links", "size", "mtime_ns", "ctime_ns", "sha256"}
+    bootstrap.exact_keys(identity, fields)
+    if (any(type(identity[name]) is not int or identity[name] < 0 for name in fields - {"sha256"})
+            or identity["owner"] != os.getuid() or identity["mode"] != 0o600 or identity["links"] != 1
+            or not 0 < identity["size"] <= private_pip.MAX_FILE
+            or not isinstance(identity["sha256"], str) or re.fullmatch(r"[a-f0-9]{64}", identity["sha256"]) is None):
+        raise ValueError("Private pip producer receipt identity is invalid")
+    return identity
+
+
+@contextmanager
+def capture_private_pip(owned, runner_temp):
+    if owned is None:
+        yield None
+        return
+    state = owned["state"]
+    expected_identity = producer_receipt_identity(owned["receipt_identity"])
+    with private_pip.held_file(state.receipt, owned=True) as (_raw, identity):
+        if identity != expected_identity:
+            raise ValueError("Private pip receipt differs from its pre-product producer object/bytes")
+        report, subjects = private_pip.verify_runtime(state.receipt, runner_temp, require_trust=True)
+        if report["root_identity"] != state.identity:
+            raise ValueError("Private pip root differs from its exact producer allocation")
+        if not isinstance(subjects, dict) or not subjects:
+            raise ValueError("Private pip has no wheel-derived installed subject inventory")
+        summary = {"schema": "durable-workflow.private-pip-terminal/v1", "receipt_sha256": identity["sha256"],
+            "receipt_object": identity, "root_identity": state.identity, "pip_version": private_pip.VERSION,
+            "python_version": report["interpreter"]["version"], "wheel_sha256": private_pip.WHEEL_SHA256,
+            "ca_sha256": private_pip.CA_SHA256, "subject_count": len(subjects), "revalidated": False}
+        try:
+            yield summary
+        finally:
+            current, current_subjects = private_pip.verify_runtime(state.receipt, runner_temp, require_trust=True)
+            if current != report or current_subjects != subjects:
+                raise ValueError("Private pip receipt or wheel-derived installed subjects changed after probes")
+    summary["revalidated"] = True
+
+
 def qualify(path, runner_temp, environment, publish, *, validate=validate_success,
-            subjects=revalidate_subjects, probes=run_probes):
+            subjects=revalidate_subjects, probes=run_probes, pip_state=None):
     if (environment != bootstrap.clean_environment(environment, environment.get("HOME", ""))
             or dict(os.environ) != environment):
         raise ValueError("Qualification requires a closed parent environment")
-    state = checked_state(path, runner_temp)
-    state_identity = object_identity(state.lstat())[:4]
+    owned_pip = pip_ownership(pip_state, runner_temp)
+    state, state_identity = None, None
     evidence = {"schema": "durable-workflow.php-linux-terminal/v1", "outcome": "refused", "stage": "capture"}
     verified = False
     try:
-        with capture_receipt(path, runner_temp) as (report, held, unchanged):
+        state = checked_state(path, runner_temp)
+        state_identity = object_identity(state.lstat())[:4]
+        with capture_private_pip(owned_pip, runner_temp) as pip_report, \
+                capture_receipt(path, runner_temp) as (report, held, unchanged):
+            if pip_report is not None:
+                evidence["private_pip"] = pip_report
             evidence.update(receipt_sha256=held.identity["digest"], receipt_object=held.effective,
                             stage="validate")
             if isinstance(report, dict):
@@ -307,16 +369,16 @@ def qualify(path, runner_temp, environment, publish, *, validate=validate_succes
                 held.assert_sealed()
                 subjects(report, plan)
             evidence["receipt"] = report
-            verified = True
+        verified = True
     except Exception as error:
         evidence.update(**setup.failure_details(error))
         raise
     finally:
-        finish_terminal(state, state_identity, evidence, verified, publish)
+        finish_terminal(state, state_identity, evidence, verified, publish, pip_state=owned_pip)
 
 
 def cleanup_state(state, expected):
-    if object_identity(state.lstat())[:4] != expected:
+    if state is None or object_identity(state.lstat())[:4] != expected:
         raise ValueError("Exact owned setup state changed; cleanup refused")
     setup.checked_root(state)
     shutil.rmtree(state)
@@ -324,15 +386,33 @@ def cleanup_state(state, expected):
         raise ValueError("Exact owned setup state remains after cleanup")
 
 
-def finish_terminal(state, expected, evidence, verified, publish):
+def cleanup_terminal_states(state, expected, pip_state):
+    failures = {}
+    if pip_state is not None:
+        owned = pip_state["state"]
+        try:
+            private_pip.cleanup_runtime(owned.root, owned.root.parent, owned.identity)
+        except Exception as error:
+            failures["private_pip"] = error
     try:
         cleanup_state(state, expected)
     except Exception as error:
+        failures["setup"] = error
+    return failures
+
+
+def finish_terminal(state, expected, evidence, verified, publish, *, pip_state=None):
+    failures = cleanup_terminal_states(state, expected, pip_state)
+    if failures:
+        error = next(iter(failures.values()))
         evidence.update(outcome="refused", stage="cleanup", cleanup="refused",
-                        cleanup_failure=setup.failure_details(error))
+                        cleanup_failure=setup.failure_details(error),
+                        cleanup_failures={name: setup.failure_details(value) for name, value in failures.items()})
         publish(evidence)
-        raise
+        raise error
     evidence["cleanup"] = "pass"
+    if "private_pip" in evidence:
+        evidence["private_pip"]["cleanup"] = "pass"
     if verified:
         evidence.update(outcome="pass", stage="complete")
     publish(evidence)

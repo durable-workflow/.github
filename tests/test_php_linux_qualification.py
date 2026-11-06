@@ -70,6 +70,130 @@ class PhpLinuxQualificationTest(unittest.TestCase):
         environment = bootstrap.clean_environment({}, str(root / "private-home"))
         return path, report, plan, environment
 
+    def pip_fixture(self, root):
+        runtime = qualification.private_pip
+        state = runtime._private_root(root)
+        state.receipt.write_text('{"inert-public-pip-receipt":true}')
+        state.receipt.chmod(0o600)
+        with runtime.held_file(state.receipt, owned=True) as (_raw, identity):
+            self.assertTrue(_raw)
+        data = {"receipt": str(state.receipt), "root_identity": json.dumps(state.identity),
+                "receipt_identity": json.dumps(identity), "created": "true"}
+        report = {"root_identity": state.identity, "interpreter": {"version": [3, 14, 4]}}
+        return state, data, report, {"inert-module": identity}
+
+    def test_private_pip_receipt_and_subjects_bind_before_and_after_probes_and_both_states_clean_before_pass(self):
+        for mutation in ("none", "receipt-write", "receipt-replace", "subject"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                path, _, _, environment = self.fixture(root)
+                pip_state, data, report, subjects = self.pip_fixture(root)
+                observations, evidence = [], []
+                changed = False
+                def verify(*_args, **_options):
+                    observations.append("pip-subjects")
+                    return report, {"changed": {}} if changed else subjects
+                def probes(*_):
+                    nonlocal changed
+                    observations.append("probes")
+                    if mutation == "receipt-write":
+                        pip_state.receipt.write_text("{}")
+                    elif mutation == "receipt-replace":
+                        raw = pip_state.receipt.read_bytes()
+                        pip_state.receipt.unlink()
+                        pip_state.receipt.write_bytes(raw)
+                        pip_state.receipt.chmod(0o600)
+                    elif mutation == "subject":
+                        changed = True
+                    return []
+                def publish(value):
+                    self.assertFalse(path.parent.exists())
+                    self.assertFalse(pip_state.root.exists())
+                    observations.append("publish-" + value["outcome"])
+                    evidence.append(copy.deepcopy(value))
+                with patch.object(qualification.private_pip, "verify_runtime", side_effect=verify):
+                    if mutation == "none":
+                        self.closed_qualify(path, root, environment, publish,
+                            pip_state=data, subjects=lambda *_: None, probes=probes)
+                        self.assertEqual(["pip-subjects", "probes", "pip-subjects", "publish-pass"], observations)
+                        self.assertTrue(evidence[0]["private_pip"]["revalidated"])
+                        self.assertEqual("pass", evidence[0]["private_pip"]["cleanup"])
+                    else:
+                        with self.assertRaises(ValueError):
+                            self.closed_qualify(path, root, environment, publish,
+                                pip_state=data, subjects=lambda *_: None, probes=probes)
+                        self.assertEqual("publish-refused", observations[-1])
+
+    def test_foreign_pre_product_receipt_identity_refuses_before_any_pip_import_or_phar_probe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path, _, _, environment = self.fixture(root)
+            pip_state, data, _, _ = self.pip_fixture(root)
+            identity = json.loads(data["receipt_identity"])
+            identity["sha256"] = "0" * 64
+            data["receipt_identity"] = json.dumps(identity)
+            probes, evidence = [], []
+            with patch.object(qualification.private_pip, "verify_runtime") as verify, self.assertRaises(ValueError):
+                self.closed_qualify(path, root, environment, evidence.append,
+                    pip_state=data, probes=lambda *_: probes.append("unexpected"))
+            verify.assert_not_called()
+            self.assertEqual([], probes)
+            self.assertEqual("refused", evidence[0]["outcome"])
+            self.assertFalse(path.parent.exists())
+            self.assertFalse(pip_state.root.exists())
+
+    def test_malformed_receipt_stamp_refuses_after_ownership_registration_and_cleans_both_states(self):
+        for stamp in ("not-json", "{}", '{"owner":0,"owner":0}'):
+            with self.subTest(stamp=stamp), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                path, _, _, environment = self.fixture(root)
+                pip_state, data, _, _ = self.pip_fixture(root)
+                data["receipt_identity"] = stamp
+                evidence = []
+                with self.assertRaises(ValueError):
+                    self.closed_qualify(path, root, environment, evidence.append, pip_state=data)
+                self.assertFalse(pip_state.root.exists())
+                self.assertFalse(path.parent.exists())
+                self.assertEqual("refused", evidence[0]["outcome"])
+
+    def test_private_pip_cleanup_failure_still_cleans_setup_and_never_publishes_pass(self):
+        for failure in ("exception", "no-op"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                path, _, _, environment = self.fixture(root)
+                pip_state, data, report, subjects = self.pip_fixture(root)
+                evidence = []
+                original = qualification.shutil.rmtree
+                def remove(path, *args, **options):
+                    if isinstance(path, str) and path.startswith("dw-pip-"):
+                        if failure == "exception":
+                            raise OSError("inert pip cleanup refusal")
+                        return None
+                    return original(path, *args, **options)
+                with patch.object(qualification.private_pip, "verify_runtime", return_value=(report, subjects)), \
+                        patch.object(qualification.shutil, "rmtree", side_effect=remove), self.assertRaises((ValueError, OSError)):
+                    self.closed_qualify(path, root, environment, evidence.append,
+                        pip_state=data, subjects=lambda *_: None, probes=lambda *_: [])
+                self.assertEqual("refused", evidence[0]["outcome"])
+                self.assertEqual("cleanup", evidence[0]["stage"])
+                self.assertIn("private_pip", evidence[0]["cleanup_failures"])
+                self.assertFalse(path.parent.exists())
+                self.assertTrue(pip_state.root.exists())
+
+    def test_reused_private_pip_state_is_not_reclaimed_or_accepted_as_this_original_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path, _, _, environment = self.fixture(root)
+            pip_state, data, _, _ = self.pip_fixture(root)
+            data["created"] = "false"
+            evidence, probes = [], []
+            with self.assertRaisesRegex(ValueError, "newly created"):
+                self.closed_qualify(path, root, environment, evidence.append,
+                    pip_state=data, probes=lambda *_: probes.append("unexpected"))
+            self.assertEqual([], probes)
+            self.assertEqual([], evidence)
+            self.assertTrue(pip_state.root.exists())
+
     def test_exact_complete_producer_receipt_is_required_before_any_probe(self):
         with tempfile.TemporaryDirectory() as directory:
             path, report, _, _ = self.fixture(Path(directory))
