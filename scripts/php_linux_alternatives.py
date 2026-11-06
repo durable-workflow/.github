@@ -1,6 +1,7 @@
 """Finite initial-profile updater handoff; no command executes in this module."""
 import os
 from pathlib import Path
+import shlex
 import stat
 
 from scripts import php_linux_archive as archive
@@ -21,16 +22,36 @@ def exclusions():
     return tuple(row['path'] for row in inventory()['managed'])
 
 
+def selection_source():
+    # Registration preserves a higher-priority automatic or an existing manual
+    # choice. Select only the already registered, held versioned targets before
+    # the caller can execute any PHP through the default commands.
+    return '\n'.join('  /usr/bin/sudo /usr/bin/update-alternatives --set '
+        + shlex.quote(row['group']) + ' ' + shlex.quote('/' + row['target']) + ' || exit "$?"'
+        for row in inventory()['managed'])
+
+
+def verify_edge(group, kind, alias, destination, target):
+    try:
+        valid = (stat.S_ISLNK(alias.lstat().st_mode) and os.readlink(alias) == str(destination)
+                 and alias.resolve() == target.resolve())
+    except OSError as error:
+        raise ValueError(f'Alternative {group}: {kind} edge could not be bound') from error
+    if not valid:
+        raise ValueError(f'Alternative {group}: {kind} edge differs from its exact target')
+
+
 def verify(files, root=Path('/')):
     rows = inventory()['managed']
     for row in rows:
         target = root / row['target']
         if row['target'] not in files:
-            raise ValueError('Alternatives target has no held regular archive authority')
-        archive.verify_file(target, files[row['target']])
-        for path, destination in ((row['path'], target), (row['command'], root / row['path'])):
-            alias = root / path
-            if (not stat.S_ISLNK(alias.lstat().st_mode) or os.readlink(alias) != str(destination)
-                    or alias.resolve() != target.resolve()):
-                raise ValueError('Installed alternatives edge differs from its exact updater target')
+            raise ValueError(f"Alternative {row['group']}: target has no held regular archive authority")
+        try:
+            archive.verify_file(target, files[row['target']])
+        except (OSError, ValueError) as error:
+            raise ValueError(f"Alternative {row['group']}: held target binding refused") from error
+        for kind, path, destination in (('alternative', row['path'], target),
+                                        ('command', row['command'], root / row['path'])):
+            verify_edge(row['group'], kind, root / path, destination, target)
     return {'inventory_sha256': INVENTORY_SHA256, 'count': len(rows)}

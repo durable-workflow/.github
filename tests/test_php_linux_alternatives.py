@@ -43,24 +43,52 @@ class PhpLinuxAlternativesTest(unittest.TestCase):
         return {path: {'size': len(value), 'sha256': bootstrap.sha256(value)}
                 for path, value in contents.items()}
 
-    def update(self, root):
+    def stock(self, root, *arguments):
+        (root / 'admin').mkdir(exist_ok=True)
+        (root / 'etc/alternatives').mkdir(parents=True, exist_ok=True)
+        return subprocess.run(['/usr/bin/update-alternatives', '--altdir', str(root / 'etc/alternatives'),
+            '--admindir', str(root / 'admin'), '--log', str(root / 'log'), *arguments],
+            env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'}, capture_output=True, text=True, timeout=5, check=True)
+
+    def existing_choices(self, root, mode):
+        version = {'auto-higher': '8.5', 'manual-other': '8.2', 'preselected-held': '8.3'}[mode]
+        for row in self.record['managed']:
+            # The actual refused host had no competing FPM choice.
+            if mode == 'auto-higher' and row['group'] == 'php-fpm':
+                continue
+            target = root / row['target'].replace('8.3', version)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b'inert provider option, never executed')
+            command = root / row['command']
+            command.parent.mkdir(parents=True, exist_ok=True)
+            self.stock(root, '--install', str(command), row['group'], str(target), version.replace('.', ''))
+            if mode != 'auto-higher':
+                self.stock(root, '--set', row['group'], str(target))
+        return version
+
+    def update(self, root, installer=None, refusal=''):
         # Consume the complete fixed upstream function, including its parallel
         # masters, seven .gz slave operations and unresolved socket operation.
-        function = re.search(r'^fix_alternatives\(\) \{\n.*?^\}', self.original, re.M | re.S)[0]
+        function = re.search(r'^fix_alternatives\(\) \{\n.*?^\}',
+            self.successor() if installer is None else installer, re.M | re.S)[0]
+        # Route only the literal stock-tool calls into the same private
+        # link/admin/log namespace; every subject path is below this fixture.
+        function = function.replace('/usr/bin/sudo /usr/bin/update-alternatives', 'sudo update-alternatives')
         function = function.replace('/usr/', shlex.quote(str(root)) + '/usr/')
         function = function.replace('/run/', shlex.quote(str(root)) + '/run/')
-        (root / 'admin').mkdir()
+        (root / 'admin').mkdir(exist_ok=True)
         (root / 'etc/alternatives').mkdir(parents=True, exist_ok=True)
         script = '''sudo() {
   test "$1" = update-alternatives || return 79
   shift
+  if [ "$1" = --set ] && [ "$2" = "$REFUSE_GROUP" ]; then return 2; fi
   /usr/bin/update-alternatives --altdir "$OWNED_ROOT/etc/alternatives" \\
     --admindir "$OWNED_ROOT/admin" --log "$OWNED_ROOT/log" "$@"
 }
 version=8.3
 ''' + function + '\nfix_alternatives\n'
         return subprocess.run(['/usr/bin/bash', '--noprofile', '--norc', '-c', script],
-            env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C', 'OWNED_ROOT': str(root)},
+            env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C', 'OWNED_ROOT': str(root), 'REFUSE_GROUP': refusal},
             capture_output=True, text=True, timeout=10)
 
     def successor(self):
@@ -92,10 +120,10 @@ version=8.3
                 files = self.extract(root, installer)
                 for row in self.record['managed']:
                     self.assertEqual(old, (root / row['path']).exists())
-                result = self.update(root)
+                result = self.update(root, installer)
                 if old:
                     self.assertGreaterEqual(result.stderr.count('Invalid argument'), 9)
-                    with self.assertRaisesRegex(ValueError, 'alternatives edge'):
+                    with self.assertRaisesRegex(ValueError, 'Alternative php-cgi-bin: alternative edge'):
                         alternatives.verify(files, root)
                 else:
                     self.assertEqual(0, result.returncode, result.stderr)
@@ -107,6 +135,51 @@ version=8.3
                 for row in self.record['retained_regular']:
                     self.assertTrue((root / row['path']).is_file())
                     self.assertFalse((root / row['path']).is_symlink())
+
+    def test_real_registration_predecessor_retains_existing_choice_and_successor_selects_only_held_targets(self):
+        previous = (bootstrap.ROOT / 'tests/fixtures/php_initial_installer_5f64e43.sh').read_text()
+        self.assertEqual('c2530ef6938c0fd0d2944d2080e09ec7cd3f7cb2d46e6c9336efb683d98166b5',
+            bootstrap.sha256(previous.encode()))
+        for mode in ('auto-higher', 'manual-other', 'preselected-held'):
+            for old, installer in ((True, previous), (False, self.successor())):
+                with self.subTest(mode=mode, predecessor=old), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    version = self.existing_choices(root, mode)
+                    foreign = root / 'usr/bin/unrelated42'
+                    foreign.write_bytes(b'inert unrelated option')
+                    command = root / 'usr/bin/unrelated'
+                    self.stock(root, '--install', str(command), 'unrelated', str(foreign), '42')
+                    self.stock(root, '--set', 'unrelated', str(foreign))
+                    state = (root / 'admin/unrelated').read_bytes()
+                    files = self.extract(root, installer)
+                    result = self.update(root, installer)
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    if old and mode != 'preselected-held':
+                        with self.assertRaisesRegex(ValueError, 'Alternative php-cgi-bin: alternative edge'):
+                            alternatives.verify(files, root)
+                        row = self.record['managed'][0]
+                        self.assertEqual(root / row['target'].replace('8.3', version),
+                            (root / row['command']).resolve())
+                    else:
+                        self.assertEqual(9, alternatives.verify(files, root)['count'])
+                    for row in self.record['managed']:
+                        if mode == 'auto-higher' and row['group'] == 'php-fpm':
+                            continue
+                        options = self.stock(root, '--list', row['group']).stdout.splitlines()
+                        self.assertIn(str(root / row['target'].replace('8.3', version)), options)
+                        self.assertIn(str(root / row['target']), options)
+                    self.assertEqual(state, (root / 'admin/unrelated').read_bytes())
+                    self.assertEqual(foreign, command.resolve())
+
+    def test_native_selection_refusal_exits_without_accepting_an_unheld_choice(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.existing_choices(root, 'auto-higher')
+            files = self.extract(root, self.successor())
+            result = self.update(root, refusal='php-cgi-bin')
+            self.assertEqual(2, result.returncode)
+            with self.assertRaisesRegex(ValueError, 'Alternative php-cgi-bin: alternative edge'):
+                alternatives.verify(files, root)
 
     def test_foreign_target_missing_authority_and_wrong_edge_type_refuse(self):
         for mutation in ('foreign-alternative', 'foreign-command', 'regular-alternative', 'missing-authority', 'changed-target'):
@@ -126,7 +199,7 @@ version=8.3
                         path.write_bytes(b'copied bytes are not a canonical edge')
                     else:
                         path.symlink_to(root / 'unproved-target')
-                with self.assertRaises((ValueError, FileNotFoundError)):
+                with self.assertRaisesRegex(ValueError, 'Alternative php-cgi-bin:'):
                     alternatives.verify(files, root)
 
     def test_extraction_excludes_only_the_nine_bound_master_paths_and_preserves_no_apt_order(self):
