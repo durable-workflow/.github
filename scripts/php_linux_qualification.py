@@ -1,6 +1,7 @@
 """Unwired initial-profile terminal evidence; no acquisition or root operations."""
 
 from contextlib import contextmanager, ExitStack
+from functools import partial
 import hashlib
 import importlib.util
 import io
@@ -505,6 +506,7 @@ def qualify(path, runner_temp, environment, publish, *, validate=validate_succes
             if required_schema is not None and (not isinstance(report, dict) or report.get('schema') != required_schema):
                 raise ValueError('Current qualification requires the configured receipt schema')
             plan = validate(report, state)
+            verify_alternatives = partial(alternatives, original=dict(plan['archive']['asset']))
             normalized_unchanged = None
             normalized_held = None
             configured_unchanged = None
@@ -517,13 +519,15 @@ def qualify(path, runner_temp, environment, publish, *, validate=validate_succes
                 normalization.validate_document(document, report['normalization'], plan['archive']['asset'])
                 if report['schema'] == setup.CONFIGURED_RECEIPT_SCHEMA:
                     configured, _outputs, configured_held, configured_unchanged = normalization_custody.enter_context(
-                        cli_configuration.capture_manifest(state, report['configuration_manifest'], document['files']))
-                    configured_plan = cli_configuration.subject_plan(configured, document['files'])
+                        cli_configuration.capture_manifest(state, report['configuration_manifest'], document['files'],
+                                                           original=plan['archive']['asset']))
+                    configured_plan = cli_configuration.subject_plan(configured, document['files'],
+                                                                     original=plan['archive']['asset'])
                     evidence['configuration'] = {'schema': cli_configuration.SCHEMA,
                         'manifest_object': configured_held.effective,
                         'manifest_sha256': configured_held.identity['digest'], 'revalidated': False}
                 validate_normalized_subjects(report['subjects'], document, configured_plan)
-                evidence['alternatives'] = dict(alternatives(document['files']), revalidated=False)
+                evidence['alternatives'] = dict(verify_alternatives(document['files']), revalidated=False)
                 evidence['normalization'] = {'schema': normalization.DOCUMENT_SCHEMA,
                     'manifest_object': normalized_held.effective, 'manifest_sha256': normalized_held.identity['digest'],
                     'derived': report['normalization']['derived'], 'revalidated': False}
@@ -539,7 +543,7 @@ def qualify(path, runner_temp, environment, publish, *, validate=validate_succes
                 held.assert_sealed()
                 subjects(report, plan, **subject_options)
                 revalidate_provenance(document, normalized_held, normalized_unchanged, configured_held,
-                    configured_unchanged, evidence, alternatives)
+                    configured_unchanged, evidence, verify_alternatives)
             evidence["receipt"] = report
         verified = True
     except Exception as error:

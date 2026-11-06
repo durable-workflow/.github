@@ -14,6 +14,7 @@ from scripts import php_linux_archive as archive
 from scripts import php_linux_configuration as configuration
 from scripts import php_linux_recipe as recipe
 from scripts import php_linux_qualification as qualification
+from scripts import php_linux_normalize as normalization
 
 
 class CliConfigurationTest(unittest.TestCase):
@@ -41,6 +42,50 @@ class CliConfigurationTest(unittest.TestCase):
             outputs[configuration.CLI])
         self.assertNotIn('etc/php/8.3/fpm/conf.d/20-xdebug.ini', document['removed'])
         self.assertEqual(configuration.identity(template), files[configuration.TEMPLATE])
+
+    def archive_identity(self, asset_id):
+        asset = normalization.reviewed_profile(asset_id).metadata['asset']
+        return {**{key: asset[key] for key in ('id', 'name', 'size')},
+                'digest': 'sha256:' + asset['sha256']}
+
+    def test_asset_profile_is_external_authority_for_configuration_recomputation(self):
+        template, files, initial, outputs = self.fixture()
+        original = self.archive_identity(672921837)
+        document, actual = configuration.derive(template, files, self.source, original=original)
+        self.assertEqual(outputs, actual)
+        self.assertEqual('ubuntu24.04-x64-php8.3-production-coverage-none', document['profile'])
+        self.assertEqual(outputs, configuration.validate(document, files, original=original))
+        self.assertEqual(configuration.subject_plan(initial, files),
+                         configuration.subject_plan(document, files, original=original))
+        for foreign in (None, self.archive_identity(672923785), dict(original, digest='sha256:'+'f'*64)):
+            with self.subTest(original=foreign), self.assertRaises(ValueError):
+                configuration.validate(document, files, original=foreign)
+        with self.assertRaises(ValueError):
+            configuration.validate(initial, files, original=original)
+
+    def test_asset_specific_manifest_capture_and_writer_refuse_a_foreign_profile(self):
+        template, files, _, _ = self.fixture()
+        original = self.archive_identity(672921837)
+        document, outputs = configuration.derive(template, files, self.source, original=original)
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            state.chmod(0o700)
+            record = configuration.write_manifest(state, document, files, original=original)
+            with configuration.capture_manifest(state, record, files, original=original) as (value, actual, held, same):
+                self.assertEqual(document, value)
+                self.assertEqual(outputs, actual)
+                held.assert_sealed()
+                same()
+            capture = configuration.capture_manifest(state, record, files,
+                                                       original=self.archive_identity(672923785))
+            with self.assertRaises(ValueError):
+                capture.__enter__()
+            environment = bootstrap.clean_environment({}, str(state / 'home'))
+            foreign = self.archive_identity(672923785)
+            with mock.patch('subprocess.run') as execute, self.assertRaises(ValueError):
+                configuration.apply(document, files, environment, root=state, execute=execute,
+                                    original=foreign)
+            execute.assert_not_called()
 
     def test_coverage_filter_matches_actual_stock_sed(self):
         lines = [b'extension=xdebug', b'zend_extension="/tmp/xdebug.so"', b'extension=pcov.so',

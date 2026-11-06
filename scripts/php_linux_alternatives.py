@@ -8,11 +8,27 @@ from scripts import php_linux_archive as archive
 from scripts import php_linux_normalize as normalization
 
 INVENTORY_SHA256 = '108dcf7b7e95ad83154ca6e7832e551a8388be594f3eb59c828f9cb7a6516d26'
+INVENTORIES = {
+    672923785: ('initial', INVENTORY_SHA256),
+    672921837: ('ubuntu24', '138a14f56930da7187c422f244efcdc97c6b06dabc7665098de4cb650c1ca4e3'),
+}
 
 
-def inventory():
-    return normalization.pinned_json(
-        archive.bootstrap.ROOT / 'qualification/php-linux-initial-alternatives.json', INVENTORY_SHA256)
+def inventory_source(original):
+    if original is None:
+        return normalization.pinned_json(archive.bootstrap.ROOT /
+            'qualification/php-linux-initial-alternatives.json', INVENTORY_SHA256), INVENTORY_SHA256
+    selected = normalization.profile(original)
+    name, digest = INVENTORIES[selected.metadata['asset']['id']]
+    record = normalization.pinned_json(
+        archive.bootstrap.ROOT / 'qualification' / ('php-linux-' + name + '-alternatives.json'), digest)
+    if record['archive_metadata_sha256'] != selected.metadata_sha256:
+        raise ValueError('Alternatives inventory differs from its exact archive profile')
+    return record, digest
+
+
+def inventory(original=None):
+    return inventory_source(original)[0]
 
 
 def exclusions():
@@ -41,8 +57,9 @@ def verify_edge(group, kind, alias, destination, target):
         raise ValueError(f'Alternative {group}: {kind} edge differs from its exact target')
 
 
-def verify(files, root=Path('/')):
-    rows = inventory()['managed']
+def verify(files, root=Path('/'), *, original=None):
+    record, digest = inventory_source(original)
+    rows = record['managed']
     for row in rows:
         target = root / row['target']
         if row['target'] not in files:
@@ -54,4 +71,4 @@ def verify(files, root=Path('/')):
         for kind, path, destination in (('alternative', row['path'], target),
                                         ('command', row['command'], root / row['path'])):
             verify_edge(row['group'], kind, root / path, destination, target)
-    return {'inventory_sha256': INVENTORY_SHA256, 'count': len(rows)}
+    return {'inventory_sha256': digest, 'count': len(rows)}

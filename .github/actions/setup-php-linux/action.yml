@@ -1,5 +1,5 @@
 name: Bound initial Linux PHP setup
-description: Proposed no-APT Ubuntu26.04/x64 PHP8.3 setup with both literal PHARs and coverage none.
+description: Bound no-APT Ubuntu24.04/26.04 x64 PHP8.3 source profiles with both literal PHARs and coverage none.
 inputs:
   php-version:
     description: The initial profile requires the literal PHP minor 8.3.

@@ -109,12 +109,14 @@ class SetupPhpLinuxTest(unittest.TestCase):
             self.assertEqual(environment, child)
             return {"name": row["name"], "executor": "inert"}
 
-        def configure(*_arguments):
+        def configure(*_arguments, **options):
             calls.append('configure-cli')
+            self.assertEqual(archive, options['original'])
             return {'inert':'configuration'}, {'name':'cli-configuration.json'}, {'inert':'configuration-plan'}
 
         @contextmanager
-        def capture_configuration(*_arguments):
+        def capture_configuration(*_arguments, **options):
+            self.assertEqual(archive, options['original'])
             yield {'inert':'configuration'}, {}, None, lambda:None
 
         def capture_subjects(members, php, required, selected_tools, *, normalization_targets, configuration):
@@ -139,6 +141,7 @@ class SetupPhpLinuxTest(unittest.TestCase):
         with patch.dict(os.environ, environment, clear=True), patch.object(bootstrap, "CATALOG", catalog_path), \
                 patch.object(bootstrap, "observed_host", return_value=host), \
                 patch.object(bootstrap, "explicit_trust", return_value=object()), \
+                patch.object(normalization, 'profile', return_value=normalize_tests.PhpLinuxNormalizeTest().fixture()[2]), \
                 patch.object(normalization, 'normalize', side_effect=derive), \
                 patch.object(setup, 'configure_cli', side_effect=configure), \
                 patch.object(setup.configuration, 'capture_manifest', side_effect=capture_configuration):
@@ -187,7 +190,7 @@ class SetupPhpLinuxTest(unittest.TestCase):
         host = dict(operating_system="ubuntu", release="26.04", architecture="x86_64")
         request = recipe.capture_request({'INPUT_PHP-VERSION':'8.3', 'INPUT_TOOLS':'composer:2.10.3,phpunit:11.5.57',
                                           'INPUT_COVERAGE':'none'})
-        candidates = [(dict(host, release='24.04'), request), (dict(host, architecture='aarch64'), request)]
+        candidates = [(dict(host, release='22.04'), request), (dict(host, architecture='aarch64'), request)]
         for name, value in (('php-version','8.4'), ('extensions','json'), ('coverage',''),
                             ('coverage','xdebug'), ('tools','composer:2.10.3'), ('tools','none')):
             changed = copy.deepcopy(request)
@@ -197,6 +200,25 @@ class SetupPhpLinuxTest(unittest.TestCase):
             plan = recipe.validate_request(actual_request, catalog, tool_catalog, actual_host)
             with self.subTest(host=actual_host, inputs=actual_request['inputs']), self.assertRaises(ValueError):
                 setup.initial_profile(plan, actual_host)
+
+    def test_host_profile_requires_the_complete_matching_pinned_archive_identity(self):
+        from scripts import php_linux_tools as tools
+        catalog = json.loads(bootstrap.CATALOG.read_text())
+        tool_catalog = json.loads(tools.CATALOG.read_text())
+        request = recipe.capture_request({'INPUT_PHP-VERSION':'8.3',
+            'INPUT_TOOLS':'composer:2.10.3,phpunit:11.5.57', 'INPUT_COVERAGE':'none'})
+        for release in ('24.04', '26.04'):
+            host = dict(operating_system='ubuntu', release=release, architecture='x86_64')
+            plan = recipe.validate_request(request, catalog, tool_catalog, host)
+            setup.initial_profile(plan, host)
+            for field in ('id', 'name', 'size', 'digest'):
+                changed = copy.deepcopy(plan)
+                changed['archive']['asset'][field] = 'foreign'
+                with self.subTest(release=release, field=field), self.assertRaises(ValueError):
+                    setup.initial_profile(changed, host)
+            foreign_host = dict(host, release='26.04' if release == '24.04' else '24.04')
+            with self.assertRaises(ValueError):
+                setup.initial_profile(plan, foreign_host)
 
     def test_masked_upstream_refusal_keeps_original_failed_stage_and_never_installs_tools(self):
         with tempfile.TemporaryDirectory(prefix="php-inert-masked-") as directory:

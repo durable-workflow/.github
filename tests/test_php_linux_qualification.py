@@ -41,6 +41,25 @@ class PhpLinuxQualificationTest(unittest.TestCase):
             terminal = {'receipt': report, 'metadata-reserve': 'x' * 8192}
             self.assertLess(len(json.dumps(terminal, sort_keys=True).encode()), 65536)
 
+    def test_ubuntu24_complete_catalog_shape_fits_unchanged_subject_and_terminal_bounds(self):
+        from tests.test_php_linux_archive import initial_subject_shape
+        with tempfile.TemporaryDirectory() as directory:
+            _, report, _, _, _ = self.normalized_fixture(Path(directory), configured=True)
+            manifest, document, configured = initial_subject_shape(profile_name='ubuntu24')
+            for name, identity in report['subjects']['files'].items():
+                if identity['authority']['kind'] == 'tool':
+                    manifest['files'][name] = identity
+            report['subjects'] = manifest
+            report['host']['release'] = '24.04'
+            report['archive']['id'] = 672921837
+            archive.require_subject_bound(manifest)
+            qualification.validate_normalized_subjects(manifest, document, configured)
+            self.assertEqual(69, len(manifest['configs']))
+            self.assertLessEqual(len(manifest['files']), 256)
+            self.assertLessEqual(len((json.dumps(report, sort_keys=True) + '\n').encode()), setup.MAX_RECEIPT - 8192)
+            self.assertLess(len(json.dumps({'receipt':report, 'metadata-reserve':'x'*8192},
+                                           sort_keys=True).encode()), 65536)
+
     def test_v2_references_require_complete_unchanged_provenance_and_cleanup_both_states(self):
         mutations = ('none', 'document-bytes', 'document-object', 'target-digest',
                      'post-probe', 'legacy-schema', 'foreign-reference', 'file-digest', 'wrong-kind')
@@ -88,7 +107,7 @@ class PhpLinuxQualificationTest(unittest.TestCase):
                 self.assertFalse(pip_state.root.exists())
 
     def closed_qualify(self, path, root, environment, publish, **options):
-        options.setdefault('alternatives', lambda _files: {'count': 9, 'inventory_sha256': 'a' * 64})
+        options.setdefault('alternatives', lambda _files, **_options: {'count': 9, 'inventory_sha256': 'a' * 64})
         # Retained legacy-receipt controls exercise the historical validators.
         # The live collector uses the new strict default, checked separately.
         options.setdefault('required_schema', None)
@@ -153,8 +172,14 @@ class PhpLinuxQualificationTest(unittest.TestCase):
         report = {"root_identity": state.identity, "interpreter": {"version": [3, 14, 4]}}
         return state, data, report, {"inert-module": identity}
 
-    def normalized_fixture(self, root, *, configured=False):
+    def normalized_fixture(self, root, *, configured=False, release='26.04'):
         path, report, plan, environment = self.fixture(root)
+        if release != '26.04':
+            catalog = json.loads(bootstrap.CATALOG.read_text())
+            tool_catalog = json.loads(tools.CATALOG.read_text())
+            report['host']['release'] = release
+            plan = recipe.validate_request(report['request'], catalog, tool_catalog, report['host'])
+            report['archive'] = dict(plan['archive']['asset'], effective=report['archive']['effective'])
         files = {name.lstrip('/'): {key: value[key] for key in ('size', 'sha256')}
             for name, value in report['subjects']['files'].items() if value['authority']['kind'] == 'archive'}
         template = b'; inert held CLI production template\n'
@@ -198,10 +223,11 @@ class PhpLinuxQualificationTest(unittest.TestCase):
             for value in report['subjects']['files'].values():
                 if value['authority']['kind'] in ('archive', 'normalized-archive'):
                     value['authority'] = {'kind': value['authority']['kind']}
-            config_document, outputs = configuration.derive(template, files, recipe.verified_source())
+            config_document, outputs = configuration.derive(template, files, recipe.verified_source(), original=asset)
             report.update(schema=setup.CONFIGURED_RECEIPT_SCHEMA,
-                          configuration_manifest=configuration.write_manifest(path.parent, config_document, files))
-            config_plan = configuration.subject_plan(config_document, files)
+                          configuration_manifest=configuration.write_manifest(path.parent, config_document, files,
+                                                                              original=asset))
+            config_plan = configuration.subject_plan(config_document, files, original=asset)
             for name, raw in outputs.items():
                 report['subjects']['files']['/' + name] = {'type':'regular', **configuration.identity(raw),
                     'authority':{'kind':'derived-cli-configuration','member':name,'recipe':configuration.SCHEMA}}
@@ -261,13 +287,56 @@ class PhpLinuxQualificationTest(unittest.TestCase):
             self.assertEqual('pass', evidence[0]['cleanup'])
             self.assertFalse(path.parent.exists())
 
+    def test_ubuntu24_terminal_binds_configuration_and_both_alternatives_checks_to_its_asset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path, _report, plan, environment, selected = self.normalized_fixture(
+                root, configured=True, release='24.04')
+            calls, evidence, probes = [], [], []
+            def verify(_files, **options):
+                calls.append(copy.deepcopy(options['original']))
+                return {'count':9, 'inventory_sha256':'a'*64}
+            with patch.object(normalization, 'profile', return_value=selected):
+                self.closed_qualify(path, root, environment, evidence.append,
+                    alternatives=verify, subjects=lambda *_args, **_options:None,
+                    probes=lambda *_args:probes.append('inert'))
+            self.assertEqual([plan['archive']['asset']]*2, calls)
+            self.assertEqual(['inert'], probes)
+            self.assertEqual('pass', evidence[0]['outcome'])
+            self.assertTrue(evidence[0]['configuration']['revalidated'])
+            self.assertTrue(evidence[0]['alternatives']['revalidated'])
+            self.assertFalse(path.parent.exists())
+
+    def test_ubuntu24_terminal_refuses_a_fresh_producer_object_with_the_ubuntu26_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path, report, _plan, environment, selected = self.normalized_fixture(
+                root, configured=True, release='24.04')
+            config_path = path.parent / configuration.MANIFEST_NAME
+            document = json.loads(config_path.read_bytes())
+            document['profile'] = configuration.PROFILE
+            config_path.unlink()
+            report['configuration_manifest'] = normalization.write_document(
+                path.parent, configuration.MANIFEST_NAME, document, configuration.MAX_DOCUMENT)
+            path.write_text(json.dumps(report))
+            evidence, probes = [], []
+            with patch.object(normalization, 'profile', return_value=selected), \
+                    self.assertRaisesRegex(ValueError, 'independently derived source recipe'):
+                self.closed_qualify(path, root, environment, evidence.append,
+                    subjects=lambda *_args, **_options:None,
+                    probes=lambda *_args:probes.append('must not run'))
+            self.assertEqual([], probes)
+            self.assertEqual('pass', evidence[0]['cleanup'])
+            self.assertFalse(path.parent.exists())
+
     def test_normalized_alternatives_refusal_before_or_after_probes_cleans_without_pass(self):
         for mutation in ('none', 'before', 'after', 'authority-drift'):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 path, _report, _plan, environment, selected = self.normalized_fixture(root)
                 evidence, calls, probes = [], [], []
-                def alternatives(_files):
+                def alternatives(_files, **options):
+                    self.assertEqual(_plan['archive']['asset'], options['original'])
                     calls.append('verify')
                     if (mutation == 'before' or mutation == 'after' and len(calls) == 2):
                         raise ValueError('inert alternatives refusal')

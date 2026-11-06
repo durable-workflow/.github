@@ -18,8 +18,11 @@ The separate Ubuntu 24.04/x64/PHP 8.3 normalization source is recorded in
 Selection requires the complete pinned asset identity, not a caller-supplied
 map or path. Its 684 links have 634 contained regular targets and 50 explicit
 directory or unresolved omissions; the derived inventory has 3,203 files and
-372 directories. This source profile does not admit Ubuntu 24.04 installation:
-the setup and installed qualification gates retain their initial host tuple.
+372 directories. The source setup gate requires the exact Ubuntu 24.04 or
+26.04 x64 host and matching complete archive identity, PHP 8.3, both literal
+PHARs, coverage none and no extension override. Other catalog tuples refuse.
+The current live qualification still binds the accepted initial Ubuntu 26.04
+source; Ubuntu 24.04 needs its own immutable workflow binding and installed run.
 
 Receipt v4 additionally binds the initial CLI configuration. It derives the
 production INI from the held archive's `php.ini-production.cli` and the exact
@@ -36,7 +39,13 @@ qualification requires v4. Retained legacy readers and source controls do not
 qualify a new installed original. A changed effect packet and distinct run
 selection remain necessary before executing this source.
 
-The fixed updater's writer inventory is in `php-linux-initial-alternatives.json`.
+The fixed updater's writer inventories are in `php-linux-initial-alternatives.json`
+and `php-linux-ubuntu24-alternatives.json`. They bind their respective metadata
+hashes and the same exact stock writers. The generated installer bytes remain
+unchanged. Setup and terminal verification pass the selected original asset
+through the CLI configuration and alternatives checks; a document's profile
+label cannot choose its own expected configuration. Post-probe alternatives
+verification retains a copy of that same asset identity.
 Nine archive-materialized alternatives paths are master links created by
 `fix_alternatives`. Extraction excludes those exact paths, leaving their
 creation to the existing updater after extraction. Both link hops and the

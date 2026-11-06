@@ -11,6 +11,7 @@ import unittest
 
 from scripts import php_linux_alternatives as alternatives
 from scripts import php_linux_bootstrap as bootstrap
+from scripts import php_linux_normalize as normalization
 
 
 class PhpLinuxAlternativesTest(unittest.TestCase):
@@ -109,6 +110,27 @@ version=8.3
         self.assertTrue(all(not row['target_in_regular_archive'] for row in self.record['slave_writers']))
         self.assertNotIn(self.record['socket_writer']['alternative'], alternatives.exclusions())
         self.assertEqual(bootstrap.sha256(self.original.encode()), self.record['installer_sha256'])
+
+    def test_ubuntu24_inventory_binds_its_own_archive_and_the_same_nine_stock_writers(self):
+        asset = normalization.reviewed_profile(672921837).metadata['asset']
+        original = {**{key:asset[key] for key in ('id', 'name', 'size')}, 'digest':'sha256:'+asset['sha256']}
+        previous = self.record
+        self.record, digest = alternatives.inventory_source(original)
+        self.assertNotEqual(alternatives.INVENTORY_SHA256, digest)
+        self.assertEqual({key:value for key,value in previous.items() if key != 'archive_metadata_sha256'},
+                         {key:value for key,value in self.record.items() if key != 'archive_metadata_sha256'})
+        self.assertEqual(normalization.profile(original).metadata_sha256, self.record['archive_metadata_sha256'])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.existing_choices(root, 'auto-higher')
+            files = self.extract(root, self.successor())
+            result = self.update(root)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual({'inventory_sha256':digest, 'count':9},
+                             alternatives.verify(files, root, original=original))
+        foreign = dict(original, digest='sha256:'+'f'*64)
+        with self.assertRaises(ValueError):
+            alternatives.inventory(foreign)
 
     def test_exact_predecessor_retains_regular_alternatives_and_successor_restores_nine_canonical_edges(self):
         previous = (bootstrap.ROOT / 'tests/fixtures/php_initial_installer_45a7863.sh').read_text()
