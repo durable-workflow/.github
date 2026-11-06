@@ -24,6 +24,10 @@ class ProtectedContextTest(unittest.TestCase):
                  for path in (ROOT / ".github/workflows").glob("*.y*ml")}
         context.validate_context(files)
 
+    def test_unknown_context_target_refuses_without_interpreting_a_workflow(self):
+        with self.assertRaisesRegex(InputRefused, "context target"):
+            context.validate_context({}, policy_target="elsewhere")
+
     def test_initial_qualification_is_only_the_exact_reviewed_future_workflow(self):
         path=".github/workflows/qualify-linux-php-initial.yml"
         raw=(ROOT/"tests/fixtures/qualify-linux-php-initial.yml").read_bytes()

@@ -27,12 +27,13 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(ROOT))
 
 from scripts.protected_policy_inputs import (  # noqa: E402
-    MAX_FILES, MAX_TREE_ENTRIES, InputRefused, collect_inputs, read_identity, require_current, write_inputs,
+    CONTROL_TARGET, MAX_FILES, MAX_TREE_ENTRIES, InputRefused, PolicyTarget, checked_policy_target,
+    collect_inputs, read_identity, require_current, write_inputs,
 )
 from scripts.protected_policy_context import validate_context  # noqa: E402
 
-PILOT_REPOSITORY = "durable-workflow/.github"
-PILOT_REPOSITORY_ID = 575230056
+PILOT_REPOSITORY = CONTROL_TARGET.repository
+PILOT_REPOSITORY_ID = CONTROL_TARGET.repository_id
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_REQUESTS = MAX_FILES + 16
 MAX_JSON_DEPTH = 64
@@ -176,8 +177,9 @@ class GitHubReadClient:
             return value
 
 
-def require_protected_base(read, base_sha: str) -> None:
-    record = read(f"/repos/{PILOT_REPOSITORY}/branches/main")
+def require_protected_base(read, base_sha: str, *, target: PolicyTarget = CONTROL_TARGET) -> None:
+    target = checked_policy_target(target.repository, target.repository_id)
+    record = read(f"/repos/{target.repository}/branches/main")
     try:
         if record["name"] != "main" or record["protected"] is not True or record["commit"]["sha"] != base_sha:
             raise InputRefused("The pilot's protected main branch moved or cannot be verified")
@@ -185,10 +187,13 @@ def require_protected_base(read, base_sha: str) -> None:
         raise InputRefused("Incomplete protected-branch metadata") from error
 
 
-def validate_files(files: dict[str, bytes], *, validator=None) -> dict[str, Any]:
+def validate_files(
+    files: dict[str, bytes], *, validator=None, target: PolicyTarget = CONTROL_TARGET,
+) -> dict[str, Any]:
     from scripts.qualification_policy import PolicyError, load_policy, validate_local_action_references
 
-    validate_context(files)
+    target = checked_policy_target(target.repository, target.repository_id)
+    validate_context(files, policy_target=target.policy_name)
     policy_path = ROOT / "qualification/policy.json"
     try:
         policy = load_policy(policy_path)
@@ -199,7 +204,7 @@ def validate_files(files: dict[str, bytes], *, validator=None) -> dict[str, Any]
         candidate = Path(temporary) / "data"
         write_inputs(files, candidate)
         try:
-            actions = check(policy, candidate / ".github/workflows", "github-control-plane")
+            actions = check(policy, candidate / ".github/workflows", target.policy_name)
         except (PolicyError, RecursionError) as error:
             raise InputRefused(str(error)) from error
     digests = {name: hashlib.sha256(raw).hexdigest() for name, raw in sorted(files.items())}
@@ -210,12 +215,15 @@ def validate_files(files: dict[str, bytes], *, validator=None) -> dict[str, Any]
     }
 
 
-def validate_snapshot(read, number: int, base_sha: str, *, validator=None) -> dict[str, Any]:
-    require_protected_base(read, base_sha)
-    identity = read_identity(read, PILOT_REPOSITORY, PILOT_REPOSITORY_ID, number, base_sha)
+def validate_snapshot(
+    read, number: int, base_sha: str, *, validator=None, target: PolicyTarget = CONTROL_TARGET,
+) -> dict[str, Any]:
+    target = checked_policy_target(target.repository, target.repository_id)
+    require_protected_base(read, base_sha, target=target)
+    identity = read_identity(read, target.repository, target.repository_id, number, base_sha)
     files = collect_inputs(read, identity)
-    statistics = validate_files(files, validator=validator)
-    require_protected_base(read, base_sha)
+    statistics = validate_files(files, validator=validator, target=target)
+    require_protected_base(read, base_sha, target=target)
     require_current(read, identity)
     return {
         "schema": "durable-workflow.protected-policy-read/v1", "repository": identity.repository,

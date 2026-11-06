@@ -49,6 +49,13 @@ REVIEWED_SOURCE_CI_SUCCESSORS = {
     ".github/workflows/sonar.yml": "10af0ec0dcec58368a8261188e9e2fb1c3c91736d39502863e7aa57914e99fbe",
 }
 
+# AI's existing matrix commands are reviewed only for that repository. They do
+# not enlarge the control repository's complex-workflow exceptions.
+REVIEWED_AI_WORKFLOWS = {
+    ".github/workflows/ci.yml": "bb67cff8534c78269aa4a0025c3d28056b0ce6f81d8ec8e8b146e13fb9216aa3",
+    ".github/workflows/sonar.yml": "350ab6c80ad7e83702d4afb4215652affa226bed2e33401ad6fab594ec37d9b6",
+}
+
 
 def literal_python(arguments: list[str]) -> bool:
     if arguments[:1] == ["-I"]:
@@ -185,13 +192,19 @@ def validate_helper_step(document, job, step, files, reviewed_complex=False):
     check_helpers(source, files, set())
 
 
-def validate_context(files: dict[str, bytes]) -> None:
+def validate_context(files: dict[str, bytes], *, policy_target: str = "github-control-plane") -> None:
+    if policy_target not in {"github-control-plane", "ai"}:
+        raise InputRefused("Unsupported protected policy context target")
     for name, raw in sorted(files.items()):
         if PurePosixPath(name).parent.as_posix() != ".github/workflows" or not name.endswith((".yml", ".yaml")):
             continue
         document = bounded_document(raw.decode("utf-8"))
         digest = hashlib.sha256(raw).hexdigest()
-        reviewed_complex = digest in {REVIEWED_COMPLEX_WORKFLOWS.get(name), REVIEWED_SOURCE_CI_SUCCESSORS.get(name)}
+        reviewed_hashes = (
+            {REVIEWED_COMPLEX_WORKFLOWS.get(name), REVIEWED_SOURCE_CI_SUCCESSORS.get(name)}
+            if policy_target == "github-control-plane" else {REVIEWED_AI_WORKFLOWS.get(name)}
+        )
+        reviewed_complex = digest in reviewed_hashes
         jobs = document.get("jobs", {})
         if not isinstance(jobs, dict):
             raise InputRefused("Protected pilot requires a jobs mapping")
