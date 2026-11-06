@@ -448,6 +448,14 @@ def revalidate_provenance(document, normalized, normalized_unchanged, configured
         evidence['configuration']['revalidated'] = True
 
 
+def record_producer_terminal(evidence, report):
+    if isinstance(report, dict):
+        evidence['producer_terminal'] = {
+            key: value for key, value in report.items()
+            if key in {'outcome', 'stage', 'failure_type', 'cause_type', 'http_status', 'returncode'}
+            and (type(value) is int or isinstance(value, str) and len(value) <= 100)}
+
+
 def qualify(path, runner_temp, environment, publish, *, validate=validate_success,
             subjects=revalidate_subjects, probes=run_probes, pip_state=None,
             alternatives=php_linux_alternatives.verify,
@@ -473,11 +481,7 @@ def qualify(path, runner_temp, environment, publish, *, validate=validate_succes
                 evidence["private_pip"] = pip_report
             evidence.update(receipt_sha256=held.identity["digest"], receipt_object=held.effective,
                             stage="validate")
-            if isinstance(report, dict):
-                evidence["producer_terminal"] = {
-                    key: value for key, value in report.items()
-                    if key in {"outcome", "stage", "failure_type", "cause_type", "http_status", "returncode"}
-                    and (type(value) is int or isinstance(value, str) and len(value) <= 100)}
+            record_producer_terminal(evidence, report)
             if required_schema is not None and (not isinstance(report, dict) or report.get('schema') != required_schema):
                 raise ValueError('Current qualification requires the configured receipt schema')
             plan = validate(report, state)
