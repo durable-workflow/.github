@@ -270,9 +270,18 @@ class NormalizedQualificationWorkflowTest(unittest.TestCase):
 class AlternativesQualificationWorkflowTest(NormalizedQualificationWorkflowTest):
     fixture = 'qualify-linux-php-alternatives.yml'
     source = '5f64e43d7dda8d30a7b0c5433f838bb3fe5f85ec'
+    predecessor_fixture = 'qualify-linux-php-normalized.yml'
+    predecessor_source = NormalizedQualificationWorkflowTest.source
 
     def test_exact_consumed_normalized_fixture_changes_only_six_source_literals(self):
-        old = (ROOT / 'tests/fixtures/qualify-linux-php-normalized.yml').read_bytes()
-        previous = NormalizedQualificationWorkflowTest.source.encode()
+        old = (ROOT / 'tests/fixtures' / self.predecessor_fixture).read_bytes()
+        previous = self.predecessor_source.encode()
         self.assertEqual(6, old.count(previous))
         self.assertEqual(old.replace(previous, self.source.encode()), self.raw)
+
+
+class SelectedAlternativesQualificationWorkflowTest(AlternativesQualificationWorkflowTest):
+    fixture = 'qualify-linux-php-selected-alternatives.yml'
+    source = 'fd390417973902bae3ac4847fb67ae778c854786'
+    predecessor_fixture = AlternativesQualificationWorkflowTest.fixture
+    predecessor_source = AlternativesQualificationWorkflowTest.source

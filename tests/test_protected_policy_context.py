@@ -144,6 +144,10 @@ class ProtectedContextTest(unittest.TestCase):
         self.checked_initial_profile('qualify-linux-php-alternatives.yml',
             'REVIEWED_ALTERNATIVES_PROFILE_SUCCESSORS', b'5f64e43d7dda8d30a7b0c5433f838bb3fe5f85ec')
 
+    def test_selected_alternatives_profile_requires_accepted_sources_and_control_plane_target(self):
+        self.checked_initial_profile('qualify-linux-php-selected-alternatives.yml',
+            'REVIEWED_SELECTED_ALTERNATIVES_PROFILE_SUCCESSORS', b'fd390417973902bae3ac4847fb67ae778c854786')
+
     def test_plain_root_helper_and_literal_root_overrides_are_supported(self):
         for directory in (".", "./", "${{ github.workspace }}"):
             with self.subTest(directory=directory):
