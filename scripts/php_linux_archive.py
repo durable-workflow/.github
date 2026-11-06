@@ -273,7 +273,9 @@ def verify_installed(files: dict, php: str, required: list[str], execute=subproc
 
 
 def selected_subject_schema(normalization_targets, selected):
-    schema = (NORMALIZED_SUBJECT_SCHEMA if normalization_targets is not None else SUBJECT_SCHEMA) if selected is None else selected
+    schema = selected
+    if schema is None:
+        schema = NORMALIZED_SUBJECT_SCHEMA if normalization_targets is not None else SUBJECT_SCHEMA
     if schema not in (SUBJECT_SCHEMA, NORMALIZED_SUBJECT_SCHEMA):
         raise ValueError('Unknown installed subject representation')
     if schema == NORMALIZED_SUBJECT_SCHEMA and normalization_targets is None:
