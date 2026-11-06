@@ -68,3 +68,21 @@ consumer diff before any selected build. Source tests use inert package/release
 records and stock offline version comparison; they do not run a container or APT.
 The existing Python host guard remains separate and unwired. No historical root
 bootstrap or package-manager transaction is restored.
+
+## Python worker parent inventory
+
+`python-3.12.16-slim-bookworm.v1.json` records a matching official Python worker
+parent with both native architectures and the fixed Debian package pair. Its
+index, children, configs, attestation manifests, SPDX statements and package
+records were checked with public Registry v2 metadata requests. No image layer
+was fetched and no image was executed.
+
+The initial pip in this parent is older than the maintained client bootstrap.
+The record explicitly requires a fixed Python client bootstrap before dependency
+requests. A fixed APT pair does not qualify pip or its effective trust stores.
+The consumer must bind the exact parent and central preflight before its first
+APT command, keep old pip offline, and verify the maintained pip, vendored
+library and actual CA bundles before SDK installation.
+
+This is a producer source inventory, not an installed or consumer qualification.
+It does not select a first image/tool acquisition, build, runtime or publication.

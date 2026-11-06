@@ -107,6 +107,27 @@ class BookwormAptSourceTest(unittest.TestCase):
                     self.assertRegex(platform[kind]["digest"], r"^sha256:[0-9a-f]{64}$")
                     self.assertGreater(platform[kind]["size"], 0)
 
+    def test_python_parent_inventory_does_not_qualify_its_initial_python_clients(self):
+        path = ROOT / "docker/apt/python-3.12.16-slim-bookworm.v1.json"
+        record = json.loads(path.read_text())
+        self.assertEqual("publisher-source-inventory-only", record["scope"])
+        self.assertEqual("docker.io/library/python", record["repository"])
+        self.assertEqual("3.12.16", record["python_version"])
+        self.assertEqual({"id": "debian", "version_id": "12"}, record["os"])
+        self.assertFalse(any(record["inventory"].values()))
+        self.assertTrue(record["requires_fixed_python_client_bootstrap"])
+        parent = record["parents"]["candidate"]
+        self.assertEqual({"linux/amd64", "linux/arm64"}, set(parent["platforms"]))
+        self.assertRegex(parent["index"]["digest"], r"^sha256:[0-9a-f]{64}$")
+        self.assertGreater(parent["index"]["size"], 0)
+        for platform in parent["platforms"].values():
+            self.assertEqual(record["fixed"], platform["packages"])
+            self.assertEqual(record["python_version"], platform["python_version"])
+            self.assertEqual({"pip": "25.0.1"}, platform["initial_python_clients"])
+            for kind in ("child", "config", "attestation", "spdx"):
+                self.assertRegex(platform[kind]["digest"], r"^sha256:[0-9a-f]{64}$")
+                self.assertGreater(platform[kind]["size"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
