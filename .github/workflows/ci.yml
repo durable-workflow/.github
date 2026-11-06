@@ -26,7 +26,7 @@ jobs:
         with:
           python-version: "3.13"
 
-      - uses: ./.github/actions/bootstrap-patched-pip # local
+      - uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7 # clean-trust
         with:
           clients: pip,python,composer,curl,git,npm,cargo
 
@@ -99,7 +99,7 @@ jobs:
         run: |
           python -I -m venv "$RUNNER_TEMP/protected-parser-install"
           printf '%s\n' "$RUNNER_TEMP/protected-parser-install/bin" >> "$GITHUB_PATH"
-      - uses: ./.github/actions/bootstrap-patched-pip # local
+      - uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7 # clean-trust
         with:
           clients: pip,python
       - name: Exercise the actual isolated hash-locked installer
