@@ -21,8 +21,9 @@ directory or unresolved omissions; the derived inventory has 3,203 files and
 372 directories. The source setup gate requires the exact Ubuntu 24.04 or
 26.04 x64 host and matching complete archive identity, PHP 8.3, both literal
 PHARs, coverage none and no extension override. Other catalog tuples refuse.
-The current live qualification still binds the accepted initial Ubuntu 26.04
-source; Ubuntu 24.04 needs its own immutable workflow binding and installed run.
+The exact initial Ubuntu 26.04 and Ubuntu 24.04 tuples have separate accepted
+installed runs, recorded in [#297](https://github.com/durable-workflow/.github/issues/297).
+Each consumer still needs its own source binding and actual caller qualification.
 
 Receipt v4 additionally binds the initial CLI configuration. It derives the
 production INI from the held archive's `php.ini-production.cli` and the exact
@@ -175,22 +176,31 @@ part of the Server hook's combined qualification.
 
 ### Composer on the runner
 
-Linux jobs that fetch Composer dependencies use this order after checkout:
+For the initial Ubuntu 24.04 or 26.04 x64 PHP 8.3 production profile, the policy
+recognizes this dependency-request order after checkout. Use a literal supported
+runner. The immutable setup entry approves only the `setup-php-linux` action path;
+it does not approve other actions at that revision.
 
 ```yaml
-- uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+- uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5 # clean-trust
   with:
-    python-version: '3.13'
-- uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7 # clean-trust
-  with:
-    clients: pip,python,composer,curl,git
-- uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+    clients: python,composer,curl,git
+- uses: durable-workflow/.github/.github/actions/setup-php-linux@8ba5caae2546f3d5f41b7616c5722b9b337b8fc0 # bound-linux-php
   with:
     php-version: '8.3'
-    tools: composer:2.10.3
-- uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7 # clean-trust
+    tools: composer:2.10.3,phpunit:11.5.57
+    coverage: none
+- uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5 # clean-trust
 - run: composer install --prefer-dist --no-interaction
 ```
+
+The bound setup requires the Python trust client as well as Composer, curl and
+Git. Its source contract requires those literal PHP/tool/coverage values,
+production INI and no extension or INI-value override. The live verifier remains
+required immediately before each dependency-request step. This policy entry is
+source support for migration, not an installed caller result: retain independent
+post-product setup revalidation and both setup/private-pip cleanup, and qualify
+the actual consumer before release or publication.
 
 The bootstrap authenticates the pip wheel by SHA-256 before exporting its
 verified CA bundle. It selects both a file and an empty directory because pip's

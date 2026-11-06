@@ -18,6 +18,7 @@ from unittest.mock import patch
 from scripts.qualification_policy import (
     GitHubClient,
     PolicyError,
+    audit_action_releases,
     _verify_action_policy_preflight,
     _verify_cloud_route_environment,
     scan_workflow_sources,
@@ -671,6 +672,22 @@ class QualificationPolicyTest(unittest.TestCase):
             candidate = workflow(f"- uses: {action}@{ref} # clean-trust")
             with self.subTest(ref=ref), self.assertRaises(PolicyError):
                 self.scan(candidate)
+
+    def test_bound_php_setup_pin_is_approved_only_for_its_exact_action_path(self) -> None:
+        commit = "8ba5caae2546f3d5f41b7616c5722b9b337b8fc0"
+        action = "durable-workflow/.github/.github/actions/setup-php-linux"
+        source = workflow(f"- uses: {action}@{commit} # bound-linux-php")
+        predecessor = copy.deepcopy(self.policy)
+        del predecessor["action_runtime"]["allowed_releases"]["durable-workflow/.github"][commit]
+        with self.assertRaisesRegex(PolicyError, "not centrally approved"):
+            scan_workflow_sources(predecessor, "github-control-plane", {".github/workflows/test.yml": source})
+        self.assertEqual([f"{action}@{commit}"], self.scan(source)[".github/workflows/test.yml"]["external_actions"])
+        for path in ("bootstrap-patched-pip", "verify-composer-trust", "setup-php-linux/other"):
+            changed = workflow(f"- uses: durable-workflow/.github/.github/actions/{path}@{commit} # bound-linux-php")
+            with self.subTest(path=path), self.assertRaisesRegex(PolicyError, "only its setup-php-linux action path"):
+                self.scan(changed)
+            with self.subTest(audit_path=path), self.assertRaisesRegex(PolicyError, "only its setup-php-linux action path"):
+                audit_action_releases(self.policy, None, {"test.yml": changed}, {})
 
     def test_complete_repository_workflow_set_accepts_the_exact_inert_private_pip_profile(self) -> None:
         sources = {str(path.relative_to(ROOT)): path.read_text()
