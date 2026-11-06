@@ -48,6 +48,11 @@ REVIEWED_SOURCE_CI_SUCCESSORS = {
     ".github/workflows/ci.yml": "f0546eeeeec386042088cb5eb2ff36caedf9517726c06d030a0b1e275b94fb55",
     ".github/workflows/sonar.yml": "10af0ec0dcec58368a8261188e9e2fb1c3c91736d39502863e7aa57914e99fbe",
 }
+# The successor remains inert until its separate runtime pin and manual-only
+# workflow integration. Keep the consumed predecessor's identity unchanged.
+REVIEWED_INITIAL_PROFILE_SUCCESSORS = {
+    ".github/workflows/qualify-linux-php-initial.yml": "676a132c09e946ac37ec50d2ec523bec195383f0814052b06c9b3fb71a1fc168",
+}
 
 
 def literal_python(arguments: list[str]) -> bool:
@@ -191,7 +196,8 @@ def validate_context(files: dict[str, bytes]) -> None:
             continue
         document = bounded_document(raw.decode("utf-8"))
         digest = hashlib.sha256(raw).hexdigest()
-        reviewed_complex = digest in {REVIEWED_COMPLEX_WORKFLOWS.get(name), REVIEWED_SOURCE_CI_SUCCESSORS.get(name)}
+        reviewed_complex = digest in {REVIEWED_COMPLEX_WORKFLOWS.get(name), REVIEWED_SOURCE_CI_SUCCESSORS.get(name),
+                                     REVIEWED_INITIAL_PROFILE_SUCCESSORS.get(name)}
         jobs = document.get("jobs", {})
         if not isinstance(jobs, dict):
             raise InputRefused("Protected pilot requires a jobs mapping")

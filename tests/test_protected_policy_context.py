@@ -74,6 +74,26 @@ class ProtectedContextTest(unittest.TestCase):
                 with self.assertRaises(InputRefused):
                     context.validate_context({WORKFLOW: raw})
 
+    def test_private_pip_manual_successor_is_exact_and_keeps_php_and_control_sources_separate(self):
+        path = ".github/workflows/qualify-linux-php-initial.yml"
+        raw = (ROOT / "tests/fixtures/qualify-linux-php-private-pip.yml").read_bytes()
+        with patch.object(context, "REVIEWED_INITIAL_PROFILE_SUCCESSORS", {}), self.assertRaises(InputRefused):
+            context.validate_context({path: raw})
+        context.validate_context({path: raw})
+        mutations = [raw + b"\n# changed\n", raw.replace(b"workflow_dispatch:\n", b"push:\n"),
+            raw.replace(b"timeout-minutes: 15", b"timeout-minutes: 60"),
+            raw.replace(b"1b194dd945b72019f701e94472134135f584f652", b"a" * 40),
+            raw.replace(b"242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5", b"b" * 40),
+            raw.replace(b"GITHUB_RUN_ATTEMPT\" = 1", b"GITHUB_RUN_ATTEMPT\" = 2"),
+            raw.replace(b"qualification.qualify(receipt,runner_temp,closed,publish,pip_state=pip_state)",
+                        b"qualification.qualify(receipt,runner_temp,closed,publish)")]
+        for index, changed in enumerate(mutations):
+            self.assertNotEqual(raw, changed)
+            with self.subTest(mutation=index), self.assertRaises(InputRefused):
+                context.validate_context({path: changed})
+        with self.assertRaises(InputRefused):
+            context.validate_context({WORKFLOW: raw})
+
     def test_plain_root_helper_and_literal_root_overrides_are_supported(self):
         for directory in (".", "./", "${{ github.workspace }}"):
             with self.subTest(directory=directory):
