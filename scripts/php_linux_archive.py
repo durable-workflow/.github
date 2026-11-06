@@ -19,6 +19,7 @@ from scripts import php_linux_bootstrap as bootstrap
 MAX_UNPACKED = 2 * 1024 * 1024 * 1024
 MAX_MEMBERS = 100000
 SUBJECT_SCHEMA = "durable-workflow.php-linux-subjects/v1"
+NORMALIZED_SUBJECT_SCHEMA = "durable-workflow.php-linux-subjects/v2"
 MAX_SUBJECT_BYTES = 48 * 1024
 
 
@@ -271,7 +272,19 @@ def verify_installed(files: dict, php: str, required: list[str], execute=subproc
             "version": result["version"], "zts": result["zts"], "debug": result["debug"]}
 
 
-def subject_record(name, expected, php, configuration, normalization_targets):
+def selected_subject_schema(normalization_targets, selected):
+    schema = selected
+    if schema is None:
+        schema = NORMALIZED_SUBJECT_SCHEMA if normalization_targets is not None else SUBJECT_SCHEMA
+    if schema not in (SUBJECT_SCHEMA, NORMALIZED_SUBJECT_SCHEMA):
+        raise ValueError('Unknown installed subject representation')
+    if schema == NORMALIZED_SUBJECT_SCHEMA and normalization_targets is None:
+        raise ValueError('Subject references require the complete normalization authority')
+    return schema
+
+
+def subject_record(name, expected, php, configuration, normalization_targets, *, subject_schema=None):
+    schema = selected_subject_schema(normalization_targets, subject_schema)
     authority = ({"kind": "derived-redis", "member": name}
                  if name == f"etc/php/{php}/mods-available/redis.ini"
                  else {"kind": "archive", "member": name})
@@ -287,13 +300,19 @@ def subject_record(name, expected, php, configuration, normalization_targets):
             'target_sha256': origin['sha256'],
             'target_metadata_sha256': bootstrap.sha256(json.dumps(origin['metadata'], sort_keys=True,
                 separators=(',', ':')).encode())}
+    # V2 indexes the complete sealed document by the canonical file key.
+    # V1's historical representation retains its full duplicate target proof.
+    if schema == NORMALIZED_SUBJECT_SCHEMA and authority['kind'] in ('archive', 'normalized-archive'):
+        authority = {'kind': authority['kind']}
     return {"type": "regular", **expected, "authority": authority}
 
 
 def capture_subjects(files, php, required, *, root=Path("/"), read=None, resolve=None,
-                     command_path=None, normalization_targets=None, configuration=None, **checks):
+                     command_path=None, normalization_targets=None, configuration=None,
+                     subject_schema=None, **checks):
     """Producer manifest: each file identity comes from held archive/derived bytes."""
-    manifest = {"schema": SUBJECT_SCHEMA, "files": {}, "commands": {}, "configs": {}}
+    schema = selected_subject_schema(normalization_targets, subject_schema)
+    manifest = {"schema": schema, "files": {}, "commands": {}, "configs": {}}
     configs = configuration_members(files, php)
     if configuration is not None:
         configs.update(configuration['outputs'])
@@ -312,7 +331,8 @@ def capture_subjects(files, php, required, *, root=Path("/"), read=None, resolve
             raise ValueError("Subject lacks held-archive/derived authority")
         metadata, contents = native_read(path)
         verify_file(path, expected, lambda _: (metadata, contents))
-        manifest["files"][canonical(path)] = subject_record(name, expected, php, configuration, normalization_targets)
+        manifest["files"][canonical(path)] = subject_record(name, expected, php, configuration,
+            normalization_targets, subject_schema=schema)
         return metadata, contents
 
     def observed_resolve(path):
