@@ -183,11 +183,13 @@ class PrivatePipQualificationWorkflowTest(unittest.TestCase):
 
 
 class NormalizedQualificationWorkflowTest(unittest.TestCase):
+    fixture = "qualify-linux-php-normalized.yml"
+    source = '45a7863dbc425ecf19a5a4038a84a9443c23a9a9'
+
     def setUp(self):
-        self.raw = (ROOT / "tests/fixtures/qualify-linux-php-normalized.yml").read_bytes()
+        self.raw = (ROOT / "tests/fixtures" / self.fixture).read_bytes()
         self.document = yaml.load(self.raw, Loader=yaml.BaseLoader)
         self.job = self.document['jobs']['qualify-initial-linux-php']
-        self.source = '45a7863dbc425ecf19a5a4038a84a9443c23a9a9'
 
     def test_only_the_two_coordinated_source_identities_change_from_consumed_profile(self):
         previous = (ROOT / 'tests/fixtures/qualify-linux-php-private-pip.yml').read_bytes()
@@ -263,3 +265,14 @@ class NormalizedQualificationWorkflowTest(unittest.TestCase):
         PrivatePipQualificationWorkflowTest.test_actual_terminal_with_missing_setup_output_cleans_only_proven_pip_and_publishes_bounded_refusal)
     test_actual_inline_gate_refuses_wrong_head_ref_event_repo_or_rerun_before_following_code = (
         PhpLinuxQualificationWorkflowTest.test_actual_inline_gate_refuses_wrong_head_ref_event_repo_or_rerun_before_following_code)
+
+
+class AlternativesQualificationWorkflowTest(NormalizedQualificationWorkflowTest):
+    fixture = 'qualify-linux-php-alternatives.yml'
+    source = '5f64e43d7dda8d30a7b0c5433f838bb3fe5f85ec'
+
+    def test_exact_consumed_normalized_fixture_changes_only_six_source_literals(self):
+        old = (ROOT / 'tests/fixtures/qualify-linux-php-normalized.yml').read_bytes()
+        previous = NormalizedQualificationWorkflowTest.source.encode()
+        self.assertEqual(6, old.count(previous))
+        self.assertEqual(old.replace(previous, self.source.encode()), self.raw)

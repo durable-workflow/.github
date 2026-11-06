@@ -60,6 +60,10 @@ REVIEWED_NORMALIZED_PROFILE_SUCCESSORS = {
     INITIAL_PHP_WORKFLOW: "52fa0e223464e06bd7e10f0b57076557f350353dcfedb1235b0829e0121134ac",
 }
 
+REVIEWED_ALTERNATIVES_PROFILE_SUCCESSORS = {
+    INITIAL_PHP_WORKFLOW: "7c88cfa13dcb75de5a05902e2b95e10592790c3fe0582f1521b556e6634695cd",
+}
+
 # AI's existing matrix commands are reviewed only for that repository. They do
 # not enlarge the control repository's complex-workflow exceptions.
 REVIEWED_AI_WORKFLOWS = {
@@ -71,7 +75,8 @@ REVIEWED_AI_WORKFLOWS = {
 def reviewed_context_hashes(policy_target: str) -> dict[str, set[str]]:
     if policy_target == "github-control-plane":
         registries = (REVIEWED_COMPLEX_WORKFLOWS, REVIEWED_SOURCE_CI_SUCCESSORS,
-                      REVIEWED_INITIAL_PROFILE_SUCCESSORS, REVIEWED_NORMALIZED_PROFILE_SUCCESSORS)
+                      REVIEWED_INITIAL_PROFILE_SUCCESSORS, REVIEWED_NORMALIZED_PROFILE_SUCCESSORS,
+                      REVIEWED_ALTERNATIVES_PROFILE_SUCCESSORS)
     elif policy_target == "ai":
         registries = (REVIEWED_AI_WORKFLOWS,)
     else:

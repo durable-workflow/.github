@@ -101,17 +101,16 @@ class ProtectedContextTest(unittest.TestCase):
         with self.assertRaises(InputRefused):
             context.validate_context({WORKFLOW: raw})
 
-    def test_normalized_profile_requires_exact_coordinated_sources_and_control_plane_target(self):
+    def checked_initial_profile(self, fixture, registry, source):
         path = ".github/workflows/qualify-linux-php-initial.yml"
-        raw = (ROOT / "tests/fixtures/qualify-linux-php-normalized.yml").read_bytes()
-        with patch.object(context, "REVIEWED_NORMALIZED_PROFILE_SUCCESSORS", {}), self.assertRaises(InputRefused):
+        raw = (ROOT / "tests/fixtures" / fixture).read_bytes()
+        with patch.object(context, registry, {}), self.assertRaises(InputRefused):
             context.validate_context({path: raw})
         context.validate_context({path: raw})
         with self.assertRaises(InputRefused):
             context.validate_context({path: raw}, policy_target="ai")
         with self.assertRaises(InputRefused):
             context.validate_context({WORKFLOW: raw})
-        source = b"45a7863dbc425ecf19a5a4038a84a9443c23a9a9"
         changes = [raw + b"\n# drift\n", raw.replace(b"workflow_dispatch:\n", b"push:\n"),
             raw.replace(b"timeout-minutes: 15", b"timeout-minutes: 60"),
             raw.replace(source, b"a" * 40),
@@ -127,10 +126,8 @@ class ProtectedContextTest(unittest.TestCase):
             with self.subTest(change=number), self.assertRaises(InputRefused):
                 context.validate_context({path: changed})
 
-    def test_normalized_profile_passes_the_real_inert_context_and_action_parser(self):
         from scripts.protected_policy_check import validate_files
-        files = {'.github/workflows/qualify-linux-php-initial.yml':
-            (ROOT / 'tests/fixtures/qualify-linux-php-normalized.yml').read_bytes()}
+        files = {'.github/workflows/qualify-linux-php-initial.yml': raw}
         for name in ('action.yml', 'bootstrap.js'):
             path = '.github/actions/setup-php-linux/' + name
             files[path] = (ROOT / path).read_bytes()
@@ -138,6 +135,14 @@ class ProtectedContextTest(unittest.TestCase):
         self.assertEqual(3, report['input_count'])
         self.assertEqual(2, report['approved_action_count'])
         self.assertEqual(64, len(report['inputs_sha256']))
+
+    def test_normalized_profile_requires_exact_coordinated_sources_and_control_plane_target(self):
+        self.checked_initial_profile('qualify-linux-php-normalized.yml',
+            'REVIEWED_NORMALIZED_PROFILE_SUCCESSORS', b'45a7863dbc425ecf19a5a4038a84a9443c23a9a9')
+
+    def test_alternatives_profile_requires_exact_accepted_sources_and_control_plane_target(self):
+        self.checked_initial_profile('qualify-linux-php-alternatives.yml',
+            'REVIEWED_ALTERNATIVES_PROFILE_SUCCESSORS', b'5f64e43d7dda8d30a7b0c5433f838bb3fe5f85ec')
 
     def test_plain_root_helper_and_literal_root_overrides_are_supported(self):
         for directory in (".", "./", "${{ github.workspace }}"):
