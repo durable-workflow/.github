@@ -28,6 +28,7 @@ import yaml
 SCHEMA = "durable-workflow.github-target-qualification/v1"
 CENTRAL_ACTION_REPOSITORY = "durable-workflow/.github"
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+JOB_STEP_ID_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
 SUPPORTED_JAVASCRIPT_ACTION_RUNTIMES = ["node24"]
 PROTECTED_POLICY_EXCEPTION = {
     "target": "github-control-plane",
@@ -422,7 +423,7 @@ def _validate_composer_scopes(name: str, target: dict[str, Any]) -> None:
         if (not isinstance(scope["workflow"], str)
                 or not re.fullmatch(r"[a-z0-9][a-z0-9.-]*\.yml", scope["workflow"])
                 or not isinstance(scope["job"], str)
-                or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", scope["job"])
+                or not JOB_STEP_ID_PATTERN.fullmatch(scope["job"])
                 or not isinstance(scope["required"], bool)):
             raise PolicyError(f"{name} has an invalid Composer workflow/job scope")
         identity = scope["workflow"], scope["job"]
@@ -2723,7 +2724,7 @@ def _require_bootstrap_binding(steps: list[dict[str, Any]], guard: dict[str, Any
     for bootstrap in candidates:
         identity = bootstrap.get("id", "")
         unconditional = not bootstrap.get("if") and bootstrap.get("continue-on-error", False) in (False, "false")
-        if not unconditional or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", identity):
+        if not unconditional or not JOB_STEP_ID_PATTERN.fullmatch(identity):
             continue
         if all(inputs.get(field) == "${{ steps." + identity + ".outputs." + field + " }}" for field in ("ca-file", "ca-sha256")):
             return
@@ -2750,7 +2751,7 @@ def _require_container_caller(steps: list[dict[str, Any]], request_id: str, requ
     if any(step.get("if") or str(step.get("continue-on-error", "false")) != "false" for step in (guard, build)):
         raise PolicyError(f"{request_id} cannot skip or ignore the verifier or build refusal")
     inputs, identity = guard.get("with", {}), guard.get("id", "")
-    if (inputs.get("request") != request_id or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", identity)
+    if (inputs.get("request") != request_id or not JOB_STEP_ID_PATTERN.fullmatch(identity)
             or not all(inputs.get(field) for field in ("source-directory", "source-commit", "compose-directory", "provenance"))
             or inputs["compose-directory"] != build.get("working-directory")):
         raise PolicyError(f"{request_id} must bind its source and actual Compose directory")

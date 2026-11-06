@@ -376,10 +376,12 @@ class ScopedComposerMigrationTest(unittest.TestCase):
             for field, value in (("if", "false"), ("continue-on-error", True)):
                 steps = deepcopy(self.steps)
                 steps[index][field] = value
+                sources = self.sources(steps)
                 with self.subTest(index=index, field=field), self.assertRaises(PolicyError):
-                    self.check(self.sources(steps))
+                    self.check(sources)
+        sources = self.sources([*self.steps[:2], self.steps[3]])
         with self.assertRaises(PolicyError):
-            self.check(self.sources([*self.steps[:2], self.steps[3]]))
+            self.check(sources)
 
     def test_omitted_optional_scope_leaves_unmigrated_source_unqualified(self):
         self.assertEqual([], self.check({}))
@@ -393,8 +395,9 @@ class ScopedComposerMigrationTest(unittest.TestCase):
                 self.check(sources)
         steps = deepcopy(self.steps)
         steps[1]["uses"] = PREFIX + "setup-php-linux@" + "e" * 40
+        sources = self.sources(steps)
         with self.assertRaises(PolicyError):
-            self.check(self.sources(steps))
+            self.check(sources)
 
     def test_duplicate_workflow_identities_cannot_select_a_different_source(self):
         sources = self.sources()
@@ -403,19 +406,22 @@ class ScopedComposerMigrationTest(unittest.TestCase):
             self.check(sources)
 
     def test_a_selected_scope_cannot_hide_all_product_requests(self):
+        sources = self.sources(self.steps[:3])
         with self.assertRaisesRegex(PolicyError, "no enumerated"):
-            self.check(self.sources(self.steps[:3]))
+            self.check(sources)
 
     def test_workflow_and_step_trust_overrides_still_refuse(self):
         sources = self.sources()
         document = yaml.safe_load(sources[".github/workflows/release.yml"])
         document["env"] = {"COMPOSER_CAFILE": "/unverified"}
+        sources = {"release.yml": yaml.safe_dump(document)}
         with self.assertRaises(PolicyError):
-            self.check({"release.yml": yaml.safe_dump(document)})
+            self.check(sources)
         steps = deepcopy(self.steps)
         steps[-1]["env"] = {"COMPOSER_HOME": "/unverified"}
+        sources = self.sources(steps)
         with self.assertRaises(PolicyError):
-            self.check(self.sources(steps))
+            self.check(sources)
 
     def test_no_registered_scope_keeps_the_prior_all_job_verifier_rule(self):
         del self.policy["targets"]["fixture"]["composer_trust_scopes"]
