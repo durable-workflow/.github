@@ -31,12 +31,14 @@ SHEBANGS = {"#!/bin/sh", "#!/bin/bash", "#!/usr/bin/sh", "#!/usr/bin/bash",
 WORD = r'''(?:[A-Za-z0-9_./:@%+,=-]+|'[A-Za-z0-9_./:@%+,= -]*'|"[A-Za-z0-9_./:@%+,= -]*")'''
 COMMAND = re.compile(rf"{WORD}(?:[ \t]+{WORD})*[ \t]*")
 PYTHON_MODULES = {"unittest", "pip", "venv", "http.server"}
+CI_WORKFLOW = ".github/workflows/ci.yml"
+SONAR_WORKFLOW = ".github/workflows/sonar.yml"
 # Filled with explicit reviewed workflow-byte identities, never derived from
 # candidate text. A changed complex workflow needs a separate source review.
 REVIEWED_COMPLEX_WORKFLOWS = {
     ".github/workflows/qualify-linux-php-initial.yml": "c94aa78f856940b71ce21476caf1f9f826375f11499d54759c81a79467acd1eb",
-    ".github/workflows/ci.yml": "d5b32d7b2868638e09b7deea1d3cab4bcbd3b4601fd9120da0be55319540eff7",
-    ".github/workflows/sonar.yml": "0dd432a52b1dcb6ef10b6e25404163b285deaa651a92219456eabec18514067b",
+    CI_WORKFLOW: "d5b32d7b2868638e09b7deea1d3cab4bcbd3b4601fd9120da0be55319540eff7",
+    SONAR_WORKFLOW: "0dd432a52b1dcb6ef10b6e25404163b285deaa651a92219456eabec18514067b",
     ".github/workflows/protected-policy.yml": "642d204ea939ca5eba7ef51be9e4ae56a35177413caabe849315086d3d9d2d31",
     ".github/workflows/rust-docs-visual.yml": "69bc0b89cdeacbabd35c345770de86fe9e20bb3f2a53fc1c7a157973c3db31a6",
     ".github/workflows/cancellation-competitors.yml": "9ce25bd480c899e52a7e805fd6e5e6d45fcaa687c8c25b092d1f2163baf0b0b5",
@@ -45,14 +47,36 @@ REVIEWED_COMPLEX_WORKFLOWS = {
 # the new private-pip implementation is qualified separately. These are inert
 # future workflow identities; candidate text never supplies an expected digest.
 REVIEWED_SOURCE_CI_SUCCESSORS = {
-    ".github/workflows/ci.yml": "f0546eeeeec386042088cb5eb2ff36caedf9517726c06d030a0b1e275b94fb55",
-    ".github/workflows/sonar.yml": "10af0ec0dcec58368a8261188e9e2fb1c3c91736d39502863e7aa57914e99fbe",
+    CI_WORKFLOW: "f0546eeeeec386042088cb5eb2ff36caedf9517726c06d030a0b1e275b94fb55",
+    SONAR_WORKFLOW: "10af0ec0dcec58368a8261188e9e2fb1c3c91736d39502863e7aa57914e99fbe",
 }
 # The successor remains inert until its separate runtime pin and manual-only
 # workflow integration. Keep the consumed predecessor's identity unchanged.
 REVIEWED_INITIAL_PROFILE_SUCCESSORS = {
     ".github/workflows/qualify-linux-php-initial.yml": "d3eefa3cce62b0c92ae07d6e6a1617342b843e9b5fb0ddad6ad6be4c1c4a2f9f",
 }
+
+# AI's existing matrix commands are reviewed only for that repository. They do
+# not enlarge the control repository's complex-workflow exceptions.
+REVIEWED_AI_WORKFLOWS = {
+    CI_WORKFLOW: "bb67cff8534c78269aa4a0025c3d28056b0ce6f81d8ec8e8b146e13fb9216aa3",
+    SONAR_WORKFLOW: "350ab6c80ad7e83702d4afb4215652affa226bed2e33401ad6fab594ec37d9b6",
+}
+
+
+def reviewed_context_hashes(policy_target: str) -> dict[str, set[str]]:
+    if policy_target == "github-control-plane":
+        registries = (REVIEWED_COMPLEX_WORKFLOWS, REVIEWED_SOURCE_CI_SUCCESSORS,
+                      REVIEWED_INITIAL_PROFILE_SUCCESSORS)
+    elif policy_target == "ai":
+        registries = (REVIEWED_AI_WORKFLOWS,)
+    else:
+        raise InputRefused("Unsupported protected policy context target")
+    result: dict[str, set[str]] = {}
+    for registry in registries:
+        for name, digest in registry.items():
+            result.setdefault(name, set()).add(digest)
+    return result
 
 
 def literal_python(arguments: list[str]) -> bool:
@@ -190,14 +214,14 @@ def validate_helper_step(document, job, step, files, reviewed_complex=False):
     check_helpers(source, files, set())
 
 
-def validate_context(files: dict[str, bytes]) -> None:
+def validate_context(files: dict[str, bytes], *, policy_target: str = "github-control-plane") -> None:
+    reviewed_hashes = reviewed_context_hashes(policy_target)
     for name, raw in sorted(files.items()):
         if PurePosixPath(name).parent.as_posix() != ".github/workflows" or not name.endswith((".yml", ".yaml")):
             continue
         document = bounded_document(raw.decode("utf-8"))
         digest = hashlib.sha256(raw).hexdigest()
-        reviewed_complex = digest in {REVIEWED_COMPLEX_WORKFLOWS.get(name), REVIEWED_SOURCE_CI_SUCCESSORS.get(name),
-                                     REVIEWED_INITIAL_PROFILE_SUCCESSORS.get(name)}
+        reviewed_complex = digest in reviewed_hashes.get(name, ())
         jobs = document.get("jobs", {})
         if not isinstance(jobs, dict):
             raise InputRefused("Protected pilot requires a jobs mapping")

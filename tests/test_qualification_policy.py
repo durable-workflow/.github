@@ -668,8 +668,9 @@ class QualificationPolicyTest(unittest.TestCase):
             scan_workflow_sources(predecessor, "github-control-plane", {".github/workflows/test.yml": source})
         self.assertEqual([f"{action}@{commit}"], self.scan(source)[".github/workflows/test.yml"]["external_actions"])
         for ref in ("main", "a" * 40):
+            candidate = workflow(f"- uses: {action}@{ref} # clean-trust")
             with self.subTest(ref=ref), self.assertRaises(PolicyError):
-                self.scan(workflow(f"- uses: {action}@{ref} # clean-trust"))
+                self.scan(candidate)
 
     def test_complete_repository_workflow_set_accepts_the_exact_inert_private_pip_profile(self) -> None:
         sources = {str(path.relative_to(ROOT)): path.read_text()

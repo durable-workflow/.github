@@ -1,0 +1,149 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  action-policy:
+    name: Central action policy preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out candidate source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+      - name: Check out central action policy
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          repository: durable-workflow/.github
+          ref: main
+          path: .central-action-policy
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.13"
+      - name: Bootstrap patched pip trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+      - name: Install policy dependencies
+        run: >-
+          python -m pip install --only-binary :all: PyYAML==6.0.2
+      - name: Require centrally approved immutable action commits
+        run: >-
+          python .central-action-policy/scripts/qualification_policy.py validate
+          --policy .central-action-policy/qualification/policy.json
+          --target ai
+          --workflow-directory .github/workflows
+
+  test:
+    name: PHP ${{ matrix.php }} / Laravel ${{ matrix.laravel }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - php: '8.2'
+            laravel: '12'
+            framework: '^12.61.1'
+            testbench: '^10.0'
+            phpunit: '^11.0'
+          - php: '8.3'
+            laravel: '12'
+            framework: '^12.61.1'
+            testbench: '^10.0'
+            phpunit: '^11.0'
+          - php: '8.4'
+            laravel: '13'
+            framework: '^13.0'
+            testbench: '^11.0'
+            phpunit: '^12.0'
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+
+      - name: Select authenticated dependency trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7 # clean-trust
+        with:
+          clients: pip,python,composer,curl,git
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          tools: composer:2.10.3
+
+      - name: Verify Composer trust before selecting compatibility dependencies
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7 # clean-trust
+
+      - name: Select compatibility dependencies
+        run: |
+          composer require --no-update "laravel/framework:${{ matrix.framework }}"
+          composer require --dev --no-update \
+            "orchestra/testbench:${{ matrix.testbench }}" \
+            "phpunit/phpunit:${{ matrix.phpunit }}"
+
+      - name: Verify Composer trust before dependency requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7 # clean-trust
+
+      - name: Install dependencies
+        run: composer update --prefer-dist --no-progress --no-interaction
+
+      - name: Verify Composer trust before validation
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7 # clean-trust
+
+      - name: Validate package metadata
+        run: composer validate --strict --no-check-all
+
+      - name: Verify Composer trust before formatting scripts
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7 # clean-trust
+
+      - name: Check formatting
+        run: composer format
+
+      - name: Verify Composer trust before analysis scripts
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7 # clean-trust
+
+      - name: Run static analysis
+        run: composer stan
+
+      - name: Verify Composer trust before test scripts
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7 # clean-trust
+
+      - name: Run tests
+        run: composer test
+
+  target-branch-qualification:
+    name: Target branch qualification
+    if: ${{ always() }}
+    needs: [action-policy, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Require central action policy preflight
+        env:
+          ACTION_POLICY_RESULT: ${{ needs.action-policy.result }}
+        run: test "$ACTION_POLICY_RESULT" = success
+
+      - name: Require complete GitHub qualification
+        env:
+          TEST_RESULT: ${{ needs.test.result }}
+        run: test "$TEST_RESULT" = success

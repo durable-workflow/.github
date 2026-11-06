@@ -161,10 +161,11 @@ class PrivatePipQualificationWorkflowTest(unittest.TestCase):
                 options["probes"] = lambda *_: probes.append("unexpected")
                 return original(*args, **options)
             output = io.StringIO()
+            code = compile(script, "inert-private-pip-terminal", "exec")
             with patch.dict(os.environ, environment, clear=True), patch.object(sys, "path", list(sys.path)), \
                     patch.object(qualification, "qualify", side_effect=qualify), \
                     contextlib.chdir(root), contextlib.redirect_stdout(output), self.assertRaises(ValueError):
-                exec(compile(script, "inert-private-pip-terminal", "exec"), {})
+                exec(code, {})
             records = [json.loads(line) for line in output.getvalue().splitlines()]
             refusals = [record for record in records if record.get("schema") == "durable-workflow.php-linux-terminal/v1"]
             self.assertEqual(1, len(refusals))

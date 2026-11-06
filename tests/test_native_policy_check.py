@@ -7,7 +7,8 @@ from unittest import TestCase
 from unittest.mock import patch
 
 from scripts import native_policy_check as native
-from scripts.protected_policy_inputs import InputRefused
+from scripts import protected_policy_check as checker
+from scripts.protected_policy_inputs import AI_TARGET, InputRefused
 from tests import test_protected_policy_inputs as inputs
 from tests.test_protected_policy_check import SAFE_WORKFLOW
 
@@ -33,14 +34,14 @@ class NativePolicyCheckTest(TestCase):
         return native.validate_native(self.fixture.read, self.environment["GITHUB_EVENT_NAME"],
                                       self.event, self.environment, validator=validator or (lambda *_: []))
 
-    def group(self, head=inputs.HEAD):
+    def group(self, head=inputs.HEAD, repository=native.PILOT):
         for path, value in list(self.fixture.records.items()):
             if path.startswith(f"/repos/{inputs.FORK}/git/"):
-                self.fixture.records[path.replace(inputs.FORK, native.PILOT)] = deepcopy(value)
+                self.fixture.records[path.replace(inputs.FORK, repository)] = deepcopy(value)
         if head != inputs.HEAD:
-            commit = deepcopy(self.fixture.records[f"/repos/{native.PILOT}/git/commits/{inputs.HEAD}"])
+            commit = deepcopy(self.fixture.records[f"/repos/{repository}/git/commits/{inputs.HEAD}"])
             commit["sha"] = head
-            self.fixture.records[f"/repos/{native.PILOT}/git/commits/{head}"] = commit
+            self.fixture.records[f"/repos/{repository}/git/commits/{head}"] = commit
         ref = "refs/heads/gh-readonly-queue/main/pr-7-control"
         self.event.update(action="checks_requested", merge_group={"base_ref": "refs/heads/main",
                           "base_sha": inputs.BASE, "head_ref": ref, "head_sha": head})
@@ -53,6 +54,111 @@ class NativePolicyCheckTest(TestCase):
         self.assertEqual(inputs.FORK, result["head_repository"])
         self.assertEqual("github-required-workflow", result["enforcement"])
         self.assertFalse(any("check-runs" in path for path in self.fixture.requests))
+
+    def ai_subject(self):
+        pull = self.fixture.records.pop(f"/repos/{native.PILOT}/pulls/7")
+        pull["base"]["repo"].update(full_name=AI_TARGET.repository, id=AI_TARGET.repository_id)
+        self.fixture.records[f"/repos/{AI_TARGET.repository}/pulls/7"] = pull
+        self.fixture.records[f"/repos/{AI_TARGET.repository}/branches/main"] = {
+            "name": "main", "protected": True, "commit": {"sha": inputs.BASE},
+        }
+        self.environment.update(GITHUB_REPOSITORY=AI_TARGET.repository,
+                                GITHUB_REPOSITORY_ID=str(AI_TARGET.repository_id))
+        self.event["repository"].update(full_name=AI_TARGET.repository, id=AI_TARGET.repository_id)
+        self.event["pull_request"] = deepcopy(pull)
+        self.fixture.entries.clear()
+        root = Path(__file__).parent / "fixtures/native-policy-ai"
+        for name in ("ci.yml", "sonar.yml"):
+            self.fixture.add_file(f".github/workflows/{name}", (root / name).read_bytes())
+        self.fixture.requests.clear()
+        return pull
+
+    def test_ai_public_fork_uses_its_actual_workflows_and_target_policy(self):
+        self.ai_subject()
+        report = native.validate_native(self.fixture.read, "pull_request", self.event, self.environment)
+        self.assertEqual(AI_TARGET.repository, report["repository"])
+        self.assertEqual(AI_TARGET.repository_id, report["repository_id"])
+        self.assertEqual(inputs.FORK, report["head_repository"])
+        self.assertEqual(2, report["input_count"])
+        self.assertGreater(report["approved_action_count"], 0)
+        self.assertEqual(2, self.fixture.requests.count(f"/repos/{AI_TARGET.repository}/branches/main"))
+        self.assertFalse(any("check-runs" in path for path in self.fixture.requests))
+
+    def test_ai_merge_group_validates_the_combined_target_commit_without_a_pr(self):
+        self.ai_subject()
+        combined = "d" * 40
+        self.group(combined, AI_TARGET.repository)
+        report = native.validate_native(self.fixture.read, "merge_group", self.event, self.environment)
+        self.assertEqual(AI_TARGET.repository, report["repository"])
+        self.assertEqual(combined, report["head_sha"])
+        self.assertEqual(2, report["input_count"])
+        self.assertFalse(any("/pulls/" in path for path in self.fixture.requests))
+
+    def test_ai_identity_or_visibility_substitution_refuses_before_reads(self):
+        self.ai_subject()
+        for field, value in (("id", native.PILOT_ID), ("id", True),
+                             ("full_name", native.PILOT), ("private", True)):
+            event = deepcopy(self.event)
+            event["repository"][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(InputRefused):
+                native.validate_native(self.fixture.read, "pull_request", event, self.environment)
+            self.assertEqual([], self.fixture.requests)
+        for field, value in (("GITHUB_REPOSITORY", native.PILOT),
+                             ("GITHUB_REPOSITORY_ID", str(native.PILOT_ID))):
+            environment = {**self.environment, field: value}
+            with self.subTest(field=field), self.assertRaises(InputRefused):
+                native.validate_native(self.fixture.read, "pull_request", self.event, environment)
+            self.assertEqual([], self.fixture.requests)
+
+    def test_malformed_or_unselected_target_metadata_refuses_before_reads(self):
+        self.fixture.requests.clear()
+        for repository in (None, [], {"full_name": ["durable-workflow/ai"], "id": AI_TARGET.repository_id},
+                           {"full_name": "durable-workflow/elsewhere", "id": AI_TARGET.repository_id}):
+            event = {**self.event, "repository": repository}
+            with self.subTest(repository=repository), self.assertRaises(InputRefused):
+                native.validate_native(self.fixture.read, "pull_request", event, self.environment)
+            self.assertEqual([], self.fixture.requests)
+
+    def test_ai_changed_matrix_workflow_cannot_supply_its_own_policy(self):
+        self.ai_subject()
+        import base64
+        entry = self.fixture.entries[0]
+        blob = self.fixture.blob(entry)
+        raw = base64.b64decode(blob["content"])
+        changed = raw.replace(b"run: composer stan", b"run: composer other")
+        self.assertNotEqual(raw, changed)
+        blob.update(content=base64.encodebytes(changed).decode(), size=len(changed))
+        entry["size"] = len(changed)
+        unreferenced = self.fixture.add_file("qualification/policy.json", b"{}\n")
+        with self.assertRaisesRegex(InputRefused, "closed literal"):
+            native.validate_native(self.fixture.read, "pull_request", self.event, self.environment)
+        self.assertNotIn(f"/repos/{inputs.FORK}/git/blobs/{unreferenced['sha']}", self.fixture.requests)
+
+    def test_ai_reviewed_complex_context_does_not_transfer_to_control_or_another_path(self):
+        root = Path(__file__).parent / "fixtures/native-policy-ai"
+        raw = (root / "ci.yml").read_bytes()
+        with self.assertRaisesRegex(InputRefused, "closed literal"):
+            checker.validate_files({".github/workflows/ci.yml": raw})
+        with self.assertRaisesRegex(InputRefused, "closed literal"):
+            checker.validate_files({".github/workflows/other.yml": raw}, target=AI_TARGET)
+
+    def test_ai_protected_branch_and_pr_head_are_rechecked(self):
+        pull = self.ai_subject()
+
+        def move_branch(*_):
+            self.fixture.records[f"/repos/{AI_TARGET.repository}/branches/main"]["commit"]["sha"] = "e" * 40
+            return []
+
+        with self.assertRaisesRegex(InputRefused, "branch moved"):
+            self.run_gate(move_branch)
+        self.fixture.records[f"/repos/{AI_TARGET.repository}/branches/main"]["commit"]["sha"] = inputs.BASE
+
+        def move_head(*_):
+            pull["head"]["sha"] = "e" * 40
+            return []
+
+        with self.assertRaises(InputRefused):
+            self.run_gate(move_head)
 
     def test_old_event_cannot_qualify_a_newer_api_head(self):
         self.fixture.pull()["head"]["sha"] = "d" * 40
