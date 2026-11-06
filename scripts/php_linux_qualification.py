@@ -351,9 +351,13 @@ def qualify(path, runner_temp, environment, publish, *, validate=validate_succes
     evidence = {"schema": "durable-workflow.php-linux-terminal/v1", "outcome": "refused", "stage": "capture"}
     verified = False
     try:
-        state = checked_state(path, runner_temp)
-        state_identity = object_identity(state.lstat())[:4]
-        owned_pip = pip_ownership(pip_state, runner_temp)
+        try:
+            state = checked_state(path, runner_temp)
+            state_identity = object_identity(state.lstat())[:4]
+        finally:
+            # A missing or unproven setup receipt must not strand the separately
+            # proven pip allocation. Invalid pip data still leaves it unowned.
+            owned_pip = pip_ownership(pip_state, runner_temp)
         with capture_private_pip(owned_pip, runner_temp) as pip_report, \
                 capture_receipt(path, runner_temp) as (report, held, unchanged):
             if pip_report is not None:
@@ -409,6 +413,8 @@ def cleanup_terminal_states(state, expected, pip_state):
 
 def finish_terminal(state, expected, evidence, verified, publish, *, pip_state=None):
     failures = cleanup_terminal_states(state, expected, pip_state)
+    if pip_state is not None:
+        evidence["private_pip_cleanup"] = "refused" if "private_pip" in failures else "pass"
     if failures:
         error = next(iter(failures.values()))
         evidence.update(outcome="refused", stage="cleanup", cleanup="refused",
