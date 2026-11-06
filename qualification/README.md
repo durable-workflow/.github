@@ -13,13 +13,25 @@ object and bytes, original and derived archive identities, and alias target
 provenance. Terminal qualification retains and checks that same manifest before
 and after both PHAR probes, then removes exact owned state before publishing PASS.
 
-The focused source controls use inert archives and temporary paths. They cover
-forced alternatives and coverage-INI removal, but do not establish installed
-PHP configuration, module, loader or PHAR behavior. The two historical installed
-originals remain NONPASS. The live manual workflow still pins its earlier
-immutable helpers; adopting this recipe and selecting a fresh installed
-qualification require their separate source and effect decisions. Other host,
-PHP, tool and consumer tuples do not inherit this initial profile.
+The fixed updater's writer inventory is in `php-linux-initial-alternatives.json`.
+Nine archive-materialized alternatives paths are master links created by
+`fix_alternatives`. Extraction excludes those exact paths, leaving their
+creation to the existing updater after extraction. Both link hops and the
+held versioned target bytes are verified before PHP and again before and after
+the terminal probes. The other eight alternatives aliases remain regular
+copies: the library alias and seven plain manpage aliases have no writer in
+that function. Its seven gzip-manpage slave operations use different names;
+the socket operation has no contained regular target. Those existing operations
+are retained without treating them as authority for another archive alias.
+
+The focused source controls use inert archives, the stock alternatives updater
+and temporary paths. They reproduce the regular-alternatives failure and check
+the corrected extraction/updater order, but do not establish installed PHP
+configuration, module, loader or PHAR behavior. Historical installed originals
+remain NONPASS. The live manual workflow keeps its immutable helpers; successor
+adoption and a fresh installed qualification require their separate source and
+effect decisions. Other host, PHP, tool and consumer tuples do not inherit this
+initial profile.
 
 `policy.json` is the reviewed organization policy for GitHub Actions references
 and workflow trust boundaries. Product repositories load it during pull-request

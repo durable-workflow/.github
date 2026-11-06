@@ -23,6 +23,7 @@ from scripts import php_linux_normalize as normalization
 
 class PhpLinuxQualificationTest(unittest.TestCase):
     def closed_qualify(self, path, root, environment, publish, **options):
+        options.setdefault('alternatives', lambda _files: {'count': 9, 'inventory_sha256': 'a' * 64})
         with patch.dict(os.environ, environment, clear=True):
             return qualification.qualify(path, root, environment, publish, **options)
 
@@ -123,6 +124,31 @@ class PhpLinuxQualificationTest(unittest.TestCase):
             'target_metadata_sha256': bootstrap.sha256(normalization.canonical_json(metadata))}
         path.write_text(json.dumps(report))
         return path, report, plan, environment, selected
+
+    def test_normalized_alternatives_refusal_before_or_after_probes_cleans_without_pass(self):
+        for mutation in ('none', 'before', 'after', 'authority-drift'):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                path, _report, _plan, environment, selected = self.normalized_fixture(root)
+                evidence, calls, probes = [], [], []
+                def alternatives(_files):
+                    calls.append('verify')
+                    if (mutation == 'before' or mutation == 'after' and len(calls) == 2):
+                        raise ValueError('inert alternatives refusal')
+                    return {'count': 9, 'inventory_sha256':
+                        ('b' if mutation == 'authority-drift' and len(calls) == 2 else 'a') * 64}
+                expectation = contextlib.nullcontext() if mutation == 'none' else self.assertRaises(ValueError)
+                with patch.object(normalization, 'profile', return_value=selected), expectation:
+                    self.closed_qualify(path, root, environment, evidence.append,
+                        alternatives=alternatives, subjects=lambda *_args, **_options: None,
+                        probes=lambda *_args: probes.append('inert probe'))
+                self.assertEqual([] if mutation == 'before' else ['inert probe'], probes)
+                self.assertEqual(1 if mutation == 'before' else 2, len(calls))
+                self.assertEqual('pass' if mutation == 'none' else 'refused', evidence[0]['outcome'])
+                if mutation == 'none':
+                    self.assertTrue(evidence[0]['alternatives']['revalidated'])
+                self.assertEqual('pass', evidence[0]['cleanup'])
+                self.assertFalse(path.parent.exists())
 
     def test_normalized_receipt_binds_original_target_manifest_before_and_after_probes_and_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:

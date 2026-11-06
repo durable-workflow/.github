@@ -17,6 +17,7 @@ from urllib.request import Request
 
 from scripts import php_linux_bootstrap as bootstrap
 from scripts import php_linux_normalize as normalization
+from scripts import php_linux_alternatives as alternatives
 from tests import test_php_linux_normalize as normalize_tests
 
 
@@ -306,9 +307,10 @@ sudo() {
                 self.assertEqual(str(result.held.descriptor), options['env']['DW_VERIFIED_ARCHIVE_FD'])
                 self.assertNotEqual(original.descriptor, options['pass_fds'][1])
                 self.assertEqual(result.files, normalization.archive.inspect_held(result.held))
-            with patch.dict(os.environ, environment, clear=True):
+            with patch.dict(os.environ, environment, clear=True), patch.object(alternatives, 'verify') as verify:
                 bootstrap.run_held_installer(script, original, ('8.3', 'release', 'nts'), environment,
                     catalog, execute, host, no_apt=True, normalized=result)
+                verify.assert_called_once_with(result.files)
                 forged = SimpleNamespace(held=result.held)
                 with self.assertRaises(ValueError):
                     bootstrap.run_held_installer(script, original, ('8.3', 'release', 'nts'), environment,

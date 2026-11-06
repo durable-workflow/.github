@@ -1,0 +1,176 @@
+{
+  "schema": "durable-workflow.php-linux-initial-alternatives/v1",
+  "installer_sha256": "7bc5bfea71696b0927367eb887e2710d44c6f17216fbd47add5a4cb181543e99",
+  "archive_metadata_sha256": "038fe8c777dda939ba3f2d6c12f6977ca9dd09c65de7d62fe734c60e71135d0a",
+  "order": [
+    "install",
+    "fix_alternatives",
+    "fix_redis_linking"
+  ],
+  "managed": [
+    {
+      "path": "etc/alternatives/php-cgi-bin",
+      "command": "usr/lib/cgi-bin/php",
+      "target": "usr/lib/cgi-bin/php8.3",
+      "archive_member": "usr/bin/php-cgi8.3",
+      "group": "php-cgi-bin"
+    },
+    {
+      "path": "etc/alternatives/php-fpm",
+      "command": "usr/sbin/php-fpm",
+      "target": "usr/sbin/php-fpm8.3",
+      "archive_member": "usr/sbin/php-fpm8.3",
+      "group": "php-fpm"
+    },
+    {
+      "path": "etc/alternatives/phpize",
+      "command": "usr/bin/phpize",
+      "target": "usr/bin/phpize8.3",
+      "archive_member": "usr/bin/phpize8.3",
+      "group": "phpize"
+    },
+    {
+      "path": "etc/alternatives/php-config",
+      "command": "usr/bin/php-config",
+      "target": "usr/bin/php-config8.3",
+      "archive_member": "usr/bin/php-config8.3",
+      "group": "php-config"
+    },
+    {
+      "path": "etc/alternatives/phpdbg",
+      "command": "usr/bin/phpdbg",
+      "target": "usr/bin/phpdbg8.3",
+      "archive_member": "usr/bin/phpdbg8.3",
+      "group": "phpdbg"
+    },
+    {
+      "path": "etc/alternatives/php-cgi",
+      "command": "usr/bin/php-cgi",
+      "target": "usr/bin/php-cgi8.3",
+      "archive_member": "usr/bin/php-cgi8.3",
+      "group": "php-cgi"
+    },
+    {
+      "path": "etc/alternatives/php",
+      "command": "usr/bin/php",
+      "target": "usr/bin/php8.3",
+      "archive_member": "usr/bin/php8.3",
+      "group": "php"
+    },
+    {
+      "path": "etc/alternatives/phar.phar",
+      "command": "usr/bin/phar.phar",
+      "target": "usr/bin/phar.phar8.3",
+      "archive_member": "usr/bin/phar.phar8.3",
+      "group": "phar.phar"
+    },
+    {
+      "path": "etc/alternatives/phar",
+      "command": "usr/bin/phar",
+      "target": "usr/bin/phar8.3",
+      "archive_member": "usr/bin/phar.phar8.3",
+      "group": "phar"
+    }
+  ],
+  "retained_regular": [
+    {
+      "path": "etc/alternatives/libphp8",
+      "target": "usr/lib/libphp8.3.so",
+      "reason": "not written by the fixed alternatives function"
+    },
+    {
+      "path": "etc/alternatives/phar.1",
+      "target": "usr/share/man/man1/phar8.3.1",
+      "reason": "not written by the fixed alternatives function"
+    },
+    {
+      "path": "etc/alternatives/phar.phar.1",
+      "target": "usr/share/man/man1/phar.phar8.3.1",
+      "reason": "not written by the fixed alternatives function"
+    },
+    {
+      "path": "etc/alternatives/php-cgi.1",
+      "target": "usr/share/man/man1/php-cgi8.3.1",
+      "reason": "not written by the fixed alternatives function"
+    },
+    {
+      "path": "etc/alternatives/php-config.1",
+      "target": "usr/share/man/man1/php-config8.3.1",
+      "reason": "not written by the fixed alternatives function"
+    },
+    {
+      "path": "etc/alternatives/php.1",
+      "target": "usr/share/man/man1/php8.3.1",
+      "reason": "not written by the fixed alternatives function"
+    },
+    {
+      "path": "etc/alternatives/phpdbg.1",
+      "target": "usr/share/man/man1/phpdbg8.3.1",
+      "reason": "not written by the fixed alternatives function"
+    },
+    {
+      "path": "etc/alternatives/phpize.1",
+      "target": "usr/share/man/man1/phpize8.3.1",
+      "reason": "not written by the fixed alternatives function"
+    }
+  ],
+  "slave_writers": [
+    {
+      "group": "phpize",
+      "command": "usr/share/man/man1/phpize.1.gz",
+      "alternative": "etc/alternatives/phpize.1.gz",
+      "target": "usr/share/man/man1/phpize8.3.1.gz",
+      "target_in_regular_archive": false
+    },
+    {
+      "group": "php-config",
+      "command": "usr/share/man/man1/php-config.1.gz",
+      "alternative": "etc/alternatives/php-config.1.gz",
+      "target": "usr/share/man/man1/php-config8.3.1.gz",
+      "target_in_regular_archive": false
+    },
+    {
+      "group": "phpdbg",
+      "command": "usr/share/man/man1/phpdbg.1.gz",
+      "alternative": "etc/alternatives/phpdbg.1.gz",
+      "target": "usr/share/man/man1/phpdbg8.3.1.gz",
+      "target_in_regular_archive": false
+    },
+    {
+      "group": "php-cgi",
+      "command": "usr/share/man/man1/php-cgi.1.gz",
+      "alternative": "etc/alternatives/php-cgi.1.gz",
+      "target": "usr/share/man/man1/php-cgi8.3.1.gz",
+      "target_in_regular_archive": false
+    },
+    {
+      "group": "php",
+      "command": "usr/share/man/man1/php.1.gz",
+      "alternative": "etc/alternatives/php.1.gz",
+      "target": "usr/share/man/man1/php8.3.1.gz",
+      "target_in_regular_archive": false
+    },
+    {
+      "group": "phar.phar",
+      "command": "usr/share/man/man1/phar.phar.1.gz",
+      "alternative": "etc/alternatives/phar.phar.1.gz",
+      "target": "usr/share/man/man1/phar.phar8.3.1.gz",
+      "target_in_regular_archive": false
+    },
+    {
+      "group": "phar",
+      "command": "usr/share/man/man1/phar.1.gz",
+      "alternative": "etc/alternatives/phar.1.gz",
+      "target": "usr/share/man/man1/phar8.3.1.gz",
+      "target_in_regular_archive": false
+    }
+  ],
+  "socket_writer": {
+    "group": "php-fpm.sock",
+    "command": "run/php/php-fpm.sock",
+    "alternative": "etc/alternatives/php-fpm.sock",
+    "target": "run/php/php8.3-fpm.sock",
+    "target_in_regular_archive": false,
+    "treatment": "existing updater call retained; not an archive-materialized regular alias"
+  }
+}
