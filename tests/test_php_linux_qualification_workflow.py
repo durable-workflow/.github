@@ -186,6 +186,7 @@ class NormalizedQualificationWorkflowTest(unittest.TestCase):
     fixture = "qualify-linux-php-normalized.yml"
     source = '45a7863dbc425ecf19a5a4038a84a9443c23a9a9'
     configured_receipt = False
+    expected_subject_schema = None
 
     def setUp(self):
         self.raw = (ROOT / "tests/fixtures" / self.fixture).read_bytes()
@@ -222,6 +223,10 @@ class NormalizedQualificationWorkflowTest(unittest.TestCase):
             manifest.chmod(0o600)
             manifest.write_bytes(b'{}')
             manifest.chmod(0o400)
+        if mutation == 'legacy-subject-schema':
+            report = json.loads(receipt.read_bytes())
+            report['subjects']['schema'] = 'durable-workflow.php-linux-subjects/v1'
+            receipt.write_text(json.dumps(report))
         return receipt, profile
 
     def reader_options(self):
@@ -235,6 +240,8 @@ class NormalizedQualificationWorkflowTest(unittest.TestCase):
         code = compile(script, 'inert-normalized-terminal', 'exec')
         fixture = test_php_linux_qualification.PhpLinuxQualificationTest()
         mutations = ('none', 'manifest-bytes', 'configuration-bytes', 'legacy-schema') if self.configured_receipt else ('none', 'manifest-bytes')
+        if self.expected_subject_schema is not None:
+            mutations += ('legacy-subject-schema',)
         for mutation in mutations:
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
@@ -273,6 +280,8 @@ class NormalizedQualificationWorkflowTest(unittest.TestCase):
                 self.assertEqual('pass', terminal['private_pip_cleanup'])
                 if self.configured_receipt and mutation == 'none':
                     self.assertTrue(terminal['configuration']['revalidated'])
+                if self.expected_subject_schema is not None and mutation == 'none':
+                    self.assertEqual(self.expected_subject_schema, terminal['receipt']['subjects']['schema'])
                 self.assertEqual(['inert PHAR substitute'] if mutation == 'none' else [], probes)
                 self.assertFalse(receipt.parent.exists())
                 self.assertFalse(pip_state.root.exists())
@@ -310,3 +319,11 @@ class ConfiguredCliQualificationWorkflowTest(SelectedAlternativesQualificationWo
     predecessor_fixture = SelectedAlternativesQualificationWorkflowTest.fixture
     predecessor_source = SelectedAlternativesQualificationWorkflowTest.source
     configured_receipt = True
+
+
+class ReferencedSubjectsQualificationWorkflowTest(ConfiguredCliQualificationWorkflowTest):
+    fixture = 'qualify-linux-php-subject-references.yml'
+    source = '140f937cf245f39a495467fe6bab2bd30f93a17a'
+    predecessor_fixture = ConfiguredCliQualificationWorkflowTest.fixture
+    predecessor_source = ConfiguredCliQualificationWorkflowTest.source
+    expected_subject_schema = 'durable-workflow.php-linux-subjects/v2'
