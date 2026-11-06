@@ -236,6 +236,7 @@ class NormalizedQualificationWorkflowTest(unittest.TestCase):
                 original = qualification.qualify
                 def qualify(*args, **options):
                     options['subjects'] = lambda *_args, **_options: None
+                    options['alternatives'] = lambda _files: {'count': 9, 'inventory_sha256': 'a' * 64}
                     options['probes'] = lambda *_args: probes.append('inert PHAR substitute')
                     return original(*args, **options)
                 output = io.StringIO()

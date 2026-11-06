@@ -16,7 +16,7 @@ from tests import (test_fixed_apt, test_php_linux_bootstrap, test_php_linux_tool
                    test_php_linux_recipe, test_php_linux_archive, test_setup_php_linux,
                    test_php_linux_qualification, test_php_linux_qualification_workflow,
                    test_bookworm_apt_source, test_private_pip_runtime,
-                   test_php_linux_normalize, test_php_linux_archive_metadata)
+                   test_php_linux_normalize, test_php_linux_archive_metadata, test_php_linux_alternatives)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,7 +32,7 @@ def load_tests(loader, standard_tests, pattern):
                    test_php_linux_recipe, test_php_linux_archive, test_setup_php_linux,
                    test_php_linux_qualification, test_php_linux_qualification_workflow,
                    test_bookworm_apt_source, test_private_pip_runtime,
-                   test_php_linux_normalize, test_php_linux_archive_metadata):
+                   test_php_linux_normalize, test_php_linux_archive_metadata, test_php_linux_alternatives):
         standard_tests.addTests(loader.loadTestsFromModule(module))
     return standard_tests
 

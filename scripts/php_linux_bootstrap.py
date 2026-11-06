@@ -293,6 +293,9 @@ def no_apt_installer_source(original: bytes, catalog: dict) -> bytes:
         source = replace_once(source, line, '')
     excludes = ' '.join('--exclude=' + prefix + name for name in
         ('var/lib/dpkg', 'var/lib/apt', 'etc/apt', 'usr/sbin/merge_status') for prefix in ('', './'))
+    from scripts import php_linux_alternatives as alternatives
+    excludes += ' ' + ' '.join('--exclude=' + prefix + name
+        for name in alternatives.exclusions() for prefix in ('', './'))
     source = replace_once(source, '/usr/bin/tar -I /usr/bin/zstd -xf - -C /',
                           '/usr/bin/tar -I /usr/bin/zstd ' + excludes + ' -xf - -C /')
     for name in ('fix_service', 'fix_list', 'fix_packages'):
@@ -368,5 +371,9 @@ def run_held_installer(script: HeldAsset, archive: HeldAsset, arguments: tuple[s
     os.lseek(script.descriptor, 0, os.SEEK_SET)
     os.lseek(installation_archive.descriptor, 0, os.SEEK_SET)
     child = dict(environment, DW_VERIFIED_ARCHIVE_FD=str(installation_archive.descriptor))
-    return execute(["/usr/bin/bash", f"/proc/self/fd/{script.descriptor}", *arguments], env=child,
-                   pass_fds=(script.descriptor, installation_archive.descriptor), timeout=120, check=True)
+    result = execute(["/usr/bin/bash", f"/proc/self/fd/{script.descriptor}", *arguments], env=child,
+                     pass_fds=(script.descriptor, installation_archive.descriptor), timeout=120, check=True)
+    if normalized is not None:
+        from scripts import php_linux_alternatives as alternatives
+        alternatives.verify(normalized.files)
+    return result

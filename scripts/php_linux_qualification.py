@@ -18,6 +18,7 @@ from scripts import php_linux_recipe as recipe
 from scripts import php_linux_tools as tools
 from scripts import setup_php_linux as setup
 from scripts import php_linux_normalize as normalization
+from scripts import php_linux_alternatives
 
 
 MAX_RECEIPT = setup.MAX_RECEIPT
@@ -377,7 +378,8 @@ def capture_private_pip(owned, runner_temp):
 
 
 def qualify(path, runner_temp, environment, publish, *, validate=validate_success,
-            subjects=revalidate_subjects, probes=run_probes, pip_state=None):
+            subjects=revalidate_subjects, probes=run_probes, pip_state=None,
+            alternatives=php_linux_alternatives.verify):
     if (environment != bootstrap.clean_environment(environment, environment.get("HOME", ""))
             or dict(os.environ) != environment):
         raise ValueError("Qualification requires a closed parent environment")
@@ -412,6 +414,7 @@ def qualify(path, runner_temp, environment, publish, *, validate=validate_succes
                     normalization.capture_manifest(state, report['normalization_manifest']))
                 normalization.validate_document(document, report['normalization'], plan['archive']['asset'])
                 validate_normalized_subjects(report['subjects'], document)
+                evidence['alternatives'] = dict(alternatives(document['files']), revalidated=False)
                 evidence['normalization'] = {'schema': normalization.DOCUMENT_SCHEMA,
                     'manifest_object': normalized_held.effective, 'manifest_sha256': normalized_held.identity['digest'],
                     'derived': report['normalization']['derived'], 'revalidated': False}
@@ -425,6 +428,10 @@ def qualify(path, runner_temp, environment, publish, *, validate=validate_succes
                 held.assert_sealed()
                 subjects(report, plan, **subject_options)
                 if normalized_held is not None:
+                    if alternatives(document['files']) != {
+                            key: value for key, value in evidence['alternatives'].items() if key != 'revalidated'}:
+                        raise ValueError('Installed alternatives authority changed after probes')
+                    evidence['alternatives']['revalidated'] = True
                     normalized_unchanged()
                     normalized_held.assert_sealed()
                     evidence['normalization']['revalidated'] = True
