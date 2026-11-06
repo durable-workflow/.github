@@ -51,6 +51,12 @@ REVIEWED_SOURCE_CI_SUCCESSORS = {
     CI_WORKFLOW: "f0546eeeeec386042088cb5eb2ff36caedf9517726c06d030a0b1e275b94fb55",
     SONAR_WORKFLOW: "10af0ec0dcec58368a8261188e9e2fb1c3c91736d39502863e7aa57914e99fbe",
 }
+# These exact inert successors add the PHP configuration control modules to
+# existing CI/coverage steps. The live workflows and runtime pin are separate.
+REVIEWED_PHP_CONFIGURATION_SOURCE_CI_SUCCESSORS = {
+    CI_WORKFLOW: "44953364dc6aceff2c2f16e04980805418f7601cecfecbf519244132e9980e3e",
+    SONAR_WORKFLOW: "829ac16a197305d64701a8f423f14544d17658b062fc0c6dca5c1e838d51be0d",
+}
 # The successor remains inert until its separate runtime pin and manual-only
 # workflow integration. Keep the consumed predecessor's identity unchanged.
 REVIEWED_INITIAL_PROFILE_SUCCESSORS = {
@@ -79,6 +85,7 @@ REVIEWED_AI_WORKFLOWS = {
 def reviewed_context_hashes(policy_target: str) -> dict[str, set[str]]:
     if policy_target == "github-control-plane":
         registries = (REVIEWED_COMPLEX_WORKFLOWS, REVIEWED_SOURCE_CI_SUCCESSORS,
+                      REVIEWED_PHP_CONFIGURATION_SOURCE_CI_SUCCESSORS,
                       REVIEWED_INITIAL_PROFILE_SUCCESSORS, REVIEWED_NORMALIZED_PROFILE_SUCCESSORS,
                       REVIEWED_ALTERNATIVES_PROFILE_SUCCESSORS,
                       REVIEWED_SELECTED_ALTERNATIVES_PROFILE_SUCCESSORS)
