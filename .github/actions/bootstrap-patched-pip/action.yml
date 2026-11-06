@@ -15,6 +15,15 @@ outputs:
   pip-python:
     description: Bound job-private Python executable preserving the selected interpreter version.
     value: ${{ steps.runtime.outputs.pip-python }}
+  pip-created:
+    description: Whether this invocation created the exact private runtime.
+    value: ${{ steps.runtime.outputs.pip-created }}
+  pip-root-identity:
+    description: Producer-captured directory identity for exact owned-state cleanup.
+    value: ${{ steps.runtime.outputs.pip-identity }}
+  pip-receipt-identity:
+    description: Producer-captured receipt object and SHA-256 before product execution.
+    value: ${{ steps.runtime.outputs.pip-receipt-identity }}
   ca-file:
     description: Absolute path of the verified public CA bundle.
     value: ${{ steps.trust.outputs.ca-file }}

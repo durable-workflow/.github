@@ -90,8 +90,13 @@ class PrivatePipRuntimeTest(unittest.TestCase):
                     patch.object(runtime.sys, "argv", ["runtime", "bootstrap", "/usr/bin/python3"]):
                 runtime.main()
                 values = dict(line.split("=", 1) for line in command_files["GITHUB_ENV"].read_text().splitlines())
+                outputs = dict(line.split("=", 1) for line in command_files["GITHUB_OUTPUT"].read_text().splitlines())
                 receipt = Path(values["DW_CI_PIP_STATE"])
                 report, _subjects = runtime.verify_runtime(receipt, runner)
+                self.assertEqual("true", outputs["pip-created"])
+                self.assertEqual(report["root_identity"], json.loads(outputs["pip-identity"]))
+                with runtime.held_file(receipt, owned=True) as (_raw, identity):
+                    self.assertEqual(identity, json.loads(outputs["pip-receipt-identity"]))
                 self.assertEqual("1", values["PYTHONDONTWRITEBYTECODE"])
                 self.assertEqual("/dev/null", values["PIP_CONFIG_FILE"])
                 self.assertIn("pip-state=" + str(receipt), command_files["GITHUB_OUTPUT"].read_text())
@@ -368,6 +373,8 @@ class PrivatePipRuntimeTest(unittest.TestCase):
                     root = state.root
                     created.append(root)
                     report["root_identity"] = state.identity
+                    state.receipt.write_text("{}")
+                    state.receipt.chmod(0o600)
                     if stage == "append":
                         output = Path(environment["GITHUB_OUTPUT"])
                         output.rename(runner / "held-output")
