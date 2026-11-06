@@ -20,6 +20,13 @@ from scripts import php_linux_bootstrap as bootstrap
 
 METADATA_SHA256 = '038fe8c777dda939ba3f2d6c12f6977ca9dd09c65de7d62fe734c60e71135d0a'
 PLAN_SHA256 = 'd02b0008c58c94e52688d9d7154a806c2a172d9e5f67241274c17341aae2c76d'
+SOURCE_PROFILES = {
+    672923785: ('initial', METADATA_SHA256, PLAN_SHA256, (3887, 3497, 390)),
+    672921837: ('ubuntu24',
+        '1ffbe5e1a4f19c07c736b9985518d9e34741fcdab1acb5159e50fd4076c8dd6c',
+        'a64c9baf9e1e907ad70087c56d8cc81524c83ff5afc60227bed3d36f8c6b7d8c',
+        (3575, 3203, 372)),
+}
 SCHEMA = 'durable-workflow.php-linux-normalization/v1'
 DOCUMENT_SCHEMA = 'durable-workflow.php-linux-normalized-subjects/v1'
 MANIFEST_NAME = 'normalization.json'
@@ -59,16 +66,34 @@ def pinned_json(path, digest):
         os.close(descriptor)
 
 
-def profile():
-    metadata = pinned_json(bootstrap.ROOT / 'qualification/php-linux-initial-archive.json', METADATA_SHA256)
-    plan = pinned_json(bootstrap.ROOT / 'qualification/php-linux-initial-normalization.json', PLAN_SHA256)
+def reviewed_profile(asset_id):
+    name, metadata_sha256, plan_sha256, counts = SOURCE_PROFILES[asset_id]
+    prefix = bootstrap.ROOT / 'qualification' / ('php-linux-' + name)
+    metadata = pinned_json(prefix.with_name(prefix.name + '-archive.json'), metadata_sha256)
+    plan = pinned_json(prefix.with_name(prefix.name + '-normalization.json'), plan_sha256)
     if (metadata['schema'] != 'durable-workflow.php-linux-archive-metadata/v1'
             or plan['schema'] != 'durable-workflow.php-linux-normalization-proposal/v1'
-            or plan['metadata_sha256'] != METADATA_SHA256 or plan['asset'] != metadata['asset']
-            or plan['expected_members'] != 3887 or plan['expected_regular_files'] != 3497
-            or plan['expected_directories'] != 390 or plan['expected_links'] != 0):
+            or plan['metadata_sha256'] != metadata_sha256 or plan['asset'] != metadata['asset']
+            or metadata['asset']['id'] != asset_id
+            or (plan['expected_members'], plan['expected_regular_files'], plan['expected_directories']) != counts
+            or plan['expected_links'] != 0):
         raise ValueError('No exact reviewed normalization profile')
-    return Profile(metadata, plan, METADATA_SHA256, PLAN_SHA256)
+    return Profile(metadata, plan, metadata_sha256, plan_sha256)
+
+
+def profile(original=None):
+    """Select only a complete held identity from the closed source registry."""
+    if original is None:
+        return reviewed_profile(672923785)
+    if not isinstance(original, dict) or type(original.get('id')) is not int or original['id'] not in SOURCE_PROFILES:
+        raise ValueError('No exact reviewed normalization asset')
+    selected = reviewed_profile(original['id'])
+    asset = selected.metadata['asset']
+    expected = {key: asset[key] for key in ('id', 'name', 'size')}
+    expected['digest'] = bootstrap.SHA256_PREFIX + asset['sha256']
+    if original != expected:
+        raise ValueError('Normalization requires the exact independently bound original asset')
+    return selected
 
 
 def remaining(deadline):
@@ -438,7 +463,7 @@ def capture_document(state, record, name, limit):
 
 
 def validate_document(value, proof, original):
-    selected = profile()
+    selected = profile(original)
     bootstrap.exact_keys(value, {'schema', 'proof', 'files', 'targets'})
     if value['schema'] != DOCUMENT_SCHEMA or value['proof'] != proof:
         raise ValueError('Normalization document differs from its producer proof')
@@ -520,8 +545,8 @@ def validate_target_metadata(info, target, size):
 
 @contextmanager
 def normalize(held):
-    """Derive only the fixed asset; the caller may not supply a map or path."""
-    selected = profile()
+    """Derive a fixed reviewed asset; the caller may not supply a map or path."""
+    selected = profile(held.identity)
     metadata, plan = selected.metadata, selected.plan
     asset = metadata['asset']
     expected_input = {key: asset[key] for key in ('id', 'name', 'size')}

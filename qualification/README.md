@@ -13,6 +13,14 @@ object and bytes, original and derived archive identities, and alias target
 provenance. Terminal qualification retains and checks that same manifest before
 and after both PHAR probes, then removes exact owned state before publishing PASS.
 
+The separate Ubuntu 24.04/x64/PHP 8.3 normalization source is recorded in
+`php-linux-ubuntu24-archive.json` and `php-linux-ubuntu24-normalization.json`.
+Selection requires the complete pinned asset identity, not a caller-supplied
+map or path. Its 684 links have 634 contained regular targets and 50 explicit
+directory or unresolved omissions; the derived inventory has 3,203 files and
+372 directories. This source profile does not admit Ubuntu 24.04 installation:
+the setup and installed qualification gates retain their initial host tuple.
+
 Receipt v4 additionally binds the initial CLI configuration. It derives the
 production INI from the held archive's `php.ini-production.cli` and the exact
 pinned PHP, xdebug and JIT configuration fragments. The bounded input document
