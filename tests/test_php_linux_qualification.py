@@ -191,8 +191,32 @@ class PhpLinuxQualificationTest(unittest.TestCase):
                 self.closed_qualify(path, root, environment, evidence.append,
                     pip_state=data, probes=lambda *_: probes.append("unexpected"))
             self.assertEqual([], probes)
-            self.assertEqual([], evidence)
+            self.assertEqual("refused", evidence[0]["outcome"])
+            self.assertFalse(path.parent.exists())
             self.assertTrue(pip_state.root.exists())
+
+    def test_unbound_pip_descriptor_still_finalizes_owned_setup_and_publishes_refusal(self):
+        for mutation in ("missing-field", "malformed-root", "foreign-root"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                path, _, _, environment = self.fixture(root)
+                pip_state, data, _, _ = self.pip_fixture(root)
+                if mutation == "missing-field":
+                    del data["receipt_identity"]
+                elif mutation == "malformed-root":
+                    data["root_identity"] = "not-json"
+                else:
+                    identity = json.loads(data["root_identity"])
+                    identity["mode"] = 0o777
+                    data["root_identity"] = json.dumps(identity)
+                evidence, probes = [], []
+                with self.assertRaises(ValueError):
+                    self.closed_qualify(path, root, environment, evidence.append,
+                        pip_state=data, probes=lambda *_: probes.append("unexpected"))
+                self.assertEqual([], probes)
+                self.assertEqual("refused", evidence[0]["outcome"])
+                self.assertFalse(path.parent.exists())
+                self.assertTrue(pip_state.root.exists())
 
     def test_exact_complete_producer_receipt_is_required_before_any_probe(self):
         with tempfile.TemporaryDirectory() as directory:

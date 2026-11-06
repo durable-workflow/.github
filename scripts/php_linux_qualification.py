@@ -315,25 +315,30 @@ def capture_private_pip(owned, runner_temp):
         return
     state = owned["state"]
     expected_identity = producer_receipt_identity(owned["receipt_identity"])
-    with private_pip.held_file(state.receipt, owned=True) as (_raw, identity):
-        if identity != expected_identity:
-            raise ValueError("Private pip receipt differs from its pre-product producer object/bytes")
-        report, subjects = private_pip.verify_runtime(state.receipt, runner_temp, require_trust=True)
-        if report["root_identity"] != state.identity:
-            raise ValueError("Private pip root differs from its exact producer allocation")
-        if not isinstance(subjects, dict) or not subjects:
-            raise ValueError("Private pip has no wheel-derived installed subject inventory")
-        summary = {"schema": "durable-workflow.private-pip-terminal/v1", "receipt_sha256": identity["sha256"],
-            "receipt_object": identity, "root_identity": state.identity, "pip_version": private_pip.VERSION,
-            "python_version": report["interpreter"]["version"], "wheel_sha256": private_pip.WHEEL_SHA256,
-            "ca_sha256": private_pip.CA_SHA256, "subject_count": len(subjects), "revalidated": False}
-        try:
-            yield summary
-        finally:
-            current, current_subjects = private_pip.verify_runtime(state.receipt, runner_temp, require_trust=True)
-            if current != report or current_subjects != subjects:
-                raise ValueError("Private pip receipt or wheel-derived installed subjects changed after probes")
-    summary["revalidated"] = True
+    summary = {}
+    try:
+        with private_pip.held_file(state.receipt, owned=True) as (_raw, identity):
+            if identity != expected_identity:
+                raise ValueError("Private pip receipt differs from its pre-product producer object/bytes")
+            report, subjects = private_pip.verify_runtime(state.receipt, runner_temp, require_trust=True)
+            if report["root_identity"] != state.identity:
+                raise ValueError("Private pip root differs from its exact producer allocation")
+            if not isinstance(subjects, dict) or not subjects:
+                raise ValueError("Private pip has no wheel-derived installed subject inventory")
+            summary.update(schema="durable-workflow.private-pip-terminal/v1", receipt_sha256=identity["sha256"],
+                receipt_object=identity, root_identity=state.identity, pip_version=private_pip.VERSION,
+                python_version=report["interpreter"]["version"], wheel_sha256=private_pip.WHEEL_SHA256,
+                ca_sha256=private_pip.CA_SHA256, subject_count=len(subjects), revalidated=False)
+            try:
+                yield summary
+            finally:
+                current, current_subjects = private_pip.verify_runtime(state.receipt, runner_temp, require_trust=True)
+                if current != report or current_subjects != subjects:
+                    raise ValueError("Private pip receipt or wheel-derived installed subjects changed after probes")
+                summary["revalidated"] = True
+    except BaseException:
+        summary["revalidated"] = False
+        raise
 
 
 def qualify(path, runner_temp, environment, publish, *, validate=validate_success,
@@ -341,13 +346,14 @@ def qualify(path, runner_temp, environment, publish, *, validate=validate_succes
     if (environment != bootstrap.clean_environment(environment, environment.get("HOME", ""))
             or dict(os.environ) != environment):
         raise ValueError("Qualification requires a closed parent environment")
-    owned_pip = pip_ownership(pip_state, runner_temp)
+    owned_pip = None
     state, state_identity = None, None
     evidence = {"schema": "durable-workflow.php-linux-terminal/v1", "outcome": "refused", "stage": "capture"}
     verified = False
     try:
         state = checked_state(path, runner_temp)
         state_identity = object_identity(state.lstat())[:4]
+        owned_pip = pip_ownership(pip_state, runner_temp)
         with capture_private_pip(owned_pip, runner_temp) as pip_report, \
                 capture_receipt(path, runner_temp) as (report, held, unchanged):
             if pip_report is not None:
