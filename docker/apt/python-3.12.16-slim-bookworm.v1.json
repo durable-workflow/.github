@@ -1,0 +1,95 @@
+{
+  "schema": "durable-workflow.python-bookworm-apt-parent.v1",
+  "scope": "publisher-source-inventory-only",
+  "repository": "docker.io/library/python",
+  "discovery_tag": "3.12-slim-bookworm",
+  "python_version": "3.12.16",
+  "os": {
+    "id": "debian",
+    "version_id": "12"
+  },
+  "architectures": [
+    "amd64",
+    "arm64"
+  ],
+  "fixed": {
+    "apt": "2.6.2",
+    "libapt-pkg6.0": "2.6.2"
+  },
+  "authority": [
+    "https://lists.debian.org/debian-lts-announce/2026/11/msg00004.html",
+    "https://packages.debian.org/bookworm/apt",
+    "https://packages.debian.org/bookworm/libapt-pkg6.0"
+  ],
+  "inventory": {
+    "layer_fetch": false,
+    "image_execution": false,
+    "rootfs_inspection": false,
+    "installed_qualification": false
+  },
+  "requires_fixed_python_client_bootstrap": true,
+  "parents": {
+    "candidate": {
+      "index": {
+        "digest": "sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df",
+        "size": 6546
+      },
+      "platforms": {
+        "linux/amd64": {
+          "child": {
+            "digest": "sha256:0f086103b026048cc50cb5da25ec435c023c5241a83fc44daea593377abc61c4",
+            "size": 1752
+          },
+          "config": {
+            "digest": "sha256:313cf8f190a1abab00472c1f0c950c10486c22114bcd8aef2a8198fb587a6d18",
+            "size": 5681
+          },
+          "attestation": {
+            "digest": "sha256:e338e960c496bce1dca192f4e0b68330dd1cbc614dea6cfe34cfbd9e00980889",
+            "size": 841
+          },
+          "spdx": {
+            "digest": "sha256:301dc9274968489cec5adb85c258cf191b2523750b4b31940d3f84bb2b36c979",
+            "size": 2573784
+          },
+          "packages": {
+            "apt": "2.6.2",
+            "libapt-pkg6.0": "2.6.2"
+          },
+          "initial_python_clients": {
+            "pip": "25.0.1"
+          },
+          "python_version": "3.12.16",
+          "producer_source": "https://github.com/docker-library/python.git#3d7e95597e56a415d9e4abc0f15877e005d2cb2e:3.12/slim-bookworm"
+        },
+        "linux/arm64": {
+          "child": {
+            "digest": "sha256:df540bfd30bd380e89a349611ce42aa67bcb542d58c047706616eb6ba2f86a1b",
+            "size": 1754
+          },
+          "config": {
+            "digest": "sha256:4703adf8fdd93b1441114e4f87ce2c62f7373fc5f88bda6a546c551625bcc71c",
+            "size": 5699
+          },
+          "attestation": {
+            "digest": "sha256:1963550cb3eceef68960bf21cffab72ddebb30f1c1ba97e752ad9a63af628b3e",
+            "size": 841
+          },
+          "spdx": {
+            "digest": "sha256:99d2daf4cffa38da84c6984e6160f97cb88dd397fd2c57da5e7fadd24a41289a",
+            "size": 2574033
+          },
+          "packages": {
+            "apt": "2.6.2",
+            "libapt-pkg6.0": "2.6.2"
+          },
+          "initial_python_clients": {
+            "pip": "25.0.1"
+          },
+          "python_version": "3.12.16",
+          "producer_source": "https://github.com/docker-library/python.git#3d7e95597e56a415d9e4abc0f15877e005d2cb2e:3.12/slim-bookworm"
+        }
+      }
+    }
+  }
+}
