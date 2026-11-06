@@ -82,6 +82,12 @@ REVIEWED_SUBJECT_REFERENCE_PROFILE_SUCCESSORS = {
     INITIAL_PHP_WORKFLOW: "0a428ffd00c78a2eba29ada8db0b71f39efad0496e0d61616ab4d001eb0d77cd",
 }
 
+# A separate inert host profile leaves the accepted initial workflow intact.
+REVIEWED_UBUNTU24_PROFILE_WORKFLOWS = {
+    ".github/workflows/qualify-linux-php-ubuntu24.yml":
+        "46157beef7dd666b0cf7c2eb6f3d073587b01e7d6075d6f6dfda3c9005e976f7",
+}
+
 # AI's existing matrix commands are reviewed only for that repository. They do
 # not enlarge the control repository's complex-workflow exceptions.
 REVIEWED_AI_WORKFLOWS = {
@@ -98,7 +104,8 @@ def reviewed_context_hashes(policy_target: str) -> dict[str, set[str]]:
                       REVIEWED_ALTERNATIVES_PROFILE_SUCCESSORS,
                       REVIEWED_SELECTED_ALTERNATIVES_PROFILE_SUCCESSORS,
                       REVIEWED_CONFIGURED_CLI_PROFILE_SUCCESSORS,
-                      REVIEWED_SUBJECT_REFERENCE_PROFILE_SUCCESSORS)
+                      REVIEWED_SUBJECT_REFERENCE_PROFILE_SUCCESSORS,
+                      REVIEWED_UBUNTU24_PROFILE_WORKFLOWS)
     elif policy_target == "ai":
         registries = (REVIEWED_AI_WORKFLOWS,)
     else:
