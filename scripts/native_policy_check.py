@@ -14,11 +14,12 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(ROOT))
 
 from scripts.protected_policy_inputs import (  # noqa: E402
-    InputRefused, checked_sha, collect_commit_inputs, positive_id, read_identity,
+    CONTROL_TARGET, InputRefused, checked_policy_target, checked_sha, collect_commit_inputs,
+    positive_id, read_identity,
 )
 
-PILOT = "durable-workflow/.github"
-PILOT_ID = 575230056
+PILOT = CONTROL_TARGET.repository
+PILOT_ID = CONTROL_TARGET.repository_id
 QUEUE_REF = re.compile(r"refs/heads/gh-readonly-queue/main/[A-Za-z0-9_/-]+")
 
 
@@ -37,20 +38,21 @@ def prepare_runtime(environment):
         handle.write(str(runtime / "bin") + "\n")
 
 
-def _require_pilot(event_name, event, environment):
+def _require_target(event_name, event, environment):
     repository = event.get("repository", {})
-    if (not isinstance(repository, dict)
-            or environment.get("GITHUB_SERVER_URL") != "https://github.com"
-            or environment.get("GITHUB_REPOSITORY") != PILOT
-            or environment.get("GITHUB_REPOSITORY_ID") != str(PILOT_ID)
+    if not isinstance(repository, dict):
+        raise InputRefused("Incomplete public policy repository metadata")
+    target = checked_policy_target(repository.get("full_name"), repository.get("id"))
+    if (environment.get("GITHUB_SERVER_URL") != "https://github.com"
+            or environment.get("GITHUB_REPOSITORY") != target.repository
+            or environment.get("GITHUB_REPOSITORY_ID") != str(target.repository_id)
             or environment.get("GITHUB_EVENT_NAME") != event_name
-            or repository.get("full_name") != PILOT
-            or positive_id(repository.get("id")) != PILOT_ID
             or repository.get("private") is not False):
-        raise InputRefused("This source pilot admits only the selected public repository")
+        raise InputRefused("The selected public policy repository and event identity differ")
+    return target
 
 
-def _pull_request(read, event, validator):
+def _pull_request(read, event, validator, target):
     from scripts import protected_policy_check as checker
 
     if event.get("action") not in {"opened", "synchronize", "reopened"}:
@@ -58,16 +60,16 @@ def _pull_request(read, event, validator):
     number = positive_id(event.get("number"))
     pull = event["pull_request"]
     base, head = checked_sha(pull["base"]["sha"]), checked_sha(pull["head"]["sha"])
-    identity = read_identity(read, PILOT, PILOT_ID, number, base)
+    identity = read_identity(read, target.repository, target.repository_id, number, base)
     if identity.head_sha != head:
         raise InputRefused("The event's pull-request head is stale")
-    report = checker.validate_snapshot(read, number, base, validator=validator)
+    report = checker.validate_snapshot(read, number, base, validator=validator, target=target)
     if report["head_sha"] != head:
         raise InputRefused("The event's pull-request head changed")
     return {**report, "enforcement": "github-required-workflow", "subject": "pull_request"}
 
 
-def _merge_group(read, event, environment, validator):
+def _merge_group(read, event, environment, validator, target):
     from scripts import protected_policy_check as checker
 
     if event.get("action") != "checks_requested":
@@ -79,22 +81,22 @@ def _merge_group(read, event, environment, validator):
             or QUEUE_REF.fullmatch(ref) is None or "//" in ref
             or environment.get("GITHUB_REF") != ref or environment.get("GITHUB_SHA") != head):
         raise InputRefused("The native merge-group event identity differs")
-    checker.require_protected_base(read, base)
-    files = collect_commit_inputs(read, PILOT, head)
-    statistics = checker.validate_files(files, validator=validator)
-    checker.require_protected_base(read, base)
-    return {"schema": "durable-workflow.native-policy-read/v1", "repository": PILOT,
-            "repository_id": PILOT_ID, "subject": "merge_group", "base_sha": base,
+    checker.require_protected_base(read, base, target=target)
+    files = collect_commit_inputs(read, target.repository, head)
+    statistics = checker.validate_files(files, validator=validator, target=target)
+    checker.require_protected_base(read, base, target=target)
+    return {"schema": "durable-workflow.native-policy-read/v1", "repository": target.repository,
+            "repository_id": target.repository_id, "subject": "merge_group", "base_sha": base,
             "head_sha": head, "head_ref": ref, "enforcement": "github-required-workflow",
             **statistics}
 
 
 def validate_native(read, event_name, event, environment, *, validator=None):
-    _require_pilot(event_name, event, environment)
+    target = _require_target(event_name, event, environment)
     if event_name == "pull_request":
-        return _pull_request(read, event, validator)
+        return _pull_request(read, event, validator, target)
     if event_name == "merge_group":
-        return _merge_group(read, event, environment, validator)
+        return _merge_group(read, event, environment, validator, target)
     raise InputRefused("Unsupported required-workflow event")
 
 

@@ -64,6 +64,28 @@ def positive_id(value: object) -> int:
 
 
 @dataclass(frozen=True)
+class PolicyTarget:
+    repository: str
+    repository_id: int
+    policy_name: str
+
+
+# Source admission is separate from GitHub's live required-workflow selector.
+CONTROL_TARGET = PolicyTarget("durable-workflow/.github", 575230056, "github-control-plane")
+AI_TARGET = PolicyTarget("durable-workflow/ai", 1168573348, "ai")
+PUBLIC_POLICY_TARGETS = {target.repository: target for target in (CONTROL_TARGET, AI_TARGET)}
+
+
+def checked_policy_target(repository: object, repository_id: object) -> PolicyTarget:
+    if not isinstance(repository, str):
+        raise InputRefused("A selected public policy repository is required")
+    target = PUBLIC_POLICY_TARGETS.get(repository)
+    if target is None or positive_id(repository_id) != target.repository_id:
+        raise InputRefused("The protected reader admits only selected public repository identities")
+    return target
+
+
+@dataclass(frozen=True)
 class PullIdentity:
     repository: str
     repository_id: int
