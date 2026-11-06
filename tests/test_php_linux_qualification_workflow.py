@@ -13,6 +13,7 @@ import yaml
 from unittest.mock import patch
 
 from scripts import php_linux_qualification as qualification
+from scripts import php_linux_normalize as normalization
 from tests import test_php_linux_qualification
 
 
@@ -177,5 +178,87 @@ class PrivatePipQualificationWorkflowTest(unittest.TestCase):
             self.assertTrue(setup_receipt.parent.exists())
             self.assertNotIn('"outcome": "pass"', summary.read_text())
 
+    test_actual_inline_gate_refuses_wrong_head_ref_event_repo_or_rerun_before_following_code = (
+        PhpLinuxQualificationWorkflowTest.test_actual_inline_gate_refuses_wrong_head_ref_event_repo_or_rerun_before_following_code)
+
+
+class NormalizedQualificationWorkflowTest(unittest.TestCase):
+    def setUp(self):
+        self.raw = (ROOT / "tests/fixtures/qualify-linux-php-normalized.yml").read_bytes()
+        self.document = yaml.load(self.raw, Loader=yaml.BaseLoader)
+        self.job = self.document['jobs']['qualify-initial-linux-php']
+        self.source = '45a7863dbc425ecf19a5a4038a84a9443c23a9a9'
+
+    def test_only_the_two_coordinated_source_identities_change_from_consumed_profile(self):
+        previous = (ROOT / 'tests/fixtures/qualify-linux-php-private-pip.yml').read_bytes()
+        for source in (SOURCE, '2ca775c1951c1e6a6a469f5a0db672c00479b337'):
+            self.assertEqual(3, previous.count(source.encode()))
+            previous = previous.replace(source.encode(), self.source.encode())
+        self.assertEqual(previous, self.raw)
+        steps = self.job['steps']
+        self.assertEqual(7, len(steps))
+        for step in steps[1:3]:
+            self.assertEqual(self.source, step['with']['ref'])
+            self.assertEqual('durable-workflow/.github', step['with']['repository'])
+            self.assertEqual('false', step['with']['persist-credentials'])
+        preflight = steps[3]['run']
+        self.assertEqual(2, preflight[:preflight.index('/usr/bin/python3')].count(self.source))
+        self.assertEqual('durable-workflow/.github/.github/actions/bootstrap-patched-pip@'
+            '242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5', steps[4]['uses'])
+        self.assertEqual({'clients': 'python'}, steps[4]['with'])
+        terminal = steps[6]['run']
+        self.assertIn("evidence['source']='" + self.source + "'", terminal)
+        self.assertIn("evidence['php_helper_source']='" + self.source + "'", terminal)
+
+    def test_actual_normalized_terminal_revalidates_document_and_cleans_both_proven_states(self):
+        script = self.job['steps'][6]['run'].split("<<'PYCODE'\n", 1)[1].rsplit('\nPYCODE', 1)[0]
+        code = compile(script, 'inert-normalized-terminal', 'exec')
+        fixture = test_php_linux_qualification.PhpLinuxQualificationTest()
+        for mutation in ('none', 'manifest-bytes'):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                receipt, _, _, _, profile = fixture.normalized_fixture(root)
+                pip_state, pip_data, pip_report, pip_subjects = fixture.pip_fixture(root)
+                summary = root / 'summary'
+                environment = {'RUNNER_TEMP': str(root), 'GITHUB_STEP_SUMMARY': str(summary),
+                    'SETUP_RECEIPT': str(receipt), 'PIP_RECEIPT': pip_data['receipt'],
+                    'PIP_CREATED': pip_data['created'], 'PIP_ROOT_IDENTITY': pip_data['root_identity'],
+                    'PIP_RECEIPT_IDENTITY': pip_data['receipt_identity'],
+                    'GITHUB_REPOSITORY': 'durable-workflow/.github', 'GITHUB_WORKFLOW_SHA': 'a' * 40,
+                    'GITHUB_SHA': 'a' * 40, 'GITHUB_REF': 'refs/heads/main', 'GITHUB_EVENT_NAME': 'workflow_dispatch',
+                    'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '1'}
+                if mutation != 'none':
+                    manifest = receipt.parent / normalization.MANIFEST_NAME
+                    manifest.chmod(0o600)
+                    manifest.write_bytes(b'{}')
+                    manifest.chmod(0o400)
+                probes = []
+                original = qualification.qualify
+                def qualify(*args, **options):
+                    options['subjects'] = lambda *_args, **_options: None
+                    options['probes'] = lambda *_args: probes.append('inert PHAR substitute')
+                    return original(*args, **options)
+                output = io.StringIO()
+                expectation = contextlib.nullcontext() if mutation == 'none' else self.assertRaises(ValueError)
+                with patch.dict(os.environ, environment, clear=True), patch.object(sys, 'path', list(sys.path)), \
+                        patch.object(normalization, 'profile', return_value=profile), \
+                        patch.object(qualification.private_pip, 'verify_runtime', return_value=(pip_report, pip_subjects)), \
+                        patch.object(qualification, 'qualify', side_effect=qualify), contextlib.chdir(root), \
+                        contextlib.redirect_stdout(output), expectation:
+                    exec(code, {})
+                records = [json.loads(line) for line in output.getvalue().splitlines()]
+                terminal = next(row for row in records if row.get('schema') == 'durable-workflow.php-linux-terminal/v1')
+                self.assertEqual('pass' if mutation == 'none' else 'refused', terminal['outcome'])
+                self.assertEqual(self.source, terminal['source'])
+                self.assertEqual(self.source, terminal['php_helper_source'])
+                self.assertEqual('pass', terminal['cleanup'])
+                self.assertEqual('pass', terminal['private_pip_cleanup'])
+                self.assertEqual(['inert PHAR substitute'] if mutation == 'none' else [], probes)
+                self.assertFalse(receipt.parent.exists())
+                self.assertFalse(pip_state.root.exists())
+                self.assertLessEqual(len(output.getvalue().encode()), 65536)
+
+    test_actual_terminal_with_missing_setup_output_cleans_only_proven_pip_and_publishes_bounded_refusal = (
+        PrivatePipQualificationWorkflowTest.test_actual_terminal_with_missing_setup_output_cleans_only_proven_pip_and_publishes_bounded_refusal)
     test_actual_inline_gate_refuses_wrong_head_ref_event_repo_or_rerun_before_following_code = (
         PhpLinuxQualificationWorkflowTest.test_actual_inline_gate_refuses_wrong_head_ref_event_repo_or_rerun_before_following_code)
