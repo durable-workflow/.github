@@ -34,6 +34,13 @@ acquisition. Normal bootstrap also verifies an existing explicit receipt rather
 than creating another environment. The action refuses startup hooks such as
 `.pth`, `sitecustomize` and `usercustomize` in the private site-packages root.
 
+`pip-created`, `pip-root-identity` and `pip-receipt-identity` transfer the producer's
+allocation and receipt object/SHA-256 to a bounded qualification. Capture these
+literal step outputs before product execution. They let terminal evidence bind
+the same original receipt and reclaim only the newly created exact state even
+when a later metadata read refuses. They do not authorize cleanup of reused or
+unbound state.
+
 The trust exporter reads the bound certifi file through a no-follow descriptor,
 checks blocked subjects using the absolute validated OpenSSL executable under a
 closed environment, and writes only held GitHub command files and private CA
