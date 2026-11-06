@@ -218,6 +218,36 @@ class PhpLinuxQualificationTest(unittest.TestCase):
                 self.assertFalse(path.parent.exists())
                 self.assertTrue(pip_state.root.exists())
 
+    def test_missing_or_unproven_setup_receipt_still_finalizes_proven_pip_and_publishes_refusal(self):
+        for mutation in ("empty-output", "foreign-output", "missing-file", "missing-state"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                path, _, _, environment = self.fixture(root)
+                pip_state, data, report, subjects = self.pip_fixture(root)
+                setup_state = path.parent
+                if mutation == "empty-output":
+                    path = None
+                elif mutation == "foreign-output":
+                    path = root / "unproven.json"
+                    path.write_text("{}")
+                elif mutation == "missing-file":
+                    path.unlink()
+                else:
+                    qualification.shutil.rmtree(setup_state)
+                evidence, probes = [], []
+                with patch.object(qualification.private_pip, "verify_runtime", return_value=(report, subjects)), \
+                        self.assertRaises((ValueError, FileNotFoundError)):
+                    self.closed_qualify(path, root, environment, evidence.append,
+                        pip_state=data, probes=lambda *_: probes.append("unexpected"))
+                self.assertEqual([], probes)
+                self.assertEqual("refused", evidence[0]["outcome"])
+                self.assertFalse(pip_state.root.exists())
+                self.assertEqual("pass", evidence[0]["private_pip_cleanup"])
+                if mutation in {"empty-output", "foreign-output"}:
+                    self.assertTrue(setup_state.exists())
+                else:
+                    self.assertFalse(setup_state.exists())
+
     def test_exact_complete_producer_receipt_is_required_before_any_probe(self):
         with tempfile.TemporaryDirectory() as directory:
             path, report, _, _ = self.fixture(Path(directory))
