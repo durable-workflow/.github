@@ -68,9 +68,10 @@ class SetupPhpLinuxTest(unittest.TestCase):
             held.assert_sealed()
             return setup.archive.inspect_held(held)
 
+        derive_archive = normalization.normalize
         @contextmanager
         def derive(held):
-            with patch.object(normalization, 'profile', return_value=selected_profile), normalization.normalize(held) as result:
+            with patch.object(normalization, 'profile', return_value=selected_profile), derive_archive(held) as result:
                 yield result
 
         def install(script, held, arguments, child, selected, *, no_apt, normalized):
@@ -121,10 +122,13 @@ class SetupPhpLinuxTest(unittest.TestCase):
 
     def run_fixture(self, data):
         state, node, environment, request, host, catalog_path, calls, effects = data
+        options = dict(effects)
+        derive = options.pop('derive_archive')
         with patch.dict(os.environ, environment, clear=True), patch.object(bootstrap, "CATALOG", catalog_path), \
                 patch.object(bootstrap, "observed_host", return_value=host), \
-                patch.object(bootstrap, "explicit_trust", return_value=object()):
-            return setup.run_setup(state, request, node, environment, **effects)
+                patch.object(bootstrap, "explicit_trust", return_value=object()), \
+                patch.object(normalization, 'normalize', side_effect=derive):
+            return setup.run_setup(state, request, node, environment, **options)
 
     def test_real_producer_manifest_glue_binds_both_tools_before_returning(self):
         manifest={"files":{}}

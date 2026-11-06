@@ -231,7 +231,8 @@ def build_regular_tar(source, output, source_size, index, hashes, aliases, omitt
     expected.update({name: hashes[target] for name, target in aliases.items()})
     writer = DescriptorWriter(output, MAX_STAGED - source_size, deadline)
     directories, targets = 0, {}
-    with tarfile.open(fileobj=writer, mode='w|', format=tarfile.GNU_FORMAT) as destination:
+    with io.BufferedWriter(writer) as buffered, \
+            tarfile.open(fileobj=buffered, mode='w|', format=tarfile.GNU_FORMAT) as destination:
         for name, original in index.items():
             if name in omitted:
                 continue
@@ -405,7 +406,7 @@ def capture_manifest(state, record):
         value = json.loads(raw)
         if raw != canonical_json(value) + b'\n':
             raise ValueError('Normalization manifest is not the exact canonical producer document')
-        identity = {'size': len(raw), 'digest': 'sha256:' + bootstrap.sha256(raw)}
+        identity = {'size': len(raw), 'digest': bootstrap.SHA256_PREFIX + bootstrap.sha256(raw)}
         with bootstrap.hold_bytes(io.BytesIO(raw), identity, original) as sealed:
             yield value, sealed, unchanged
     finally:
@@ -435,7 +436,7 @@ def validate_document(value, proof, original):
 
 def validate_proof(proof, original, selected):
     expected_asset = {key: selected.metadata['asset'][key] for key in ('id', 'name', 'size')}
-    expected_asset['digest'] = 'sha256:' + selected.metadata['asset']['sha256']
+    expected_asset['digest'] = bootstrap.SHA256_PREFIX + selected.metadata['asset']['sha256']
     expected_keys = {'schema', 'original', 'derived', 'metadata_sha256', 'plan_sha256',
         'file_manifest_sha256', 'target_manifest_sha256', 'regular_files', 'directories',
         'members', 'materialized', 'omitted'}
@@ -502,7 +503,7 @@ def normalize(held):
     metadata, plan = selected.metadata, selected.plan
     asset = metadata['asset']
     expected_input = {key: asset[key] for key in ('id', 'name', 'size')}
-    expected_input['digest'] = 'sha256:' + asset['sha256']
+    expected_input['digest'] = bootstrap.SHA256_PREFIX + asset['sha256']
     held.assert_sealed()
     if held.identity != expected_input:
         raise ValueError('Normalization requires the exact independently bound original asset')
@@ -517,7 +518,7 @@ def normalize(held):
                     aliases, omitted, plan, deadline)
             with codec(['--compress', '--stdout', '--quiet', '-T1'], regular, bootstrap.MAX_ARCHIVE, deadline) as encoded:
                 compressed, size, digest = encoded
-                identity = {'name': 'php-initial-regular-only.tar.zst', 'size': size, 'digest': 'sha256:' + digest}
+                identity = {'name': 'php-initial-regular-only.tar.zst', 'size': size, 'digest': bootstrap.SHA256_PREFIX + digest}
                 with io.BufferedReader(DescriptorReader(compressed, 0, size, deadline)) as reader:
                     derived = output.enter_context(bootstrap.hold_bytes(reader, identity, {'kind': SCHEMA}))
                 with codec(['--decompress', '--stdout', '--quiet'], derived.descriptor,

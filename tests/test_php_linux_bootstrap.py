@@ -309,9 +309,10 @@ sudo() {
             with patch.dict(os.environ, environment, clear=True):
                 bootstrap.run_held_installer(script, original, ('8.3', 'release', 'nts'), environment,
                     catalog, execute, host, no_apt=True, normalized=result)
+                forged = SimpleNamespace(held=result.held)
                 with self.assertRaises(ValueError):
                     bootstrap.run_held_installer(script, original, ('8.3', 'release', 'nts'), environment,
-                        catalog, execute, host, no_apt=True, normalized=SimpleNamespace(held=result.held))
+                        catalog, execute, host, no_apt=True, normalized=forged)
                 result.targets['usr/bin/alias']['sha256'] = '0' * 64
                 with self.assertRaises(ValueError):
                     bootstrap.run_held_installer(script, original, ('8.3', 'release', 'nts'), environment,

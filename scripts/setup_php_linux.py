@@ -101,7 +101,7 @@ def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
               inspect_archive=archive.inspect_held, install_php=bootstrap.run_held_installer,
               verify_php=archive.verify_installed, confirm_extensions=archive.verify_enabled,
               install_tool=tools.install_held, execute=subprocess.run,
-              capture_subjects=capture_setup_subjects, derive_archive=normalization.normalize):
+              capture_subjects=capture_setup_subjects):
     """Complete effect recipe; focused tests substitute all external effects."""
     if environment != bootstrap.clean_environment(environment, str(state / "home")) or dict(os.environ) != environment:
         raise ValueError("Setup requires an already closed parent environment before reading inputs")
@@ -146,7 +146,7 @@ def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
                             digest="sha256:" + bootstrap.sha256(patched))
             script = stack.enter_context(bootstrap.hold_bytes(io.BytesIO(patched), identity, original.effective))
             report["stage"] = "archive-inspection"
-            normalized = stack.enter_context(derive_archive(held_archive))
+            normalized = stack.enter_context(normalization.normalize(held_archive))
             normalized.assert_valid()
             members = inspect_archive(normalized.held)
             if members != normalized.files:
