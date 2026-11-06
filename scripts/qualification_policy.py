@@ -2091,12 +2091,13 @@ def _scan_workflow_trust(
         parsed = _split_action_reference(specification)
         if parsed is None:
             raise PolicyError(f"{label} has unsupported action reference {specification!r}")
-        repository, _manifest_directory, commit = parsed
+        repository, manifest_directory, commit = parsed
         releases = action_runtime["allowed_releases"].get(repository)
         if not COMMIT_PATTERN.fullmatch(commit):
             raise PolicyError(f"{label} action {specification} is not pinned to a full commit SHA")
         if not isinstance(releases, dict) or commit not in releases:
             raise PolicyError(f"{label} action {specification} is not centrally approved")
+        _verify_action_release_path(repository, manifest_directory, releases[commit])
         _require_reference_comment(source, specification, releases[commit], label)
         external_actions.add(specification)
 
@@ -2392,6 +2393,12 @@ def _inspect_action_release(
     }
 
 
+def _verify_action_release_path(repository: str, directory: str, version: str) -> None:
+    if (repository == CENTRAL_ACTION_REPOSITORY and version == "bound-linux-php"
+            and directory != ".github/actions/setup-php-linux"):
+        raise PolicyError("The bound Linux PHP release approves only its setup-php-linux action path")
+
+
 def audit_action_releases(
     policy: dict[str, Any],
     client: GitHubClient,
@@ -2420,6 +2427,7 @@ def audit_action_releases(
                 f"action {specification} is not centrally approved; allowed references are "
                 f"{sorted(allowed_releases[repository])}"
             )
+        _verify_action_release_path(repository, manifest_directory, allowed_releases[repository][reference])
         if specification not in cache:
             cache[specification] = _inspect_action_release(
                 client,
@@ -2515,17 +2523,32 @@ def _reviewed_composer_action(uses: str, action: str, approved: set[str], local:
     return (local and uses == "./.github/actions/" + action) or (uses.startswith(prefix) and uses[len(prefix):] in approved)
 
 
-def _advance_composer_trust(step: dict[str, Any], state: tuple[bool, bool, bool], approved: set[str], local: bool) -> tuple[bool, bool, bool]:
-    clean, checked, setup_safe = state
+def _bound_composer_setup(step: dict[str, Any], approved: set[str], local: bool) -> bool:
+    if not _reviewed_composer_action(step.get("uses", ""), "setup-php-linux", approved, local):
+        return False
+    inputs = step.get("with") or {}
+    required = {"php-version": "8.3", "tools": "composer:2.10.3,phpunit:11.5.57", "coverage": "none"}
+    optional = {"ini-file": "production", "extensions": "", "ini-values": ""}
+    return (all(inputs.get(name) == value for name, value in required.items())
+            and set(inputs) <= required.keys() | optional.keys()
+            and all(inputs.get(name, value) == value for name, value in optional.items()))
+
+
+def _advance_composer_trust(step: dict[str, Any], state: tuple[bool, bool, bool, bool], approved: set[str], bound_setups: set[str], local: bool) -> tuple[bool, bool, bool, bool]:
+    clean, checked, setup_safe, python_clean = state
     uses = step.get("uses", "")
     unconditional = not step.get("if") and str(step.get("continue-on-error", "false")) == "false"
     if _reviewed_composer_action(uses, "bootstrap-patched-pip", approved, local):
         clients = {value.strip() for value in step.get("with", {}).get("clients", "pip").split(",")}
         clean = unconditional and {"composer", "curl", "git"} <= clients
+        python_clean = clean and "python" in clients
         checked = False
     elif uses.startswith("shivammathur/setup-php@"):
         tools = {value.strip() for value in step.get("with", {}).get("tools", "").split(",")}
         setup_safe = clean and unconditional and "composer:2.10.3" in tools
+        checked = False
+    elif _reviewed_composer_action(uses, "setup-php-linux", bound_setups, local):
+        setup_safe = python_clean and unconditional and _bound_composer_setup(step, bound_setups, local)
         checked = False
     elif _reviewed_composer_action(uses, "verify-composer-trust", approved, local):
         checked = clean and setup_safe and unconditional
@@ -2533,11 +2556,11 @@ def _advance_composer_trust(step: dict[str, Any], state: tuple[bool, bool, bool]
         # Verification authorizes only the next request step. Any intervening
         # action or shell step can change paths, configuration or GITHUB_ENV.
         checked = False
-    return clean, checked, setup_safe
+    return clean, checked, setup_safe, python_clean
 
 
-def _require_composer_request_trust(step: dict[str, Any], state: tuple[bool, bool, bool], label: str, source: str) -> None:
-    clean, checked, _ = state
+def _require_composer_request_trust(step: dict[str, Any], state: tuple[bool, bool, bool, bool], label: str, source: str) -> None:
+    clean, checked, _, _ = state
     if not clean or not checked:
         raise PolicyError(f"{label} Composer requests lack the reviewed clean bootstrap and live verifier")
     if re.search(r"(?:always|failure|cancelled)\s*\(", step.get("if", "")):
@@ -2549,18 +2572,18 @@ def _require_composer_request_trust(step: dict[str, Any], state: tuple[bool, boo
         raise PolicyError(f"{label} changes Composer trust inside its request step or helper")
 
 
-def _composer_job_sinks(job: dict[str, Any], root: Path, approved: set[str], local: bool, label: str) -> list[str]:
+def _composer_job_sinks(job: dict[str, Any], root: Path, approved: set[str], bound_setups: set[str], local: bool, label: str) -> list[str]:
     if set(job.get("env") or {}) & COMPOSER_TRUST_FIELDS:
         raise PolicyError(f"{label} declares unverified job-level Composer trust overrides")
     evidence = []
-    state = (False, False, False)
+    state = (False, False, False, False)
     for index, step in enumerate(job.get("steps") or []):
         step_label = f"{label}:step-{index + 1}"
         expanded = _composer_step_source(step.get("run", ""), root)
         if _composer_network_commands(expanded):
             _require_composer_request_trust(step, state, step_label, expanded)
             evidence.append(step_label)
-        state = _advance_composer_trust(step, state, approved, local)
+        state = _advance_composer_trust(step, state, approved, bound_setups, local)
     return evidence
 
 
@@ -2572,13 +2595,14 @@ def verify_composer_network_sinks(policy: dict[str, Any], target: str, sources: 
     if not enabled:
         return []
     approved = {sha for sha, label in policy["action_runtime"]["allowed_releases"][CENTRAL_ACTION_REPOSITORY].items() if label == "clean-trust"}
+    bound_setups = {sha for sha, label in policy["action_runtime"]["allowed_releases"][CENTRAL_ACTION_REPOSITORY].items() if label == "bound-linux-php"}
     evidence = []
     for filename, source in sources.items():
         document = _parse_yaml(source, filename)
         if set(document.get("env") or {}) & COMPOSER_TRUST_FIELDS:
             raise PolicyError(f"{filename} declares unverified workflow-level Composer trust overrides")
         for job_name, job in (document.get("jobs") or {}).items():
-            evidence.extend(_composer_job_sinks(job, root, approved, target == "github-control-plane", f"{filename}:{job_name}"))
+            evidence.extend(_composer_job_sinks(job, root, approved, bound_setups, target == "github-control-plane", f"{filename}:{job_name}"))
     catalog = json.loads((Path(__file__).resolve().parents[1] / "qualification/composer-container-trust.json").read_text())
     evidence.extend(verify_composer_container_callers(target, sources, approved, catalog, root))
     return evidence

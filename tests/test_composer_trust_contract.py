@@ -9,6 +9,7 @@ from scripts.qualification_policy import PolicyError, verify_composer_container_
 
 
 REVISION = "a" * 40
+BOUND_REVISION = "d" * 40
 PREFIX = "durable-workflow/.github/.github/actions/"
 
 
@@ -218,6 +219,71 @@ class ComposerNetworkContractTest(unittest.TestCase):
 
     def test_local_only_commands_and_quoted_examples_are_not_network_requests(self):
         self.assertEqual([], self.check([{"run": "composer --version\ncomposer help\ncomposer list\necho 'composer install'\nCOMPOSER_BINARY=$(command -v composer) phpunit"}]))
+
+
+class BoundPhpComposerContractTest(ComposerNetworkContractTest):
+    def setUp(self):
+        super().setUp()
+        self.policy["action_runtime"]["allowed_releases"]["durable-workflow/.github"][BOUND_REVISION] = "bound-linux-php"
+        self.steps[0]["with"]["clients"] = "python,composer,curl,git"
+        self.steps[1] = {
+            "uses": PREFIX + "setup-php-linux@" + BOUND_REVISION,
+            "with": {"php-version": "8.3", "tools": "composer:2.10.3,phpunit:11.5.57", "coverage": "none"},
+        }
+
+    def test_only_the_literal_qualified_inputs_authorize_the_live_guard(self):
+        mutations = {
+            "php-version": ("8.2", "8.4", "${{ matrix.php }}"),
+            "tools": ("composer", "composer:2.10.3", "composer:2.10.4,phpunit:11.5.57", "${{ inputs.tools }}"),
+            "coverage": ("", "xdebug", "pcov", "${{ inputs.coverage }}"),
+            "ini-file": ("development", ""),
+            "extensions": ("redis", "xdebug"),
+            "ini-values": ("memory_limit=-1",),
+            "fail-fast": ("true", "false"),
+            "unknown": ("input",),
+        }
+        for name, values in mutations.items():
+            for value in values:
+                steps = deepcopy(self.steps)
+                steps[1]["with"][name] = value
+                with self.subTest(name=name, value=value), self.assertRaises(PolicyError):
+                    self.check(steps)
+        for name in ("php-version", "tools", "coverage"):
+            steps = deepcopy(self.steps)
+            del steps[1]["with"][name]
+            with self.subTest(missing=name), self.assertRaises(PolicyError):
+                self.check(steps)
+
+    def test_explicit_production_and_empty_overrides_preserve_the_same_profile(self):
+        self.steps[1]["with"].update({"ini-file": "production", "extensions": "", "ini-values": ""})
+        self.assertEqual(["ci.yml:test:step-4"], self.check())
+
+    def test_a_literal_yaml_number_has_the_same_actions_input_value(self):
+        self.steps[1]["with"]["php-version"] = 8.3
+        self.assertEqual(["ci.yml:test:step-4"], self.check())
+
+    def test_the_bound_setup_also_requires_the_python_trust_client(self):
+        self.steps[0]["with"]["clients"] = "composer,curl,git"
+        with self.assertRaises(PolicyError):
+            self.check()
+
+    def test_a_setup_pin_cannot_supply_the_bootstrap_or_verifier_role(self):
+        for index in (0, 2):
+            steps = deepcopy(self.steps)
+            steps[index]["uses"] = steps[index]["uses"].replace(REVISION, BOUND_REVISION)
+            with self.subTest(index=index), self.assertRaises(PolicyError):
+                self.check(steps)
+
+    def test_an_unregistered_setup_or_another_action_at_that_pin_refuses(self):
+        for reference in (REVISION, "0" * 40, "main"):
+            steps = deepcopy(self.steps)
+            steps[1]["uses"] = PREFIX + "setup-php-linux@" + reference
+            with self.subTest(reference=reference), self.assertRaises(PolicyError):
+                self.check(steps)
+        steps = deepcopy(self.steps)
+        steps[1]["uses"] = PREFIX + "verify-composer-trust@" + BOUND_REVISION
+        with self.assertRaises(PolicyError):
+            self.check(steps)
 
     def test_unknown_and_other_composer_commands_require_a_fresh_guard(self):
         for command in ("remove vendor/package", "reinstall vendor/package", "search package", "self-update", "diagnose", "show --all", "custom-script", "validate"):
