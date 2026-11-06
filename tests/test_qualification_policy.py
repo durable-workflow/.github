@@ -658,6 +658,30 @@ class QualificationPolicyTest(unittest.TestCase):
             with self.subTest(ref=ref), self.assertRaises(PolicyError):
                 self.scan(workflow(f"- uses: {action}@{ref} # fixed-apt"))
 
+    def test_accepted_private_pip_predecessor_has_only_its_literal_catalog_revision(self) -> None:
+        action = "durable-workflow/.github/.github/actions/bootstrap-patched-pip"
+        commit = "242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5"
+        source = workflow(f"- uses: {action}@{commit} # clean-trust")
+        predecessor = copy.deepcopy(self.policy)
+        del predecessor["action_runtime"]["allowed_releases"]["durable-workflow/.github"][commit]
+        with self.assertRaisesRegex(PolicyError, "not centrally approved"):
+            scan_workflow_sources(predecessor, "github-control-plane", {".github/workflows/test.yml": source})
+        self.assertEqual([f"{action}@{commit}"], self.scan(source)[".github/workflows/test.yml"]["external_actions"])
+        for ref in ("main", "a" * 40):
+            candidate = workflow(f"- uses: {action}@{ref} # clean-trust")
+            with self.subTest(ref=ref), self.assertRaises(PolicyError):
+                self.scan(candidate)
+
+    def test_complete_repository_workflow_set_accepts_the_exact_inert_private_pip_profile(self) -> None:
+        sources = {str(path.relative_to(ROOT)): path.read_text()
+                   for path in (ROOT / ".github/workflows").glob("*.y*ml")}
+        target = ".github/workflows/qualify-linux-php-initial.yml"
+        sources[target] = (ROOT / "tests/fixtures/qualify-linux-php-private-pip.yml").read_text()
+        evidence = scan_workflow_sources(self.policy, "github-control-plane", sources)
+        self.assertEqual(set(sources), set(evidence))
+        self.assertIn("durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5",
+                      evidence[target]["external_actions"])
+
     def test_action_pin_requires_its_reviewed_version_comment(self) -> None:
         commit, _version = self.approved_action("actions/checkout")
         with self.assertRaisesRegex(PolicyError, "readable version comment"):

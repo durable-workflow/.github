@@ -50,6 +50,11 @@ REVIEWED_SOURCE_CI_SUCCESSORS = {
     CI_WORKFLOW: "f0546eeeeec386042088cb5eb2ff36caedf9517726c06d030a0b1e275b94fb55",
     SONAR_WORKFLOW: "10af0ec0dcec58368a8261188e9e2fb1c3c91736d39502863e7aa57914e99fbe",
 }
+# The successor remains inert until its separate runtime pin and manual-only
+# workflow integration. Keep the consumed predecessor's identity unchanged.
+REVIEWED_INITIAL_PROFILE_SUCCESSORS = {
+    ".github/workflows/qualify-linux-php-initial.yml": "d3eefa3cce62b0c92ae07d6e6a1617342b843e9b5fb0ddad6ad6be4c1c4a2f9f",
+}
 
 # AI's existing matrix commands are reviewed only for that repository. They do
 # not enlarge the control repository's complex-workflow exceptions.
@@ -61,7 +66,8 @@ REVIEWED_AI_WORKFLOWS = {
 
 def reviewed_context_hashes(policy_target: str) -> dict[str, set[str]]:
     if policy_target == "github-control-plane":
-        registries = (REVIEWED_COMPLEX_WORKFLOWS, REVIEWED_SOURCE_CI_SUCCESSORS)
+        registries = (REVIEWED_COMPLEX_WORKFLOWS, REVIEWED_SOURCE_CI_SUCCESSORS,
+                      REVIEWED_INITIAL_PROFILE_SUCCESSORS)
     elif policy_target == "ai":
         registries = (REVIEWED_AI_WORKFLOWS,)
     else:
