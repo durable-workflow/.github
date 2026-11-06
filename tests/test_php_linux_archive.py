@@ -133,6 +133,16 @@ class PhpLinuxArchiveTest(unittest.TestCase):
         for path, record in manifest["files"].items():
             self.assertEqual({"kind":"archive","member":path.lstrip("/")},record["authority"])
             self.assertEqual(files[path.lstrip("/")]["sha256"],record["sha256"])
+        origin = {'target': 'etc/php/8.3/mods-available/inert.ini', **files[name], 'metadata': {'mode': 0o644}}
+        _, normalized = archive.capture_subjects(files, '8.3', [], normalization_targets={name: origin}, **options)
+        authority = normalized['files']['/' + name]['authority']
+        self.assertEqual('normalized-archive', authority['kind'])
+        self.assertEqual(origin['target'], authority['source_member'])
+        self.assertEqual(bootstrap.sha256(json.dumps(origin['metadata'], sort_keys=True,
+            separators=(',', ':')).encode()), authority['target_metadata_sha256'])
+        origin['size'] += 1
+        with self.assertRaisesRegex(ValueError, 'original contained target'):
+            archive.capture_subjects(files, '8.3', [], normalization_targets={name: origin}, **options)
         contents["usr/lib/php/20230831/redis.so"] = b"changed actual module"
         with self.assertRaises(ValueError):
             archive.capture_subjects(files,"8.3",[],**options)

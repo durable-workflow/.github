@@ -267,7 +267,7 @@ def verify_installed(files: dict, php: str, required: list[str], execute=subproc
 
 
 def capture_subjects(files, php, required, *, root=Path("/"), read=None, resolve=None,
-                     command_path=None, **checks):
+                     command_path=None, normalization_targets=None, **checks):
     """Producer manifest: each file identity comes from held archive/derived bytes."""
     manifest = {"schema": SUBJECT_SCHEMA, "files": {}, "commands": {}, "configs": {}}
     configs = configuration_members(files, php)
@@ -289,6 +289,15 @@ def capture_subjects(files, php, required, *, root=Path("/"), read=None, resolve
         authority = ({"kind": "derived-redis", "member": name}
                      if name == f"etc/php/{php}/mods-available/redis.ini"
                      else {"kind": "archive", "member": name})
+        if normalization_targets is not None and name in normalization_targets:
+            origin = normalization_targets[name]
+            if expected != {key: origin[key] for key in ('size', 'sha256')}:
+                raise ValueError('Normalized subject differs from its original contained target')
+            authority = {'kind': 'normalized-archive', 'member': name,
+                'source_member': origin['target'], 'target_size': origin['size'],
+                'target_sha256': origin['sha256'],
+                'target_metadata_sha256': bootstrap.sha256(json.dumps(origin['metadata'], sort_keys=True,
+                    separators=(',', ':')).encode())}
         manifest["files"][canonical(path)] = {"type": "regular", **expected, "authority": authority}
         return metadata, contents
 

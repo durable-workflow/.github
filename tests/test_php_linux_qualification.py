@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import tarfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -17,6 +18,7 @@ from scripts import php_linux_recipe as recipe
 from scripts import php_linux_tools as tools
 from scripts import php_linux_qualification as qualification
 from scripts import setup_php_linux as setup
+from scripts import php_linux_normalize as normalization
 
 
 class PhpLinuxQualificationTest(unittest.TestCase):
@@ -81,6 +83,111 @@ class PhpLinuxQualificationTest(unittest.TestCase):
                 "receipt_identity": json.dumps(identity), "created": "true"}
         report = {"root_identity": state.identity, "interpreter": {"version": [3, 14, 4]}}
         return state, data, report, {"inert-module": identity}
+
+    def normalized_fixture(self, root):
+        path, report, plan, environment = self.fixture(root)
+        files = {name.lstrip('/'): {key: value[key] for key in ('size', 'sha256')}
+            for name, value in report['subjects']['files'].items() if value['authority']['kind'] == 'archive'}
+        alias = 'etc/php/8.3/cli/php.ini'
+        target = 'etc/php/8.3/mods-available/inert.ini'
+        files[target] = dict(files[alias])
+        info = tarfile.TarInfo('./' + target)
+        info.size = files[target]['size']
+        metadata = {key: value.decode('ascii') if isinstance(value, bytes) else value
+            for key, value in info.get_info().items()}
+        targets = {alias: {'target': target, **files[target], 'metadata': metadata}}
+        asset = plan['archive']['asset']
+        original = {key: asset[key] for key in ('id', 'name', 'size')}
+        original['sha256'] = asset['digest'].removeprefix('sha256:')
+        rows = [['./' + name, '0', '', identity['size'], 0, 512]
+            for name, identity in files.items() if name != alias]
+        selected = normalization.Profile({'asset': original, 'members': rows,
+            'columns': ['name', 'type', 'linkname', 'size', 'offset', 'offset_data']},
+            {'materialize_regular_aliases': [[alias, target]], 'omit_aliases': [],
+             'expected_regular_files': len(files), 'expected_directories': 0,
+             'expected_members': len(files), 'expected_links': 0}, 'a' * 64, 'b' * 64)
+        proof = {'schema': normalization.SCHEMA, 'original': dict(asset),
+            'derived': {'name': 'php-initial-regular-only.tar.zst', 'size': 17, 'digest': 'sha256:' + 'c' * 64},
+            'metadata_sha256': selected.metadata_sha256, 'plan_sha256': selected.plan_sha256,
+            'file_manifest_sha256': bootstrap.sha256(normalization.canonical_json(files)),
+            'target_manifest_sha256': bootstrap.sha256(normalization.canonical_json(targets)),
+            'regular_files': len(files), 'directories': 0, 'members': len(files), 'materialized': 1, 'omitted': 0}
+        document = {'schema': normalization.DOCUMENT_SCHEMA, 'proof': proof, 'files': files, 'targets': targets}
+        result = SimpleNamespace(files=files, targets=targets, proof=proof,
+            assert_valid=lambda: normalization.validate_document(document, proof, asset))
+        with patch.object(normalization, 'profile', return_value=selected):
+            record = normalization.write_manifest(path.parent, result)
+        report.update(schema=setup.NORMALIZED_RECEIPT_SCHEMA, normalization=proof, normalization_manifest=record)
+        report['subjects']['files']['/' + alias]['authority'] = {'kind': 'normalized-archive', 'member': alias,
+            'source_member': target, 'target_size': files[target]['size'], 'target_sha256': files[target]['sha256'],
+            'target_metadata_sha256': bootstrap.sha256(normalization.canonical_json(metadata))}
+        path.write_text(json.dumps(report))
+        return path, report, plan, environment, selected
+
+    def test_normalized_receipt_binds_original_target_manifest_before_and_after_probes_and_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path, report, _plan, environment, selected = self.normalized_fixture(root)
+            calls, evidence = [], []
+            def subjects(_report, _plan, **options):
+                self.assertEqual({'etc/php/8.3/cli/php.ini'}, set(options['normalization_targets']))
+                calls.append('subjects')
+            def probes(*_args):
+                self.assertTrue((path.parent / normalization.MANIFEST_NAME).is_file())
+                calls.append('probes')
+                return []
+            with patch.object(normalization, 'profile', return_value=selected):
+                self.closed_qualify(path, root, environment, evidence.append, subjects=subjects, probes=probes)
+            self.assertEqual(['subjects', 'probes', 'subjects'], calls)
+            self.assertEqual('pass', evidence[0]['outcome'])
+            self.assertTrue(evidence[0]['normalization']['revalidated'])
+            self.assertEqual(report['normalization']['derived'], evidence[0]['normalization']['derived'])
+            self.assertFalse(path.parent.exists())
+
+    def test_normalized_missing_changed_or_foreign_provenance_refuses_before_probes_and_cleans(self):
+        for mutation in ('missing', 'bytes', 'object', 'hash', 'authority', 'schema'):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                path, report, _plan, environment, selected = self.normalized_fixture(root)
+                manifest = path.parent / normalization.MANIFEST_NAME
+                if mutation == 'missing':
+                    manifest.unlink()
+                elif mutation in ('bytes', 'object'):
+                    raw = manifest.read_bytes()
+                    manifest.unlink()
+                    manifest.write_bytes(raw if mutation == 'object' else b'{}')
+                    manifest.chmod(0o400)
+                elif mutation == 'hash':
+                    report['normalization']['target_manifest_sha256'] = '0' * 64
+                elif mutation == 'authority':
+                    report['subjects']['files']['/etc/php/8.3/cli/php.ini']['authority']['source_member'] = 'foreign'
+                else:
+                    report['schema'] = setup.RECEIPT_SCHEMA
+                path.write_text(json.dumps(report))
+                evidence, calls = [], []
+                with patch.object(normalization, 'profile', return_value=selected), self.assertRaises((ValueError, OSError)):
+                    self.closed_qualify(path, root, environment, evidence.append, subjects=lambda *_args, **_kw: None,
+                        probes=lambda *_args: calls.append('probe'))
+                self.assertEqual([], calls)
+                self.assertEqual('refused', evidence[0]['outcome'])
+                self.assertFalse(path.parent.exists())
+
+    def test_post_probe_normalization_mutation_refuses_before_pass_and_cleans(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path, _report, _plan, environment, selected = self.normalized_fixture(root)
+            def probes(*_args):
+                manifest = path.parent / normalization.MANIFEST_NAME
+                manifest.chmod(0o600)
+                manifest.write_bytes(b'{}')
+                manifest.chmod(0o400)
+                return []
+            evidence = []
+            with patch.object(normalization, 'profile', return_value=selected), self.assertRaises(ValueError):
+                self.closed_qualify(path, root, environment, evidence.append,
+                    subjects=lambda *_args, **_kw: None, probes=probes)
+            self.assertEqual('refused', evidence[0]['outcome'])
+            self.assertFalse(path.parent.exists())
 
     def test_private_pip_receipt_and_subjects_bind_before_and_after_probes_and_both_states_clean_before_pass(self):
         for mutation in ("none", "receipt-write", "receipt-replace", "subject"):

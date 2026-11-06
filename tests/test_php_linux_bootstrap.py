@@ -16,6 +16,8 @@ from unittest.mock import patch
 from urllib.request import Request
 
 from scripts import php_linux_bootstrap as bootstrap
+from scripts import php_linux_normalize as normalization
+from tests import test_php_linux_normalize as normalize_tests
 
 
 class PhpLinuxBootstrapTest(unittest.TestCase):
@@ -283,6 +285,38 @@ sudo() {
                 with self.assertRaises(ValueError):
                     bootstrap.run_held_installer(script, archive, ("8.3", "release", "nts"),
                                                 dict(environment, GH_TOKEN="inert"), catalog, execute, host)
+        self.assertEqual(1, len(calls))
+
+    def test_normalized_effect_handoff_passes_only_the_sealed_derived_fd_to_an_inert_executor(self):
+        payload, identity, selected_profile, _raw = normalize_tests.PhpLinuxNormalizeTest().fixture()
+        catalog = copy.deepcopy(self.catalog)
+        row = next(row for row in catalog['archives'] if row == self.row)
+        row['asset'] = identity
+        derived = bootstrap.no_apt_installer_source(self.original, catalog)
+        script_id = self.identity('bound-install.sh', derived, catalog['installer']['id'])
+        environment = bootstrap.clean_environment({}, '/tmp/inert-no-apt-home')
+        host = dict(operating_system='ubuntu', release='26.04', architecture='x86_64')
+        calls = []
+        with bootstrap.hold_bytes(io.BytesIO(derived), script_id, {}) as script, \
+                bootstrap.hold_bytes(io.BytesIO(payload), identity, {}) as original, \
+                patch.object(normalization, 'profile', return_value=selected_profile), normalization.normalize(original) as result:
+            def execute(_command, **options):
+                calls.append(options)
+                self.assertEqual(result.held.descriptor, options['pass_fds'][1])
+                self.assertEqual(str(result.held.descriptor), options['env']['DW_VERIFIED_ARCHIVE_FD'])
+                self.assertNotEqual(original.descriptor, options['pass_fds'][1])
+                self.assertEqual(result.files, normalization.archive.inspect_held(result.held))
+            with patch.dict(os.environ, environment, clear=True):
+                bootstrap.run_held_installer(script, original, ('8.3', 'release', 'nts'), environment,
+                    catalog, execute, host, no_apt=True, normalized=result)
+                forged = SimpleNamespace(held=result.held)
+                with self.assertRaises(ValueError):
+                    bootstrap.run_held_installer(script, original, ('8.3', 'release', 'nts'), environment,
+                        catalog, execute, host, no_apt=True, normalized=forged)
+                result.targets['usr/bin/alias']['sha256'] = '0' * 64
+                with self.assertRaises(ValueError):
+                    bootstrap.run_held_installer(script, original, ('8.3', 'release', 'nts'), environment,
+                        catalog, execute, host, no_apt=True, normalized=result)
         self.assertEqual(1, len(calls))
 
     def test_initial_effect_primitive_requires_the_exact_no_apt_derived_bytes(self):
