@@ -137,6 +137,19 @@ class ProtectedContextTest(unittest.TestCase):
         with self.assertRaises(InputRefused):
             context.validate_context({path:raw}, policy_target='ai')
 
+    def test_subject_reference_successor_changes_only_six_literals_and_remains_target_scoped(self):
+        raw = (ROOT / 'tests/fixtures/qualify-linux-php-subject-references.yml').read_bytes()
+        old = (ROOT / 'tests/fixtures/qualify-linux-php-configured-cli.yml').read_bytes()
+        previous = b'153f409e36002b2ae5f010f247a03b8830898e3c'
+        current = b'140f937cf245f39a495467fe6bab2bd30f93a17a'
+        self.assertEqual(6, old.count(previous))
+        self.assertEqual(old.replace(previous, current), raw)
+        self.assertEqual(7103, len(raw))
+        self.assertEqual(context.REVIEWED_SUBJECT_REFERENCE_PROFILE_SUCCESSORS[
+            '.github/workflows/qualify-linux-php-initial.yml'], hashlib.sha256(raw).hexdigest())
+        self.checked_initial_profile('qualify-linux-php-subject-references.yml',
+            'REVIEWED_SUBJECT_REFERENCE_PROFILE_SUCCESSORS', current)
+
     def test_private_pip_manual_successor_is_exact_and_keeps_php_and_control_sources_separate(self):
         path = ".github/workflows/qualify-linux-php-initial.yml"
         raw = (ROOT / "tests/fixtures/qualify-linux-php-private-pip.yml").read_bytes()
