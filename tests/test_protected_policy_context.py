@@ -1,4 +1,5 @@
 from pathlib import Path
+import hashlib
 import unittest
 from unittest.mock import patch
 
@@ -61,10 +62,8 @@ class ProtectedContextTest(unittest.TestCase):
         for name in ("ci", "sonar"):
             path = f".github/workflows/{name}.yml"
             raw = (ROOT / f"tests/fixtures/{name}-private-pip-source.yml").read_bytes()
-            current = (ROOT / path).read_bytes()
-            expected = current.replace(b"uses: ./.github/actions/bootstrap-patched-pip # local",
-                b"uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7 # clean-trust")
-            self.assertEqual(expected, raw)
+            # Historical fixture identity is independent of later live CI edits.
+            self.assertEqual(context.REVIEWED_SOURCE_CI_SUCCESSORS[path], hashlib.sha256(raw).hexdigest())
             with self.subTest(workflow=name):
                 with patch.object(context, "REVIEWED_SOURCE_CI_SUCCESSORS", {}), self.assertRaises(InputRefused):
                     context.validate_context({path: raw})
@@ -77,6 +76,43 @@ class ProtectedContextTest(unittest.TestCase):
                         context.validate_context({path: changed})
                 with self.assertRaises(InputRefused):
                     context.validate_context({WORKFLOW: raw})
+
+    def test_php_configuration_source_ci_successors_require_exact_reviewed_bytes_and_target(self):
+        modules = ('test_php_linux_bootstrap test_php_linux_archive test_php_linux_normalize '
+                   'test_php_linux_recipe test_php_linux_tools test_php_linux_alternatives '
+                   'test_setup_php_linux test_php_linux_qualification test_php_linux_qualification_workflow '
+                   'test_php_linux_configuration').split()
+        for name in ('ci', 'sonar'):
+            path = f'.github/workflows/{name}.yml'
+            raw = (ROOT / f'tests/fixtures/{name}-php-configuration-source.yml').read_bytes()
+            previous = (ROOT / f'tests/fixtures/{name}-private-pip-source.yml').read_bytes()
+            if name == 'ci':
+                needle = b'          tests.test_composer_container_effective_trust\n'
+                added = b''.join(('          tests.' + module + '\n').encode() for module in modules)
+                expected = previous.replace(needle, needle + added, 1)
+            else:
+                needle = b' tests.test_composer_container_effective_trust\n'
+                added = b' ' + b' '.join(('tests.' + module).encode() for module in modules) + b'\n'
+                expected = previous.replace(needle, needle[:-1] + added, 1)
+            self.assertEqual(1, previous.count(needle))
+            self.assertEqual(expected, raw)
+            self.assertEqual(context.REVIEWED_PHP_CONFIGURATION_SOURCE_CI_SUCCESSORS[path],
+                             hashlib.sha256(raw).hexdigest())
+            context.validate_context({path: raw})
+            with patch.object(context, 'REVIEWED_PHP_CONFIGURATION_SOURCE_CI_SUCCESSORS', {}), \
+                    self.assertRaises(InputRefused):
+                context.validate_context({path: raw})
+            mutations = (raw + b'\n# unreviewed\n',
+                         raw.replace(b'tests.test_php_linux_configuration', b'tests.unreviewed', 1),
+                         raw.replace(b'75587fc33ff40c34f32ef777293dad56bb6f48c7', b'a' * 40))
+            for changed in mutations:
+                self.assertNotEqual(raw, changed)
+                with self.assertRaises(InputRefused):
+                    context.validate_context({path: changed})
+            with self.assertRaises(InputRefused):
+                context.validate_context({WORKFLOW: raw})
+            with self.assertRaises(InputRefused):
+                context.validate_context({path: raw}, policy_target='ai')
 
     def test_private_pip_manual_successor_is_exact_and_keeps_php_and_control_sources_separate(self):
         path = ".github/workflows/qualify-linux-php-initial.yml"
