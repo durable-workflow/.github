@@ -138,7 +138,8 @@ def verify_file(path: Path, expected: dict, read=None):
     metadata, contents = read(path)
     if (not stat.S_ISREG(metadata.st_mode) or len(contents) != expected["size"]
             or bootstrap.sha256(contents) != expected["sha256"]):
-        raise ValueError("Installed PHP/module does not match its held archive member")
+        member = path.name if re.fullmatch(r'[A-Za-z0-9_.-]{1,100}', path.name) else 'unknown-member'
+        raise ValueError("Installed PHP/module does not match its held archive member: " + member)
 
 
 def verify_commands(files, php, root, read, command_path):
@@ -215,7 +216,7 @@ def configuration_members(files, php):
     return configs
 
 
-def verify_configs(files, php, result, directory, root, read, active_configs, resolve):
+def verify_configs(files, php, result, directory, root, read, active_configs, resolve, configuration=None):
     # Default startup must not load an ambient .ini or a module from outside
     # the held archive before pinned upstream starts. Redis's one INI rewrite
     # is the deterministic effect in the bound upstream installer itself.
@@ -223,10 +224,14 @@ def verify_configs(files, php, result, directory, root, read, active_configs, re
             or result["scan_dir"] != f"/etc/php/{php}/cli/conf.d"):
         raise ValueError("PHP default configuration paths have no reviewed CLI profile")
     configs = configuration_members(files, php)
+    if configuration is not None:
+        configs.update(configuration['outputs'])
     if active_configs is None:
         active_configs = [root / result["config_path"].lstrip("/") / "php.ini",
                           *(root / result["scan_dir"].lstrip("/")).glob("*.ini")]
     resolve = (lambda path: path.resolve(strict=True)) if resolve is None else resolve
+    if configuration is not None and sorted(path.relative_to(root).as_posix() for path in active_configs) != configuration['active']:
+        raise ValueError('Active CLI configuration differs from the complete held recipe')
     for path in active_configs:
         target = resolve(path)
         name = target.relative_to(root).as_posix()
@@ -256,21 +261,23 @@ def verify_required(files, required, result, directory, binary_name, root, read)
 
 def verify_installed(files: dict, php: str, required: list[str], execute=subprocess.run,
                      root: Path = Path("/"), read=None, shared=None, command_path=None,
-                     active_configs=None, resolve=None) -> dict:
+                     active_configs=None, resolve=None, configuration=None) -> dict:
     binary_name, binary = verify_commands(files, php, root, read, command_path)
     result, directory = probe_binary(binary, php, execute)
     verify_shared(files, directory, root, read, shared)
-    verify_configs(files, php, result, directory, root, read, active_configs, resolve)
+    verify_configs(files, php, result, directory, root, read, active_configs, resolve, configuration)
     checked = verify_required(files, required, result, directory, binary_name, root, read)
     return {"binary": {"source": binary_name, **files[binary_name]}, "extensions": checked,
             "version": result["version"], "zts": result["zts"], "debug": result["debug"]}
 
 
 def capture_subjects(files, php, required, *, root=Path("/"), read=None, resolve=None,
-                     command_path=None, normalization_targets=None, **checks):
+                     command_path=None, normalization_targets=None, configuration=None, **checks):
     """Producer manifest: each file identity comes from held archive/derived bytes."""
     manifest = {"schema": SUBJECT_SCHEMA, "files": {}, "commands": {}, "configs": {}}
     configs = configuration_members(files, php)
+    if configuration is not None:
+        configs.update(configuration['outputs'])
     native_read = read or (lambda path: (path.lstat(), path.read_bytes()))
     native_resolve = resolve or (lambda path: path.resolve(strict=True))
     native_command = command_path or (
@@ -289,7 +296,10 @@ def capture_subjects(files, php, required, *, root=Path("/"), read=None, resolve
         authority = ({"kind": "derived-redis", "member": name}
                      if name == f"etc/php/{php}/mods-available/redis.ini"
                      else {"kind": "archive", "member": name})
-        if normalization_targets is not None and name in normalization_targets:
+        if configuration is not None and name in configuration['outputs']:
+            authority = {'kind': 'derived-cli-configuration', 'member': name,
+                         'recipe': configuration['schema']}
+        elif normalization_targets is not None and name in normalization_targets:
             origin = normalization_targets[name]
             if expected != {key: origin[key] for key in ('size', 'sha256')}:
                 raise ValueError('Normalized subject differs from its original contained target')
@@ -312,7 +322,11 @@ def capture_subjects(files, php, required, *, root=Path("/"), read=None, resolve
         return target
 
     installed = verify_installed(files, php, required, root=root, read=observed_read,
-        resolve=observed_resolve, command_path=observed_command, **checks)
+        resolve=observed_resolve, command_path=observed_command, configuration=configuration, **checks)
+    if configuration is not None:
+        for name in configuration['outputs']:
+            if '/' + name not in manifest['files']:
+                observed_read(root / name)
     require_subject_bound(manifest)
     return installed, manifest
 

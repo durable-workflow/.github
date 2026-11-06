@@ -237,6 +237,9 @@ class NormalizedQualificationWorkflowTest(unittest.TestCase):
                 probes = []
                 original = qualification.qualify
                 def qualify(*args, **options):
+                    # Replay the retained v3 collector as a legacy source control.
+                    # Current live qualification separately requires v4 by default.
+                    options['required_schema'] = None
                     options['subjects'] = lambda *_args, **_options: None
                     options['alternatives'] = lambda _files: {'count': 9, 'inventory_sha256': 'a' * 64}
                     options['probes'] = lambda *_args: probes.append('inert PHAR substitute')

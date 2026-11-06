@@ -13,6 +13,21 @@ object and bytes, original and derived archive identities, and alias target
 provenance. Terminal qualification retains and checks that same manifest before
 and after both PHAR probes, then removes exact owned state before publishing PASS.
 
+Receipt v4 additionally binds the initial CLI configuration. It derives the
+production INI from the held archive's `php.ini-production.cli` and the exact
+pinned PHP, xdebug and JIT configuration fragments. The bounded input document
+is captured before configuration writes. Only CLI `php.ini`, CLI `99-pecl.ini`
+and the explicit production marker are written; only inventory-bound CLI
+xdebug/pcov startup entries are removed. The derived upstream helpers leave
+other SAPIs unchanged and do not consult an ambient current-INI marker.
+
+Terminal verification independently recomputes these outputs from the held
+preimage and pinned source, checks the complete active CLI inventory, and holds
+the configuration document through both PHAR probes and cleanup. Current live
+qualification requires v4. Retained legacy readers and source controls do not
+qualify a new installed original. A changed effect packet and distinct run
+selection remain necessary before executing this source.
+
 The fixed updater's writer inventory is in `php-linux-initial-alternatives.json`.
 Nine archive-materialized alternatives paths are master links created by
 `fix_alternatives`. Extraction excludes those exact paths, leaving their

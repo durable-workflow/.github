@@ -160,6 +160,8 @@ def derive_source(files: dict[str, bytes], refusal: Path) -> dict[str, bytes]:
             source = source[:start] + source[finish:]
             source = replace_function(source, "self_hosted_setup",
                 '  if [ "$runner" = self-hosted ]; then _dw_refuse self_hosted_setup; fi')
+            source = replace_function(source, "configure_php",
+                '  : "CLI configuration is already installed from its held source recipe"')
             source = "_dw_refuse() {\n" + guard + "\n}\n" + source
         if name == "src/scripts/extensions/add_extensions.sh":
             source = replace_function(source, "enable_cache_extension_dependencies",
@@ -169,6 +171,19 @@ def derive_source(files: dict[str, bytes], refusal: Path) -> dict[str, bytes]:
                 '  [ -x /usr/bin/sudo ] || { printf "%s\\n" "sudo prerequisite missing" >&2; exit 78; }')
             source = bootstrap.replace_once(source, 'link_apt_fast >/dev/null 2>&1\n',
                                              ': "No APT setup or apt-fast link in the initial profile"\n')
+            source = bootstrap.replace_once(source,
+                '  mapfile -t ini_file < <(sudo find "$ini_dir/.." -name "php.ini" -exec readlink -m {} +)\n',
+                '  ini_file=("$ini_dir/php.ini")\n')
+            for function in ("add_php_config", "link_pecl_file"):
+                source = replace_function(source, function,
+                    '  : "Only the prebound CLI configuration is supported"')
+            source = replace_function(source, "disable_extension_helper",
+                '  case "$1" in xdebug|pcov) : "Bound coverage-none CLI recipe" ;;\n'
+                '    *) _dw_refuse non_cli_coverage ;; esac')
+            source = bootstrap.replace_once(source,
+                '  sudo chmod 777 "${ini_file[@]}" "$pecl_file" "${tool_path_dir:?}"\n',
+                '  sudo chmod 0644 "${ini_file[@]}" "$pecl_file"\n'
+                '  sudo chmod 777 "${tool_path_dir:?}"\n')
         derived[name] = source.encode()
     return derived
 

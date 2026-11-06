@@ -19,6 +19,7 @@ from scripts import php_linux_tools as tools
 from scripts import setup_php_linux as setup
 from scripts import php_linux_normalize as normalization
 from scripts import php_linux_alternatives
+from scripts import php_linux_configuration as cli_configuration
 
 
 MAX_RECEIPT = setup.MAX_RECEIPT
@@ -27,6 +28,7 @@ PASS_FIELDS = frozenset(("schema", "outcome", "stage", "host", "image", "apt", "
     "request", "host_tool", "setup_php_commit", "source_hashes", "preinstalled_authority",
     "tools", "installer", "archive", "installed", "configured", "subjects"))
 NORMALIZED_PASS_FIELDS = PASS_FIELDS | {'normalization', 'normalization_manifest'}
+CONFIGURED_PASS_FIELDS = NORMALIZED_PASS_FIELDS | {'configuration_manifest'}
 _PIP_SPEC = importlib.util.spec_from_file_location("qualification_private_pip",
     bootstrap.ROOT / ".github/actions/bootstrap-patched-pip/pip_runtime.py")
 private_pip = importlib.util.module_from_spec(_PIP_SPEC)
@@ -71,16 +73,17 @@ def validate_manifest(report, plan):
         raise ValueError("Producer default commands are not bound to the selected archive")
     selected = {row["name"]: row for row in plan["tools"]}
     validate_manifest_files(manifest, selected, php,
-        normalized=report['schema'] == setup.NORMALIZED_RECEIPT_SCHEMA)
+        normalized=report['schema'] in (setup.NORMALIZED_RECEIPT_SCHEMA, setup.CONFIGURED_RECEIPT_SCHEMA),
+        configured=report['schema'] == setup.CONFIGURED_RECEIPT_SCHEMA)
     validate_manifest_binary(report, manifest, php)
     validate_manifest_tools(manifest, plan["tools"])
 
 
-def validate_manifest_files(manifest, selected, php, *, normalized=False):
+def validate_manifest_files(manifest, selected, php, *, normalized=False, configured=False):
     for path, identity in manifest["files"].items():
         canonical_path(path)
         file_identity(identity)
-        validate_subject_authority(path, identity, selected, php, normalized=normalized)
+        validate_subject_authority(path, identity, selected, php, normalized=normalized, configured=configured)
     for path, target in manifest["configs"].items():
         canonical_path(path)
         canonical_path(target)
@@ -103,11 +106,18 @@ def validate_manifest_tools(manifest, selected):
             raise ValueError("Both literal PHAR subjects are mandatory")
 
 
-def validate_subject_authority(path, identity, selected, php, *, normalized=False):
+def validate_subject_authority(path, identity, selected, php, *, normalized=False, configured=False):
     authority = identity["authority"]
     if not isinstance(authority, dict):
         raise ValueError("Subject authority is missing")
     kind = authority.get("kind")
+    if kind == 'derived-cli-configuration':
+        bootstrap.exact_keys(authority, {'kind', 'member', 'recipe'})
+        if (not configured or authority['member'] != path.lstrip('/')
+                or authority['member'] not in (cli_configuration.CLI, cli_configuration.PECL, cli_configuration.CURRENT)
+                or authority['recipe'] != cli_configuration.SCHEMA):
+            raise ValueError('CLI subject lacks the closed versioned configuration authority')
+        return
     if kind == "tool":
         bootstrap.exact_keys(authority, {"kind", "name"})
         row = selected.get(authority["name"])
@@ -135,11 +145,14 @@ def validate_subject_authority(path, identity, selected, php, *, normalized=Fals
 
 
 def validate_success(report, state):
-    normalized = isinstance(report, dict) and report.get('schema') == setup.NORMALIZED_RECEIPT_SCHEMA
-    expected_fields = NORMALIZED_PASS_FIELDS if normalized else PASS_FIELDS
+    configured = isinstance(report, dict) and report.get('schema') == setup.CONFIGURED_RECEIPT_SCHEMA
+    normalized = isinstance(report, dict) and report.get('schema') in (
+        setup.NORMALIZED_RECEIPT_SCHEMA, setup.CONFIGURED_RECEIPT_SCHEMA)
+    expected_fields = CONFIGURED_PASS_FIELDS if configured else NORMALIZED_PASS_FIELDS if normalized else PASS_FIELDS
     if not isinstance(report, dict) or set(report) != expected_fields:
         raise ValueError("Complete successful setup receipt is required")
-    if (report["schema"] not in (setup.RECEIPT_SCHEMA, setup.NORMALIZED_RECEIPT_SCHEMA) or report["outcome"] != "pass"
+    if (report["schema"] not in (setup.RECEIPT_SCHEMA, setup.NORMALIZED_RECEIPT_SCHEMA,
+                                setup.CONFIGURED_RECEIPT_SCHEMA) or report["outcome"] != "pass"
             or report["stage"] != "complete" or report["preinstalled_authority"] is not False
             or report["apt"] != {"invoked": False, "profile": "no-apt"}
             or report["ca_sha256"] != setup.CA_SHA256
@@ -155,9 +168,25 @@ def validate_success(report, state):
     return plan
 
 
-def validate_normalized_subjects(manifest, document):
+def validate_normalized_subjects(manifest, document, configuration=None):
+    derived = {path.lstrip('/') for path, identity in manifest['files'].items()
+               if identity['authority']['kind'] == 'derived-cli-configuration'}
+    if configuration is not None:
+        if derived != set(configuration['outputs']):
+            raise ValueError('Complete configured CLI outputs are mandatory subjects')
+        if set(manifest['configs']) != {'/' + name for name in configuration['active']}:
+            raise ValueError('Producer active CLI inventory differs from the held configuration recipe')
+    elif derived:
+        raise ValueError('CLI subjects require independent configuration recomputation')
     for path, identity in manifest['files'].items():
         authority = identity['authority']
+        if authority['kind'] == 'derived-cli-configuration':
+            name = path.lstrip('/')
+            expected = {'kind': 'derived-cli-configuration', 'member': name, 'recipe': cli_configuration.SCHEMA}
+            if (authority != expected or {key:identity[key] for key in ('size', 'sha256')}
+                    != configuration['outputs'][name]):
+                raise ValueError('CLI subject differs from independent held-input derivation')
+            continue
         if authority['kind'] in ('tool', 'derived-redis'):
             continue
         name = path.lstrip('/')
@@ -285,12 +314,14 @@ def unchanged_receipt(path, descriptor, metadata, raw):
 
 
 def revalidate_subjects(report, plan, *, capture=archive.capture_subjects, append=tools.append_subject,
-                        enabled=archive.verify_enabled, normalization_targets=None):
+                        enabled=archive.verify_enabled, normalization_targets=None, configuration=None):
     files = {path.lstrip("/"): {key: identity[key] for key in ("size", "sha256")}
              for path, identity in report["subjects"]["files"].items()
              if identity["authority"]["kind"] != "tool"}
     php = plan["request"]["inputs"]["php-version"]
     options = {} if normalization_targets is None else {'normalization_targets': normalization_targets}
+    if configuration is not None:
+        options['configuration'] = configuration
     installed, manifest = capture(files, php, plan["required_extensions"], **options)
     for row in plan["tools"]:
         append(manifest, row)
@@ -379,7 +410,8 @@ def capture_private_pip(owned, runner_temp):
 
 def qualify(path, runner_temp, environment, publish, *, validate=validate_success,
             subjects=revalidate_subjects, probes=run_probes, pip_state=None,
-            alternatives=php_linux_alternatives.verify):
+            alternatives=php_linux_alternatives.verify,
+            required_schema=setup.CONFIGURED_RECEIPT_SCHEMA):
     if (environment != bootstrap.clean_environment(environment, environment.get("HOME", ""))
             or dict(os.environ) != environment):
         raise ValueError("Qualification requires a closed parent environment")
@@ -406,19 +438,33 @@ def qualify(path, runner_temp, environment, publish, *, validate=validate_succes
                     key: value for key, value in report.items()
                     if key in {"outcome", "stage", "failure_type", "cause_type", "http_status", "returncode"}
                     and (type(value) is int or isinstance(value, str) and len(value) <= 100)}
+            if required_schema is not None and (not isinstance(report, dict) or report.get('schema') != required_schema):
+                raise ValueError('Current qualification requires the configured receipt schema')
             plan = validate(report, state)
             normalized_unchanged = None
             normalized_held = None
-            if report['schema'] == setup.NORMALIZED_RECEIPT_SCHEMA:
+            configured_unchanged = None
+            configured_held = None
+            configured_plan = None
+            if report['schema'] in (setup.NORMALIZED_RECEIPT_SCHEMA, setup.CONFIGURED_RECEIPT_SCHEMA):
                 document, normalized_held, normalized_unchanged = normalization_custody.enter_context(
                     normalization.capture_manifest(state, report['normalization_manifest']))
                 normalization.validate_document(document, report['normalization'], plan['archive']['asset'])
-                validate_normalized_subjects(report['subjects'], document)
+                if report['schema'] == setup.CONFIGURED_RECEIPT_SCHEMA:
+                    configured, _outputs, configured_held, configured_unchanged = normalization_custody.enter_context(
+                        cli_configuration.capture_manifest(state, report['configuration_manifest'], document['files']))
+                    configured_plan = cli_configuration.subject_plan(configured, document['files'])
+                    evidence['configuration'] = {'schema': cli_configuration.SCHEMA,
+                        'manifest_object': configured_held.effective,
+                        'manifest_sha256': configured_held.identity['digest'], 'revalidated': False}
+                validate_normalized_subjects(report['subjects'], document, configured_plan)
                 evidence['alternatives'] = dict(alternatives(document['files']), revalidated=False)
                 evidence['normalization'] = {'schema': normalization.DOCUMENT_SCHEMA,
                     'manifest_object': normalized_held.effective, 'manifest_sha256': normalized_held.identity['digest'],
                     'derived': report['normalization']['derived'], 'revalidated': False}
             subject_options = {} if normalized_held is None else {'normalization_targets': document['targets']}
+            if configured_plan is not None:
+                subject_options['configuration'] = configured_plan
             subjects(report, plan, **subject_options)
             evidence["stage"] = "probes"
             try:
@@ -435,6 +481,10 @@ def qualify(path, runner_temp, environment, publish, *, validate=validate_succes
                     normalized_unchanged()
                     normalized_held.assert_sealed()
                     evidence['normalization']['revalidated'] = True
+                if configured_held is not None:
+                    configured_unchanged()
+                    configured_held.assert_sealed()
+                    evidence['configuration']['revalidated'] = True
             evidence["receipt"] = report
         verified = True
     except Exception as error:

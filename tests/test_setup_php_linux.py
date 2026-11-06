@@ -109,25 +109,37 @@ class SetupPhpLinuxTest(unittest.TestCase):
             self.assertEqual(environment, child)
             return {"name": row["name"], "executor": "inert"}
 
-        def capture_subjects(members, php, required, selected_tools, *, normalization_targets):
+        def configure(*_arguments):
+            calls.append('configure-cli')
+            return {'inert':'configuration'}, {'name':'cli-configuration.json'}, {'inert':'configuration-plan'}
+
+        @contextmanager
+        def capture_configuration(*_arguments):
+            yield {'inert':'configuration'}, {}, None, lambda:None
+
+        def capture_subjects(members, php, required, selected_tools, *, normalization_targets, configuration):
             calls.append("capture-subjects")
             calls.extend("subject-" + row["name"] for row in selected_tools)
             self.assertEqual({'usr/bin/alias'}, set(normalization_targets))
+            self.assertEqual({'inert':'configuration-plan'}, configuration)
             return {"source": "inert verified-file substitute"}, {"files": {}}
 
         effects = dict(asset_fetch=fetch, tool_fetch=tool_fetch, inspect_archive=inspect,
             install_php=install, verify_php=verify, confirm_extensions=confirm_extensions,
-            install_tool=install_tool, execute=execute, capture_subjects=capture_subjects, derive_archive=derive)
+            install_tool=install_tool, execute=execute, capture_subjects=capture_subjects, derive_archive=derive,
+            configure=configure, capture_configuration=capture_configuration)
         return state, node, environment, request, host, catalog_path, calls, effects
 
     def run_fixture(self, data):
         state, node, environment, request, host, catalog_path, calls, effects = data
         options = dict(effects)
         derive = options.pop('derive_archive')
+        capture_configuration = options.pop('capture_configuration')
         with patch.dict(os.environ, environment, clear=True), patch.object(bootstrap, "CATALOG", catalog_path), \
                 patch.object(bootstrap, "observed_host", return_value=host), \
                 patch.object(bootstrap, "explicit_trust", return_value=object()), \
-                patch.object(normalization, 'normalize', side_effect=derive):
+                patch.object(normalization, 'normalize', side_effect=derive), \
+                patch.object(setup.configuration, 'capture_manifest', side_effect=capture_configuration):
             return setup.run_setup(state, request, node, environment, **options)
 
     def test_real_producer_manifest_glue_binds_both_tools_before_returning(self):
@@ -146,7 +158,7 @@ class SetupPhpLinuxTest(unittest.TestCase):
             data = self.fixture(Path(directory))
             report = self.run_fixture(data)
             self.assertEqual(["read-installer", "read-archive", "read-composer", "read-phpunit",
-                "inspect-archive", "install-php", "verify-installed", "upstream", "confirm-extensions",
+                "inspect-archive", "install-php", "verify-installed", "configure-cli", "upstream", "confirm-extensions",
                 "install-composer", "install-phpunit", "capture-subjects", "subject-composer",
                 "subject-phpunit"], data[6])
             self.assertEqual("pass", report["outcome"])

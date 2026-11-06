@@ -13,6 +13,7 @@ from scripts import php_linux_bootstrap as bootstrap
 from scripts import php_linux_archive as archive
 from scripts import php_linux_configuration as configuration
 from scripts import php_linux_recipe as recipe
+from scripts import php_linux_qualification as qualification
 
 
 class CliConfigurationTest(unittest.TestCase):
@@ -58,7 +59,8 @@ class CliConfigurationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             contents = {'usr/bin/php8.3': b'inert binary', 'usr/bin/php-config8.3': b'inert config',
-                        configuration.CLI: b'; inert production template\n', configuration.PECL: b'\n'}
+                        configuration.CLI: b'; inert production template\n', configuration.PECL: b'\n',
+                        configuration.TEMPLATE: b'; inert production template\n'}
             for name, raw in contents.items():
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -88,6 +90,47 @@ pecl_file=$PECL; ini_file=("$INI"); configure_php
                 check=True, timeout=5, env={'PATH':'/usr/bin:/bin','LC_ALL':'C'})
             with self.assertRaisesRegex(ValueError, 'does not match its held archive member'):
                 archive.capture_subjects(files, '8.3', [], **options)
+            document, outputs = configuration.derive(contents[configuration.TEMPLATE], files, self.source)
+            self.assertEqual(outputs[configuration.CLI], (root / configuration.CLI).read_bytes())
+            self.assertEqual(outputs[configuration.PECL], (root / configuration.PECL).read_bytes())
+            (root / configuration.CURRENT).write_bytes(outputs[configuration.CURRENT])
+            plan = configuration.subject_plan(document, files)
+            _, manifest = archive.capture_subjects(files, '8.3', [], configuration=plan, **options)
+            qualification.validate_normalized_subjects(manifest, {'files':files, 'targets':{}}, plan)
+            changed = copy.deepcopy(manifest)
+            changed['files']['/' + configuration.CLI]['sha256'] = 'f' * 64
+            with self.assertRaisesRegex(ValueError, 'independent held-input derivation'):
+                qualification.validate_normalized_subjects(changed, {'files':files, 'targets':{}}, plan)
+            with self.assertRaisesRegex(ValueError, 'independent configuration recomputation'):
+                qualification.validate_normalized_subjects(manifest, {'files':files, 'targets':{}})
+
+    def test_configuration_document_is_captured_and_retained_by_exact_object_identity(self):
+        _, files, document, outputs = self.fixture()
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp)
+            state.chmod(0o700)
+            record = configuration.write_manifest(state, document, files)
+            with configuration.capture_manifest(state, record, files) as (actual, derived, held, unchanged):
+                self.assertEqual(document, actual)
+                self.assertEqual(outputs, derived)
+                held.assert_sealed()
+                unchanged()
+                path = state / configuration.MANIFEST_NAME
+                path.chmod(0o600)
+                with self.assertRaises(ValueError):
+                    unchanged()
+            with self.assertRaises(ValueError):
+                configuration.capture_manifest(state, dict(record, name='other.json'), files).__enter__()
+
+    def test_configured_authority_cannot_be_claimed_by_a_legacy_receipt(self):
+        _, files, document, outputs = self.fixture()
+        identity = {'type':'regular', **configuration.identity(outputs[configuration.CLI]),
+                    'authority':{'kind':'derived-cli-configuration','member':configuration.CLI,
+                                 'recipe':configuration.SCHEMA}}
+        with self.assertRaisesRegex(ValueError, 'versioned configuration authority'):
+            qualification.validate_subject_authority('/' + configuration.CLI, identity, {}, '8.3', normalized=True)
+        qualification.validate_subject_authority('/' + configuration.CLI, identity, {}, '8.3',
+                                                 normalized=True, configured=True)
 
     def test_terminal_recomputation_refuses_changed_inputs_outputs_or_recipe(self):
         _, files, document, _ = self.fixture()
@@ -159,14 +202,34 @@ pecl_file=$PECL; ini_file=("$INI"); configure_php
             self.assertTrue(all(not (root / member).exists() for member in document['removed']))
 
     def test_native_writer_failure_is_not_suppressed_or_repeated(self):
+        template, _, _, _ = self.fixture()
+        files = {configuration.TEMPLATE:configuration.identity(template)}
+        document, _ = configuration.derive(template, files, self.source)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            environment = bootstrap.clean_environment({}, str(root / 'home'))
+            failure = subprocess.CalledProcessError(7, ['inert refused CLI writer'])
+            with mock.patch.dict(os.environ, environment, clear=True), \
+                    mock.patch('subprocess.run', side_effect=failure) as forbidden:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    configuration.apply(document, files, environment, root=root, execute=forbidden)
+                self.assertEqual(1, forbidden.call_count)
+
+    def test_foreign_output_alias_refuses_before_any_writer(self):
         _, files, document, _ = self.fixture()
-        environment = bootstrap.clean_environment({'PATH':'/usr/bin:/bin'}, '/tmp/inert-configuration-home')
-        failure = subprocess.CalledProcessError(7, ['inert refused install'])
-        with mock.patch.dict(os.environ, environment, clear=True), \
-                mock.patch('subprocess.run', side_effect=failure) as forbidden:
-            with self.assertRaises(subprocess.CalledProcessError):
-                configuration.apply(document, files, environment, execute=forbidden)
-            self.assertEqual(1, forbidden.call_count)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outside = root / 'unrelated-file'
+            outside.write_bytes(b'unchanged')
+            target = root / configuration.CURRENT
+            target.parent.mkdir(parents=True)
+            target.symlink_to(outside)
+            environment = bootstrap.clean_environment({}, str(root / 'home'))
+            with mock.patch.dict(os.environ, environment, clear=True), mock.patch('subprocess.run') as execute:
+                with self.assertRaisesRegex(ValueError, 'cannot replace a symlink'):
+                    configuration.apply(document, files, environment, root=root, execute=execute)
+                execute.assert_not_called()
+            self.assertEqual(b'unchanged', outside.read_bytes())
 
 
 if __name__ == '__main__':

@@ -5,6 +5,7 @@ Observed configured files never supply their own expected digest.
 """
 
 import base64
+from contextlib import contextmanager
 import io
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ import subprocess
 
 from scripts import php_linux_bootstrap as bootstrap
 from scripts import php_linux_recipe as recipe
+from scripts import php_linux_normalize as normalization
 
 
 SCHEMA = "durable-workflow.php-linux-cli-configuration/v1"
@@ -78,6 +80,15 @@ def validate(document, files, source=None):
     bootstrap.exact_keys(document, {"schema", "profile", "setup_php_commit", "input", "components", "outputs", "removed"})
     incoming = document["input"]
     bootstrap.exact_keys(incoming, {"member", "size", "sha256", "base64"})
+    for mapping in (document["components"], document["outputs"]):
+        if not isinstance(mapping, dict):
+            raise ValueError("CLI configuration file identities require a closed mapping")
+        for value in mapping.values():
+            bootstrap.exact_keys(value, {"size", "sha256"})
+            if type(value["size"]) is not int or not isinstance(value["sha256"], str):
+                raise ValueError("CLI configuration file identity has invalid field types")
+    if type(incoming["size"]) is not int or not isinstance(incoming["sha256"], str):
+        raise ValueError("CLI configuration preimage identity has invalid field types")
     if not isinstance(incoming["base64"], str) or len(incoming["base64"]) > 4 * ((MAX_TEMPLATE + 2) // 3):
         raise ValueError("CLI configuration preimage exceeds its fixed bound")
     try:
@@ -90,11 +101,26 @@ def validate(document, files, source=None):
     return outputs
 
 
+def subject_plan(document, files):
+    outputs = validate(document, files)
+    prefix = "etc/php/8.3/cli/conf.d/"
+    active = {name for name in files if name.startswith(prefix)
+              and "/" not in name[len(prefix):] and name.endswith('.ini')}
+    active.difference_update(document['removed'])
+    active.update((CLI, PECL))
+    return {'schema': SCHEMA, 'outputs': {name: identity(raw) for name, raw in outputs.items()},
+            'active': sorted(active)}
+
+
 def capture_template(files, root=Path("/")):
-    expected = files.get(TEMPLATE)
+    return capture_member(files, TEMPLATE, root)
+
+
+def capture_member(files, member, root):
+    expected = files.get(member)
     if not isinstance(expected, dict) or type(expected.get("size")) is not int or not 0 < expected["size"] <= MAX_TEMPLATE:
         raise ValueError("Initial archive lacks its bounded CLI production template")
-    descriptor = os.open(root / TEMPLATE, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    descriptor = os.open(root / member, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size != expected["size"]:
@@ -110,6 +136,18 @@ def capture_template(files, root=Path("/")):
         os.close(descriptor)
 
 
+def write_manifest(state, document, files):
+    validate(document, files)
+    return normalization.write_document(state, MANIFEST_NAME, document, MAX_DOCUMENT)
+
+
+@contextmanager
+def capture_manifest(state, record, files):
+    with normalization.capture_document(state, record, MANIFEST_NAME, MAX_DOCUMENT) as (document, held, unchanged):
+        outputs = validate(document, files)
+        yield document, outputs, held, unchanged
+
+
 def apply(document, files, environment, *, root=Path("/"), execute=subprocess.run, source=None):
     """Write only three literal outputs and remove exact held coverage entries."""
     outputs = validate(document, files, source)
@@ -123,6 +161,8 @@ def apply(document, files, environment, *, root=Path("/"), execute=subprocess.ru
             continue
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
             raise ValueError("CLI output cannot replace a symlink, alias or special file")
+    for member in document['removed']:
+        capture_member(files, member, root)
     for member, raw in outputs.items():
         bound = {"size": len(raw), "digest": bootstrap.SHA256_PREFIX + bootstrap.sha256(raw)}
         with bootstrap.hold_bytes(io.BytesIO(raw), bound, {"recipe": SCHEMA, "member": member}) as held:
@@ -143,17 +183,7 @@ def apply(document, files, environment, *, root=Path("/"), execute=subprocess.ru
             os.close(descriptor)
     for member in document["removed"]:
         path = root / member
-        if type(files[member].get("size")) is not int or not 0 < files[member]["size"] <= MAX_TEMPLATE:
-            raise ValueError("Coverage configuration exceeds its held-input bound")
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-        try:
-            metadata = os.fstat(descriptor)
-            if (not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1
-                    or metadata.st_size != files[member]["size"]
-                    or identity(os.pread(descriptor, metadata.st_size + 1, 0)) != files[member]):
-                raise ValueError("Coverage removal lacks the exact held member identity")
-        finally:
-            os.close(descriptor)
+        capture_member(files, member, root)
         execute(["/usr/bin/sudo", "/usr/bin/rm", "--", str(path)],
                 env=environment, timeout=10, check=True)
     return outputs
