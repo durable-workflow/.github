@@ -344,6 +344,13 @@
     },
     "workflow": {
       "branch": "main",
+      "composer_trust_scopes": [
+        {
+          "job": "published-package",
+          "required": false,
+          "workflow": "release-verification.yml"
+        }
+      ],
       "repository": "workflow",
       "workflows": [
         {

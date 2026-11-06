@@ -633,6 +633,32 @@ class QualificationPolicyTest(unittest.TestCase):
                 self.assertEqual(succeeds, result.returncode == 0)
                 self.assertEqual(succeeds, marker.exists())
 
+    def test_composer_scopes_require_closed_workflow_job_and_boolean_fields(self) -> None:
+        selected = self.policy["targets"]["workflow"]["composer_trust_scopes"][0]
+        self.assertEqual({"workflow": "release-verification.yml", "job": "published-package", "required": False}, selected)
+        for field, value in (("workflow", "../release.yml"), ("job", "${{ inputs.job }}"),
+                             ("required", "false"), ("extra", "field")):
+            candidate = copy.deepcopy(self.policy)
+            candidate["targets"]["workflow"]["composer_trust_scopes"][0][field] = value
+            with self.subTest(field=field), self.assertRaises(PolicyError):
+                validate_policy(candidate)
+        for value in (None, {}, [None], [selected, selected]):
+            candidate = copy.deepcopy(self.policy)
+            candidate["targets"]["workflow"]["composer_trust_scopes"] = value
+            with self.subTest(value=value), self.assertRaises(PolicyError):
+                validate_policy(candidate)
+
+    def test_a_scoped_migration_cannot_replace_whole_target_composer_enforcement(self) -> None:
+        self.policy["targets"]["sdk-php"]["composer_trust_scopes"] = [
+            {"workflow": "docs.yml", "job": "build", "required": False}]
+        with self.assertRaisesRegex(PolicyError, "cannot be scoped down"):
+            validate_policy(self.policy)
+
+    def test_composer_enforcement_flags_require_boolean_values(self) -> None:
+        self.policy["targets"]["sdk-php"]["composer_trust_required"] = "false"
+        with self.assertRaisesRegex(PolicyError, "invalid Composer enforcement"):
+            validate_policy(self.policy)
+
     def test_approved_immutable_action_with_version_comment_is_accepted(self) -> None:
         commit, version = self.approved_action("actions/checkout")
         evidence = self.scan(workflow(f"- uses: actions/checkout@{commit} # {version}"))
