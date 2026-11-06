@@ -19,7 +19,7 @@ from scripts import php_linux_normalize as normalization
 
 
 class PhpLinuxNormalizeTest(unittest.TestCase):
-    def fixture(self, *, pax=None, special=None):
+    def fixture(self, *, pax=None, special=None, content=b'inert'):
         raw = io.BytesIO()
         with tarfile.open(fileobj=raw, mode='w', format=tarfile.PAX_FORMAT if pax else tarfile.GNU_FORMAT) as output:
             for name in ('./usr', './usr/bin'):
@@ -27,11 +27,11 @@ class PhpLinuxNormalizeTest(unittest.TestCase):
                 info.type, info.mode = tarfile.DIRTYPE, 0o755
                 output.addfile(info)
             info = tarfile.TarInfo('./usr/bin/target')
-            info.size, info.mode, info.mtime = 5, 0o555, 123
+            info.size, info.mode, info.mtime = len(content), 0o555, 123
             info.uid, info.gid, info.uname, info.gname = 11, 12, 'inert', 'fixture'
             if pax:
                 info.pax_headers = pax
-            output.addfile(info, io.BytesIO(b'inert'))
+            output.addfile(info, io.BytesIO(content))
             for name, target in (('./usr/bin/alias', 'target'), ('./usr/bin/missing', 'absent'),
                                  ('./usr/bin/directory-alias', '.')):
                 info = tarfile.TarInfo(name)
@@ -117,6 +117,23 @@ class PhpLinuxNormalizeTest(unittest.TestCase):
         stream = io.BytesIO(source)
         with self.assertRaisesRegex(ValueError, 'links/sparse/special'):
             archive.inventory(stream)
+
+    def test_default_window_exceeds_bound_but_finite_long_window_preserves_large_alias_targets(self):
+        content = hashlib.shake_256(b'inert contained target fixture').digest(3 * 1024**2)
+        compressed, identity, selected, _ = self.fixture(content=content)
+        old_arguments = ('--compress', '--stdout', '--quiet', '-T1')
+        with self.held(compressed, identity) as held, patch.object(normalization, 'profile', return_value=selected), \
+                patch.object(bootstrap, 'MAX_ARCHIVE', 5 * 1024**2):
+            with patch.object(normalization, 'COMPRESSOR_ARGS', old_arguments):
+                with self.assertRaisesRegex(ValueError, 'inspection byte limit'):
+                    self.enter_derivation(held)
+            self.assertEqual([], self.temporary_descriptors())
+            with normalization.normalize(held) as result:
+                self.assertLess(result.held.identity['size'], bootstrap.MAX_ARCHIVE)
+                self.assertEqual(result.files['usr/bin/target'], result.files['usr/bin/alias'])
+                self.assertEqual(3 * 1024**2, result.files['usr/bin/alias']['size'])
+                self.assertEqual(result.files, archive.inspect_held(result.held))
+            self.assertEqual([], self.temporary_descriptors())
 
     def test_manifest_is_captured_before_install_and_rejects_content_object_and_type_drift(self):
         compressed, identity, selected, _ = self.fixture()

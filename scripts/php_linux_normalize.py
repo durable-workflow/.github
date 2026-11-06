@@ -26,6 +26,10 @@ MANIFEST_NAME = 'normalization.json'
 MAX_MANIFEST = 2 * 1024**2
 MAX_STAGED = archive.MAX_UNPACKED
 DURATION = 120
+# Materialized library aliases can repeat targets farther apart than the
+# default window. Match the held input's observed 128 MiB window without a
+# worker buffer or any increase to the output, staging or process bounds.
+COMPRESSOR_ARGS = ('--compress', '--stdout', '--quiet', '--single-thread', '--long=27')
 
 
 @dataclass(frozen=True)
@@ -516,7 +520,7 @@ def normalize(held):
                 aliases, omitted = checked_plan(index, plan)
                 files, targets = build_regular_tar(original, regular, original_size, index, hashes,
                     aliases, omitted, plan, deadline)
-            with codec(['--compress', '--stdout', '--quiet', '-T1'], regular, bootstrap.MAX_ARCHIVE, deadline) as encoded:
+            with codec(COMPRESSOR_ARGS, regular, bootstrap.MAX_ARCHIVE, deadline) as encoded:
                 compressed, size, digest = encoded
                 identity = {'name': 'php-initial-regular-only.tar.zst', 'size': size, 'digest': bootstrap.SHA256_PREFIX + digest}
                 with io.BufferedReader(DescriptorReader(compressed, 0, size, deadline)) as reader:
