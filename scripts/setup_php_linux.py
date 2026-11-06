@@ -111,12 +111,18 @@ def configure_cli(state, members, source, environment):
     return document, record, plan
 
 
+def bind_installed_files(report, members, plan, verify_php):
+    report['stage'] = 'installed-file-binding'
+    report['installed'] = verify_php(members, plan['request']['inputs']['php-version'],
+                                     plan['required_extensions'])
+
+
 def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
               asset_fetch=bootstrap.download_held, tool_fetch=tools.download_held,
               inspect_archive=archive.inspect_held, install_php=bootstrap.run_held_installer,
               verify_php=archive.verify_installed, confirm_extensions=archive.verify_enabled,
               install_tool=tools.install_held, execute=subprocess.run,
-              capture_subjects=capture_setup_subjects, configure=configure_cli):
+              capture_subjects=capture_setup_subjects):
     """Complete effect recipe; focused tests substitute all external effects."""
     if environment != bootstrap.clean_environment(environment, str(state / "home")) or dict(os.environ) != environment:
         raise ValueError("Setup requires an already closed parent environment before reading inputs")
@@ -175,11 +181,9 @@ def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
             report["stage"] = "bound-installer"
             install_php(script, held_archive, (request["inputs"]["php-version"], "release", "nts"),
                         environment, catalog, no_apt=True, normalized=normalized)
-            report["stage"] = "installed-file-binding"
-            report["installed"] = verify_php(members, request["inputs"]["php-version"],
-                                               plan["required_extensions"])
+            bind_installed_files(report, members, plan, verify_php)
             report['stage'] = 'bound-cli-configuration'
-            config_document, config_record, config_plan = configure(state, members, files, environment)
+            config_document, config_record, config_plan = configure_cli(state, members, files, environment)
             report['configuration_manifest'] = config_record
             if bootstrap.sha256(Path(node["node"]).read_bytes()) != node["node_sha256"]:
                 raise ValueError("Runner action Node executable changed after the closed reexec")

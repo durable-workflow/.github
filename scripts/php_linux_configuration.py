@@ -27,6 +27,7 @@ CURRENT = "usr/lib/php/8.3/php.ini-current"
 MANIFEST_NAME = "cli-configuration.json"
 MAX_TEMPLATE = 128 * 1024
 MAX_DOCUMENT = 256 * 1024
+SUDO = '/usr/bin/sudo'
 COMPONENTS = ("src/configs/ini/php.ini", "src/configs/ini/xdebug.ini", "src/configs/ini/jit.ini")
 
 
@@ -76,11 +77,8 @@ def derive(template, files, source):
     return document, outputs
 
 
-def validate(document, files, source=None):
-    bootstrap.exact_keys(document, {"schema", "profile", "setup_php_commit", "input", "components", "outputs", "removed"})
-    incoming = document["input"]
-    bootstrap.exact_keys(incoming, {"member", "size", "sha256", "base64"})
-    for mapping in (document["components"], document["outputs"]):
+def validate_file_identities(components, outputs, incoming):
+    for mapping in (components, outputs):
         if not isinstance(mapping, dict):
             raise ValueError("CLI configuration file identities require a closed mapping")
         for value in mapping.values():
@@ -89,6 +87,13 @@ def validate(document, files, source=None):
                 raise ValueError("CLI configuration file identity has invalid field types")
     if type(incoming["size"]) is not int or not isinstance(incoming["sha256"], str):
         raise ValueError("CLI configuration preimage identity has invalid field types")
+
+
+def validate(document, files, source=None):
+    bootstrap.exact_keys(document, {"schema", "profile", "setup_php_commit", "input", "components", "outputs", "removed"})
+    incoming = document["input"]
+    bootstrap.exact_keys(incoming, {"member", "size", "sha256", "base64"})
+    validate_file_identities(document['components'], document['outputs'], incoming)
     if not isinstance(incoming["base64"], str) or len(incoming["base64"]) > 4 * ((MAX_TEMPLATE + 2) // 3):
         raise ValueError("CLI configuration preimage exceeds its fixed bound")
     try:
@@ -166,11 +171,11 @@ def apply(document, files, environment, *, root=Path("/"), execute=subprocess.ru
     for member, raw in outputs.items():
         bound = {"size": len(raw), "digest": bootstrap.SHA256_PREFIX + bootstrap.sha256(raw)}
         with bootstrap.hold_bytes(io.BytesIO(raw), bound, {"recipe": SCHEMA, "member": member}) as held:
-            execute(["/usr/bin/sudo", "/usr/bin/tee", "--", str(root / member)],
+            execute([SUDO, "/usr/bin/tee", "--", str(root / member)],
                     stdin=held.descriptor, stdout=subprocess.DEVNULL,
                     env=environment, timeout=10, check=True)
             held.assert_sealed()
-        execute(["/usr/bin/sudo", "/usr/bin/chmod", "0644", str(root / member)],
+        execute([SUDO, "/usr/bin/chmod", "0644", str(root / member)],
                 env=environment, timeout=10, check=True)
         descriptor = os.open(root / member, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
         try:
@@ -184,6 +189,6 @@ def apply(document, files, environment, *, root=Path("/"), execute=subprocess.ru
     for member in document["removed"]:
         path = root / member
         capture_member(files, member, root)
-        execute(["/usr/bin/sudo", "/usr/bin/rm", "--", str(path)],
+        execute([SUDO, "/usr/bin/rm", "--", str(path)],
                 env=environment, timeout=10, check=True)
     return outputs

@@ -135,10 +135,12 @@ class SetupPhpLinuxTest(unittest.TestCase):
         options = dict(effects)
         derive = options.pop('derive_archive')
         capture_configuration = options.pop('capture_configuration')
+        configure = options.pop('configure')
         with patch.dict(os.environ, environment, clear=True), patch.object(bootstrap, "CATALOG", catalog_path), \
                 patch.object(bootstrap, "observed_host", return_value=host), \
                 patch.object(bootstrap, "explicit_trust", return_value=object()), \
                 patch.object(normalization, 'normalize', side_effect=derive), \
+                patch.object(setup, 'configure_cli', side_effect=configure), \
                 patch.object(setup.configuration, 'capture_manifest', side_effect=capture_configuration):
             return setup.run_setup(state, request, node, environment, **options)
 

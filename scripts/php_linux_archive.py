@@ -271,6 +271,25 @@ def verify_installed(files: dict, php: str, required: list[str], execute=subproc
             "version": result["version"], "zts": result["zts"], "debug": result["debug"]}
 
 
+def subject_record(name, expected, php, configuration, normalization_targets):
+    authority = ({"kind": "derived-redis", "member": name}
+                 if name == f"etc/php/{php}/mods-available/redis.ini"
+                 else {"kind": "archive", "member": name})
+    if configuration is not None and name in configuration['outputs']:
+        authority = {'kind': 'derived-cli-configuration', 'member': name,
+                     'recipe': configuration['schema']}
+    elif normalization_targets is not None and name in normalization_targets:
+        origin = normalization_targets[name]
+        if expected != {key: origin[key] for key in ('size', 'sha256')}:
+            raise ValueError('Normalized subject differs from its original contained target')
+        authority = {'kind': 'normalized-archive', 'member': name,
+            'source_member': origin['target'], 'target_size': origin['size'],
+            'target_sha256': origin['sha256'],
+            'target_metadata_sha256': bootstrap.sha256(json.dumps(origin['metadata'], sort_keys=True,
+                separators=(',', ':')).encode())}
+    return {"type": "regular", **expected, "authority": authority}
+
+
 def capture_subjects(files, php, required, *, root=Path("/"), read=None, resolve=None,
                      command_path=None, normalization_targets=None, configuration=None, **checks):
     """Producer manifest: each file identity comes from held archive/derived bytes."""
@@ -293,22 +312,7 @@ def capture_subjects(files, php, required, *, root=Path("/"), read=None, resolve
             raise ValueError("Subject lacks held-archive/derived authority")
         metadata, contents = native_read(path)
         verify_file(path, expected, lambda _: (metadata, contents))
-        authority = ({"kind": "derived-redis", "member": name}
-                     if name == f"etc/php/{php}/mods-available/redis.ini"
-                     else {"kind": "archive", "member": name})
-        if configuration is not None and name in configuration['outputs']:
-            authority = {'kind': 'derived-cli-configuration', 'member': name,
-                         'recipe': configuration['schema']}
-        elif normalization_targets is not None and name in normalization_targets:
-            origin = normalization_targets[name]
-            if expected != {key: origin[key] for key in ('size', 'sha256')}:
-                raise ValueError('Normalized subject differs from its original contained target')
-            authority = {'kind': 'normalized-archive', 'member': name,
-                'source_member': origin['target'], 'target_size': origin['size'],
-                'target_sha256': origin['sha256'],
-                'target_metadata_sha256': bootstrap.sha256(json.dumps(origin['metadata'], sort_keys=True,
-                    separators=(',', ':')).encode())}
-        manifest["files"][canonical(path)] = {"type": "regular", **expected, "authority": authority}
+        manifest["files"][canonical(path)] = subject_record(name, expected, php, configuration, normalization_targets)
         return metadata, contents
 
     def observed_resolve(path):

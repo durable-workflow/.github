@@ -119,8 +119,10 @@ pecl_file=$PECL; ini_file=("$INI"); configure_php
                 path.chmod(0o600)
                 with self.assertRaises(ValueError):
                     unchanged()
+            foreign = dict(record, name='other.json')
+            capture = configuration.capture_manifest(state, foreign, files)
             with self.assertRaises(ValueError):
-                configuration.capture_manifest(state, dict(record, name='other.json'), files).__enter__()
+                capture.__enter__()
 
     def test_configured_authority_cannot_be_claimed_by_a_legacy_receipt(self):
         _, files, document, outputs = self.fixture()

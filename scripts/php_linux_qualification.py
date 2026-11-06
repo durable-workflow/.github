@@ -106,34 +106,45 @@ def validate_manifest_tools(manifest, selected):
             raise ValueError("Both literal PHAR subjects are mandatory")
 
 
+def validate_cli_authority(path, authority, configured):
+    bootstrap.exact_keys(authority, {'kind', 'member', 'recipe'})
+    if (not configured or authority['member'] != path.lstrip('/')
+            or authority['member'] not in (cli_configuration.CLI, cli_configuration.PECL, cli_configuration.CURRENT)
+            or authority['recipe'] != cli_configuration.SCHEMA):
+        raise ValueError('CLI subject lacks the closed versioned configuration authority')
+
+
+def validate_tool_authority(path, identity, selected):
+    authority = identity['authority']
+    bootstrap.exact_keys(authority, {"kind", "name"})
+    row = selected.get(authority["name"])
+    if (row is None or path != TOOL_DIRECTORY + row["name"]
+            or identity["size"] != row["size"] or identity["sha256"] != row["sha256"]):
+        raise ValueError("PHAR subject lacks literal tool-catalog authority")
+
+
+def validate_normalized_authority(path, identity, normalized):
+    authority = identity['authority']
+    bootstrap.exact_keys(authority, {'kind', 'member', 'source_member', 'target_size',
+        'target_sha256', 'target_metadata_sha256'})
+    if (not normalized or authority['member'] != path.lstrip('/')
+            or authority['target_size'] != identity['size'] or authority['target_sha256'] != identity['sha256']
+            or not isinstance(authority['source_member'], str)
+            or not re.fullmatch(tools.SHA256_PATTERN, authority['target_metadata_sha256'])):
+        raise ValueError('Normalized subject lacks its exact source-target authority')
+
+
 def validate_subject_authority(path, identity, selected, php, *, normalized=False, configured=False):
     authority = identity["authority"]
     if not isinstance(authority, dict):
         raise ValueError("Subject authority is missing")
     kind = authority.get("kind")
     if kind == 'derived-cli-configuration':
-        bootstrap.exact_keys(authority, {'kind', 'member', 'recipe'})
-        if (not configured or authority['member'] != path.lstrip('/')
-                or authority['member'] not in (cli_configuration.CLI, cli_configuration.PECL, cli_configuration.CURRENT)
-                or authority['recipe'] != cli_configuration.SCHEMA):
-            raise ValueError('CLI subject lacks the closed versioned configuration authority')
-        return
+        return validate_cli_authority(path, authority, configured)
     if kind == "tool":
-        bootstrap.exact_keys(authority, {"kind", "name"})
-        row = selected.get(authority["name"])
-        if (row is None or path != TOOL_DIRECTORY + row["name"]
-                or identity["size"] != row["size"] or identity["sha256"] != row["sha256"]):
-            raise ValueError("PHAR subject lacks literal tool-catalog authority")
-        return
+        return validate_tool_authority(path, identity, selected)
     if kind == 'normalized-archive':
-        bootstrap.exact_keys(authority, {'kind', 'member', 'source_member', 'target_size',
-            'target_sha256', 'target_metadata_sha256'})
-        if (not normalized or authority['member'] != path.lstrip('/')
-                or authority['target_size'] != identity['size'] or authority['target_sha256'] != identity['sha256']
-                or not isinstance(authority['source_member'], str)
-                or not re.fullmatch(tools.SHA256_PATTERN, authority['target_metadata_sha256'])):
-            raise ValueError('Normalized subject lacks its exact source-target authority')
-        return
+        return validate_normalized_authority(path, identity, normalized)
     bootstrap.exact_keys(authority, {"kind", "member"})
     if authority["member"] != path.lstrip("/") or kind not in ("archive", "derived-redis"):
         raise ValueError("Subject lacks canonical held-archive member authority")
@@ -148,7 +159,12 @@ def validate_success(report, state):
     configured = isinstance(report, dict) and report.get('schema') == setup.CONFIGURED_RECEIPT_SCHEMA
     normalized = isinstance(report, dict) and report.get('schema') in (
         setup.NORMALIZED_RECEIPT_SCHEMA, setup.CONFIGURED_RECEIPT_SCHEMA)
-    expected_fields = CONFIGURED_PASS_FIELDS if configured else NORMALIZED_PASS_FIELDS if normalized else PASS_FIELDS
+    if configured:
+        expected_fields = CONFIGURED_PASS_FIELDS
+    elif normalized:
+        expected_fields = NORMALIZED_PASS_FIELDS
+    else:
+        expected_fields = PASS_FIELDS
     if not isinstance(report, dict) or set(report) != expected_fields:
         raise ValueError("Complete successful setup receipt is required")
     if (report["schema"] not in (setup.RECEIPT_SCHEMA, setup.NORMALIZED_RECEIPT_SCHEMA,
@@ -168,7 +184,7 @@ def validate_success(report, state):
     return plan
 
 
-def validate_normalized_subjects(manifest, document, configuration=None):
+def validate_configured_inventory(manifest, configuration):
     derived = {path.lstrip('/') for path, identity in manifest['files'].items()
                if identity['authority']['kind'] == 'derived-cli-configuration'}
     if configuration is not None:
@@ -178,28 +194,36 @@ def validate_normalized_subjects(manifest, document, configuration=None):
             raise ValueError('Producer active CLI inventory differs from the held configuration recipe')
     elif derived:
         raise ValueError('CLI subjects require independent configuration recomputation')
-    for path, identity in manifest['files'].items():
-        authority = identity['authority']
-        if authority['kind'] == 'derived-cli-configuration':
-            name = path.lstrip('/')
-            expected = {'kind': 'derived-cli-configuration', 'member': name, 'recipe': cli_configuration.SCHEMA}
-            if (authority != expected or {key:identity[key] for key in ('size', 'sha256')}
-                    != configuration['outputs'][name]):
-                raise ValueError('CLI subject differs from independent held-input derivation')
-            continue
-        if authority['kind'] in ('tool', 'derived-redis'):
-            continue
+
+
+def validate_normalized_identity(path, identity, document, configuration):
+    authority = identity['authority']
+    if authority['kind'] == 'derived-cli-configuration':
         name = path.lstrip('/')
-        if name not in document['files'] or {key: identity[key] for key in ('size', 'sha256')} != document['files'][name]:
-            raise ValueError('Installed subject differs from the complete derived manifest')
-        target = document['targets'].get(name)
-        expected = {'kind': 'archive', 'member': name}
-        if target is not None:
-            expected = {'kind': 'normalized-archive', 'member': name, 'source_member': target['target'],
-                'target_size': target['size'], 'target_sha256': target['sha256'],
-                'target_metadata_sha256': bootstrap.sha256(normalization.canonical_json(target['metadata']))}
-        if authority != expected:
-            raise ValueError('Installed subject lost its original archive-target provenance')
+        expected = {'kind': 'derived-cli-configuration', 'member': name, 'recipe': cli_configuration.SCHEMA}
+        if (authority != expected or {key:identity[key] for key in ('size', 'sha256')}
+                != configuration['outputs'][name]):
+            raise ValueError('CLI subject differs from independent held-input derivation')
+        return
+    if authority['kind'] in ('tool', 'derived-redis'):
+        return
+    name = path.lstrip('/')
+    if name not in document['files'] or {key: identity[key] for key in ('size', 'sha256')} != document['files'][name]:
+        raise ValueError('Installed subject differs from the complete derived manifest')
+    target = document['targets'].get(name)
+    expected = {'kind': 'archive', 'member': name}
+    if target is not None:
+        expected = {'kind': 'normalized-archive', 'member': name, 'source_member': target['target'],
+            'target_size': target['size'], 'target_sha256': target['sha256'],
+            'target_metadata_sha256': bootstrap.sha256(normalization.canonical_json(target['metadata']))}
+    if authority != expected:
+        raise ValueError('Installed subject lost its original archive-target provenance')
+
+
+def validate_normalized_subjects(manifest, document, configuration=None):
+    validate_configured_inventory(manifest, configuration)
+    for path, identity in manifest['files'].items():
+        validate_normalized_identity(path, identity, document, configuration)
 
 
 def validate_runtime_receipt(report, plan):
@@ -408,6 +432,22 @@ def capture_private_pip(owned, runner_temp):
         raise
 
 
+def revalidate_provenance(document, normalized, normalized_unchanged, configured,
+                          configured_unchanged, evidence, alternatives):
+    if normalized is not None:
+        if alternatives(document['files']) != {
+                key: value for key, value in evidence['alternatives'].items() if key != 'revalidated'}:
+            raise ValueError('Installed alternatives authority changed after probes')
+        evidence['alternatives']['revalidated'] = True
+        normalized_unchanged()
+        normalized.assert_sealed()
+        evidence['normalization']['revalidated'] = True
+    if configured is not None:
+        configured_unchanged()
+        configured.assert_sealed()
+        evidence['configuration']['revalidated'] = True
+
+
 def qualify(path, runner_temp, environment, publish, *, validate=validate_success,
             subjects=revalidate_subjects, probes=run_probes, pip_state=None,
             alternatives=php_linux_alternatives.verify,
@@ -446,6 +486,7 @@ def qualify(path, runner_temp, environment, publish, *, validate=validate_succes
             configured_unchanged = None
             configured_held = None
             configured_plan = None
+            document = None
             if report['schema'] in (setup.NORMALIZED_RECEIPT_SCHEMA, setup.CONFIGURED_RECEIPT_SCHEMA):
                 document, normalized_held, normalized_unchanged = normalization_custody.enter_context(
                     normalization.capture_manifest(state, report['normalization_manifest']))
@@ -473,18 +514,8 @@ def qualify(path, runner_temp, environment, publish, *, validate=validate_succes
                 unchanged()
                 held.assert_sealed()
                 subjects(report, plan, **subject_options)
-                if normalized_held is not None:
-                    if alternatives(document['files']) != {
-                            key: value for key, value in evidence['alternatives'].items() if key != 'revalidated'}:
-                        raise ValueError('Installed alternatives authority changed after probes')
-                    evidence['alternatives']['revalidated'] = True
-                    normalized_unchanged()
-                    normalized_held.assert_sealed()
-                    evidence['normalization']['revalidated'] = True
-                if configured_held is not None:
-                    configured_unchanged()
-                    configured_held.assert_sealed()
-                    evidence['configuration']['revalidated'] = True
+                revalidate_provenance(document, normalized_held, normalized_unchanged, configured_held,
+                    configured_unchanged, evidence, alternatives)
             evidence["receipt"] = report
         verified = True
     except Exception as error:
