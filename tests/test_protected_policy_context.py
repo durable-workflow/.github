@@ -101,6 +101,32 @@ class ProtectedContextTest(unittest.TestCase):
         with self.assertRaises(InputRefused):
             context.validate_context({WORKFLOW: raw})
 
+    def test_normalized_profile_requires_exact_coordinated_sources_and_control_plane_target(self):
+        path = ".github/workflows/qualify-linux-php-initial.yml"
+        raw = (ROOT / "tests/fixtures/qualify-linux-php-normalized.yml").read_bytes()
+        with patch.object(context, "REVIEWED_NORMALIZED_PROFILE_SUCCESSORS", {}), self.assertRaises(InputRefused):
+            context.validate_context({path: raw})
+        context.validate_context({path: raw})
+        with self.assertRaises(InputRefused):
+            context.validate_context({path: raw}, policy_target="ai")
+        with self.assertRaises(InputRefused):
+            context.validate_context({WORKFLOW: raw})
+        source = b"45a7863dbc425ecf19a5a4038a84a9443c23a9a9"
+        changes = [raw + b"\n# drift\n", raw.replace(b"workflow_dispatch:\n", b"push:\n"),
+            raw.replace(b"timeout-minutes: 15", b"timeout-minutes: 60"),
+            raw.replace(source, b"a" * 40),
+            raw.replace(b"ref: " + source, b"ref: 1b194dd945b72019f701e94472134135f584f652", 1),
+            raw.replace(b".qualification-control", b".other-source"),
+            raw.replace(b"242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5", b"b" * 40),
+            raw.replace(b"GITHUB_RUN_ATTEMPT\" = 1", b"GITHUB_RUN_ATTEMPT\" = 2"),
+            raw.replace(b"pathlib.Path(receipt_text) if receipt_text else None", b"pathlib.Path('/unproven')"),
+            raw.replace(b"qualification.qualify(receipt,runner_temp,closed,publish,pip_state=pip_state)",
+                        b"qualification.qualify(receipt,runner_temp,closed,publish)")]
+        for number, changed in enumerate(changes):
+            self.assertNotEqual(raw, changed)
+            with self.subTest(change=number), self.assertRaises(InputRefused):
+                context.validate_context({path: changed})
+
     def test_plain_root_helper_and_literal_root_overrides_are_supported(self):
         for directory in (".", "./", "${{ github.workspace }}"):
             with self.subTest(directory=directory):

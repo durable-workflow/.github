@@ -1,0 +1,140 @@
+name: Qualify initial bound Linux PHP setup
+
+# Source wiring only. General selects each original manual qualification run.
+on:
+  workflow_dispatch:
+    inputs:
+      expected_workflow_sha:
+        description: Full reviewed workflow commit selected for this original run
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: initial-bound-linux-php
+  cancel-in-progress: false
+
+jobs:
+  qualify-initial-linux-php:
+    name: Original initial Linux PHP setup qualification
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      GITHUB_TOKEN: ''
+      GH_TOKEN: ''
+      GITHUB_ENTERPRISE_TOKEN: ''
+      GH_ENTERPRISE_TOKEN: ''
+    steps:
+      - name: Require the exact original protected workflow admission
+        id: admission
+        env:
+          EXPECTED_WORKFLOW_SHA: ${{ inputs.expected_workflow_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$EXPECTED_WORKFLOW_SHA" = "$GITHUB_SHA"
+          test "$GITHUB_WORKFLOW_SHA" = "$GITHUB_SHA"
+          test "$GITHUB_REPOSITORY" = durable-workflow/.github
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_WORKFLOW_REF" = durable-workflow/.github/.github/workflows/qualify-linux-php-initial.yml@refs/heads/main
+          test "$GITHUB_RUN_ATTEMPT" = 1
+      - name: Check out the accepted source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: durable-workflow/.github
+          ref: 45a7863dbc425ecf19a5a4038a84a9443c23a9a9
+          persist-credentials: false
+      - name: Check out the accepted private-pip and terminal control source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: durable-workflow/.github
+          ref: 45a7863dbc425ecf19a5a4038a84a9443c23a9a9
+          path: .qualification-control
+          persist-credentials: false
+      - name: Bind source and require the existing host prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(/usr/bin/git rev-parse HEAD)" = 45a7863dbc425ecf19a5a4038a84a9443c23a9a9
+          test "$(/usr/bin/git -C .qualification-control rev-parse HEAD)" = 45a7863dbc425ecf19a5a4038a84a9443c23a9a9
+          /usr/bin/python3 -I -S -B - <<'PY'
+          import hashlib,json,os,pathlib,shutil,sys
+          sys.path.insert(0,str(pathlib.Path.cwd()))
+          from scripts.php_linux_bootstrap import observed_host
+          assert observed_host()==dict(operating_system='ubuntu',release='26.04',architecture='x86_64')
+          assert os.environ.get('RUNNER_ENVIRONMENT')=='github-hosted'
+          assert shutil.disk_usage(os.environ['RUNNER_TEMP']).free>=8*1024**3
+          available=next(int(line.split()[1])*1024 for line in pathlib.Path('/proc/meminfo').read_text().splitlines() if line.startswith('MemAvailable:'))
+          assert available>=4*1024**3
+          tools={}
+          for name in ('python3','tar','zstd','bash','sudo','install','timeout'):
+              path=pathlib.Path('/usr/bin')/name
+              assert path.is_file() and os.access(path,os.X_OK)
+              tools[name]=hashlib.sha256(path.read_bytes()).hexdigest()
+          print(json.dumps({'host':'ubuntu26.04/x86_64','image_os':os.environ.get('ImageOS'),'image_version':os.environ.get('ImageVersion'),'host_tool_sha256':tools},sort_keys=True))
+          PY
+      - name: Use the existing authenticated clean-store predecessor
+        id: pip_trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5 # clean-trust
+        with:
+          clients: python
+      - name: Exercise the exact bound initial setup profile once
+        id: setup
+        uses: ./.github/actions/setup-php-linux # local
+        with:
+          php-version: '8.3'
+          tools: composer:2.10.3,phpunit:11.5.57
+          coverage: none
+      - name: Capture exact producer evidence before PHAR probes and revalidate afterward
+        if: ${{ always() && steps.admission.outcome == 'success' && (steps.setup.outcome == 'success' || steps.setup.outcome == 'failure') }}
+        env:
+          SETUP_RECEIPT: ${{ steps.setup.outputs.bootstrap-receipt }}
+          PIP_RECEIPT: ${{ steps.pip_trust.outputs.pip-state }}
+          PIP_CREATED: ${{ steps.pip_trust.outputs.pip-created }}
+          PIP_ROOT_IDENTITY: ${{ steps.pip_trust.outputs.pip-root-identity }}
+          PIP_RECEIPT_IDENTITY: ${{ steps.pip_trust.outputs.pip-receipt-identity }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 -I -S -B - <<'PYCODE'
+          import json,os,pathlib,sys,tempfile
+          sys.path.insert(0,str(pathlib.Path.cwd()/'.qualification-control'))
+          from scripts import php_linux_bootstrap as bootstrap
+          from scripts import php_linux_qualification as qualification
+          pip_state={key:os.environ.get(name,'') for key,name in (
+              ('receipt','PIP_RECEIPT'),('created','PIP_CREATED'),
+              ('root_identity','PIP_ROOT_IDENTITY'),('receipt_identity','PIP_RECEIPT_IDENTITY'))}
+          receipt_text=os.environ.get('SETUP_RECEIPT','')
+          control={key:os.environ[key] for key in ('GITHUB_REPOSITORY','GITHUB_WORKFLOW_SHA',
+              'GITHUB_SHA','GITHUB_REF','GITHUB_EVENT_NAME','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT')}
+          receipt=pathlib.Path(receipt_text) if receipt_text else None
+          runner_temp=pathlib.Path(os.environ['RUNNER_TEMP'])
+          with tempfile.TemporaryDirectory(prefix='cli-297-terminal-',dir=runner_temp) as directory:
+              private=pathlib.Path(directory)
+              (private/'home').mkdir(mode=0o700)
+              (private/'tmp').mkdir(mode=0o700)
+              closed=bootstrap.clean_environment(dict(os.environ),str(private/'home'))
+              os.environ.clear()
+              os.environ.update(closed)
+              def publish(evidence):
+                  evidence['source']='45a7863dbc425ecf19a5a4038a84a9443c23a9a9'
+                  evidence['php_helper_source']='45a7863dbc425ecf19a5a4038a84a9443c23a9a9'
+                  evidence['pip_predecessor_source']='242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5'
+                  evidence['control']=control
+                  text=json.dumps(evidence,sort_keys=True)
+                  if len(text.encode())>65536:
+                      raise ValueError('Terminal evidence exceeds its fixed bound')
+                  print(text)
+                  with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as output:
+                      output.write('Original terminal qualification\n\n'+text+'\n')
+              try:
+                  qualification.qualify(receipt,runner_temp,closed,publish,pip_state=pip_state)
+              finally:
+                  print(json.dumps({'exact_setup_state_absent':None if receipt is None else not receipt.parent.exists()}))
+          PYCODE
