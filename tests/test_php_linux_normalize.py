@@ -267,6 +267,36 @@ class PhpLinuxNormalizeTest(unittest.TestCase):
                     self.enter_derivation(held)
                 self.assertEqual([], self.temporary_descriptors())
 
+    def test_original_index_refuses_canonical_parent_type_and_duplicate_collisions(self):
+        for first_name, second_name, kind in (
+                ('usr/bin', 'usr/bin', tarfile.REGTYPE),
+                ('usr/bin', 'usr/bin/php', tarfile.REGTYPE),
+                ('usr/bin/php', 'usr/bin', tarfile.REGTYPE),
+                ('usr', '../host', tarfile.DIRTYPE),
+                ('usr', 'usr//bin', tarfile.DIRTYPE)):
+            first = tarfile.TarInfo(first_name)
+            first.type = kind
+            second = tarfile.TarInfo(second_name)
+            index, parents = {}, set()
+            normalization.index_member(first, index, parents)
+            with self.subTest(second_name=second_name), self.assertRaises(ValueError):
+                normalization.index_member(second, index, parents)
+
+    def test_resolution_is_archive_local_and_refuses_cycles_depth_and_escape(self):
+        target = tarfile.TarInfo('usr/bin/target')
+        alias = tarfile.TarInfo('usr/bin/alias')
+        alias.type, alias.linkname = tarfile.SYMTYPE, '/usr/bin/target'
+        index = {'usr/bin/alias': alias, 'usr/bin/target': target}
+        self.assertEqual(('regular', 'usr/bin/target'), normalization.resolve(index, 'usr/bin/alias'))
+        for link in ('alias', '../../../host'):
+            alias.linkname = link
+            with self.subTest(link=link), self.assertRaises(ValueError):
+                normalization.resolve(index, 'usr/bin/alias')
+        alias.linkname = 'target'
+        seen = tuple(str(number) for number in range(128))
+        with self.assertRaises(ValueError):
+            normalization.resolve(index, 'usr/bin/alias', seen)
+
     def test_source_record_links_and_byte_changes_refuse(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
