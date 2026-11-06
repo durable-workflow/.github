@@ -84,6 +84,8 @@ class ProtectedContextTest(unittest.TestCase):
         with patch.object(context, "REVIEWED_INITIAL_PROFILE_SUCCESSORS", {}), self.assertRaises(InputRefused):
             context.validate_context({path: raw})
         context.validate_context({path: raw})
+        with self.assertRaises(InputRefused):
+            context.validate_context({path: raw}, policy_target="ai")
         mutations = [raw + b"\n# changed\n", raw.replace(b"workflow_dispatch:\n", b"push:\n"),
             raw.replace(b"timeout-minutes: 15", b"timeout-minutes: 60"),
             raw.replace(b"1b194dd945b72019f701e94472134135f584f652", b"a" * 40),
