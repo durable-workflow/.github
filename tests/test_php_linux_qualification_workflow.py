@@ -1,10 +1,19 @@
 """Read-only source/inline admission controls; the manual job never runs here."""
 from pathlib import Path
+import contextlib
+import io
+import json
+import os
 import subprocess
+import sys
 import tempfile
 import unittest
 
 import yaml
+from unittest.mock import patch
+
+from scripts import php_linux_qualification as qualification
+from tests import test_php_linux_qualification
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,7 +89,8 @@ class PrivatePipQualificationWorkflowTest(unittest.TestCase):
         self.job = self.document["jobs"]["qualify-initial-linux-php"]
         self.previous = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)
         self.previous_job = self.previous["jobs"]["qualify-initial-linux-php"]
-        self.control_source = "242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5"
+        self.control_source = "2ca775c1951c1e6a6a469f5a0db672c00479b337"
+        self.pip_source = "242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5"
 
     def test_event_profile_tokens_and_all_job_bounds_are_preserved(self):
         self.assertEqual(self.previous["on"], self.document["on"])
@@ -104,7 +114,7 @@ class PrivatePipQualificationWorkflowTest(unittest.TestCase):
         self.assertLess(preflight.index("test \"$(/usr/bin/git -C .qualification-control rev-parse HEAD)\" = " + self.control_source),
                         preflight.index("/usr/bin/python3 -I -S -B"))
         self.assertEqual("pip_trust", steps[4]["id"])
-        self.assertEqual("durable-workflow/.github/.github/actions/bootstrap-patched-pip@" + self.control_source, steps[4]["uses"])
+        self.assertEqual("durable-workflow/.github/.github/actions/bootstrap-patched-pip@" + self.pip_source, steps[4]["uses"])
         self.assertEqual({"clients": "python"}, steps[4]["with"])
         self.assertFalse(any("setup-python" in step.get("uses", "") for step in steps))
 
@@ -120,10 +130,51 @@ class PrivatePipQualificationWorkflowTest(unittest.TestCase):
         self.assertIn("sys.path.insert(0,str(pathlib.Path.cwd()/'.qualification-control'))", script)
         self.assertIn("qualification.qualify(receipt,runner_temp,closed,publish,pip_state=pip_state)", script)
         self.assertLess(script.index("pip_state={"), script.index("os.environ.clear()"))
+        self.assertLess(script.index("pip_state={"), script.index("receipt_text="))
+        self.assertIn("pathlib.Path(receipt_text) if receipt_text else None", script)
+        self.assertNotIn("if not receipt_text:", script)
         self.assertIn("evidence['php_helper_source']='" + SOURCE + "'", script)
-        self.assertIn("evidence['pip_predecessor_source']='" + self.control_source + "'", script)
+        self.assertIn("evidence['pip_predecessor_source']='" + self.pip_source + "'", script)
+        self.assertIn("evidence['source']='" + self.control_source + "'", script)
         self.assertNotIn("glob(", script)
         self.assertNotIn("DW_CI_PIP_STATE", script)
+
+    def test_actual_terminal_with_missing_setup_output_cleans_only_proven_pip_and_publishes_bounded_refusal(self):
+        script = self.job["steps"][6]["run"].split("<<'PYCODE'\n", 1)[1].rsplit("\nPYCODE", 1)[0]
+        fixture = test_php_linux_qualification.PhpLinuxQualificationTest()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            setup_receipt, _, _, _ = fixture.fixture(root)
+            pip_state, data, _, _ = fixture.pip_fixture(root)
+            summary = root / "summary"
+            environment = {"RUNNER_TEMP": str(root), "GITHUB_STEP_SUMMARY": str(summary),
+                "SETUP_RECEIPT": "", "PIP_RECEIPT": data["receipt"], "PIP_CREATED": data["created"],
+                "PIP_ROOT_IDENTITY": data["root_identity"], "PIP_RECEIPT_IDENTITY": data["receipt_identity"],
+                "GITHUB_REPOSITORY": "durable-workflow/.github", "GITHUB_WORKFLOW_SHA": "a" * 40,
+                "GITHUB_SHA": "a" * 40, "GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "workflow_dispatch",
+                "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1"}
+            probes = []
+            original = qualification.qualify
+            def qualify(*args, **options):
+                self.assertIsNone(args[0])
+                self.assertEqual(data, options["pip_state"])
+                options["probes"] = lambda *_: probes.append("unexpected")
+                return original(*args, **options)
+            output = io.StringIO()
+            with patch.dict(os.environ, environment, clear=True), patch.object(sys, "path", list(sys.path)), \
+                    patch.object(qualification, "qualify", side_effect=qualify), \
+                    contextlib.chdir(root), contextlib.redirect_stdout(output), self.assertRaises(ValueError):
+                exec(compile(script, "inert-private-pip-terminal", "exec"), {})
+            records = [json.loads(line) for line in output.getvalue().splitlines()]
+            refusals = [record for record in records if record.get("schema") == "durable-workflow.php-linux-terminal/v1"]
+            self.assertEqual(1, len(refusals))
+            self.assertEqual("refused", refusals[0]["outcome"])
+            self.assertEqual("pass", refusals[0]["private_pip_cleanup"])
+            self.assertLessEqual(len(output.getvalue().encode()), 65536)
+            self.assertEqual([], probes)
+            self.assertFalse(pip_state.root.exists())
+            self.assertTrue(setup_receipt.parent.exists())
+            self.assertNotIn('"outcome": "pass"', summary.read_text())
 
     test_actual_inline_gate_refuses_wrong_head_ref_event_repo_or_rerun_before_following_code = (
         PhpLinuxQualificationWorkflowTest.test_actual_inline_gate_refuses_wrong_head_ref_event_repo_or_rerun_before_following_code)

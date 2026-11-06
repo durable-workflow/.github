@@ -84,6 +84,7 @@ class ProtectedContextTest(unittest.TestCase):
             raw.replace(b"timeout-minutes: 15", b"timeout-minutes: 60"),
             raw.replace(b"1b194dd945b72019f701e94472134135f584f652", b"a" * 40),
             raw.replace(b"242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5", b"b" * 40),
+            raw.replace(b"2ca775c1951c1e6a6a469f5a0db672c00479b337", b"c" * 40),
             raw.replace(b"GITHUB_RUN_ATTEMPT\" = 1", b"GITHUB_RUN_ATTEMPT\" = 2"),
             raw.replace(b"qualification.qualify(receipt,runner_temp,closed,publish,pip_state=pip_state)",
                         b"qualification.qualify(receipt,runner_temp,closed,publish)")]

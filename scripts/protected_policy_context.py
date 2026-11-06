@@ -51,7 +51,7 @@ REVIEWED_SOURCE_CI_SUCCESSORS = {
 # The successor remains inert until its separate runtime pin and manual-only
 # workflow integration. Keep the consumed predecessor's identity unchanged.
 REVIEWED_INITIAL_PROFILE_SUCCESSORS = {
-    ".github/workflows/qualify-linux-php-initial.yml": "676a132c09e946ac37ec50d2ec523bec195383f0814052b06c9b3fb71a1fc168",
+    ".github/workflows/qualify-linux-php-initial.yml": "d3eefa3cce62b0c92ae07d6e6a1617342b843e9b5fb0ddad6ad6be4c1c4a2f9f",
 }
 
 

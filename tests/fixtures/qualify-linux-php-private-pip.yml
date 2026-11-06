@@ -54,7 +54,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: durable-workflow/.github
-          ref: 242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5
+          ref: 2ca775c1951c1e6a6a469f5a0db672c00479b337
           path: .qualification-control
           persist-credentials: false
       - name: Bind source and require the existing host prerequisites
@@ -62,7 +62,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(/usr/bin/git rev-parse HEAD)" = 1b194dd945b72019f701e94472134135f584f652
-          test "$(/usr/bin/git -C .qualification-control rev-parse HEAD)" = 242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5
+          test "$(/usr/bin/git -C .qualification-control rev-parse HEAD)" = 2ca775c1951c1e6a6a469f5a0db672c00479b337
           /usr/bin/python3 -I -S -B - <<'PY'
           import hashlib,json,os,pathlib,shutil,sys
           sys.path.insert(0,str(pathlib.Path.cwd()))
@@ -107,16 +107,14 @@ jobs:
           sys.path.insert(0,str(pathlib.Path.cwd()/'.qualification-control'))
           from scripts import php_linux_bootstrap as bootstrap
           from scripts import php_linux_qualification as qualification
-          receipt_text=os.environ.get('SETUP_RECEIPT','')
-          if not receipt_text:
-              raise ValueError('Exact steps.setup output receipt is missing; no discovery/fallback')
-          control={key:os.environ[key] for key in ('GITHUB_REPOSITORY','GITHUB_WORKFLOW_SHA',
-              'GITHUB_SHA','GITHUB_REF','GITHUB_EVENT_NAME','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT')}
-          receipt=pathlib.Path(receipt_text)
-          runner_temp=pathlib.Path(os.environ['RUNNER_TEMP'])
           pip_state={key:os.environ.get(name,'') for key,name in (
               ('receipt','PIP_RECEIPT'),('created','PIP_CREATED'),
               ('root_identity','PIP_ROOT_IDENTITY'),('receipt_identity','PIP_RECEIPT_IDENTITY'))}
+          receipt_text=os.environ.get('SETUP_RECEIPT','')
+          control={key:os.environ[key] for key in ('GITHUB_REPOSITORY','GITHUB_WORKFLOW_SHA',
+              'GITHUB_SHA','GITHUB_REF','GITHUB_EVENT_NAME','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT')}
+          receipt=pathlib.Path(receipt_text) if receipt_text else None
+          runner_temp=pathlib.Path(os.environ['RUNNER_TEMP'])
           with tempfile.TemporaryDirectory(prefix='cli-297-terminal-',dir=runner_temp) as directory:
               private=pathlib.Path(directory)
               (private/'home').mkdir(mode=0o700)
@@ -125,7 +123,7 @@ jobs:
               os.environ.clear()
               os.environ.update(closed)
               def publish(evidence):
-                  evidence['source']='242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5'
+                  evidence['source']='2ca775c1951c1e6a6a469f5a0db672c00479b337'
                   evidence['php_helper_source']='1b194dd945b72019f701e94472134135f584f652'
                   evidence['pip_predecessor_source']='242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5'
                   evidence['control']=control
@@ -138,5 +136,5 @@ jobs:
               try:
                   qualification.qualify(receipt,runner_temp,closed,publish,pip_state=pip_state)
               finally:
-                  print(json.dumps({'exact_setup_state_absent':not receipt.parent.exists()}))
+                  print(json.dumps({'exact_setup_state_absent':None if receipt is None else not receipt.parent.exists()}))
           PYCODE

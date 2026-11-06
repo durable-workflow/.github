@@ -671,6 +671,16 @@ class QualificationPolicyTest(unittest.TestCase):
             with self.subTest(ref=ref), self.assertRaises(PolicyError):
                 self.scan(workflow(f"- uses: {action}@{ref} # clean-trust"))
 
+    def test_complete_repository_workflow_set_accepts_the_exact_inert_private_pip_profile(self) -> None:
+        sources = {str(path.relative_to(ROOT)): path.read_text()
+                   for path in (ROOT / ".github/workflows").glob("*.y*ml")}
+        target = ".github/workflows/qualify-linux-php-initial.yml"
+        sources[target] = (ROOT / "tests/fixtures/qualify-linux-php-private-pip.yml").read_text()
+        evidence = scan_workflow_sources(self.policy, "github-control-plane", sources)
+        self.assertEqual(set(sources), set(evidence))
+        self.assertIn("durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5",
+                      evidence[target]["external_actions"])
+
     def test_action_pin_requires_its_reviewed_version_comment(self) -> None:
         commit, _version = self.approved_action("actions/checkout")
         with self.assertRaisesRegex(PolicyError, "readable version comment"):
