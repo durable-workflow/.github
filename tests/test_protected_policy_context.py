@@ -127,6 +127,18 @@ class ProtectedContextTest(unittest.TestCase):
             with self.subTest(change=number), self.assertRaises(InputRefused):
                 context.validate_context({path: changed})
 
+    def test_normalized_profile_passes_the_real_inert_context_and_action_parser(self):
+        from scripts.protected_policy_check import validate_files
+        files = {'.github/workflows/qualify-linux-php-initial.yml':
+            (ROOT / 'tests/fixtures/qualify-linux-php-normalized.yml').read_bytes()}
+        for name in ('action.yml', 'bootstrap.js'):
+            path = '.github/actions/setup-php-linux/' + name
+            files[path] = (ROOT / path).read_bytes()
+        report = validate_files(files)
+        self.assertEqual(3, report['input_count'])
+        self.assertEqual(2, report['approved_action_count'])
+        self.assertEqual(64, len(report['inputs_sha256']))
+
     def test_plain_root_helper_and_literal_root_overrides_are_supported(self):
         for directory in (".", "./", "${{ github.workspace }}"):
             with self.subTest(directory=directory):
