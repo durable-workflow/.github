@@ -25,10 +25,12 @@ from scripts import php_linux_archive as archive
 from scripts import php_linux_bootstrap as bootstrap
 from scripts import php_linux_recipe as recipe
 from scripts import php_linux_tools as tools
+from scripts import php_linux_normalize as normalization
 
 
 RECEIPT_NAME = "receipt.json"
 RECEIPT_SCHEMA = "durable-workflow.php-linux-setup-receipt/v2"
+NORMALIZED_RECEIPT_SCHEMA = "durable-workflow.php-linux-setup-receipt/v3"
 MAX_RECEIPT = 60 * 1024
 CA_SHA256 = "50f79f98dac192b20dbf73f35c56f0b0c557ab267ff5199d1117cc1180b70785"
 
@@ -85,8 +87,9 @@ def reexec(parent: dict, execute=os.execve):
             environment)
 
 
-def capture_setup_subjects(members, php, required, selected_tools):
-    installed, manifest = archive.capture_subjects(members, php, required)
+def capture_setup_subjects(members, php, required, selected_tools, *, normalization_targets=None):
+    options = {} if normalization_targets is None else {'normalization_targets': normalization_targets}
+    installed, manifest = archive.capture_subjects(members, php, required, **options)
     for row in selected_tools:
         tools.append_subject(manifest, row)
     archive.require_subject_bound(manifest)
@@ -98,7 +101,7 @@ def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
               inspect_archive=archive.inspect_held, install_php=bootstrap.run_held_installer,
               verify_php=archive.verify_installed, confirm_extensions=archive.verify_enabled,
               install_tool=tools.install_held, execute=subprocess.run,
-              capture_subjects=capture_setup_subjects):
+              capture_subjects=capture_setup_subjects, derive_archive=normalization.normalize):
     """Complete effect recipe; focused tests substitute all external effects."""
     if environment != bootstrap.clean_environment(environment, str(state / "home")) or dict(os.environ) != environment:
         raise ValueError("Setup requires an already closed parent environment before reading inputs")
@@ -122,7 +125,7 @@ def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
     runtime = state / "upstream"
     derived = recipe.derive_source(files, refusal)
     source_hashes = recipe.write_runtime(runtime, derived)
-    report = {"schema": RECEIPT_SCHEMA, "outcome": "running",
+    report = {"schema": NORMALIZED_RECEIPT_SCHEMA, "outcome": "running",
               "host": host, "image": {key: environment.get(key) for key in ("ImageOS", "ImageVersion")},
               "apt": {"invoked": False, "profile": "no-apt"}, "ca_sha256": CA_SHA256,
               "request": request, "host_tool": node,
@@ -143,14 +146,20 @@ def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
                             digest="sha256:" + bootstrap.sha256(patched))
             script = stack.enter_context(bootstrap.hold_bytes(io.BytesIO(patched), identity, original.effective))
             report["stage"] = "archive-inspection"
-            members = inspect_archive(held_archive)
+            normalized = stack.enter_context(derive_archive(held_archive))
+            normalized.assert_valid()
+            members = inspect_archive(normalized.held)
+            if members != normalized.files:
+                raise ValueError('Strict root-input inspection differs from the complete derivation')
+            report['normalization'] = normalized.proof
+            report['normalization_manifest'] = normalization.write_manifest(state, normalized)
             report.update(installer=dict(original.identity, derived_sha256=bootstrap.sha256(patched)),
                           archive=dict(held_archive.identity, effective=held_archive.effective))
             # Always install the bound tuple before any product PHP probe.
             # An ambient preinstalled PHP binary is never an archive receipt.
             report["stage"] = "bound-installer"
             install_php(script, held_archive, (request["inputs"]["php-version"], "release", "nts"),
-                        environment, catalog, no_apt=True)
+                        environment, catalog, no_apt=True, normalized=normalized)
             report["stage"] = "installed-file-binding"
             report["installed"] = verify_php(members, request["inputs"]["php-version"],
                                                plan["required_extensions"])
@@ -169,7 +178,12 @@ def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
                 report["tools"].append(install_tool(held, row, environment))
             report["stage"] = "subject-manifest"
             report["installed"], report["subjects"] = capture_subjects(
-                members, request["inputs"]["php-version"], plan["required_extensions"], plan["tools"])
+                members, request["inputs"]["php-version"], plan["required_extensions"], plan["tools"],
+                normalization_targets=normalized.targets)
+            with normalization.capture_manifest(state, report['normalization_manifest']) as (document, _sealed, unchanged):
+                if document != normalization.document(normalized):
+                    raise ValueError('Pre-install normalization manifest changed during setup')
+                unchanged()
             report.update(outcome="pass", stage="complete")
             return report
     except Exception as error:

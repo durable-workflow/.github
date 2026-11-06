@@ -1,5 +1,26 @@
 # GitHub Actions policy
 
+## Initial PHP archive derivation
+
+The initial Ubuntu 26.04/x64/PHP 8.3 source recipe uses the exact asset and
+metadata recorded in `php-linux-initial-archive.json`, with the closed map in
+`php-linux-initial-normalization.json`. `scripts/php_linux_normalize.py` copies
+only contained regular targets, including their file metadata, into a sealed
+regular-only archive. The strict root-input inspector continues to reject raw
+links, sparse members, special files and path collisions. The producer writes
+a complete archive-derived manifest before installation; receipt v3 binds its
+object and bytes, original and derived archive identities, and alias target
+provenance. Terminal qualification retains and checks that same manifest before
+and after both PHAR probes, then removes exact owned state before publishing PASS.
+
+The focused source controls use inert archives and temporary paths. They cover
+forced alternatives and coverage-INI removal, but do not establish installed
+PHP configuration, module, loader or PHAR behavior. The two historical installed
+originals remain NONPASS. The live manual workflow still pins its earlier
+immutable helpers; adopting this recipe and selecting a fresh installed
+qualification require their separate source and effect decisions. Other host,
+PHP, tool and consumer tuples do not inherit this initial profile.
+
 `policy.json` is the reviewed organization policy for GitHub Actions references
 and workflow trust boundaries. Product repositories load it during pull-request
 checks and validate their own checked-out workflow files.

@@ -337,7 +337,7 @@ def observed_host() -> dict:
 
 def run_held_installer(script: HeldAsset, archive: HeldAsset, arguments: tuple[str, str, str],
                        environment: dict[str, str], catalog: dict, execute=subprocess.run, host=None,
-                       no_apt=False):
+                       no_apt=False, normalized=None):
     """Effect primitive only; no shipped CLI/action currently invokes this.
 
     The proposed consumer must first execve into this closed environment and
@@ -356,10 +356,17 @@ def run_held_installer(script: HeldAsset, archive: HeldAsset, arguments: tuple[s
                             digest=SHA256_PREFIX + sha256(derived))
     if archive.identity != selected["asset"] or script.identity != derived_identity:
         raise ValueError("Held inputs do not match the exact selected source/tuple")
+    installation_archive = archive
+    if normalized is not None:
+        from scripts import php_linux_normalize as normalization
+        if not isinstance(normalized, normalization.NormalizedInput) or normalized.original is not archive or not no_apt:
+            raise ValueError("Only the exact no-APT normalization derivation is supported")
+        normalized.assert_valid()
+        installation_archive = normalized.held
     if environment != clean_environment(environment, environment.get("HOME", "")) or dict(os.environ) != environment:
         raise ValueError("Bound installer requires an already closed parent environment")
     os.lseek(script.descriptor, 0, os.SEEK_SET)
-    os.lseek(archive.descriptor, 0, os.SEEK_SET)
-    child = dict(environment, DW_VERIFIED_ARCHIVE_FD=str(archive.descriptor))
+    os.lseek(installation_archive.descriptor, 0, os.SEEK_SET)
+    child = dict(environment, DW_VERIFIED_ARCHIVE_FD=str(installation_archive.descriptor))
     return execute(["/usr/bin/bash", f"/proc/self/fd/{script.descriptor}", *arguments], env=child,
-                   pass_fds=(script.descriptor, archive.descriptor), timeout=120, check=True)
+                   pass_fds=(script.descriptor, installation_archive.descriptor), timeout=120, check=True)

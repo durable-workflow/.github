@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -61,6 +62,14 @@ class PhpLinuxNormalizeTest(unittest.TestCase):
     def held(self, compressed, identity):
         return bootstrap.hold_bytes(io.BytesIO(compressed), identity, {'fixture': True})
 
+    def enter_derivation(self, held):
+        with normalization.normalize(held):
+            pass
+
+    def enter_manifest(self, state, record):
+        with normalization.capture_manifest(state, record):
+            pass
+
     def temporary_descriptors(self):
         names = []
         for path in Path('/proc/self/fd').iterdir():
@@ -105,8 +114,65 @@ class PhpLinuxNormalizeTest(unittest.TestCase):
 
     def test_raw_input_links_still_refuse_in_the_unchanged_strict_inspector(self):
         _compressed, _identity, _selected, source = self.fixture()
+        stream = io.BytesIO(source)
         with self.assertRaisesRegex(ValueError, 'links/sparse/special'):
-            archive.inventory(io.BytesIO(source))
+            archive.inventory(stream)
+
+    def test_manifest_is_captured_before_install_and_rejects_content_object_and_type_drift(self):
+        compressed, identity, selected, _ = self.fixture()
+        for change in ('none', 'bytes', 'replace', 'link', 'mode', 'hardlink', 'stamp'):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                state = Path(directory)
+                state.chmod(0o700)
+                with self.held(compressed, identity) as held, patch.object(normalization, 'profile', return_value=selected), \
+                        normalization.normalize(held) as result:
+                    record = normalization.write_manifest(state, result)
+                    path = state / normalization.MANIFEST_NAME
+                    self.assertEqual(0o400, stat.S_IMODE(path.stat().st_mode))
+                    with normalization.capture_manifest(state, record) as (document, sealed, unchanged):
+                        self.assertEqual(normalization.document(result), document)
+                        sealed.assert_sealed()
+                        if change == 'none':
+                            unchanged()
+                            continue
+                        if change == 'bytes':
+                            path.chmod(0o600)
+                            path.write_bytes(b'{}')
+                            path.chmod(0o400)
+                        elif change in ('replace', 'link'):
+                            original = path.read_bytes()
+                            path.unlink()
+                            if change == 'link':
+                                path.symlink_to(state / 'absent')
+                            else:
+                                path.write_bytes(original)
+                                path.chmod(0o400)
+                        elif change == 'mode':
+                            path.chmod(0o600)
+                        elif change == 'hardlink':
+                            os.link(path, state / 'alias')
+                        else:
+                            os.utime(path, ns=(1, 1))
+                        with self.assertRaises((ValueError, FileNotFoundError)):
+                            unchanged()
+                    with self.assertRaises((ValueError, OSError)):
+                        self.enter_manifest(state, record)
+
+    def test_partial_manifest_write_cleans_only_its_new_file_and_never_replaces_existing_state(self):
+        compressed, identity, selected, _ = self.fixture()
+        with tempfile.TemporaryDirectory() as directory, self.held(compressed, identity) as held, \
+                patch.object(normalization, 'profile', return_value=selected), normalization.normalize(held) as result:
+            state = Path(directory)
+            state.chmod(0o700)
+            with patch.object(normalization, 'write_all', side_effect=OSError('inert disk refusal')):
+                with self.assertRaises(OSError):
+                    normalization.write_manifest(state, result)
+            path = state / normalization.MANIFEST_NAME
+            self.assertFalse(path.exists())
+            path.write_bytes(b'prior state')
+            with self.assertRaises(FileExistsError):
+                normalization.write_manifest(state, result)
+            self.assertEqual(b'prior state', path.read_bytes())
 
     def test_foreign_original_identity_refuses_before_any_codec(self):
         compressed, identity, selected, _ = self.fixture()
@@ -114,8 +180,7 @@ class PhpLinuxNormalizeTest(unittest.TestCase):
         with self.held(compressed, identity) as held, patch.object(normalization, 'profile', return_value=selected), \
                 patch.object(normalization, 'codec') as codec:
             with self.assertRaisesRegex(ValueError, 'exact independently bound'):
-                with normalization.normalize(held):
-                    self.fail('Foreign identity accepted')
+                self.enter_derivation(held)
             codec.assert_not_called()
 
     def test_changed_header_target_path_and_missing_rows_refuse_and_close_descriptors(self):
@@ -129,8 +194,7 @@ class PhpLinuxNormalizeTest(unittest.TestCase):
             with self.subTest(change=change), self.held(compressed, identity) as held, \
                     patch.object(normalization, 'profile', return_value=candidate):
                 with self.assertRaises(ValueError):
-                    with normalization.normalize(held):
-                        self.fail('Changed metadata accepted')
+                    self.enter_derivation(held)
                 self.assertEqual([], self.temporary_descriptors())
 
     def test_foreign_targets_unlisted_omissions_duplicates_and_wrong_counts_refuse(self):
@@ -148,8 +212,7 @@ class PhpLinuxNormalizeTest(unittest.TestCase):
             with self.subTest(change=change), self.held(compressed, identity) as held, \
                     patch.object(normalization, 'profile', return_value=candidate):
                 with self.assertRaises(ValueError):
-                    with normalization.normalize(held):
-                        self.fail('Changed plan accepted')
+                    self.enter_derivation(held)
                 self.assertEqual([], self.temporary_descriptors())
 
     def test_special_and_unreviewed_pax_metadata_remain_refused(self):
@@ -158,8 +221,7 @@ class PhpLinuxNormalizeTest(unittest.TestCase):
             with self.subTest(options=options), self.held(compressed, identity) as held, \
                     patch.object(normalization, 'profile', return_value=selected):
                 with self.assertRaisesRegex(ValueError, 'PAX/sparse/special'):
-                    with normalization.normalize(held):
-                        self.fail('Special metadata accepted')
+                    self.enter_derivation(held)
 
     def test_post_derivation_provenance_mutation_refuses(self):
         compressed, identity, selected, _ = self.fixture()
@@ -168,6 +230,42 @@ class PhpLinuxNormalizeTest(unittest.TestCase):
                 result.targets['usr/bin/alias']['target'] = 'etc/passwd'
                 with self.assertRaisesRegex(ValueError, 'provenance'):
                     result.assert_sealed()
+
+    def test_complete_document_refuses_missing_foreign_type_count_and_metadata_mutations(self):
+        compressed, identity, selected, _ = self.fixture()
+        with self.held(compressed, identity) as held, patch.object(normalization, 'profile', return_value=selected), \
+                normalization.normalize(held) as result:
+            for mutation in ('missing', 'foreign', 'size', 'hash', 'target', 'metadata', 'counts', 'original', 'derived', 'schema'):
+                value = copy.deepcopy(normalization.document(result))
+                if mutation == 'missing':
+                    del value['files']['usr/bin/target']
+                elif mutation == 'foreign':
+                    value['targets']['foreign'] = value['targets']['usr/bin/alias']
+                elif mutation in ('size', 'hash'):
+                    value['files']['usr/bin/target']['size' if mutation == 'size' else 'sha256'] = True
+                elif mutation == 'target':
+                    value['targets']['usr/bin/alias']['target'] = 'etc/passwd'
+                elif mutation == 'metadata':
+                    value['targets']['usr/bin/alias']['metadata']['mode'] = True
+                elif mutation == 'counts':
+                    value['proof']['materialized'] = True
+                elif mutation == 'original':
+                    value['proof']['original']['id'] = 999
+                elif mutation == 'derived':
+                    value['proof']['derived']['size'] = True
+                else:
+                    value['schema'] = 'foreign'
+                with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                    normalization.validate_document(value, value['proof'], identity)
+
+    def test_codec_and_aggregate_staging_bounds_refuse_and_reclaim_all_temporary_descriptors(self):
+        compressed, identity, selected, _ = self.fixture()
+        for setting in (('DURATION', -1), ('MAX_STAGED', 32), ('MAX_STAGED', 15000)):
+            with self.subTest(setting=setting), self.held(compressed, identity) as held, \
+                    patch.object(normalization, 'profile', return_value=selected), patch.object(normalization, *setting):
+                with self.assertRaises(ValueError):
+                    self.enter_derivation(held)
+                self.assertEqual([], self.temporary_descriptors())
 
     def test_source_record_links_and_byte_changes_refuse(self):
         with tempfile.TemporaryDirectory() as temporary:

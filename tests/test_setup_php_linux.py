@@ -17,7 +17,9 @@ from urllib.error import HTTPError, URLError
 
 from scripts import php_linux_bootstrap as bootstrap
 from scripts import php_linux_recipe as recipe
+from scripts import php_linux_normalize as normalization
 from scripts import setup_php_linux as setup
+from tests import test_php_linux_normalize as normalize_tests
 
 
 class SetupPhpLinuxTest(unittest.TestCase):
@@ -40,7 +42,7 @@ class SetupPhpLinuxTest(unittest.TestCase):
         catalog = json.loads(bootstrap.CATALOG.read_text())
         host = dict(operating_system="ubuntu", release="26.04", architecture="x86_64")
         archive = bootstrap.select(catalog, **host, php="8.3")["asset"]
-        archive_bytes = b"inert archive stream; never decompressed or extracted"
+        archive_bytes, _identity, selected_profile, _raw = normalize_tests.PhpLinuxNormalizeTest().fixture()
         archive.update(size=len(archive_bytes), digest="sha256:" + bootstrap.sha256(archive_bytes))
         catalog_path = root / "catalog.json"
         catalog_path.write_text(json.dumps(catalog))
@@ -64,15 +66,23 @@ class SetupPhpLinuxTest(unittest.TestCase):
         def inspect(held):
             calls.append("inspect-archive")
             held.assert_sealed()
-            return {"inert-member": {}}
+            return setup.archive.inspect_held(held)
 
-        def install(script, held, arguments, child, selected, *, no_apt):
+        @contextmanager
+        def derive(held):
+            with patch.object(normalization, 'profile', return_value=selected_profile), normalization.normalize(held) as result:
+                yield result
+
+        def install(script, held, arguments, child, selected, *, no_apt, normalized):
             calls.append("install-php")
             script.assert_sealed()
             held.assert_sealed()
             self.assertEqual(("8.3", "release", "nts"), arguments)
             self.assertIs(True, no_apt)
             self.assertEqual(environment, child)
+            normalized.assert_valid()
+            self.assertIs(normalized.original, held)
+            self.assertTrue((state / normalization.MANIFEST_NAME).is_file())
             self.assertNotIn(b"https://", os.pread(script.descriptor, script.identity["size"], 0))
 
         def verify(files, php, required):
@@ -98,14 +108,15 @@ class SetupPhpLinuxTest(unittest.TestCase):
             self.assertEqual(environment, child)
             return {"name": row["name"], "executor": "inert"}
 
-        def capture_subjects(members, php, required, selected_tools):
+        def capture_subjects(members, php, required, selected_tools, *, normalization_targets):
             calls.append("capture-subjects")
             calls.extend("subject-" + row["name"] for row in selected_tools)
+            self.assertEqual({'usr/bin/alias'}, set(normalization_targets))
             return {"source": "inert verified-file substitute"}, {"files": {}}
 
         effects = dict(asset_fetch=fetch, tool_fetch=tool_fetch, inspect_archive=inspect,
             install_php=install, verify_php=verify, confirm_extensions=confirm_extensions,
-            install_tool=install_tool, execute=execute, capture_subjects=capture_subjects)
+            install_tool=install_tool, execute=execute, capture_subjects=capture_subjects, derive_archive=derive)
         return state, node, environment, request, host, catalog_path, calls, effects
 
     def run_fixture(self, data):

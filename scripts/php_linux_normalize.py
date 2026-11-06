@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import posixpath
+import re
 import stat
 import subprocess
 import tarfile
@@ -20,6 +21,9 @@ from scripts import php_linux_bootstrap as bootstrap
 METADATA_SHA256 = '038fe8c777dda939ba3f2d6c12f6977ca9dd09c65de7d62fe734c60e71135d0a'
 PLAN_SHA256 = 'd02b0008c58c94e52688d9d7154a806c2a172d9e5f67241274c17341aae2c76d'
 SCHEMA = 'durable-workflow.php-linux-normalization/v1'
+DOCUMENT_SCHEMA = 'durable-workflow.php-linux-normalized-subjects/v1'
+MANIFEST_NAME = 'normalization.json'
+MAX_MANIFEST = 2 * 1024**2
 MAX_STAGED = archive.MAX_UNPACKED
 DURATION = 120
 
@@ -136,7 +140,7 @@ class DescriptorReader(io.RawIOBase):
         return len(data)
 
 
-class DescriptorWriter:
+class DescriptorWriter(io.RawIOBase):
     def __init__(self, descriptor, maximum, deadline):
         self.descriptor, self.maximum, self.deadline, self.size = descriptor, maximum, deadline, 0
 
@@ -148,10 +152,28 @@ class DescriptorWriter:
         self.size += len(data)
         return len(data)
 
+    def writable(self):
+        return True
+
 
 def header_row(member):
     return [member.name, member.type.decode('ascii'), member.linkname, member.size,
             member.offset, member.offset_data]
+
+
+def index_member(member, index, parents):
+    if member.pax_headers or member.issparse() or member.type not in (tarfile.REGTYPE, tarfile.DIRTYPE, tarfile.SYMTYPE):
+        raise ValueError('Normalization refuses PAX/sparse/special members')
+    name = archive.canonical_member(member)
+    ancestors = {p.as_posix() for p in PurePosixPath(name).parents if p.as_posix() != '.'}
+    if (name in index or any(index[p].type != tarfile.DIRTYPE for p in ancestors if p in index)
+            or (member.type != tarfile.DIRTYPE and name in parents)):
+        raise ValueError('Normalization member/parent/type collision')
+    index[name] = copy.copy(member)
+    parents.update(ancestors)
+    if len(index) + len(parents) > archive.MAX_MEMBERS:
+        raise ValueError('Normalization explicit/implicit member bound exceeded')
+    return name
 
 
 def index_original(descriptor, size, metadata, deadline):
@@ -159,27 +181,17 @@ def index_original(descriptor, size, metadata, deadline):
     if metadata['columns'] != ['name', 'type', 'linkname', 'size', 'offset', 'offset_data']:
         raise ValueError('Normalization metadata columns differ')
     index, hashes, parents = {}, {}, set()
-    with io.BufferedReader(DescriptorReader(descriptor, 0, size, deadline)) as reader:
-        with tarfile.open(fileobj=reader, mode='r|') as source:
-            count = 0
-            for count, member in enumerate(source, 1):
-                if count > archive.MAX_MEMBERS or count > len(expected) or header_row(member) != expected[count - 1]:
-                    raise ValueError('Original archive metadata differs from its frozen record')
-                if member.pax_headers or member.issparse() or member.type not in (tarfile.REGTYPE, tarfile.DIRTYPE, tarfile.SYMTYPE):
-                    raise ValueError('Normalization refuses PAX/sparse/special members')
-                name = archive.canonical_member(member)
-                ancestors = {p.as_posix() for p in PurePosixPath(name).parents if p.as_posix() != '.'}
-                if (name in index or any(index[p].type != tarfile.DIRTYPE for p in ancestors if p in index)
-                        or (member.type != tarfile.DIRTYPE and name in parents)):
-                    raise ValueError('Normalization member/parent/type collision')
-                index[name] = copy.copy(member)
-                parents.update(ancestors)
-                if len(index) + len(parents) > archive.MAX_MEMBERS:
-                    raise ValueError('Normalization explicit/implicit member bound exceeded')
-                if member.type == tarfile.REGTYPE:
-                    hashes[name] = archive.member_identity(source.extractfile(member), member.size)
-            if count != len(expected) or count != metadata['member_count']:
-                raise ValueError('Original archive has missing recorded members')
+    with io.BufferedReader(DescriptorReader(descriptor, 0, size, deadline)) as reader, \
+            tarfile.open(fileobj=reader, mode='r|') as source:
+        count = 0
+        for count, member in enumerate(source, 1):
+            if count > archive.MAX_MEMBERS or count > len(expected) or header_row(member) != expected[count - 1]:
+                raise ValueError('Original archive metadata differs from its frozen record')
+            name = index_member(member, index, parents)
+            if member.type == tarfile.REGTYPE:
+                hashes[name] = archive.member_identity(source.extractfile(member), member.size)
+        if count != len(expected) or count != metadata['member_count']:
+            raise ValueError('Original archive has missing recorded members')
     return index, hashes
 
 
@@ -211,7 +223,7 @@ def checked_plan(index, plan):
     for name, kind, target in omitted:
         if kind not in ('directory', 'unresolved') or resolve(index, name) != (kind, target):
             raise ValueError('Normalization omission differs from its exact approved target')
-    return dict(aliases), set(name for name, *_ in omitted)
+    return dict(aliases), {name for name, *_ in omitted}
 
 
 def build_regular_tar(source, output, source_size, index, hashes, aliases, omitted, plan, deadline):
@@ -261,13 +273,13 @@ class CountedArchive:
 
 
 def strict_manifest(descriptor, size, expected, plan, deadline):
-    with io.BufferedReader(DescriptorReader(descriptor, 0, size, deadline)) as reader:
-        with tarfile.open(fileobj=reader, mode='r|') as source:
-            counted = CountedArchive(source)
-            actual = archive.inventory_members(counted)
-            if actual != expected or counted.counts != {'files': plan['expected_regular_files'],
-                    'directories': plan['expected_directories'], 'members': plan['expected_members']}:
-                raise ValueError('Complete derived strict inventory differs')
+    with io.BufferedReader(DescriptorReader(descriptor, 0, size, deadline)) as reader, \
+            tarfile.open(fileobj=reader, mode='r|') as source:
+        counted = CountedArchive(source)
+        actual = archive.inventory_members(counted)
+        if actual != expected or counted.counts != {'files': plan['expected_regular_files'],
+                'directories': plan['expected_directories'], 'members': plan['expected_members']}:
+            raise ValueError('Complete derived strict inventory differs')
 
 
 @dataclass(frozen=True)
@@ -290,6 +302,197 @@ class NormalizedInput:
                 or proof['file_manifest_sha256'] != bootstrap.sha256(canonical_json(self.files))
                 or proof['target_manifest_sha256'] != bootstrap.sha256(canonical_json(self.targets))):
             raise ValueError('Normalization provenance or subject manifest changed')
+
+    def assert_valid(self):
+        self.assert_sealed()
+        validate_document({'schema': DOCUMENT_SCHEMA, 'proof': self.proof,
+            'files': self.files, 'targets': self.targets}, self.proof, self.original.identity)
+
+
+def document(result):
+    result.assert_valid()
+    return {'schema': DOCUMENT_SCHEMA, 'proof': result.proof, 'files': result.files, 'targets': result.targets}
+
+
+def stamp(metadata, raw):
+    return {'device': metadata.st_dev, 'inode': metadata.st_ino, 'mode': stat.S_IMODE(metadata.st_mode),
+        'owner': metadata.st_uid, 'links': metadata.st_nlink, 'size': metadata.st_size,
+        'mtime_ns': metadata.st_mtime_ns, 'ctime_ns': metadata.st_ctime_ns,
+        'sha256': bootstrap.sha256(raw)}
+
+
+def write_manifest(state, result):
+    """Capture the archive-derived document before any installer/PHP effect."""
+    raw = canonical_json(document(result)) + b'\n'
+    if not 0 < len(raw) <= MAX_MANIFEST:
+        raise ValueError('Normalization manifest exceeds its fixed bound')
+    parent = os.open(state, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    descriptor, created, complete = None, False, False
+    try:
+        directory = os.fstat(parent)
+        if directory.st_uid != os.getuid() or stat.S_IMODE(directory.st_mode) != 0o700:
+            raise ValueError('Normalization manifest requires the exact private setup state')
+        descriptor = os.open(MANIFEST_NAME, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent)
+        created = True
+        write_all(descriptor, raw)
+        os.fsync(descriptor)
+        os.fchmod(descriptor, 0o400)
+        metadata = os.fstat(descriptor)
+        if metadata.st_size != len(raw) or os.pread(descriptor, len(raw) + 1, 0) != raw:
+            raise ValueError('Normalization manifest changed during its producer write')
+        observed = os.stat(state, follow_symlinks=False)
+        if (observed.st_dev, observed.st_ino) != (directory.st_dev, directory.st_ino):
+            raise ValueError('Normalization state changed during the producer handoff')
+        complete = True
+        return {'name': MANIFEST_NAME, 'object': stamp(metadata, raw)}
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if created and not complete:
+            os.unlink(MANIFEST_NAME, dir_fd=parent)
+        os.close(parent)
+
+
+def manifest_metadata(metadata):
+    if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o400 or metadata.st_nlink != 1
+            or not 0 < metadata.st_size <= MAX_MANIFEST):
+        raise ValueError('Normalization manifest type/ownership/size differs')
+
+
+def validate_stamp(value):
+    fields = {'device', 'inode', 'mode', 'owner', 'links', 'size', 'mtime_ns', 'ctime_ns', 'sha256'}
+    bootstrap.exact_keys(value, fields)
+    if (any(type(value[key]) is not int or value[key] < 0 for key in fields - {'sha256'})
+            or value['owner'] != os.getuid() or value['mode'] != 0o400 or value['links'] != 1
+            or not 0 < value['size'] <= MAX_MANIFEST or not isinstance(value['sha256'], str)
+            or not re.fullmatch(r'[a-f0-9]{64}', value['sha256'])):
+        raise ValueError('Normalization producer object identity is invalid')
+
+
+@contextmanager
+def capture_manifest(state, record):
+    bootstrap.exact_keys(record, {'name', 'object'})
+    if record['name'] != MANIFEST_NAME:
+        raise ValueError('Only the exact producer normalization manifest is supported')
+    validate_stamp(record['object'])
+    path = state / MANIFEST_NAME
+    parent = os.open(state, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    descriptor = None
+    try:
+        directory = os.fstat(parent)
+        if directory.st_uid != os.getuid() or stat.S_IMODE(directory.st_mode) != 0o700:
+            raise ValueError('Normalization manifest parent is not the private setup root')
+        descriptor = os.open(MANIFEST_NAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+        metadata = os.fstat(descriptor)
+        manifest_metadata(metadata)
+        raw = os.read(descriptor, MAX_MANIFEST + 1)
+        original = stamp(metadata, raw)
+        if len(raw) != metadata.st_size or record['object'] != original:
+            raise ValueError('Normalization manifest differs from its pre-install producer identity')
+        def unchanged():
+            current = os.fstat(descriptor)
+            located = os.stat(path, follow_symlinks=False)
+            current_parent = os.stat(state, follow_symlinks=False)
+            manifest_metadata(current)
+            manifest_metadata(located)
+            contents = os.pread(descriptor, MAX_MANIFEST + 1, 0)
+            if ((current_parent.st_dev, current_parent.st_ino, current_parent.st_mode, current_parent.st_uid)
+                    != (directory.st_dev, directory.st_ino, directory.st_mode, directory.st_uid)
+                    or stamp(current, contents) != original or stamp(located, contents) != original or contents != raw):
+                raise ValueError('Normalization manifest object/bytes changed')
+        unchanged()
+        value = json.loads(raw)
+        if raw != canonical_json(value) + b'\n':
+            raise ValueError('Normalization manifest is not the exact canonical producer document')
+        identity = {'size': len(raw), 'digest': 'sha256:' + bootstrap.sha256(raw)}
+        with bootstrap.hold_bytes(io.BytesIO(raw), identity, original) as sealed:
+            yield value, sealed, unchanged
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        os.close(parent)
+
+
+def validate_document(value, proof, original):
+    selected = profile()
+    bootstrap.exact_keys(value, {'schema', 'proof', 'files', 'targets'})
+    if value['schema'] != DOCUMENT_SCHEMA or value['proof'] != proof:
+        raise ValueError('Normalization document differs from its producer proof')
+    validate_proof(proof, original, selected)
+    files, targets = value['files'], value['targets']
+    expected_files, aliases = expected_subjects(selected)
+    if (not isinstance(files, dict) or set(files) != set(expected_files)
+            or not isinstance(targets, dict) or set(targets) != set(aliases)):
+        raise ValueError('Normalization document has missing or foreign subjects')
+    validate_files(files, expected_files)
+    validate_targets(targets, aliases, files)
+    if (proof['file_manifest_sha256'] != bootstrap.sha256(canonical_json(files))
+            or proof['target_manifest_sha256'] != bootstrap.sha256(canonical_json(targets))):
+        raise ValueError('Normalization content/target manifest hash differs')
+    return value
+
+
+def validate_proof(proof, original, selected):
+    expected_asset = {key: selected.metadata['asset'][key] for key in ('id', 'name', 'size')}
+    expected_asset['digest'] = 'sha256:' + selected.metadata['asset']['sha256']
+    expected_keys = {'schema', 'original', 'derived', 'metadata_sha256', 'plan_sha256',
+        'file_manifest_sha256', 'target_manifest_sha256', 'regular_files', 'directories',
+        'members', 'materialized', 'omitted'}
+    bootstrap.exact_keys(proof, expected_keys)
+    if (proof['schema'] != SCHEMA or proof['original'] != expected_asset or original != expected_asset
+            or proof['metadata_sha256'] != selected.metadata_sha256 or proof['plan_sha256'] != selected.plan_sha256):
+        raise ValueError('Normalization original/source authority differs')
+    bootstrap.exact_keys(proof['derived'], {'name', 'size', 'digest'})
+    if (proof['derived']['name'] != 'php-initial-regular-only.tar.zst'
+            or type(proof['derived']['size']) is not int or not 0 < proof['derived']['size'] <= bootstrap.MAX_ARCHIVE
+            or not isinstance(proof['derived']['digest'], str)
+            or not re.fullmatch(r'sha256:[a-f0-9]{64}', proof['derived']['digest'])):
+        raise ValueError('Normalization derived identity is invalid')
+    plan = selected.plan
+    expected_counts = {'regular_files': plan['expected_regular_files'], 'directories': plan['expected_directories'],
+        'members': plan['expected_members'], 'materialized': len(plan['materialize_regular_aliases']),
+        'omitted': len(plan['omit_aliases'])}
+    if any(type(proof[key]) is not int or proof[key] != expected for key, expected in expected_counts.items()):
+        raise ValueError('Normalization complete member counts differ')
+
+
+def expected_subjects(selected):
+    rows = [dict(zip(selected.metadata['columns'], row)) for row in selected.metadata['members']]
+    raw_files = {row['name'].removeprefix('./'): row['size'] for row in rows if row['type'] == '0'}
+    aliases = dict(selected.plan['materialize_regular_aliases'])
+    expected_files = dict(raw_files)
+    expected_files.update({name: raw_files[target] for name, target in aliases.items()})
+    return expected_files, aliases
+
+
+def validate_files(files, expected_files):
+    for name, expected_size in expected_files.items():
+        identity = files[name]
+        bootstrap.exact_keys(identity, {'size', 'sha256'})
+        if (type(identity['size']) is not int or identity['size'] != expected_size
+                or not isinstance(identity['sha256'], str)
+                or not re.fullmatch(r'[a-f0-9]{64}', identity['sha256'])):
+            raise ValueError('Normalization subject identity differs')
+
+
+def validate_targets(targets, aliases, files):
+    for name, target in aliases.items():
+        entry = targets[name]
+        bootstrap.exact_keys(entry, {'target', 'size', 'sha256', 'metadata'})
+        if (entry['target'] != target or files[name] != files[target] or type(entry['size']) is not int
+                or entry['size'] != files[target]['size'] or entry['sha256'] != files[target]['sha256']):
+            raise ValueError('Normalization alias lacks exact contained-target authority')
+        validate_target_metadata(entry['metadata'], target, entry['size'])
+
+
+def validate_target_metadata(info, target, size):
+    bootstrap.exact_keys(info, {'name', 'mode', 'uid', 'gid', 'size', 'mtime',
+        'chksum', 'type', 'linkname', 'uname', 'gname', 'devmajor', 'devminor'})
+    if (info['name'] != './' + target or info['type'] != '0' or info['linkname'] != '' or info['size'] != size
+            or any(type(info[key]) is not int for key in ('mode', 'uid', 'gid', 'size', 'mtime', 'chksum', 'devmajor', 'devminor'))
+            or any(not isinstance(info[key], str) or len(info[key]) > 256 for key in ('uname', 'gname'))):
+        raise ValueError('Normalization target metadata is incomplete or foreign')
 
 
 @contextmanager
@@ -318,7 +521,7 @@ def normalize(held):
                 with io.BufferedReader(DescriptorReader(compressed, 0, size, deadline)) as reader:
                     derived = output.enter_context(bootstrap.hold_bytes(reader, identity, {'kind': SCHEMA}))
                 with codec(['--decompress', '--stdout', '--quiet'], derived.descriptor,
-                        MAX_STAGED, deadline) as decoded_again:
+                        MAX_STAGED - os.fstat(regular).st_size, deadline) as decoded_again:
                     strict_manifest(decoded_again[0], decoded_again[1], files, plan, deadline)
         held.assert_sealed()
         derived.assert_sealed()
@@ -329,5 +532,5 @@ def normalize(held):
             'regular_files': len(files), 'directories': plan['expected_directories'],
             'members': plan['expected_members'], 'materialized': len(aliases), 'omitted': len(omitted)}
         result = NormalizedInput(held, derived, files, targets, canonical_json(proof))
-        result.assert_sealed()
+        result.assert_valid()
         yield result
