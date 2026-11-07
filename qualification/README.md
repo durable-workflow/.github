@@ -251,11 +251,13 @@ outside the named migration still enables the existing whole-repository checks.
 Targets already requiring whole-target Composer trust cannot use scoped settings
 to reduce that enforcement.
 
-Workflow's `release-verification.yml` / `published-package` entry is staged with
-`required: false` while its caller wiring is absent. This grants no installed
-caller acceptance. After the reviewed wiring is integrated, tighten it to
-`required: true` before selecting actual caller qualification. A required entry
-refuses a missing workflow, missing job or missing reviewed setup. Ambiguous
+Workflow's `release-verification.yml` / `published-package` entry now uses
+`required: true` after the reviewed caller wiring reached maintained Workflow
+main at `2de438d4dcff8f213253603e608324272eeac8e5` (PR1055). This is source
+presence/enumeration enforcement, not installed caller acceptance; selecting an
+actual caller still requires its separate qualification and terminal cleanup.
+A required entry refuses a missing workflow, missing job or missing reviewed
+setup. Ambiguous
 workflow identities, invalid scopes and a migrated job without an enumerated
 dependency request also refuse. The remaining Laravel matrix stays separately
 unqualified until its own applicable profiles and callers are delivered.
