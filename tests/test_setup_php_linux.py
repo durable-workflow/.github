@@ -55,10 +55,12 @@ class SetupPhpLinuxTest(unittest.TestCase):
             with bootstrap.hold_verified(io.BytesIO(archive_bytes), identity, bootstrap.asset_url(identity)) as held:
                 yield held
 
+        source_installer = bootstrap.hold_source_installer
+
         @contextmanager
         def installer_fetch(identity):
             calls.append("read-installer")
-            with bootstrap.hold_source_installer(identity) as held:
+            with source_installer(identity) as held:
                 yield held
 
         @contextmanager
@@ -143,12 +145,14 @@ class SetupPhpLinuxTest(unittest.TestCase):
     def run_fixture(self, data):
         state, node, environment, request, host, catalog_path, calls, effects = data
         options = dict(effects)
+        installer_fetch = options.pop('installer_fetch')
         derive = options.pop('derive_archive')
         capture_configuration = options.pop('capture_configuration')
         configure = options.pop('configure')
         with patch.dict(os.environ, environment, clear=True), patch.object(bootstrap, "CATALOG", catalog_path), \
                 patch.object(bootstrap, "observed_host", return_value=host), \
                 patch.object(bootstrap, "explicit_trust", return_value=object()), \
+                patch.object(bootstrap, 'hold_source_installer', side_effect=installer_fetch), \
                 patch.object(normalization, 'profile', return_value=normalize_tests.PhpLinuxNormalizeTest().fixture()[2]), \
                 patch.object(normalization, 'normalize', side_effect=derive), \
                 patch.object(setup, 'configure_cli', side_effect=configure), \

@@ -123,7 +123,6 @@ def bind_installed_files(report, members, plan, verify_php):
 
 
 def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
-              installer_fetch=bootstrap.hold_source_installer,
               asset_fetch=bootstrap.download_held, tool_fetch=tools.download_held,
               inspect_archive=archive.inspect_held, install_php=bootstrap.run_held_installer,
               verify_php=archive.verify_installed, confirm_extensions=archive.verify_enabled,
@@ -161,7 +160,7 @@ def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
     try:
         with ExitStack() as stack:
             report["stage"] = "installer-source-read"
-            original = stack.enter_context(installer_fetch(catalog["installer"]))
+            original = stack.enter_context(bootstrap.hold_source_installer(catalog["installer"]))
             report["stage"] = "archive-read"
             held_archive = stack.enter_context(asset_fetch(plan["archive"]["asset"], context))
             report["stage"] = "tool-reads"
