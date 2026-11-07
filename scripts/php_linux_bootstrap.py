@@ -12,7 +12,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import fcntl
 import hashlib
-import json
 import os
 from pathlib import Path
 import re
@@ -249,9 +248,7 @@ def hold_verified(source: BinaryIO, identity: dict, final_url: str):
 
 
 def installer_source_origin(identity: dict) -> dict:
-    catalog = validate_catalog(json.loads(CATALOG.read_text()))
-    if identity != catalog["installer"]:
-        raise ValueError("Installer differs from the committed source authority")
+    asset_identity(identity, "install.sh", MAX_INSTALLER)
     return {"kind": "repository", "path":
             f"qualification/vendor/php-ubuntu-{identity['id']}/install.sh",
             "digest": identity["digest"]}
@@ -370,7 +367,7 @@ def observed_host() -> dict:
 
 def run_held_installer(script: HeldAsset, archive: HeldAsset, arguments: tuple[str, str, str],
                        environment: dict[str, str], catalog: dict, execute=subprocess.run, host=None,
-                       no_apt=False, normalized=None):
+                       no_apt=False, normalized=None, *, original_installer: HeldAsset):
     """Effect primitive only; no shipped CLI/action currently invokes this.
 
     The proposed consumer must first execve into this closed environment and
@@ -383,7 +380,13 @@ def run_held_installer(script: HeldAsset, archive: HeldAsset, arguments: tuple[s
         raise ValueError("Exact PHP/build/thread-safety arguments required")
     selected = select(catalog, **(observed_host() if host is None else host),
                       php=arguments[0], build=arguments[1], thread_safety=arguments[2])
-    original = (ROOT / "qualification/vendor/php-ubuntu-713206915/install.sh").read_bytes()
+    if not isinstance(original_installer, HeldAsset):
+        raise ValueError("A held original installer is required")
+    original_installer.assert_sealed()
+    if (original_installer.identity != catalog["installer"]
+            or original_installer.effective != installer_source_origin(catalog["installer"])):
+        raise ValueError("Original installer is not the held committed source")
+    original = os.pread(original_installer.descriptor, original_installer.identity["size"], 0)
     derived = no_apt_installer_source(original, catalog) if no_apt else installer_source(original, catalog)
     derived_identity = dict(catalog["installer"], name="bound-install.sh", size=len(derived),
                             digest=SHA256_PREFIX + sha256(derived))

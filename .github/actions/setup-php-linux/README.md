@@ -20,7 +20,11 @@ The reviewed snapshot of those exact bytes is committed under
 `qualification/vendor/php-ubuntu-713206915/install.sh`. Setup seals that regular
 source file directly and records its repository path and digest in the installer
 receipt. It makes no installer download request; replacement, truncation, links
-and changes during sealing refuse before installation. The archive and PHAR
+and changes during sealing refuse before installation. The effect verifier
+derives its expected script identity from that same sealed original, so a later
+pathname replacement cannot change the execution input. Canonical terminal
+qualification independently revalidates the committed source after product
+commands. The archive and PHAR
 acquisition and verification paths remain unchanged. The configured setup
 receipt is version 5; prior version-4 evidence remains bound to its original
 helper and does not qualify this changed source path.

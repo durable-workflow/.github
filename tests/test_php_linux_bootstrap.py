@@ -88,6 +88,40 @@ class PhpLinuxBootstrapTest(unittest.TestCase):
                     with bootstrap.hold_source_installer(identity):
                         pass
 
+    def test_effect_uses_the_sealed_original_after_its_path_is_replaced(self):
+        catalog = copy.deepcopy(self.catalog)
+        row = next(value for value in catalog['archives'] if value == self.row)
+        payload = b'inert archive, never extracted'
+        row['asset'] = self.identity(row['asset']['name'], payload, row['asset']['id'])
+        derived = bootstrap.no_apt_installer_source(self.original, catalog)
+        script_id = self.identity('bound-install.sh', derived, catalog['installer']['id'])
+        environment = bootstrap.clean_environment({}, '/tmp/inert-source-home')
+        host = dict(operating_system='ubuntu', release='26.04', architecture='x86_64')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / bootstrap.installer_source_origin(catalog['installer'])['path']
+            path.parent.mkdir(parents=True)
+            path.write_bytes(self.original)
+            policy = 'qualification/php-linux-initial-alternatives.json'
+            (root / policy).write_bytes((bootstrap.ROOT / policy).read_bytes())
+            replacement = root / 'replacement'
+            replacement.write_bytes(b'changed path; must never be read by the effect verifier')
+            calls = []
+
+            def execute(_command, **options):
+                calls.append(options)
+                self.assertEqual(derived, os.pread(options['pass_fds'][0], len(derived), 0))
+
+            with patch.object(bootstrap, 'ROOT', root), patch.dict(os.environ, environment, clear=True):
+                with bootstrap.hold_source_installer(catalog['installer']) as installer, \
+                        bootstrap.hold_bytes(io.BytesIO(derived), script_id, {}) as script, \
+                        bootstrap.hold_bytes(io.BytesIO(payload), row['asset'], {}) as archive:
+                    path.unlink()
+                    path.symlink_to(replacement)
+                    bootstrap.run_held_installer(script, archive, ('8.3', 'release', 'nts'),
+                        environment, catalog, execute, host, no_apt=True, original_installer=installer)
+            self.assertEqual(1, len(calls))
+
     def test_catalog_has_exact_distinct_current_asset_tuples(self):
         self.assertIs(self.catalog, bootstrap.validate_catalog(self.catalog))
         self.assertEqual(30, len(self.catalog["archives"]))
@@ -329,19 +363,21 @@ sudo() {
             self.assertEqual("/usr/bin/bash", command[0])
             self.assertTrue(command[1].startswith("/proc/self/fd/"))
             return "inert-executor"
-        with bootstrap.hold_verified(io.BytesIO(derived), script_id, bootstrap.asset_url(catalog["installer"])) as script:
+        with bootstrap.hold_source_installer(catalog['installer']) as installer, \
+                bootstrap.hold_verified(io.BytesIO(derived), script_id, bootstrap.asset_url(catalog["installer"])) as script:
             with bootstrap.hold_verified(io.BytesIO(data), row["asset"], bootstrap.asset_url(row["asset"])) as archive:
                 host = dict(operating_system="ubuntu", release="26.04", architecture="x86_64")
                 with patch.dict(os.environ, environment, clear=True):
                     result = bootstrap.run_held_installer(script, archive, ("8.3", "release", "nts"),
-                                                        environment, catalog, execute, host)
+                                                        environment, catalog, execute, host, original_installer=installer)
                     self.assertEqual("inert-executor", result)
                     with self.assertRaises(ValueError):
                         bootstrap.run_held_installer(script, archive, ("8.4", "release", "nts"),
-                                                    environment, catalog, execute, host)
+                                                    environment, catalog, execute, host, original_installer=installer)
                 with self.assertRaises(ValueError):
                     bootstrap.run_held_installer(script, archive, ("8.3", "release", "nts"),
-                                                dict(environment, GH_TOKEN="inert"), catalog, execute, host)
+                                                dict(environment, GH_TOKEN="inert"), catalog, execute, host,
+                                                original_installer=installer)
         self.assertEqual(1, len(calls))
 
     def test_normalized_effect_handoff_passes_only_the_sealed_derived_fd_to_an_inert_executor(self):
@@ -354,7 +390,8 @@ sudo() {
         environment = bootstrap.clean_environment({}, '/tmp/inert-no-apt-home')
         host = dict(operating_system='ubuntu', release='26.04', architecture='x86_64')
         calls = []
-        with bootstrap.hold_bytes(io.BytesIO(derived), script_id, {}) as script, \
+        with bootstrap.hold_source_installer(catalog['installer']) as installer, \
+                bootstrap.hold_bytes(io.BytesIO(derived), script_id, {}) as script, \
                 bootstrap.hold_bytes(io.BytesIO(payload), identity, {}) as original, \
                 patch.object(normalization, 'profile', return_value=selected_profile), normalization.normalize(original) as result:
             def execute(_command, **options):
@@ -365,16 +402,16 @@ sudo() {
                 self.assertEqual(result.files, normalization.archive.inspect_held(result.held))
             with patch.dict(os.environ, environment, clear=True), patch.object(alternatives, 'verify') as verify:
                 bootstrap.run_held_installer(script, original, ('8.3', 'release', 'nts'), environment,
-                    catalog, execute, host, no_apt=True, normalized=result)
+                    catalog, execute, host, no_apt=True, normalized=result, original_installer=installer)
                 verify.assert_called_once_with(result.files, original=original.identity)
                 forged = SimpleNamespace(held=result.held)
                 with self.assertRaises(ValueError):
                     bootstrap.run_held_installer(script, original, ('8.3', 'release', 'nts'), environment,
-                        catalog, execute, host, no_apt=True, normalized=forged)
+                        catalog, execute, host, no_apt=True, normalized=forged, original_installer=installer)
                 result.targets['usr/bin/alias']['sha256'] = '0' * 64
                 with self.assertRaises(ValueError):
                     bootstrap.run_held_installer(script, original, ('8.3', 'release', 'nts'), environment,
-                        catalog, execute, host, no_apt=True, normalized=result)
+                        catalog, execute, host, no_apt=True, normalized=result, original_installer=installer)
         self.assertEqual(1, len(calls))
 
     def test_initial_effect_primitive_requires_the_exact_no_apt_derived_bytes(self):
@@ -391,15 +428,16 @@ sudo() {
             held_script = os.pread(options['pass_fds'][0], len(derived), 0)
             self.assertEqual(derived, held_script)
             self.assertNotIn(b'sudo apt', held_script)
-        with bootstrap.hold_bytes(io.BytesIO(derived), script_id, {}) as script:
+        with bootstrap.hold_source_installer(catalog['installer']) as installer, \
+                bootstrap.hold_bytes(io.BytesIO(derived), script_id, {}) as script:
             with bootstrap.hold_bytes(io.BytesIO(data), row['asset'], {}) as held_archive:
                 with patch.dict(os.environ, environment, clear=True):
                     host = dict(operating_system='ubuntu', release='26.04', architecture='x86_64')
                     bootstrap.run_held_installer(script, held_archive, ('8.3','release','nts'),
-                        environment, catalog, execute, host, no_apt=True)
+                        environment, catalog, execute, host, no_apt=True, original_installer=installer)
                     with self.assertRaises(ValueError):
                         bootstrap.run_held_installer(script, held_archive, ('8.3','release','nts'),
-                            environment, catalog, execute, host, no_apt=False)
+                            environment, catalog, execute, host, no_apt=False, original_installer=installer)
         self.assertEqual(1, len(calls))
 
 

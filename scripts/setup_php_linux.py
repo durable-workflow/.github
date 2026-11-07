@@ -187,7 +187,8 @@ def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
             # An ambient preinstalled PHP binary is never an archive receipt.
             report["stage"] = "bound-installer"
             install_php(script, held_archive, (request["inputs"]["php-version"], "release", "nts"),
-                        environment, catalog, no_apt=True, normalized=normalized)
+                        environment, catalog, no_apt=True, normalized=normalized,
+                        original_installer=original)
             bind_installed_files(report, members, plan, verify_php)
             report['stage'] = 'bound-cli-configuration'
             config_document, config_record, config_plan = configure_cli(state, members, files, environment,

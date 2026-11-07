@@ -79,12 +79,14 @@ class SetupPhpLinuxTest(unittest.TestCase):
             with patch.object(normalization, 'profile', return_value=selected_profile), derive_archive(held) as result:
                 yield result
 
-        def install(script, held, arguments, child, selected, *, no_apt, normalized):
+        def install(script, held, arguments, child, selected, *, no_apt, normalized, original_installer):
             calls.append("install-php")
             script.assert_sealed()
             held.assert_sealed()
             self.assertEqual(("8.3", "release", "nts"), arguments)
             self.assertIs(True, no_apt)
+            original_installer.assert_sealed()
+            self.assertEqual(selected['installer'], original_installer.identity)
             self.assertEqual(environment, child)
             normalized.assert_valid()
             self.assertIs(normalized.original, held)
