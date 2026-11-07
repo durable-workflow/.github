@@ -347,7 +347,7 @@
       "composer_trust_scopes": [
         {
           "job": "published-package",
-          "required": false,
+          "required": true,
           "workflow": "release-verification.yml"
         }
       ],

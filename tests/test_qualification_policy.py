@@ -635,7 +635,7 @@ class QualificationPolicyTest(unittest.TestCase):
 
     def test_composer_scopes_require_closed_workflow_job_and_boolean_fields(self) -> None:
         selected = self.policy["targets"]["workflow"]["composer_trust_scopes"][0]
-        self.assertEqual({"workflow": "release-verification.yml", "job": "published-package", "required": False}, selected)
+        self.assertEqual({"workflow": "release-verification.yml", "job": "published-package", "required": True}, selected)
         for field, value in (("workflow", "../release.yml"), ("job", "${{ inputs.job }}"),
                              ("required", "false"), ("extra", "field")):
             candidate = copy.deepcopy(self.policy)
