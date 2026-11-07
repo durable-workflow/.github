@@ -148,7 +148,8 @@ class PhpLinuxQualificationTest(unittest.TestCase):
             "preinstalled_authority": False,
             "tools": [{"target": "/usr/local/bin/" + row["name"], **tools.identity(row)} for row in plan["tools"]],
             "installer": dict(catalog["installer"],
-                derived_sha256=bootstrap.sha256(bootstrap.no_apt_installer_source(original, catalog))),
+                derived_sha256=bootstrap.sha256(bootstrap.no_apt_installer_source(original, catalog)),
+                source=bootstrap.installer_source_origin(catalog["installer"])),
             "archive": dict(plan["archive"]["asset"], effective=bootstrap.effective_url(url)),
             "installed": {"binary": {"source": "usr/bin/php8.3", "size": binary["size"], "sha256": binary["sha256"]},
                           "extensions": {}, "version": "8.3.36", "zts": 0, "debug": 0},
@@ -606,6 +607,14 @@ class PhpLinuxQualificationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path, report, _, _ = self.fixture(Path(directory))
             changes = []
+            for field, value in (("kind", "network"), ("path", "foreign/install.sh"),
+                                 ("digest", "sha256:" + "0" * 64)):
+                changed = copy.deepcopy(report)
+                changed["installer"]["source"][field] = value
+                changes.append(changed)
+            changed = copy.deepcopy(report)
+            del changed["installer"]["source"]
+            changes.append(changed)
             for key in ("installer", "archive"):
                 changed = copy.deepcopy(report); changed[key]["digest"] = "sha256:" + "0" * 64
                 changes.append(changed)

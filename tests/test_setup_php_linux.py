@@ -50,10 +50,17 @@ class SetupPhpLinuxTest(unittest.TestCase):
 
         @contextmanager
         def fetch(identity, context):
-            calls.append("read-installer" if identity["name"] == "install.sh" else "read-archive")
-            source = ((bootstrap.ROOT / "qualification/vendor/php-ubuntu-713206915/install.sh").read_bytes()
-                      if identity["name"] == "install.sh" else archive_bytes)
-            with bootstrap.hold_verified(io.BytesIO(source), identity, bootstrap.asset_url(identity)) as held:
+            self.assertNotEqual("install.sh", identity["name"])
+            calls.append("read-archive")
+            with bootstrap.hold_verified(io.BytesIO(archive_bytes), identity, bootstrap.asset_url(identity)) as held:
+                yield held
+
+        source_installer = bootstrap.hold_source_installer
+
+        @contextmanager
+        def installer_fetch(identity):
+            calls.append("read-installer")
+            with source_installer(identity) as held:
                 yield held
 
         @contextmanager
@@ -74,12 +81,14 @@ class SetupPhpLinuxTest(unittest.TestCase):
             with patch.object(normalization, 'profile', return_value=selected_profile), derive_archive(held) as result:
                 yield result
 
-        def install(script, held, arguments, child, selected, *, no_apt, normalized):
+        def install(script, held, arguments, child, selected, *, no_apt, normalized, original_installer):
             calls.append("install-php")
             script.assert_sealed()
             held.assert_sealed()
             self.assertEqual(("8.3", "release", "nts"), arguments)
             self.assertIs(True, no_apt)
+            original_installer.assert_sealed()
+            self.assertEqual(selected['installer'], original_installer.identity)
             self.assertEqual(environment, child)
             normalized.assert_valid()
             self.assertIs(normalized.original, held)
@@ -126,7 +135,8 @@ class SetupPhpLinuxTest(unittest.TestCase):
             self.assertEqual({'inert':'configuration-plan'}, configuration)
             return {"source": "inert verified-file substitute"}, {"files": {}}
 
-        effects = dict(asset_fetch=fetch, tool_fetch=tool_fetch, inspect_archive=inspect,
+        effects = dict(installer_fetch=installer_fetch, asset_fetch=fetch,
+            tool_fetch=tool_fetch, inspect_archive=inspect,
             install_php=install, verify_php=verify, confirm_extensions=confirm_extensions,
             install_tool=install_tool, execute=execute, capture_subjects=capture_subjects, derive_archive=derive,
             configure=configure, capture_configuration=capture_configuration)
@@ -135,12 +145,14 @@ class SetupPhpLinuxTest(unittest.TestCase):
     def run_fixture(self, data):
         state, node, environment, request, host, catalog_path, calls, effects = data
         options = dict(effects)
+        installer_fetch = options.pop('installer_fetch')
         derive = options.pop('derive_archive')
         capture_configuration = options.pop('capture_configuration')
         configure = options.pop('configure')
         with patch.dict(os.environ, environment, clear=True), patch.object(bootstrap, "CATALOG", catalog_path), \
                 patch.object(bootstrap, "observed_host", return_value=host), \
                 patch.object(bootstrap, "explicit_trust", return_value=object()), \
+                patch.object(bootstrap, 'hold_source_installer', side_effect=installer_fetch), \
                 patch.object(normalization, 'profile', return_value=normalize_tests.PhpLinuxNormalizeTest().fixture()[2]), \
                 patch.object(normalization, 'normalize', side_effect=derive), \
                 patch.object(setup, 'configure_cli', side_effect=configure), \

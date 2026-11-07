@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import ssl
+import stat
 import subprocess
 import time
 from typing import BinaryIO
@@ -246,6 +247,30 @@ def hold_verified(source: BinaryIO, identity: dict, final_url: str):
         yield held
 
 
+def installer_source_origin(identity: dict) -> dict:
+    asset_identity(identity, "install.sh", MAX_INSTALLER)
+    return {"kind": "repository", "path":
+            f"qualification/vendor/php-ubuntu-{identity['id']}/install.sh",
+            "digest": identity["digest"]}
+
+
+@contextmanager
+def hold_source_installer(identity: dict):
+    """Seal the committed upstream snapshot without a rolling release request."""
+    origin = installer_source_origin(identity)
+    descriptor = os.open(ROOT / origin["path"], os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    with os.fdopen(descriptor, "rb") as source:
+        before = os.fstat(source.fileno())
+        if not stat.S_ISREG(before.st_mode) or before.st_size != identity["size"]:
+            raise ValueError("Committed installer is not the bounded regular input")
+        with hold_bytes(source, identity, origin) as held:
+            after = os.fstat(source.fileno())
+            fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+            if any(getattr(before, key) != getattr(after, key) for key in fields):
+                raise ValueError("Committed installer changed while sealing")
+            yield held
+
+
 def replace_once(source: str, before: str, after: str) -> str:
     if source.count(before) != 1:
         raise ValueError("Pinned upstream patch location is absent or ambiguous")
@@ -342,7 +367,7 @@ def observed_host() -> dict:
 
 def run_held_installer(script: HeldAsset, archive: HeldAsset, arguments: tuple[str, str, str],
                        environment: dict[str, str], catalog: dict, execute=subprocess.run, host=None,
-                       no_apt=False, normalized=None):
+                       no_apt=False, normalized=None, *, original_installer: HeldAsset):
     """Effect primitive only; no shipped CLI/action currently invokes this.
 
     The proposed consumer must first execve into this closed environment and
@@ -355,7 +380,13 @@ def run_held_installer(script: HeldAsset, archive: HeldAsset, arguments: tuple[s
         raise ValueError("Exact PHP/build/thread-safety arguments required")
     selected = select(catalog, **(observed_host() if host is None else host),
                       php=arguments[0], build=arguments[1], thread_safety=arguments[2])
-    original = (ROOT / "qualification/vendor/php-ubuntu-713206915/install.sh").read_bytes()
+    if not isinstance(original_installer, HeldAsset):
+        raise ValueError("A held original installer is required")
+    original_installer.assert_sealed()
+    if (original_installer.identity != catalog["installer"]
+            or original_installer.effective != installer_source_origin(catalog["installer"])):
+        raise ValueError("Original installer is not the held committed source")
+    original = os.pread(original_installer.descriptor, original_installer.identity["size"], 0)
     derived = no_apt_installer_source(original, catalog) if no_apt else installer_source(original, catalog)
     derived_identity = dict(catalog["installer"], name="bound-install.sh", size=len(derived),
                             digest=SHA256_PREFIX + sha256(derived))

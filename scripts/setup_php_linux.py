@@ -32,7 +32,7 @@ from scripts import php_linux_configuration as configuration
 RECEIPT_NAME = "receipt.json"
 RECEIPT_SCHEMA = "durable-workflow.php-linux-setup-receipt/v2"
 NORMALIZED_RECEIPT_SCHEMA = "durable-workflow.php-linux-setup-receipt/v3"
-CONFIGURED_RECEIPT_SCHEMA = "durable-workflow.php-linux-setup-receipt/v4"
+CONFIGURED_RECEIPT_SCHEMA = "durable-workflow.php-linux-setup-receipt/v5"
 MAX_RECEIPT = 60 * 1024
 HOST_ARCHIVES = {'26.04': 672923785, '24.04': 672921837}
 CA_SHA256 = "50f79f98dac192b20dbf73f35c56f0b0c557ab267ff5199d1117cc1180b70785"
@@ -159,8 +159,8 @@ def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
               "preinstalled_authority": False, "tools": []}
     try:
         with ExitStack() as stack:
-            report["stage"] = "installer-read"
-            original = stack.enter_context(asset_fetch(catalog["installer"], context))
+            report["stage"] = "installer-source-read"
+            original = stack.enter_context(bootstrap.hold_source_installer(catalog["installer"]))
             report["stage"] = "archive-read"
             held_archive = stack.enter_context(asset_fetch(plan["archive"]["asset"], context))
             report["stage"] = "tool-reads"
@@ -179,13 +179,15 @@ def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
                 raise ValueError('Strict root-input inspection differs from the complete derivation')
             report['normalization'] = normalized.proof
             report['normalization_manifest'] = normalization.write_manifest(state, normalized)
-            report.update(installer=dict(original.identity, derived_sha256=bootstrap.sha256(patched)),
+            report.update(installer=dict(original.identity, derived_sha256=bootstrap.sha256(patched),
+                                         source=original.effective),
                           archive=dict(held_archive.identity, effective=held_archive.effective))
             # Always install the bound tuple before any product PHP probe.
             # An ambient preinstalled PHP binary is never an archive receipt.
             report["stage"] = "bound-installer"
             install_php(script, held_archive, (request["inputs"]["php-version"], "release", "nts"),
-                        environment, catalog, no_apt=True, normalized=normalized)
+                        environment, catalog, no_apt=True, normalized=normalized,
+                        original_installer=original)
             bind_installed_files(report, members, plan, verify_php)
             report['stage'] = 'bound-cli-configuration'
             config_document, config_record, config_plan = configure_cli(state, members, files, environment,
