@@ -284,7 +284,8 @@ def validate_configured(configured):
 def validate_source_receipts(report, state, plan, catalog):
     original = (bootstrap.ROOT / "qualification/vendor/php-ubuntu-713206915/install.sh").read_bytes()
     patched = bootstrap.no_apt_installer_source(original, catalog)
-    if report["installer"] != dict(catalog["installer"], derived_sha256=bootstrap.sha256(patched)):
+    if report["installer"] != dict(catalog["installer"], derived_sha256=bootstrap.sha256(patched),
+                                   source=bootstrap.installer_source_origin(catalog["installer"])):
         raise ValueError("Installer receipt differs from its literal/derived identity")
     received = report["archive"]
     bootstrap.exact_keys(received, {*plan["archive"]["asset"], "effective"})

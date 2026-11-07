@@ -12,10 +12,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import fcntl
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
 import ssl
+import stat
 import subprocess
 import time
 from typing import BinaryIO
@@ -244,6 +246,32 @@ def hold_verified(source: BinaryIO, identity: dict, final_url: str):
     asset_identity(identity, identity["name"], MAX_ARCHIVE)
     with hold_bytes(source, identity, effective_url(final_url)) as held:
         yield held
+
+
+def installer_source_origin(identity: dict) -> dict:
+    catalog = validate_catalog(json.loads(CATALOG.read_text()))
+    if identity != catalog["installer"]:
+        raise ValueError("Installer differs from the committed source authority")
+    return {"kind": "repository", "path":
+            f"qualification/vendor/php-ubuntu-{identity['id']}/install.sh",
+            "digest": identity["digest"]}
+
+
+@contextmanager
+def hold_source_installer(identity: dict):
+    """Seal the committed upstream snapshot without a rolling release request."""
+    origin = installer_source_origin(identity)
+    descriptor = os.open(ROOT / origin["path"], os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    with os.fdopen(descriptor, "rb") as source:
+        before = os.fstat(source.fileno())
+        if not stat.S_ISREG(before.st_mode) or before.st_size != identity["size"]:
+            raise ValueError("Committed installer is not the bounded regular input")
+        with hold_bytes(source, identity, origin) as held:
+            after = os.fstat(source.fileno())
+            fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+            if any(getattr(before, key) != getattr(after, key) for key in fields):
+                raise ValueError("Committed installer changed while sealing")
+            yield held
 
 
 def replace_once(source: str, before: str, after: str) -> str:

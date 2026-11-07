@@ -1,7 +1,7 @@
 """Inert source controls: no network, PHP setup, sudo or archive extraction."""
 
 import copy
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import errno
 import io
 import json
@@ -31,6 +31,62 @@ class PhpLinuxBootstrapTest(unittest.TestCase):
     def identity(self, name, contents, identifier=123):
         return {"id": identifier, "name": name, "size": len(contents),
                 "digest": "sha256:" + bootstrap.sha256(contents)}
+
+    def test_source_installer_is_sealed_without_a_network_request(self):
+        with patch.object(bootstrap, "build_opener") as network:
+            with bootstrap.hold_source_installer(self.catalog["installer"]) as held:
+                held.assert_sealed()
+                self.assertEqual(self.original, os.pread(held.descriptor, len(self.original), 0))
+                self.assertEqual(bootstrap.installer_source_origin(self.catalog["installer"]), held.effective)
+                descriptor = held.descriptor
+            network.assert_not_called()
+        with self.assertRaises(OSError):
+            os.fstat(descriptor)
+
+    def test_source_installer_refuses_changed_bytes_links_and_authority(self):
+        identity = self.catalog["installer"]
+        origin = bootstrap.installer_source_origin(identity)
+        for kind in ("changed", "truncated", "link", "identity"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                path = root / origin["path"]
+                path.parent.mkdir(parents=True)
+                path.write_bytes(self.original)
+                selected = dict(identity)
+                if kind == "changed":
+                    path.write_bytes(b"X" + self.original[1:])
+                elif kind == "truncated":
+                    path.write_bytes(self.original[:-1])
+                elif kind == "link":
+                    path.rename(path.with_suffix(".original"))
+                    path.symlink_to(path.with_suffix(".original"))
+                else:
+                    selected["id"] += 1
+                with patch.object(bootstrap, "ROOT", root):
+                    with self.assertRaises((OSError, ValueError)):
+                        with bootstrap.hold_source_installer(selected):
+                            pass
+
+    def test_source_installer_refuses_a_change_during_sealing(self):
+        identity = self.catalog["installer"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / bootstrap.installer_source_origin(identity)["path"]
+            path.parent.mkdir(parents=True)
+            path.write_bytes(self.original)
+            seal = bootstrap.hold_bytes
+
+            @contextmanager
+            def changed(source, selected, origin):
+                with seal(source, selected, origin) as held:
+                    before = path.stat()
+                    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000))
+                    yield held
+
+            with patch.object(bootstrap, "ROOT", root), patch.object(bootstrap, "hold_bytes", changed):
+                with self.assertRaises(ValueError):
+                    with bootstrap.hold_source_installer(identity):
+                        pass
 
     def test_catalog_has_exact_distinct_current_asset_tuples(self):
         self.assertIs(self.catalog, bootstrap.validate_catalog(self.catalog))

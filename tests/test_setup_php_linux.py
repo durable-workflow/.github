@@ -50,10 +50,15 @@ class SetupPhpLinuxTest(unittest.TestCase):
 
         @contextmanager
         def fetch(identity, context):
-            calls.append("read-installer" if identity["name"] == "install.sh" else "read-archive")
-            source = ((bootstrap.ROOT / "qualification/vendor/php-ubuntu-713206915/install.sh").read_bytes()
-                      if identity["name"] == "install.sh" else archive_bytes)
-            with bootstrap.hold_verified(io.BytesIO(source), identity, bootstrap.asset_url(identity)) as held:
+            self.assertNotEqual("install.sh", identity["name"])
+            calls.append("read-archive")
+            with bootstrap.hold_verified(io.BytesIO(archive_bytes), identity, bootstrap.asset_url(identity)) as held:
+                yield held
+
+        @contextmanager
+        def installer_fetch(identity):
+            calls.append("read-installer")
+            with bootstrap.hold_source_installer(identity) as held:
                 yield held
 
         @contextmanager
@@ -126,7 +131,8 @@ class SetupPhpLinuxTest(unittest.TestCase):
             self.assertEqual({'inert':'configuration-plan'}, configuration)
             return {"source": "inert verified-file substitute"}, {"files": {}}
 
-        effects = dict(asset_fetch=fetch, tool_fetch=tool_fetch, inspect_archive=inspect,
+        effects = dict(installer_fetch=installer_fetch, asset_fetch=fetch,
+            tool_fetch=tool_fetch, inspect_archive=inspect,
             install_php=install, verify_php=verify, confirm_extensions=confirm_extensions,
             install_tool=install_tool, execute=execute, capture_subjects=capture_subjects, derive_archive=derive,
             configure=configure, capture_configuration=capture_configuration)

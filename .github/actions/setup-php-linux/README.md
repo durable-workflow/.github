@@ -16,6 +16,14 @@ The candidate PHP archive is asset 672923785,
 `846f69bcf56fc25f672ab888415c12d40122b684c8fb9f1de87b7ddb64fa4272`.
 The original installer is asset 713206915, 3,406 bytes, SHA-256
 `7bc5bfea71696b0927367eb887e2710d44c6f17216fbd47add5a4cb181543e99`.
+The reviewed snapshot of those exact bytes is committed under
+`qualification/vendor/php-ubuntu-713206915/install.sh`. Setup seals that regular
+source file directly and records its repository path and digest in the installer
+receipt. It makes no installer download request; replacement, truncation, links
+and changes during sealing refuse before installation. The archive and PHAR
+acquisition and verification paths remain unchanged. The configured setup
+receipt is version 5; prior version-4 evidence remains bound to its original
+helper and does not qualify this changed source path.
 The two literal PHAR identities and publisher evidence are in
 `qualification/php-linux-tools.json`. General selected PHPUnit's captured
 publisher digest authority; its detached signature remains unverified.
@@ -37,7 +45,7 @@ The recipe requires the existing authenticated shared CA output, exact digest
 and an empty additional-root directory. The existing `bootstrap-patched-pip`
 action's `clients: python` export can supply that predecessor without an APT
 route. Network reads use an exclusive Python TLS context and no proxy/auth.
-GitHub asset reads use literal asset IDs and closed redirects; PHAR reads use
+Archive reads use literal GitHub asset IDs and closed redirects; PHAR reads use
 literal URLs with no redirects. No tag discovery, retry or fallback exists.
 
 Every installer/archive/tool stream must match its independent size and digest
