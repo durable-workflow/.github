@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -25,6 +27,10 @@ SPEC = importlib.util.spec_from_file_location(
 )
 trust = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(trust)
+PUBLIC_BOUNDARY = ROOT / "scripts" / "check_public_boundary.py"
+BOUNDARY_SPEC = importlib.util.spec_from_file_location("public_boundary", PUBLIC_BOUNDARY)
+public_boundary = importlib.util.module_from_spec(BOUNDARY_SPEC)
+BOUNDARY_SPEC.loader.exec_module(public_boundary)
 
 
 def load_tests(loader, standard_tests, pattern):
@@ -35,6 +41,122 @@ def load_tests(loader, standard_tests, pattern):
                    test_php_linux_normalize, test_php_linux_archive_metadata, test_php_linux_alternatives):
         standard_tests.addTests(loader.loadTestsFromModule(module))
     return standard_tests
+
+
+class PublicBoundaryTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.run_git("init", "--quiet")
+        self.run_git("config", "user.name", "Public Boundary Test")
+        self.run_git("config", "user.email", "public-boundary@example.invalid")
+        ignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+        (self.root / ".gitignore").write_text(ignore, encoding="utf-8")
+        self.run_git("add", ".gitignore")
+
+    def run_git(self, *arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", str(self.root), *arguments],
+            check=check,
+            capture_output=True,
+            text=True,
+        )
+
+    def run_check(self, root: Path | None = None) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-I", str(PUBLIC_BOUNDARY)],
+            cwd=root or self.root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    def write(self, relative: str, content: str = "canary-value-must-not-be-read") -> Path:
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def test_current_repository_has_no_tracked_project_local_settings(self) -> None:
+        stderr = io.StringIO()
+        with patch("sys.stderr", stderr):
+            result = public_boundary.main()
+        self.assertEqual(0, result, stderr.getvalue())
+
+    def test_tracked_root_settings_refuse_without_content(self) -> None:
+        settings = self.write(".claude/settings.local.json")
+        self.run_git("add", "-f", ".claude/settings.local.json")
+        settings.chmod(0)
+
+        result = self.run_check()
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn(".claude/settings.local.json", result.stderr)
+        self.assertNotIn("canary-value-must-not-be-read", result.stderr)
+        stderr = io.StringIO()
+        with patch.object(public_boundary, "git_output", side_effect=[
+                (str(self.root) + "\n").encode(), b".claude/settings.local.json\0",
+        ]), patch("sys.stderr", stderr):
+            self.assertEqual(1, public_boundary.main())
+        self.assertIn(".claude/settings.local.json", stderr.getvalue())
+
+    def test_tracked_nested_settings_refuse_without_content(self) -> None:
+        settings = self.write("component/.claude/settings.local.json")
+        self.run_git("add", "-f", "component/.claude/settings.local.json")
+        settings.chmod(0)
+
+        result = self.run_check()
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("component/.claude/settings.local.json", result.stderr)
+        self.assertNotIn("canary-value-must-not-be-read", result.stderr)
+
+    def test_newline_path_is_escaped_in_the_refusal(self) -> None:
+        relative = "line\nbreak/.claude/settings.local.json"
+        self.write(relative)
+        self.run_git("add", "-f", relative)
+
+        result = self.run_check()
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("\\n", result.stderr)
+        self.assertNotIn("line\nbreak", result.stderr)
+
+    def test_untracked_settings_are_ignored_and_not_scanned(self) -> None:
+        root_settings = self.write(".claude/settings.local.json")
+        nested_settings = self.write("component/.claude/settings.local.json")
+
+        self.run_git("check-ignore", "--quiet", str(root_settings.relative_to(self.root)))
+        self.run_git("check-ignore", "--quiet", str(nested_settings.relative_to(self.root)))
+        self.assertEqual(0, self.run_check().returncode)
+
+    def test_near_names_remain_allowed(self) -> None:
+        allowed = [
+            ".claude/settings.json",
+            ".claude/settings.local.json.example",
+            "component/settings.local.json",
+        ]
+        for path in allowed:
+            self.write(path)
+        self.run_git("add", *allowed)
+
+        result = self.run_check()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_preexisting_tracked_copy_refuses_after_an_unrelated_commit(self) -> None:
+        forbidden = self.write("legacy/.claude/settings.local.json")
+        self.run_git("add", "-f", str(forbidden.relative_to(self.root)))
+        self.run_git("commit", "--quiet", "-m", "Add historical tracked copy")
+        self.write("README.md", "Unrelated change\n")
+        self.run_git("add", "README.md")
+        self.run_git("commit", "--quiet", "-m", "Unrelated change")
+
+        result = self.run_check()
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("legacy/.claude/settings.local.json", result.stderr)
 
 
 class CleanBundleTest(unittest.TestCase):

@@ -4,6 +4,9 @@ __pycache__/
 node_modules/
 /conformance/cancellation/*/evidence/
 
+/.claude/settings.local.json
+**/.claude/settings.local.json
+
 /authoritative-verification.json
 /candidate.json
 /requested-candidate.json
