@@ -37,6 +37,10 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Protect the hosted toolcache parent
+      if: runner.environment == 'github-hosted' && runner.os == 'Linux'
+      shell: bash
+      run: /usr/bin/sudo --non-interactive /usr/bin/python3 -I -S -B "$GITHUB_ACTION_PATH/protect-hosted-runtime.py" "$pythonLocation"
     - name: Seed or verify the exact job-private pip runtime
       id: runtime
       shell: bash
