@@ -2,8 +2,10 @@
 
 import importlib.util
 import os
+import io
 from pathlib import Path
 import stat
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -26,6 +28,8 @@ class HostedRuntimeParentTest(unittest.TestCase):
         self.directory.mkdir()
         self.original_fstat = os.fstat
         self.original_stat = os.stat
+        self.original_open = os.open
+        self.runner_uid = os.getuid()
         self.identity = self.directory.stat()
 
     def root_metadata(self, metadata):
@@ -132,7 +136,7 @@ class HostedRuntimeParentTest(unittest.TestCase):
         descriptor = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY)
         try:
             with self.assertRaisesRegex(ValueError, "private regular"):
-                protection.seal_tree(descriptor, os.getuid())
+                protection.seal_tree(descriptor, self.runner_uid)
         finally:
             os.close(descriptor)
         self.assertEqual(0o666, stat.S_IMODE(outside.stat().st_mode))
@@ -141,7 +145,7 @@ class HostedRuntimeParentTest(unittest.TestCase):
         descriptor = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY)
         try:
             with self.assertRaisesRegex(ValueError, "private regular"):
-                protection.seal_tree(descriptor, os.getuid())
+                protection.seal_tree(descriptor, self.runner_uid)
         finally:
             os.close(descriptor)
 
@@ -150,5 +154,94 @@ class HostedRuntimeParentTest(unittest.TestCase):
                          "/opt/hostedtoolcache/Python/3.13.18/x86", "//opt/hostedtoolcache/Python/3.13.18/x64"):
             with self.subTest(location=location), patch.object(os, "open") as opened:
                 with self.assertRaisesRegex(ValueError, "fixed hosted"):
-                    protection.protect_hosted_python(location, os.getuid())
+                    protection.protect_hosted_python(location, self.runner_uid)
                 opened.assert_not_called()
+
+    def sandbox_open(self, path, flags, **options):
+        if path == "/" and "dir_fd" not in options:
+            path = self.directory.parent
+        return self.original_open(path, flags, **options)
+
+    def hosted_tree(self):
+        selected = self.directory / "hostedtoolcache/Python/3.13.18/x64"
+        selected.mkdir(parents=True)
+        file = selected / "python"
+        file.write_bytes(b"selected interpreter fixture")
+        file.chmod(0o777)
+        for directory in (selected, *selected.parents):
+            if directory == self.directory.parent:
+                break
+            directory.chmod(0o777)
+        return selected, file
+
+    def test_complete_hosted_ancestry_and_selected_tree_are_protected_without_touching_other_versions(self):
+        selected, file = self.hosted_tree()
+        other = selected.parent / "arm64"
+        other.mkdir(mode=0o777)
+        other.chmod(0o777)
+        with patch.object(os, "open", side_effect=self.sandbox_open):
+            protection.protect_hosted_python("/opt/hostedtoolcache/Python/3.13.18/x64", self.runner_uid)
+        self.assertEqual(b"selected interpreter fixture", file.read_bytes())
+        for directory in (selected, *selected.parents):
+            if directory == self.directory.parent:
+                break
+            self.assertEqual(0o755, stat.S_IMODE(directory.stat().st_mode))
+        self.assertEqual(0o755, stat.S_IMODE(file.stat().st_mode))
+        self.assertEqual(0o777, stat.S_IMODE(other.stat().st_mode))
+
+    def test_linked_ancestry_refuses_before_traversing_selected_runtime(self):
+        selected, file = self.hosted_tree()
+        python = selected.parent.parent
+        moved = python.with_name("other-python")
+        python.rename(moved)
+        python.symlink_to(moved, target_is_directory=True)
+        with patch.object(os, "open", side_effect=self.sandbox_open):
+            with self.assertRaises(OSError):
+                protection.protect_hosted_python("/opt/hostedtoolcache/Python/3.13.18/x64", self.runner_uid)
+        self.assertEqual(0o777, stat.S_IMODE(file.stat().st_mode))
+
+    def test_metadata_limits_refuse_without_traversing_a_large_or_deep_tree(self):
+        (self.directory / "file").touch()
+        descriptor = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with self.assertRaisesRegex(ValueError, "walk limit"):
+                protection.seal_tree(descriptor, self.runner_uid, [200000])
+            with self.assertRaisesRegex(ValueError, "depth limit"):
+                protection.seal_tree(descriptor, self.runner_uid, depth=65)
+        finally:
+            os.close(descriptor)
+
+    def test_special_mode_and_ineffective_file_protection_refuse(self):
+        file = self.directory / "file"
+        file.touch()
+        descriptor = os.open(file, os.O_RDONLY)
+        try:
+            file.chmod(0o4777)
+            special = os.fstat(descriptor)
+            with self.assertRaisesRegex(ValueError, "special mode"):
+                protection.seal_file(descriptor, special)
+            file.chmod(0o777)
+            before = os.fstat(descriptor)
+            with patch.object(os, "fchmod"):
+                with self.assertRaisesRegex(ValueError, "not established"):
+                    protection.seal_file(descriptor, before)
+        finally:
+            os.close(descriptor)
+
+    def test_cli_requires_sudo_identity_and_passes_only_the_selected_location(self):
+        location = "/opt/hostedtoolcache/Python/3.13.18/x64"
+        for arguments, uid, sudo_uid in ((["tool"], 0, "1000"), (["tool", location], 1000, "1000"),
+                                        (["tool", location], 0, ""), (["tool", location], 0, "0")):
+            with self.subTest(arguments=arguments, uid=uid, sudo_uid=sudo_uid), \
+                    patch.object(sys, "argv", arguments), patch.object(os, "geteuid", return_value=uid), \
+                    patch.dict(os.environ, {"SUDO_UID": sudo_uid}), \
+                    patch.object(protection, "protect_hosted_python") as protect:
+                with self.assertRaises(SystemExit):
+                    protection.main()
+                protect.assert_not_called()
+        with patch.object(sys, "argv", ["tool", location]), patch.object(os, "geteuid", return_value=0), \
+                patch.dict(os.environ, {"SUDO_UID": "1000"}), \
+                patch.object(protection, "protect_hosted_python") as protect, \
+                patch("sys.stdout", new_callable=io.StringIO):
+            protection.main()
+        protect.assert_called_once_with(location, 1000)
