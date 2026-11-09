@@ -60,6 +60,24 @@ class PrivatePipRuntimeTest(unittest.TestCase):
         self.environment.start()
         self.addCleanup(self.environment.stop)
 
+    def test_pinned_pip26_generated_script_binds_the_exact_interpreter_and_complete_body(self):
+        observed_body = b"import sys\nfrom pip._internal.cli.main import main\nif __name__ == '__main__':\n    sys.argv[0] = sys.argv[0].removesuffix('.exe')\n    sys.exit(main())\n"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            interpreter = root / "bin/python"
+            script = root / "pip"
+            header = ("#!" + str(interpreter) + "\n").encode()
+            script.write_bytes(header + observed_body)
+            script.chmod(0o700)
+            self.assertEqual(header + observed_body, runtime._entrypoint(script, interpreter)[0])
+            for contents in (("#!/other/python\n").encode() + observed_body,
+                             header + observed_body + b"print('unexpected')\n",
+                             header + observed_body.replace(b".removesuffix('.exe')", b".removesuffix('.py')")):
+                with self.subTest(contents=contents):
+                    script.write_bytes(contents)
+                    with self.assertRaisesRegex(ValueError, "bound stock script"):
+                        runtime._entrypoint(script, interpreter)
+
     def test_full_private_bootstrap_and_read_only_reuse_have_no_ambient_or_network_fallback(self):
         with tempfile.TemporaryDirectory() as temporary:
             runner = Path(temporary)

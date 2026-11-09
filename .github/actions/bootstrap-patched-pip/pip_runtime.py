@@ -639,12 +639,19 @@ if __name__ == '__main__':
     sys.argv[0] = re.sub(r'(-script\.pyw|\.exe)?$', '', sys.argv[0])
     sys.exit(main())
 '''
+SCRIPT_BODY_PIP_26 = '''import sys
+from pip._internal.cli.main import main
+if __name__ == '__main__':
+    sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    sys.exit(main())
+'''
 
 
 def _entrypoint(path, private_python):
     with held_file(path, maximum=8192, owned=True, executable=True) as (contents, identity):
         header = ("#!" + str(private_python) + "\n").encode()
-        expected = {header + source.encode() for source in (SCRIPT_BODY_OLD, SCRIPT_BODY_CURRENT)}
+        expected = {header + source.encode()
+                    for source in (SCRIPT_BODY_OLD, SCRIPT_BODY_CURRENT, SCRIPT_BODY_PIP_26)}
         if contents not in expected:
             raise ValueError("Private pip entrypoint is not the bound stock script/shebang")
     return contents, identity
