@@ -4,11 +4,17 @@ on:
   push:
     branches: [main]
     paths:
-      - '.github/actions/bootstrap-patched-pip/**'
+      - '.github/actions/bootstrap-patched-pip/action.yml'
+      - '.github/actions/bootstrap-patched-pip/pip_runtime.py'
+      - '.github/actions/bootstrap-patched-pip/export-trust.py'
+      - '.github/actions/bootstrap-patched-pip/protect-hosted-runtime.py'
       - '.github/workflows/hosted-pip.yml'
   pull_request:
     paths:
-      - '.github/actions/bootstrap-patched-pip/**'
+      - '.github/actions/bootstrap-patched-pip/action.yml'
+      - '.github/actions/bootstrap-patched-pip/pip_runtime.py'
+      - '.github/actions/bootstrap-patched-pip/export-trust.py'
+      - '.github/actions/bootstrap-patched-pip/protect-hosted-runtime.py'
       - '.github/workflows/hosted-pip.yml'
 
 permissions:
