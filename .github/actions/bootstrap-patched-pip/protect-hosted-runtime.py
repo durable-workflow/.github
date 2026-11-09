@@ -9,30 +9,32 @@ import sys
 def protect_directory(path):
     descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        before = os.fstat(descriptor)
-        mode = stat.S_IMODE(before.st_mode)
-        if before.st_uid != 0 or mode & (stat.S_ISUID | stat.S_ISGID):
-            raise ValueError("Hosted runtime parent must be an ordinary root-owned directory")
-        if not mode & 0o022 or mode & stat.S_ISVTX:
-            return
-
-        # Hosted /opt is shared and writable. Sticky ownership prevents other
-        # users from replacing its existing toolcache entry while preserving
-        # the runner's ability to create tools below this directory.
-        expected = mode | stat.S_ISVTX
-        os.fchmod(descriptor, expected)
-        after = os.fstat(descriptor)
-        if ((before.st_dev, before.st_ino, before.st_uid)
-                != (after.st_dev, after.st_ino, after.st_uid)
-                or stat.S_IMODE(after.st_mode) != expected):
-            raise ValueError("Hosted runtime parent protection was not established")
+        protect_parent(descriptor, 0)
     finally:
         os.close(descriptor)
 
 
-def seal_tree(descriptor, runner_uid, budget=None):
+def protect_parent(descriptor, runner_uid):
+    before = os.fstat(descriptor)
+    mode = stat.S_IMODE(before.st_mode)
+    if before.st_uid not in {0, runner_uid} or mode & (stat.S_ISUID | stat.S_ISGID):
+        raise ValueError("Hosted runtime parent must be root-owned or runner-owned without special modes")
+    expected = ((mode | stat.S_ISVTX) if before.st_uid == 0 and mode & 0o022
+                else mode & ~0o022)
+    if mode != expected:
+        os.fchmod(descriptor, expected)
+    after = os.fstat(descriptor)
+    if ((before.st_dev, before.st_ino, before.st_uid)
+            != (after.st_dev, after.st_ino, after.st_uid)
+            or stat.S_IMODE(after.st_mode) != expected):
+        raise ValueError("Hosted runtime parent protection was not established")
+
+
+def seal_tree(descriptor, runner_uid, budget=None, depth=0):
     """Remove other-user writes from only the selected runtime, without following links."""
     budget = [0] if budget is None else budget
+    if depth > 64:
+        raise ValueError("Selected runtime exceeds the metadata depth limit")
     metadata = os.fstat(descriptor)
     if metadata.st_uid not in {0, runner_uid} or metadata.st_mode & (stat.S_ISUID | stat.S_ISGID):
         raise ValueError("Selected runtime has an unsupported owner or special mode")
@@ -57,13 +59,16 @@ def seal_tree(descriptor, runner_uid, budget=None):
                     != (entry.st_dev, entry.st_ino, entry.st_uid, entry.st_mode, entry.st_nlink)):
                 raise ValueError("Selected runtime entry changed during protection")
             if directory:
-                seal_tree(child, runner_uid, budget)
+                seal_tree(child, runner_uid, budget, depth + 1)
             else:
                 if held.st_mode & (stat.S_ISUID | stat.S_ISGID):
                     raise ValueError("Selected runtime file has a special mode")
                 expected = stat.S_IMODE(held.st_mode) & ~0o022
                 os.fchmod(child, expected)
-                if stat.S_IMODE(os.fstat(child).st_mode) != expected:
+                after = os.fstat(child)
+                if ((held.st_dev, held.st_ino, held.st_uid, held.st_nlink)
+                        != (after.st_dev, after.st_ino, after.st_uid, after.st_nlink)
+                        or stat.S_IMODE(after.st_mode) != expected):
                     raise ValueError("Selected runtime file protection was not established")
         finally:
             os.close(child)
@@ -86,16 +91,7 @@ def protect_hosted_python(location, runner_uid):
             child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
             os.close(descriptor)
             descriptor = child
-            metadata = os.fstat(descriptor)
-            mode = stat.S_IMODE(metadata.st_mode)
-            if metadata.st_uid not in {0, runner_uid} or mode & (stat.S_ISUID | stat.S_ISGID):
-                raise ValueError("Hosted runtime ancestry has an unsupported owner or mode")
-            expected = ((mode | stat.S_ISVTX) if metadata.st_uid == 0 and mode & 0o022
-                        else mode & ~0o022)
-            if mode != expected:
-                os.fchmod(descriptor, expected)
-            if stat.S_IMODE(os.fstat(descriptor).st_mode) != expected:
-                raise ValueError("Hosted runtime ancestor protection was not established")
+            protect_parent(descriptor, runner_uid)
         seal_tree(descriptor, runner_uid)
     finally:
         os.close(descriptor)
