@@ -209,9 +209,20 @@ class SetupPhpLinuxTest(unittest.TestCase):
             changed['inputs'][name] = value
             candidates.append((host, changed))
         for actual_host, actual_request in candidates:
-            plan = recipe.validate_request(actual_request, catalog, tool_catalog, actual_host)
+            # The catalog holds only the setup-profile tuples, so another
+            # distro release, architecture or PHP minor has no archive to plan.
+            uncataloged = (actual_host != host or actual_request['inputs']['php-version'] != '8.3')
             with self.subTest(host=actual_host, inputs=actual_request['inputs']), self.assertRaises(ValueError):
+                plan = recipe.validate_request(actual_request, catalog, tool_catalog, actual_host)
+                self.assertFalse(uncataloged)
                 setup.initial_profile(plan, actual_host)
+
+    def test_catalog_pins_exactly_the_setup_profile_archives(self):
+        catalog = json.loads(bootstrap.CATALOG.read_text())
+        self.assertEqual({(row["release"], row["asset"]["id"]) for row in catalog["archives"]},
+                         set(setup.HOST_ARCHIVES.items()))
+        self.assertEqual({"x86_64"}, {row["arch"] for row in catalog["archives"]})
+        self.assertEqual({"8.3"}, {row["php"] for row in catalog["archives"]})
 
     def test_host_profile_requires_the_complete_matching_pinned_archive_identity(self):
         from scripts import php_linux_tools as tools

@@ -31,7 +31,8 @@ Each consumer still needs its own source binding and actual caller qualification
 `shivammathur/php-ubuntu` replaces its `builds` release assets in place, and a
 replaced asset ID returns 404. Setup never falls back to a newer asset. To
 re-pin, download the new asset by ID, check its size and SHA-256 against the
-release API `digest`, and update `php-linux-bootstrap.json`. Then rebuild each
+release API `digest`, and update `php-linux-bootstrap.json`. The catalog pins
+only the archives setup uses (`HOST_ARCHIVES`), so every row needs re-pinning. Then rebuild each
 setup profile's records in place from that exact local file:
 
 ```sh
