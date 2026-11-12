@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 """Source proposal for the exact php-ubuntu installer/archive trust boundary.
 
-Archive bytes are the reviewed upstream php-ubuntu identities, served from the
-durable-workflow mirror release (issue 358); setup never requests upstream.
-
 This module has no installer/download command-line entrypoint. Consumer wiring,
 the surrounding setup-php tool/extension paths and any actual setup execution
 remain separate review gates on central issue 297.
@@ -31,19 +28,7 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Requ
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / "qualification/php-linux-bootstrap.json"
 SOURCE_COMMIT = "f3e473d116dcccaddc5834248c87452386958240"
-# Upstream provenance only. Setup never requests bytes from this repository.
 REPOSITORY = "shivammathur/php-ubuntu"
-# Issue 358: setup fetches the same reviewed bytes from a release we control.
-# Upstream replaces its assets in place; mirror assets are content-addressed and
-# never replaced. The release ID is pinned once the protected uploader creates
-# it; until then no catalog row can name a mirror asset.
-MIRROR_REPOSITORY = "durable-workflow/.github"
-MIRROR_REPOSITORY_ID = 575230056
-MIRROR_RELEASE_TAG = "php-linux-archives"
-MIRROR_RELEASE_ID = None
-MIRROR_ASSET_PATH = re.compile(r"/repos/durable-workflow/\.github/releases/assets/[1-9]\d*")
-MIRROR_REDIRECT_PREFIX = "/durable-workflow/.github/"
-MIRROR_DOWNLOAD_PREFIX = f"/github-production-release-asset/{MIRROR_REPOSITORY_ID}/"
 SHA256_PREFIX = "sha256:"
 MAX_ARCHIVE = 64 * 1024 * 1024
 MAX_INSTALLER = 16 * 1024
@@ -71,30 +56,14 @@ def asset_identity(value: dict, expected_name: str, maximum: int) -> dict:
     return value
 
 
-def mirror_name(identity: dict) -> str:
-    """Content-addressed mirror name; a name can never be reused for other bytes."""
-    return identity["digest"].removeprefix(SHA256_PREFIX) + "-" + identity["name"]
-
-
-def validate_mirror_authority(value: dict) -> dict:
-    exact_keys(value, {"repository", "release_id", "release_tag"})
-    if (MIRROR_RELEASE_ID is None or value["repository"] != MIRROR_REPOSITORY
-            or value["release_id"] != MIRROR_RELEASE_ID or value["release_tag"] != MIRROR_RELEASE_TAG):
-        raise ValueError("Unknown bootstrap mirror authority")
-    return value
-
-
 def archive_name(row: dict) -> str:
     suffix = "_arm64" if row["arch"] == "aarch64" else ""
     return f"php_{row['php']}-nts+ubuntu{row['release']}{suffix}.tar.zst"
 
 
 def validate_catalog(catalog: dict) -> dict:
-    keys = {"schema", "repository", "release_id", "release_tag", "setup_php_commit",
-            "upstream_sources", "installer", "archives"}
-    exact_keys(catalog, keys | ({"mirror"} & set(catalog)))
-    if "mirror" in catalog:
-        validate_mirror_authority(catalog["mirror"])
+    exact_keys(catalog, {"schema", "repository", "release_id", "release_tag", "setup_php_commit",
+                         "upstream_sources", "installer", "archives"})
     if (catalog["schema"] != "durable-workflow.php-linux-bootstrap/v1"
             or catalog["repository"] != REPOSITORY or catalog["release_id"] != 39619287
             or catalog["release_tag"] != "builds" or catalog["setup_php_commit"] != SOURCE_COMMIT):
@@ -108,7 +77,7 @@ def validate_catalog(catalog: dict) -> dict:
     identities = {installer["id"]}
     tuples = set()
     for row in catalog["archives"]:
-        exact_keys(row, {"os", "release", "arch", "php", "thread_safety", "build", "asset"} | ({"mirror"} & set(row)))
+        exact_keys(row, {"os", "release", "arch", "php", "thread_safety", "build", "asset"})
         if (row["os"] != "ubuntu" or row["release"] not in ("22.04", "24.04", "26.04")
                 or row["arch"] not in ("x86_64", "aarch64") or row["thread_safety"] != "nts"
                 or row["build"] != "release" or not re.fullmatch(r"8\.[1-5]", row["php"])):
@@ -118,13 +87,6 @@ def validate_catalog(catalog: dict) -> dict:
         if key in tuples or asset["id"] in identities:
             raise ValueError("Duplicate/replaced bootstrap tuple or asset")
         identities.add(asset["id"])
-        if "mirror" in row:
-            if "mirror" not in catalog:
-                raise ValueError("A mirror asset requires the pinned mirror release authority")
-            mirror = mirror_id(row)
-            if mirror in identities:
-                raise ValueError("Duplicate/replaced bootstrap mirror asset")
-            identities.add(mirror)
         tuples.add(key)
     return catalog
 
@@ -141,65 +103,32 @@ def select(catalog: dict, *, operating_system: str, release: str, architecture: 
     return rows[0]
 
 
-def mirror_id(row: dict) -> int:
-    mirror = row.get("mirror")
-    if mirror is None:
-        raise ValueError("Archive tuple has no reviewed mirror asset; upstream is never a fallback")
-    exact_keys(mirror, {"id"})
-    if type(mirror["id"]) is not int or mirror["id"] < 1:
-        raise ValueError("Unbound bootstrap mirror asset identity")
-    return mirror["id"]
+def asset_url(asset: dict) -> str:
+    # The mutable tag/name and current release metadata are never fetch selectors.
+    return f"https://api.github.com/repos/{REPOSITORY}/releases/assets/{asset['id']}"
 
 
-def asset_url(row: dict) -> str:
-    # Only the reviewed mirror asset ID selects bytes. The upstream ID, the
-    # mutable tag/name and current release metadata are never fetch selectors.
-    return f"https://api.github.com/repos/{MIRROR_REPOSITORY}/releases/assets/{mirror_id(row)}"
-
-
-def bound_url(url: str, asset_path: re.Pattern, repository_prefix: str) -> dict:
-    """One closed authority: the same three hosts and exactly one repository."""
+def effective_url(url: str) -> dict:
     parsed = urlsplit(url)
     if (parsed.scheme != "https" or parsed.hostname not in REDIRECT_HOSTS or parsed.username
             or parsed.password or parsed.port not in (None, 443) or parsed.fragment):
         raise ValueError("Bootstrap redirect/fallback authority refused")
-    if parsed.hostname == "api.github.com" and not asset_path.fullmatch(parsed.path):
+    if parsed.hostname == "api.github.com" and not re.fullmatch(
+        r"/repos/shivammathur/php-ubuntu/releases/assets/[1-9]\d*", parsed.path,
+    ):
         raise ValueError("Foreign bootstrap asset endpoint")
-    if parsed.hostname == "github.com" and not parsed.path.startswith(repository_prefix):
+    if parsed.hostname == "github.com" and not parsed.path.startswith("/shivammathur/php-ubuntu/"):
         raise ValueError("Foreign bootstrap repository redirect")
     # Preserve exact URL binding without disclosing a signed query string.
     return {"scheme": parsed.scheme, "host": parsed.hostname, "path": parsed.path,
             "url_sha256": sha256(url.encode("utf-8"))}
 
 
-def effective_url(url: str) -> dict:
-    """Setup's only fetch authority: the durable-workflow mirror, never upstream."""
-    return bound_url(url, MIRROR_ASSET_PATH, MIRROR_REDIRECT_PREFIX)
-
-
-def require_mirror_effective(effective: dict) -> dict:
-    """Receipt check: the recorded final URL is in the mirror repository."""
-    exact_keys(effective, {"scheme", "host", "path", "url_sha256"})
-    path = effective["path"]
-    if (effective["scheme"] != "https" or not isinstance(path, str)
-            or not re.fullmatch(r"[a-f0-9]{64}", str(effective["url_sha256"]))
-            or not (effective["host"] == "api.github.com" and MIRROR_ASSET_PATH.fullmatch(path)
-                    or effective["host"] == "github.com" and path.startswith(MIRROR_REDIRECT_PREFIX)
-                    or effective["host"] == "release-assets.githubusercontent.com"
-                    and path.startswith(MIRROR_DOWNLOAD_PREFIX))):
-        raise ValueError("Archive receipt was not fetched from the reviewed mirror")
-    return effective
-
-
 class ClosedRedirects(HTTPRedirectHandler):
     max_redirections = 4
 
-    def __init__(self, authority=None):
-        super().__init__()
-        self.authority = authority or effective_url
-
     def redirect_request(self, request, response, code, message, headers, target):
-        self.authority(target)
+        effective_url(target)
         if code not in (301, 302, 303, 307, 308):
             raise ValueError("Unsupported bootstrap redirect status")
         return super().redirect_request(request, response, code, message, headers, target)
@@ -236,34 +165,26 @@ class DeadlineInput:
 
 
 @contextmanager
-def fetch_held(url: str, identity: dict, context, authority, opener_factory=build_opener,
-               clock=time.monotonic):
-    """Anonymous exact-ID fetch under exactly one closed authority.
+def download_held(identity: dict, context, opener_factory=build_opener, clock=time.monotonic):
+    """Proposed anonymous exact-ID fetch; no live metadata or retry/fallback.
 
-    No live metadata, retry or fallback. Source controls substitute an inert
-    opener; no installer/archive acquisition runs in those controls.
+    This function is not wired into an action. Its source controls substitute
+    an inert opener; no installer/archive acquisition runs in those controls.
     """
     asset_identity(identity, identity["name"], MAX_ARCHIVE)
-    authority(url)
     if context.verify_mode != ssl.CERT_REQUIRED or not context.check_hostname:
         raise ValueError("Verified explicit HTTPS trust is required")
-    client = opener_factory(ProxyHandler({}), HTTPSHandler(context=context), ClosedRedirects(authority))
-    request = Request(url, headers={"Accept": "application/octet-stream",
-                                    "User-Agent": "durable-workflow-php-bootstrap"})
+    client = opener_factory(ProxyHandler({}), HTTPSHandler(context=context), ClosedRedirects())
+    request = Request(asset_url(identity), headers={"Accept": "application/octet-stream",
+                                                 "User-Agent": "durable-workflow-php-bootstrap"})
     deadline = clock() + 60
     with client.open(request, timeout=15) as response:
         if response.status != 200:
             raise HTTPError(request.full_url, response.status, "Bootstrap asset response refused", None, None)
         final = response.geturl()
-        with hold_bytes(DeadlineInput(response, deadline, clock), identity, authority(final)) as held:
+        effective_url(final)
+        with hold_verified(DeadlineInput(response, deadline, clock), identity, final) as held:
             yield held
-
-
-@contextmanager
-def download_held(row: dict, context, opener_factory=build_opener, clock=time.monotonic):
-    """Setup fetch: the row's mirror asset ID, verified against its upstream identity."""
-    with fetch_held(asset_url(row), row["asset"], context, effective_url, opener_factory, clock) as held:
-        yield held
 
 
 @dataclass

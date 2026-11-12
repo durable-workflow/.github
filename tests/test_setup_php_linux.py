@@ -22,10 +22,6 @@ from scripts import setup_php_linux as setup
 from tests import test_php_linux_normalize as normalize_tests
 
 
-# Inert mirror fixture URL; no request is made.
-MIRROR_URL = "https://api.github.com/repos/durable-workflow/.github/releases/assets/900000001"
-
-
 class SetupPhpLinuxTest(unittest.TestCase):
     def fixture(self, root):
         state = root / "state"
@@ -53,11 +49,10 @@ class SetupPhpLinuxTest(unittest.TestCase):
         calls = []
 
         @contextmanager
-        def fetch(row, context):
-            identity = row["asset"]
+        def fetch(identity, context):
             self.assertNotEqual("install.sh", identity["name"])
             calls.append("read-archive")
-            with bootstrap.hold_verified(io.BytesIO(archive_bytes), identity, MIRROR_URL) as held:
+            with bootstrap.hold_verified(io.BytesIO(archive_bytes), identity, bootstrap.asset_url(identity)) as held:
                 yield held
 
         source_installer = bootstrap.hold_source_installer
