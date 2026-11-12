@@ -18,14 +18,14 @@ import time
 from scripts import php_linux_archive as archive
 from scripts import php_linux_bootstrap as bootstrap
 
-METADATA_SHA256 = '038fe8c777dda939ba3f2d6c12f6977ca9dd09c65de7d62fe734c60e71135d0a'
-PLAN_SHA256 = 'd02b0008c58c94e52688d9d7154a806c2a172d9e5f67241274c17341aae2c76d'
+METADATA_SHA256 = '6cecceedccc27b553c16fd94fb2f52c4621652ef4e41fc2d73c5d2f6b9efeebe'
+PLAN_SHA256 = '06d623e7793501d03b18902be0e4141bf2a3948f07b8cd60cf82036cc5d9197e'
 SOURCE_PROFILES = {
-    672923785: ('initial', METADATA_SHA256, PLAN_SHA256, (3887, 3497, 390)),
-    672921837: ('ubuntu24',
-        '1ffbe5e1a4f19c07c736b9985518d9e34741fcdab1acb5159e50fd4076c8dd6c',
-        'a64c9baf9e1e907ad70087c56d8cc81524c83ff5afc60227bed3d36f8c6b7d8c',
-        (3575, 3203, 372)),
+    739711545: ('initial', METADATA_SHA256, PLAN_SHA256, (3900, 3509, 391)),
+    739209532: ('ubuntu24',
+        'e60de15982b6f0d71af4d27aff3f82fcd4551cb29efa00c92972cf2e5d44abb4',
+        '424fded62f2f4b85d7b5eaa131a98497eed1ab9a35c933f027baf9460c50ddbd',
+        (3588, 3215, 373)),
 }
 SCHEMA = 'durable-workflow.php-linux-normalization/v1'
 DOCUMENT_SCHEMA = 'durable-workflow.php-linux-normalized-subjects/v1'
@@ -84,7 +84,7 @@ def reviewed_profile(asset_id):
 def profile(original=None):
     """Select only a complete held identity from the closed source registry."""
     if original is None:
-        return reviewed_profile(672923785)
+        return reviewed_profile(739711545)
     if not isinstance(original, dict) or type(original.get('id')) is not int or original['id'] not in SOURCE_PROFILES:
         raise ValueError('No exact reviewed normalization asset')
     selected = reviewed_profile(original['id'])

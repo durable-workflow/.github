@@ -1,12 +1,12 @@
 {
   "schema": "durable-workflow.php-linux-normalization-proposal/v1",
   "asset": {
-    "id": 672923785,
+    "id": 739711545,
     "name": "php_8.3-nts+ubuntu26.04.tar.zst",
-    "size": 41840918,
-    "sha256": "846f69bcf56fc25f672ab888415c12d40122b684c8fb9f1de87b7ddb64fa4272"
+    "size": 40568012,
+    "sha256": "11c1a56755ec5d90567265719b21bc08e7c5ac4a539866a56f55c0fe5b6d196a"
   },
-  "metadata_sha256": "038fe8c777dda939ba3f2d6c12f6977ca9dd09c65de7d62fe734c60e71135d0a",
+  "metadata_sha256": "6cecceedccc27b553c16fd94fb2f52c4621652ef4e41fc2d73c5d2f6b9efeebe",
   "materialize_regular_aliases": [
     [
       "etc/alternatives/libphp8",
@@ -2513,6 +2513,10 @@
       "usr/lib/x86_64-linux-gnu/libpcre2-8.so.0.15.0"
     ],
     [
+      "usr/lib/x86_64-linux-gnu/libpcre2-8.so.0",
+      "usr/lib/x86_64-linux-gnu/libpcre2-8.so.0.15.0"
+    ],
+    [
       "usr/lib/x86_64-linux-gnu/libpcre2-posix.so",
       "usr/lib/x86_64-linux-gnu/libpcre2-posix.so.3.0.7"
     ],
@@ -2667,6 +2671,14 @@
     [
       "usr/share/doc/libjpeg8-dev/changelog.Debian.gz",
       "usr/share/doc/libjpeg8/changelog.Debian.gz"
+    ],
+    [
+      "usr/share/doc/libpcre2-dev/changelog.Debian.gz",
+      "usr/share/doc/libpcre2-8-0/changelog.Debian.gz"
+    ],
+    [
+      "usr/share/doc/libpcre2-posix3/changelog.Debian.gz",
+      "usr/share/doc/libpcre2-8-0/changelog.Debian.gz"
     ],
     [
       "usr/share/doc/librdkafka++1/changelog.Debian.gz",
@@ -3065,16 +3077,6 @@
       "usr/share/doc/libp11-kit0/changelog.Debian.gz"
     ],
     [
-      "usr/share/doc/libpcre2-dev/changelog.Debian.gz",
-      "unresolved",
-      "usr/share/doc/libpcre2-8-0/changelog.Debian.gz"
-    ],
-    [
-      "usr/share/doc/libpcre2-posix3/changelog.Debian.gz",
-      "unresolved",
-      "usr/share/doc/libpcre2-8-0/changelog.Debian.gz"
-    ],
-    [
       "usr/share/doc/libpsl-dev/changelog.Debian.gz",
       "unresolved",
       "usr/share/doc/libpsl5t64/changelog.Debian.gz"
@@ -3155,8 +3157,8 @@
       "usr/share/doc/libtalloc2/changelog.Debian.gz"
     ]
   ],
-  "expected_regular_files": 3497,
-  "expected_directories": 390,
-  "expected_members": 3887,
+  "expected_regular_files": 3509,
+  "expected_directories": 391,
+  "expected_members": 3900,
   "expected_links": 0
 }

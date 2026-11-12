@@ -112,7 +112,7 @@ version=8.3
         self.assertEqual(bootstrap.sha256(self.original.encode()), self.record['installer_sha256'])
 
     def test_ubuntu24_inventory_binds_its_own_archive_and_the_same_nine_stock_writers(self):
-        asset = normalization.reviewed_profile(672921837).metadata['asset']
+        asset = normalization.reviewed_profile(739209532).metadata['asset']
         original = {**{key:asset[key] for key in ('id', 'name', 'size')}, 'digest':'sha256:'+asset['sha256']}
         previous = self.record
         self.record, digest = alternatives.inventory_source(original)

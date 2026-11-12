@@ -19,6 +19,7 @@ from scripts import php_linux_archive as archive
 from scripts import php_linux_alternatives as alternatives
 from scripts import php_linux_bootstrap as bootstrap
 from scripts import php_linux_normalize as normalization
+from scripts import php_linux_profile_records as records
 from scripts import setup_php_linux as setup
 
 
@@ -48,7 +49,7 @@ class PhpLinuxNormalizeTest(unittest.TestCase):
         source = raw.getvalue()
         compressed = subprocess.run(['/usr/bin/zstd', '--compress', '--stdout', '--quiet'],
             input=source, capture_output=True, check=True).stdout
-        identity = {'id': 672923785, 'name': 'php_8.3-nts+ubuntu26.04.tar.zst',
+        identity = {'id': 739711545, 'name': 'php_8.3-nts+ubuntu26.04.tar.zst',
                     'size': len(compressed), 'digest': 'sha256:' + bootstrap.sha256(compressed)}
         asset = {key: identity[key] for key in ('id', 'name', 'size')}
         asset['sha256'] = bootstrap.sha256(compressed)
@@ -87,8 +88,8 @@ class PhpLinuxNormalizeTest(unittest.TestCase):
 
     def test_real_profile_has_only_its_reviewed_source_hashes_and_asset(self):
         selected = normalization.profile()
-        self.assertEqual(672923785, selected.metadata['asset']['id'])
-        self.assertEqual(3887, selected.plan['expected_members'])
+        self.assertEqual(739711545, selected.metadata['asset']['id'])
+        self.assertEqual(3900, selected.plan['expected_members'])
         self.assertEqual(normalization.METADATA_SHA256, selected.metadata_sha256)
         self.assertEqual(normalization.PLAN_SHA256, selected.plan_sha256)
 
@@ -375,8 +376,76 @@ class PhpLinuxNormalizeTest(unittest.TestCase):
             self.assertTrue(keep.exists())
 
 
-UBUNTU24_ASSET = {'id': 672921837, 'name': 'php_8.3-nts+ubuntu24.04.tar.zst', 'size': 43691699,
-         'digest': 'sha256:58a7c29b7fcb00e884e947aaae8276a09c9bca18d39fd2a50efd88c5f860ee76'}
+class ProfileRecordsTest(unittest.TestCase):
+    """Offline record derivation over inert archives; no member is extracted or run."""
+
+    def fixture(self):
+        return PhpLinuxNormalizeTest.fixture(self)
+
+    def test_derived_records_are_deterministic_and_admit_only_the_exact_normalization(self):
+        compressed, identity, expected, _ = self.fixture()
+        metadata_raw, plan_raw = records.records(compressed, identity)
+        self.assertEqual((metadata_raw, plan_raw), records.records(compressed, identity))
+        metadata, plan = json.loads(metadata_raw), json.loads(plan_raw)
+        self.assertEqual(expected.metadata['members'], metadata['members'])
+        self.assertEqual({'0': 1, '2': 3, '5': 2}, metadata['type_counts'])
+        self.assertEqual((0, 0, 6), (metadata['pax_headers'], metadata['sparse_members'], metadata['member_count']))
+        self.assertEqual((4, './usr/bin/alias', True),
+            (metadata['first_refusal']['number'], metadata['first_refusal']['name'],
+             metadata['first_refusal']['unsupported_type']))
+        self.assertEqual(bootstrap.sha256(metadata_raw), plan['metadata_sha256'])
+        self.assertEqual(expected.plan['materialize_regular_aliases'], plan['materialize_regular_aliases'])
+        self.assertEqual(sorted(expected.plan['omit_aliases']), plan['omit_aliases'])
+        self.assertEqual((4, 2, 2, 0), (plan['expected_members'], plan['expected_regular_files'],
+                                        plan['expected_directories'], plan['expected_links']))
+        derived = normalization.Profile(metadata, plan, bootstrap.sha256(metadata_raw), bootstrap.sha256(plan_raw))
+        with bootstrap.hold_bytes(io.BytesIO(compressed), identity, {'fixture': True}) as held, \
+                patch.object(normalization, 'profile', return_value=derived):
+            with normalization.normalize(held) as result:
+                self.assertEqual({'usr/bin/target', 'usr/bin/alias'}, set(result.files))
+                self.assertEqual(result.files, archive.inspect_held(result.held))
+
+    def test_committed_records_use_the_generator_layout_and_hashes(self):
+        for profile_id in normalization.SOURCE_PROFILES:
+            selected = normalization.reviewed_profile(profile_id)
+            name = normalization.SOURCE_PROFILES[profile_id][0]
+            raw = (bootstrap.ROOT / f'qualification/php-linux-{name}-archive.json').read_bytes()
+            with self.subTest(profile=name):
+                self.assertEqual(raw, records.dump_metadata(selected.metadata))
+                self.assertEqual(selected.metadata['asset']['id'], setup.HOST_ARCHIVES[
+                    {'initial': '26.04', 'ubuntu24': '24.04'}[name]])
+
+    def test_foreign_or_truncated_bytes_refuse_before_decoding(self):
+        compressed, identity, _, _ = self.fixture()
+        with patch.object(records, 'decoded') as decoded:
+            for candidate in (compressed + b'x', compressed[:-1], b'x' * len(compressed)):
+                with self.subTest(size=len(candidate)), self.assertRaisesRegex(ValueError, 'cataloged size/digest'):
+                    records.records(candidate, identity)
+            with self.assertRaises(ValueError):
+                records.records(compressed, dict(identity, digest='sha256:' + 'f' * 64))
+            decoded.assert_not_called()
+        with self.assertRaisesRegex(ValueError, 'inspection bound'):
+            records.decoded(b'not zstd')
+
+    def test_command_selects_only_the_cataloged_tuple_and_writes_both_records(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'archive.tar.zst'
+            source.write_bytes(b'inert')
+            plan = {'expected_members': 3, 'expected_regular_files': 2, 'expected_directories': 1}
+            with patch.object(records, 'records', return_value=(b'metadata', json.dumps(plan).encode())) as derive:
+                summary = records.main(['24.04', str(source), directory])
+            self.assertEqual(b'inert', derive.call_args.args[0])
+            self.assertEqual(setup.HOST_ARCHIVES['24.04'], derive.call_args.args[1]['id'])
+            self.assertEqual(b'metadata', (Path(directory) / 'php-linux-ubuntu24-archive.json').read_bytes())
+            self.assertEqual(plan, json.loads((Path(directory) / 'php-linux-ubuntu24-normalization.json').read_text()))
+            self.assertEqual((setup.HOST_ARCHIVES['24.04'], [3, 2, 1]), (summary['asset_id'], summary['counts']))
+            for arguments in ([], ['22.04', str(source), directory], ['24.04', str(source)]):
+                with self.subTest(arguments=arguments), self.assertRaisesRegex(ValueError, 'Usage'):
+                    records.main(arguments)
+
+
+UBUNTU24_ASSET = {'id': 739209532, 'name': 'php_8.3-nts+ubuntu24.04.tar.zst', 'size': 42500132,
+         'digest': 'sha256:b81626ab8a7d91c23f3b8dee7fc0860fbd3ef99c9f4b22c5321b0e0545771768'}
 
 
 class Ubuntu24ArchiveMetadataTest(unittest.TestCase):
@@ -400,27 +469,27 @@ class Ubuntu24ArchiveMetadataTest(unittest.TestCase):
         asset['sha256'] = UBUNTU24_ASSET['digest'].removeprefix('sha256:')
         self.assertEqual(asset, self.metadata['asset'])
         self.assertEqual(asset, self.plan['asset'])
-        self.assertEqual(3625, len(self.index))
-        self.assertEqual({'0': 2569, '2': 684, '5': 372}, self.metadata['type_counts'])
+        self.assertEqual(3636, len(self.index))
+        self.assertEqual({'0': 2578, '2': 685, '5': 373}, self.metadata['type_counts'])
         self.assertEqual(self.metadata['type_counts'],
                          dict(Counter(member.type.decode() for member in self.index.values())))
         self.assertEqual(0, self.metadata['pax_headers'])
         self.assertEqual(0, self.metadata['sparse_members'])
-        self.assertEqual('5dc78662912017ae9ed64b548655c4804adf479996055d4dd7765700b0e6ef32',
+        self.assertEqual('caa3cfcc5c45016abe0acd1f0cf248f66003dd40cafda0ee0adbc5c665c40485',
                          self.metadata['raw_inventory_sha256'])
         raw = (bootstrap.ROOT / 'qualification/php-linux-ubuntu24-archive.json').read_bytes()
         self.assertEqual(hashlib.sha256(raw).hexdigest(), self.plan['metadata_sha256'])
 
     def test_every_link_has_exact_regular_authority_or_an_explicit_nonregular_omission(self):
         aliases, omitted = normalization.checked_plan(self.index, self.plan)
-        self.assertEqual(634, len(aliases))
-        self.assertEqual(50, len(omitted))
+        self.assertEqual(637, len(aliases))
+        self.assertEqual(48, len(omitted))
         self.assertEqual(6, sum(row[1] == 'directory' for row in self.plan['omit_aliases']))
-        self.assertEqual(44, sum(row[1] == 'unresolved' for row in self.plan['omit_aliases']))
+        self.assertEqual(42, sum(row[1] == 'unresolved' for row in self.plan['omit_aliases']))
         files, expected_aliases = normalization.expected_subjects(self.selected)
         self.assertEqual(aliases, expected_aliases)
-        self.assertEqual(3203, len(files))
-        self.assertEqual(3575, self.plan['expected_members'])
+        self.assertEqual(3215, len(files))
+        self.assertEqual(3588, self.plan['expected_members'])
         for name, target in aliases.items():
             with self.subTest(alias=name):
                 self.assertEqual(files[target], files[name])
@@ -439,8 +508,9 @@ class Ubuntu24ArchiveMetadataTest(unittest.TestCase):
                                             'architecture': 'x86_64'})
 
     def test_incomplete_foreign_and_cross_profile_identities_refuse_before_codec(self):
-        candidates = [None, {}, [], dict(UBUNTU24_ASSET, id=True), dict(UBUNTU24_ASSET, id=672923785),
-                      dict(UBUNTU24_ASSET, id=999), dict(UBUNTU24_ASSET, path='caller-map.json')]
+        candidates = [None, {}, [], dict(UBUNTU24_ASSET, id=True), dict(UBUNTU24_ASSET, id=739711545),
+                      dict(UBUNTU24_ASSET, id=999), dict(UBUNTU24_ASSET, path='caller-map.json'),
+                      dict(UBUNTU24_ASSET, id=672921837)]
         for key in ('name', 'size', 'digest'):
             candidate = dict(UBUNTU24_ASSET)
             candidate[key] = 'foreign'
@@ -454,7 +524,7 @@ class Ubuntu24ArchiveMetadataTest(unittest.TestCase):
                 with self.subTest(identity=candidate), self.assertRaises(ValueError):
                     self.enter_derivation(held)
             codec.assert_not_called()
-        self.assertEqual(672923785, normalization.profile().metadata['asset']['id'])
+        self.assertEqual(739711545, normalization.profile().metadata['asset']['id'])
 
     def test_missing_duplicate_and_changed_target_treatments_refuse(self):
         for mutation in ('missing', 'duplicate', 'target', 'omission'):

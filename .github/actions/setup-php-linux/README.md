@@ -11,9 +11,13 @@ override. The actual distribution/release/architecture are read from the host;
 acquisition. The larger archive catalog is source inventory for future review,
 not acceptance of those profiles.
 
-The candidate PHP archive is asset 672923785,
-`php_8.3-nts+ubuntu26.04.tar.zst`, 41,840,918 bytes, SHA-256
-`846f69bcf56fc25f672ab888415c12d40122b684c8fb9f1de87b7ddb64fa4272`.
+The candidate PHP archive is asset 739711545,
+`php_8.3-nts+ubuntu26.04.tar.zst`, 40,568,012 bytes, SHA-256
+`11c1a56755ec5d90567265719b21bc08e7c5ac4a539866a56f55c0fe5b6d196a`.
+Upstream replaced every catalog archive except four PHP 8.1/8.2 rows on
+2026-11-12, so the earlier asset IDs return 404. The catalog, archive records,
+normalization plans and alternatives inventories now bind the replacement
+bytes. Earlier installed qualifications covered the replaced bytes only.
 The original installer is asset 713206915, 3,406 bytes, SHA-256
 `7bc5bfea71696b0927367eb887e2710d44c6f17216fbd47add5a4cb181543e99`.
 The reviewed snapshot of those exact bytes is committed under

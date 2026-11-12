@@ -1,12 +1,12 @@
 {
   "schema": "durable-workflow.php-linux-normalization-proposal/v1",
   "asset": {
-    "id": 672921837,
+    "id": 739209532,
     "name": "php_8.3-nts+ubuntu24.04.tar.zst",
-    "size": 43691699,
-    "sha256": "58a7c29b7fcb00e884e947aaae8276a09c9bca18d39fd2a50efd88c5f860ee76"
+    "size": 42500132,
+    "sha256": "b81626ab8a7d91c23f3b8dee7fc0860fbd3ef99c9f4b22c5321b0e0545771768"
   },
-  "metadata_sha256": "1ffbe5e1a4f19c07c736b9985518d9e34741fcdab1acb5159e50fd4076c8dd6c",
+  "metadata_sha256": "e60de15982b6f0d71af4d27aff3f82fcd4551cb29efa00c92972cf2e5d44abb4",
   "materialize_regular_aliases": [
     [
       "etc/alternatives/libphp8",
@@ -2329,6 +2329,10 @@
       "usr/lib/x86_64-linux-gnu/libpcre2-8.so.0.15.0"
     ],
     [
+      "usr/lib/x86_64-linux-gnu/libpcre2-8.so.0",
+      "usr/lib/x86_64-linux-gnu/libpcre2-8.so.0.15.0"
+    ],
+    [
       "usr/lib/x86_64-linux-gnu/libpcre2-posix.so",
       "usr/lib/x86_64-linux-gnu/libpcre2-posix.so.3.0.7"
     ],
@@ -2491,6 +2495,14 @@
     [
       "usr/share/doc/libimagequant-dev/changelog.Debian.gz",
       "usr/share/doc/libimagequant0/changelog.Debian.gz"
+    ],
+    [
+      "usr/share/doc/libpcre2-dev/changelog.Debian.gz",
+      "usr/share/doc/libpcre2-8-0/changelog.Debian.gz"
+    ],
+    [
+      "usr/share/doc/libpcre2-posix3/changelog.Debian.gz",
+      "usr/share/doc/libpcre2-8-0/changelog.Debian.gz"
     ],
     [
       "usr/share/doc/librdkafka++1/changelog.Debian.gz",
@@ -2742,16 +2754,6 @@
       "usr/share/doc/libodbc2/changelog.Debian.gz"
     ],
     [
-      "usr/share/doc/libpcre2-dev/changelog.Debian.gz",
-      "unresolved",
-      "usr/share/doc/libpcre2-8-0/changelog.Debian.gz"
-    ],
-    [
-      "usr/share/doc/libpcre2-posix3/changelog.Debian.gz",
-      "unresolved",
-      "usr/share/doc/libpcre2-8-0/changelog.Debian.gz"
-    ],
-    [
       "usr/share/doc/libpixman-1-dev/changelog.Debian.gz",
       "unresolved",
       "usr/share/doc/libpixman-1-0/changelog.Debian.gz"
@@ -2797,8 +2799,8 @@
       "usr/share/doc/libzstd1/changelog.Debian.gz"
     ]
   ],
-  "expected_regular_files": 3203,
-  "expected_directories": 372,
-  "expected_members": 3575,
+  "expected_regular_files": 3215,
+  "expected_directories": 373,
+  "expected_members": 3588,
   "expected_links": 0
 }

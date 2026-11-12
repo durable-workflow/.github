@@ -51,7 +51,7 @@ class PhpLinuxQualificationTest(unittest.TestCase):
                     manifest['files'][name] = identity
             report['subjects'] = manifest
             report['host']['release'] = '24.04'
-            report['archive']['id'] = 672921837
+            report['archive']['id'] = 739209532
             archive.require_subject_bound(manifest)
             qualification.validate_normalized_subjects(manifest, document, configured)
             self.assertEqual(69, len(manifest['configs']))
