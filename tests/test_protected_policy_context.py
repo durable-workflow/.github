@@ -150,21 +150,25 @@ class ProtectedContextTest(unittest.TestCase):
         self.checked_initial_profile('qualify-linux-php-subject-references.yml',
             'REVIEWED_SUBJECT_REFERENCE_PROFILE_SUCCESSORS', current)
 
-    def test_ubuntu24_manual_profile_is_exact_separate_and_target_scoped(self):
+    def test_retired_8ba5caae_ubuntu24_profile_bytes_are_refused_for_the_live_path(self):
         path = '.github/workflows/qualify-linux-php-ubuntu24.yml'
         raw = (ROOT / 'tests/fixtures/qualify-linux-php-ubuntu24.yml').read_bytes()
-        self.assertEqual(context.REVIEWED_UBUNTU24_PROFILE_WORKFLOWS[path], hashlib.sha256(raw).hexdigest())
-        self.checked_initial_profile('qualify-linux-php-ubuntu24.yml',
-            'REVIEWED_UBUNTU24_PROFILE_WORKFLOWS', b'8ba5caae2546f3d5f41b7616c5722b9b337b8fc0', path=path)
+        self.assertEqual(6, raw.count(b'8ba5caae2546f3d5f41b7616c5722b9b337b8fc0'))
+        self.assertEqual('46157beef7dd666b0cf7c2eb6f3d073587b01e7d6075d6f6dfda3c9005e976f7',
+                         hashlib.sha256(raw).hexdigest())
+        self.assertFalse(hasattr(context, 'REVIEWED_UBUNTU24_PROFILE_WORKFLOWS'))
+        digests = set().union(*context.reviewed_context_hashes('github-control-plane').values())
+        self.assertNotIn(hashlib.sha256(raw).hexdigest(), digests)
+        for target in ('github-control-plane', 'ai'):
+            with self.subTest(target=target), self.assertRaisesRegex(InputRefused, 'exact reviewed workflow bytes'):
+                context.validate_context({path:raw}, policy_target=target)
         with self.assertRaises(InputRefused):
             context.validate_context({'.github/workflows/qualify-linux-php-initial.yml':raw})
-        for old, new in ((b'ubuntu-24.04', b'ubuntu-latest'), (b"release='24.04'", b"release='26.04'"),
-                         (b'qualify-linux-php-ubuntu24.yml@refs/heads/main',
-                          b'qualify-linux-php-initial.yml@refs/heads/main')):
-            changed = raw.replace(old, new)
-            self.assertNotEqual(raw, changed)
-            with self.assertRaises(InputRefused):
-                context.validate_context({path:changed})
+        live = (ROOT / path).read_bytes()
+        self.assertEqual((ROOT / 'tests/fixtures/qualify-linux-php-ubuntu24-repinned.yml').read_bytes(), live)
+        context.validate_context({path:live})
+        with self.assertRaises(InputRefused):
+            context.validate_context({path:live, '.github/workflows/other.yml':raw})
 
     def test_repinned_ubuntu24_successor_changes_only_six_source_literals_and_remains_target_scoped(self):
         path = '.github/workflows/qualify-linux-php-ubuntu24.yml'
@@ -179,8 +183,9 @@ class ProtectedContextTest(unittest.TestCase):
         self.assertEqual({path}, set(context.REVIEWED_UBUNTU24_REPINNED_PROFILE_SUCCESSORS))
         self.checked_initial_profile('qualify-linux-php-ubuntu24-repinned.yml',
             'REVIEWED_UBUNTU24_REPINNED_PROFILE_SUCCESSORS', current, path=path)
-        # The predecessor stays accepted for the live file until it is adopted.
-        context.validate_context({path:old})
+        # The retired predecessor is no longer accepted for the live file.
+        with self.assertRaises(InputRefused):
+            context.validate_context({path:old})
         with self.assertRaises(InputRefused):
             context.validate_context({'.github/workflows/qualify-linux-php-initial.yml':raw})
         for changed in (raw.replace(current, previous, 1), raw.replace(b'ubuntu-24.04', b'ubuntu-latest'),
