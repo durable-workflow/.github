@@ -1,0 +1,40 @@
+name: Check PHP setup pins upstream
+
+# Early warning for issue 358: fails when shivammathur/php-ubuntu no longer
+# publishes a pinned archive (or the installer bytes) so the catalog can be
+# re-pinned before consumers break. Read-only; it writes nothing.
+on:
+  schedule:
+    - cron: '23 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: php-linux-upstream-pins
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Pinned php-ubuntu assets are unchanged
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      GITHUB_TOKEN: ''
+      GH_TOKEN: ''
+    steps:
+      - name: Check out the catalog
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Use the existing authenticated clean-store predecessor
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5 # clean-trust
+        with:
+          clients: python
+      - name: Compare every pinned asset with the upstream release
+        env:
+          PINS_TOKEN: ${{ github.token }}
+        run: python3 -I scripts/php_linux_upstream_pins.py
