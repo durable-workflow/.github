@@ -8,8 +8,9 @@ The first closed profile is Ubuntu 26.04, x86_64, PHP 8.3 NTS/release, productio
 INI, explicit `composer:2.10.3, phpunit:11.5.57`, coverage `none`, and no extension
 override. The actual distribution/release/architecture are read from the host;
 `ubuntu-latest` is never a distribution selector. Other profiles refuse before
-acquisition. The larger archive catalog is source inventory for future review,
-not acceptance of those profiles.
+acquisition. The archive catalog pins only the setup-profile archives
+(Ubuntu 24.04 and 26.04, x86_64, PHP 8.3); a new profile adds its row with its
+own review.
 
 The candidate PHP archive is asset 739711545,
 `php_8.3-nts+ubuntu26.04.tar.zst`, 40,568,012 bytes, SHA-256

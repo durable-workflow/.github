@@ -124,7 +124,10 @@ class PhpLinuxBootstrapTest(unittest.TestCase):
 
     def test_catalog_has_exact_distinct_current_asset_tuples(self):
         self.assertIs(self.catalog, bootstrap.validate_catalog(self.catalog))
-        self.assertEqual(30, len(self.catalog["archives"]))
+        # Only the setup-profile archives are pinned (setup_php_linux.HOST_ARCHIVES).
+        self.assertEqual([("24.04", "x86_64", "8.3", 739209532), ("26.04", "x86_64", "8.3", 739711545)],
+                         sorted((row["release"], row["arch"], row["php"], row["asset"]["id"])
+                                for row in self.catalog["archives"]))
         self.assertEqual(713206915, self.catalog["installer"]["id"])
         for row in self.catalog["archives"]:
             self.assertEqual(row, bootstrap.select(self.catalog, operating_system=row["os"],
