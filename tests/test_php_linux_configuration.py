@@ -50,14 +50,14 @@ class CliConfigurationTest(unittest.TestCase):
 
     def test_asset_profile_is_external_authority_for_configuration_recomputation(self):
         template, files, initial, outputs = self.fixture()
-        original = self.archive_identity(672921837)
+        original = self.archive_identity(739209532)
         document, actual = configuration.derive(template, files, self.source, original=original)
         self.assertEqual(outputs, actual)
         self.assertEqual('ubuntu24.04-x64-php8.3-production-coverage-none', document['profile'])
         self.assertEqual(outputs, configuration.validate(document, files, original=original))
         self.assertEqual(configuration.subject_plan(initial, files),
                          configuration.subject_plan(document, files, original=original))
-        for foreign in (None, self.archive_identity(672923785), dict(original, digest='sha256:'+'f'*64)):
+        for foreign in (None, self.archive_identity(739711545), dict(original, digest='sha256:'+'f'*64)):
             with self.subTest(original=foreign), self.assertRaises(ValueError):
                 configuration.validate(document, files, original=foreign)
         with self.assertRaises(ValueError):
@@ -65,7 +65,7 @@ class CliConfigurationTest(unittest.TestCase):
 
     def test_asset_specific_manifest_capture_and_writer_refuse_a_foreign_profile(self):
         template, files, _, _ = self.fixture()
-        original = self.archive_identity(672921837)
+        original = self.archive_identity(739209532)
         document, outputs = configuration.derive(template, files, self.source, original=original)
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory)
@@ -77,11 +77,11 @@ class CliConfigurationTest(unittest.TestCase):
                 held.assert_sealed()
                 same()
             capture = configuration.capture_manifest(state, record, files,
-                                                       original=self.archive_identity(672923785))
+                                                       original=self.archive_identity(739711545))
             with self.assertRaises(ValueError):
                 capture.__enter__()
             environment = bootstrap.clean_environment({}, str(state / 'home'))
-            foreign = self.archive_identity(672923785)
+            foreign = self.archive_identity(739711545)
             with mock.patch('subprocess.run') as execute, self.assertRaises(ValueError):
                 configuration.apply(document, files, environment, root=state, execute=execute,
                                     original=foreign)

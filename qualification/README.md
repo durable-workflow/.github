@@ -16,14 +16,33 @@ and after both PHAR probes, then removes exact owned state before publishing PAS
 The separate Ubuntu 24.04/x64/PHP 8.3 normalization source is recorded in
 `php-linux-ubuntu24-archive.json` and `php-linux-ubuntu24-normalization.json`.
 Selection requires the complete pinned asset identity, not a caller-supplied
-map or path. Its 684 links have 634 contained regular targets and 50 explicit
-directory or unresolved omissions; the derived inventory has 3,203 files and
-372 directories. The source setup gate requires the exact Ubuntu 24.04 or
+map or path. Its 685 links have 637 contained regular targets and 48 explicit
+directory or unresolved omissions; the derived inventory has 3,215 files and
+373 directories. The source setup gate requires the exact Ubuntu 24.04 or
 26.04 x64 host and matching complete archive identity, PHP 8.3, both literal
 PHARs, coverage none and no extension override. Other catalog tuples refuse.
-The exact initial Ubuntu 26.04 and Ubuntu 24.04 tuples have separate accepted
-installed runs, recorded in [#297](https://github.com/durable-workflow/.github/issues/297).
+The accepted installed runs recorded in
+[#297](https://github.com/durable-workflow/.github/issues/297) covered the
+earlier Ubuntu 26.04 and Ubuntu 24.04 assets, which upstream has since replaced.
 Each consumer still needs its own source binding and actual caller qualification.
+
+### Upstream asset replacement
+
+`shivammathur/php-ubuntu` replaces its `builds` release assets in place, and a
+replaced asset ID returns 404. Setup never falls back to a newer asset. To
+re-pin, download the new asset by ID, check its size and SHA-256 against the
+release API `digest`, and update `php-linux-bootstrap.json`. Then rebuild each
+setup profile's records in place from that exact local file:
+
+```sh
+python3 -I -S -B scripts/php_linux_profile_records.py 24.04 < ARCHIVE
+```
+
+The command refuses bytes that differ from the catalog. It prints the record
+hashes and counts for `SOURCE_PROFILES`. Copy the new metadata hash into the
+matching alternatives inventory, then update `INVENTORIES`, `PROFILES` and
+`HOST_ARCHIVES` to the new asset ID. Before merging, review the member and
+link differences against the previous records.
 
 Receipt v4 additionally binds the initial CLI configuration. It derives the
 production INI from the held archive's `php.ini-production.cli` and the exact
