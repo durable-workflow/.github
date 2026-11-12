@@ -444,5 +444,188 @@ sudo() {
         self.assertEqual(1, len(calls))
 
 
+class PhpLinuxUpstreamPinsTest(unittest.TestCase):
+    """Inert controls for the scheduled read-only upstream pin check."""
+
+    WORKFLOW = ".github/workflows/php-linux-upstream-pins.yml"
+
+    def setUp(self):
+        from scripts import php_linux_upstream_pins as pins
+        self.pins = pins
+        self.catalog = json.loads(bootstrap.CATALOG.read_text())
+        self.context = SimpleNamespace(verify_mode=ssl.CERT_REQUIRED, check_hostname=True)
+
+    def published(self):
+        records = [{"id": 1, "name": "php_7.4-nts+ubuntu20.04.tar.zst", "size": 1,
+                    "digest": "sha256:" + "1" * 64, "state": "uploaded"}]
+        for identity in [self.catalog["installer"]] + [row["asset"] for row in self.catalog["archives"]]:
+            records.append(dict(identity, state="uploaded", updated_at="2026-11-12T12:00:00Z"))
+        return records
+
+    def replace(self, records, identity, **changes):
+        records = [record for record in records if record["id"] != identity["id"]]
+        records.append({**identity, "id": identity["id"] + 10**8, "state": "uploaded",
+                        "updated_at": "2026-11-13T05:00:00Z", **changes})
+        return records
+
+    def test_unchanged_pins_pass(self):
+        report = self.pins.check(self.catalog, self.published())
+        self.assertEqual([], report["affected"])
+        self.assertEqual(1 + len(self.catalog["archives"]), report["checked"])
+        self.assertIn("unchanged", self.pins.summary_markdown(report))
+
+    def test_replaced_archive_fails_with_its_candidate_and_profile_flag(self):
+        profile = bootstrap.select(self.catalog, operating_system="ubuntu", release="24.04",
+                                   architecture="x86_64", php="8.3")
+        other = bootstrap.select(self.catalog, operating_system="ubuntu", release="26.04",
+                                 architecture="x86_64", php="8.3")
+        records = self.replace(self.published(), profile["asset"], size=profile["asset"]["size"] + 1,
+                               digest="sha256:" + "2" * 64)
+        records = self.replace(records, other["asset"])  # same bytes, new ID: setup still 404s
+        report = self.pins.check(self.catalog, records)
+        self.assertEqual({profile["asset"]["id"], other["asset"]["id"]},
+                         {row["pinned"]["id"] for row in report["affected"]})
+        row = next(row for row in report["affected"] if row["pinned"]["id"] == profile["asset"]["id"])
+        self.assertEqual(("archive", "missing", True, "24.04", "8.3"),
+                         (row["kind"], row["status"], row["setup_profile"], row["release"], row["php"]))
+        self.assertEqual({"id": profile["asset"]["id"] + 10**8, "size": profile["asset"]["size"] + 1,
+                          "digest": "sha256:" + "2" * 64, "updated_at": "2026-11-13T05:00:00Z"}, row["candidate"])
+        self.assertTrue(all(row["setup_profile"] for row in report["affected"]))
+        unprofiled = dict(self.catalog, archives=self.catalog["archives"] + [dict(
+            self.catalog["archives"][0], release="22.04",
+            asset=dict(self.catalog["archives"][0]["asset"], id=5, name="php_8.3-nts+ubuntu22.04.tar.zst"))])
+        (row,) = self.pins.check(unprofiled, self.published())["affected"]
+        self.assertFalse(row["setup_profile"])
+        text = self.pins.summary_markdown(report)
+        self.assertIn("replaced upstream", text)
+        self.assertIn(str(profile["asset"]["id"] + 10**8), text)
+
+    def test_changed_deleted_or_ambiguous_assets_fail(self):
+        identity = self.catalog["archives"][-1]["asset"]
+        for change in ({"digest": "sha256:" + "3" * 64}, {"size": 1}, {"name": "renamed.tar.zst"},
+                       {"state": "starter"}):
+            records = [dict(record, **change) if record["id"] == identity["id"] else record
+                       for record in self.published()]
+            with self.subTest(change=change):
+                (row,) = self.pins.check(self.catalog, records)["affected"]
+                self.assertEqual("changed", row["status"])
+        deleted = [record for record in self.published() if record["id"] != identity["id"]]
+        (row,) = self.pins.check(self.catalog, deleted)["affected"]
+        self.assertEqual(("missing", None, 0), (row["status"], row["candidate"], row["same_name_assets"]))
+        doubled = self.replace(self.published(), identity) + [dict(identity, id=7, state="uploaded")]
+        doubled = [record for record in doubled if record["id"] != identity["id"]]
+        (row,) = self.pins.check(self.catalog, doubled)["affected"]
+        self.assertEqual((None, 2), (row["candidate"], row["same_name_assets"]))
+
+    def test_installer_passes_only_for_identical_bytes_under_a_new_id(self):
+        installer = self.catalog["installer"]
+        same = self.replace(self.published(), installer)
+        self.assertEqual([], self.pins.check(self.catalog, same)["affected"])
+        for change in ({"digest": "sha256:" + "4" * 64}, {"size": installer["size"] + 1}):
+            with self.subTest(change=change):
+                (row,) = self.pins.check(self.catalog, self.replace(self.published(), installer, **change))["affected"]
+                self.assertEqual(("installer", "missing"), (row["kind"], row["status"]))
+        absent = [record for record in self.published() if record["name"] != "install.sh"]
+        self.assertEqual(1, len(self.pins.check(self.catalog, absent)["affected"]))
+
+    def test_upstream_free_text_never_reaches_the_report(self):
+        identity = self.catalog["archives"][0]["asset"]
+        records = self.replace(self.published(), identity, digest="@everyone <script>",
+                               updated_at="@someone", body="@someone")
+        report = self.pins.check(self.catalog, records)
+        text = json.dumps(report) + self.pins.summary_markdown(report)
+        self.assertNotIn("@", text)
+        self.assertNotIn("<script>", text)
+        self.assertTrue(report["affected"][0]["candidate"]["unverifiable"])
+        records = self.replace(self.published(), identity, updated_at="@someone")
+        self.assertIsNone(self.pins.check(self.catalog, records)["affected"][0]["candidate"]["updated_at"])
+
+    def test_reader_is_get_only_confined_to_the_pinned_release_without_redirects(self):
+        calls, pages = [], {}
+        records = self.published()
+        listing = records + [dict(records[0], id=index + 1000) for index in range(200 - len(records))]
+
+        class Response(io.BytesIO):
+            status = 200
+
+        def respond(request, **options):
+            calls.append((request.get_method(), request.full_url, dict(request.header_items()), options))
+            if request.full_url == self.pins.RELEASE_URL:
+                return Response(json.dumps({"id": 39619287, "tag_name": "builds"}).encode())
+            page = int(request.full_url.rsplit("=", 1)[1])
+            return Response(json.dumps(listing[(page - 1) * 100:page * 100]).encode())
+
+        def factory(*handlers):
+            self.assertEqual({}, handlers[0].proxies)
+            self.assertIsInstance(handlers[-1], self.pins.NoRedirects)
+            with self.assertRaises(ValueError):
+                handlers[-1].redirect_request(None, None, 302, "redirect", {}, "https://example.com/")
+            return SimpleNamespace(open=respond)
+
+        token = "ghs_" + "r" * 36
+        reader = self.pins.ReleaseReader(token, self.context, factory)
+        self.assertEqual(listing, reader.assets())
+        self.assertEqual({"GET"}, {call[0] for call in calls})
+        self.assertEqual(4, len(calls))
+        self.assertEqual("Bearer " + token, calls[0][2]["Authorization"])
+        for url in ("https://api.github.com/repos/shivammathur/php-ubuntu/releases/1/assets?per_page=100&page=1",
+                    "https://api.github.com/repos/durable-workflow/.github/releases/39619287",
+                    "https://api.github.com/repos/shivammathur/php-ubuntu/releases/39619287/assets?per_page=100&page=1&x=1",
+                    "https://example.com/repos/shivammathur/php-ubuntu/releases/39619287"):
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                reader.get(url)
+        self.assertEqual(4, len(calls))
+        wrong = self.pins.ReleaseReader(token, self.context, lambda *handlers: SimpleNamespace(
+            open=lambda request, **options: Response(json.dumps({"id": 39619287, "tag_name": "latest"}).encode())))
+        with self.assertRaises(ValueError):
+            wrong.assets()
+        for malformed in ("", "x" * 5, "token with space"):
+            with self.subTest(token=malformed), self.assertRaises(ValueError):
+                self.pins.ReleaseReader(malformed, self.context, factory)
+
+    def test_entrypoint_fails_on_affected_pins_and_writes_the_summary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "summary.md"
+            environment = {"DW_CI_CA_SHA256": self.pins.CA_SHA256, "SSL_CERT_FILE": "/inert/ca.pem",
+                           "PINS_TOKEN": "ghs_" + "r" * 36, "GITHUB_STEP_SUMMARY": str(output)}
+            published = self.published()
+            replaced = self.replace(published, self.catalog["archives"][0]["asset"])
+            for records, expected in ((published, 0), (replaced, 1)):
+                with self.subTest(expected=expected), patch.dict(os.environ, environment, clear=True), \
+                        patch.object(bootstrap, "explicit_trust", return_value=self.context) as trust, \
+                        patch.object(self.pins.ReleaseReader, "assets", return_value=records), \
+                        patch("sys.stdout", new_callable=io.StringIO) as printed:
+                    self.assertEqual(expected, self.pins.main())
+                trust.assert_called_once_with(Path("/inert/ca.pem"), self.pins.CA_SHA256)
+                self.assertNotIn("ghs_", printed.getvalue())
+            self.assertIn("replaced upstream", output.read_text())
+            with patch.dict(os.environ, dict(environment, DW_CI_CA_SHA256="0" * 64), clear=True), \
+                    self.assertRaises(ValueError):
+                self.pins.main()
+
+    def test_workflow_is_scheduled_read_only_and_policy_clean(self):
+        import yaml
+        from scripts import protected_policy_context as policy_context
+        from scripts.qualification_policy import load_policy, scan_workflow_sources
+        raw = (bootstrap.ROOT / self.WORKFLOW).read_bytes()
+        document = yaml.load(raw, Loader=yaml.BaseLoader)
+        self.assertEqual({"schedule", "workflow_dispatch"}, set(document["on"]))
+        self.assertEqual([{"cron": "23 5 * * *"}], document["on"]["schedule"])
+        self.assertEqual({"contents": "read"}, document["permissions"])
+        job = document["jobs"]["check"]
+        self.assertEqual({"contents": "read"}, job["permissions"])
+        self.assertNotIn("environment", job)
+        self.assertNotIn("secrets", raw.decode())
+        self.assertNotIn(": write", raw.decode())
+        self.assertEqual("false", job["steps"][0]["with"]["persist-credentials"])
+        self.assertEqual("python3 -I scripts/php_linux_upstream_pins.py", job["steps"][-1]["run"])
+        self.assertEqual({"PINS_TOKEN": "${{ github.token }}"}, job["steps"][-1]["env"])
+        self.assertNotIn(self.WORKFLOW, policy_context.reviewed_context_hashes("github-control-plane"))
+        policy_context.validate_context({self.WORKFLOW: raw})
+        policy = load_policy(bootstrap.ROOT / "qualification/policy.json")
+        evidence = scan_workflow_sources(policy, "github-control-plane", {self.WORKFLOW: raw.decode()})
+        self.assertEqual([], evidence[self.WORKFLOW]["privileged_jobs"])
+
+
 if __name__ == "__main__":
     unittest.main()

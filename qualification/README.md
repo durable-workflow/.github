@@ -28,6 +28,12 @@ Each consumer still needs its own source binding and actual caller qualification
 
 ### Upstream asset replacement
 
+The scheduled *Check PHP setup pins upstream* workflow
+(`php-linux-upstream-pins.yml`, daily and manual) fails when any pinned archive
+ID is no longer published with the same name, size and digest, or when
+`install.sh` bytes change. Its step summary lists each affected row, whether it
+is a setup-profile row, and the current same-name candidate ID, size and digest.
+
 `shivammathur/php-ubuntu` replaces its `builds` release assets in place, and a
 replaced asset ID returns 404. Setup never falls back to a newer asset. To
 re-pin, download the new asset by ID, check its size and SHA-256 against the
