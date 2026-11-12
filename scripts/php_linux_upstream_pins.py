@@ -38,6 +38,7 @@ RELEASE_ID = 39619287
 RELEASE_URL = f"https://api.github.com/repos/{bootstrap.REPOSITORY}/releases/{RELEASE_ID}"
 MAX_PAGES = 30
 MAX_RESPONSE = 4 * 1024 * 1024
+MAX_TOKEN = 4096
 TUPLE = ("os", "release", "arch", "php", "thread_safety", "build")
 TIMESTAMP = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
 
@@ -51,7 +52,12 @@ class ReleaseReader:
     """GET-only reader of the pinned upstream release metadata."""
 
     def __init__(self, token: str, context, opener_factory=build_opener):
-        if not re.fullmatch(r"[A-Za-z0-9_.-]{20,255}", token):
+        # Actions GITHUB_TOKEN is a GitHub App installation token. Since the
+        # 2026 rollout it is a stateless `ghs_<app id>_<JWT>` of about 520
+        # characters whose length varies; older tokens were 40 characters.
+        # Bound the length only to keep the header sane, and keep the
+        # header-safe character set (base64url and the JWT dots).
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{20,%d}" % MAX_TOKEN, token):
             raise ValueError("The read-only workflow token is missing or malformed")
         self._token = token
         self._client = opener_factory(ProxyHandler({}), HTTPSHandler(context=context), NoRedirects())
