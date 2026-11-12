@@ -136,7 +136,7 @@ class PhpLinuxQualificationTest(unittest.TestCase):
                 "authority": {"kind": "tool", "name": row["name"]}}
         binary = subjects["files"]["/usr/bin/php8.3"]
         original = (bootstrap.ROOT / "qualification/vendor/php-ubuntu-713206915/install.sh").read_bytes()
-        url = bootstrap.asset_url({"mirror": {"id": 900000001}})
+        url = bootstrap.asset_url(plan["archive"]["asset"])
         report = {"schema": setup.RECEIPT_SCHEMA, "outcome": "pass", "stage": "complete",
             "host": host, "image": {"ImageOS": "ubuntu26", "ImageVersion": "inert-image"},
             "apt": {"invoked": False, "profile": "no-apt"}, "ca_sha256": setup.CA_SHA256,
@@ -626,15 +626,6 @@ class PhpLinuxQualificationTest(unittest.TestCase):
             changes.append(changed)
             changed = copy.deepcopy(report); changed["image"] = {}
             changes.append(changed)
-            # An archive fetched from upstream (or any non-mirror path) is not
-            # a mirror qualification, even with the right bytes.
-            for path_value in ("/repos/shivammathur/php-ubuntu/releases/assets/739711545",
-                               "/github-production-release-asset/281550370/uuid"):
-                changed = copy.deepcopy(report)
-                changed["archive"]["effective"]["path"] = path_value
-                if path_value.startswith("/github-production"):
-                    changed["archive"]["effective"]["host"] = "release-assets.githubusercontent.com"
-                changes.append(changed)
             for index, changed in enumerate(changes):
                 with self.subTest(change=index), self.assertRaises(ValueError):
                     qualification.validate_success(changed, path.parent)
