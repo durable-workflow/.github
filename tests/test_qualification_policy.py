@@ -700,7 +700,7 @@ class QualificationPolicyTest(unittest.TestCase):
                 self.scan(candidate)
 
     def test_bound_php_setup_pin_is_approved_only_for_its_exact_action_path(self) -> None:
-        commit = "8ba5caae2546f3d5f41b7616c5722b9b337b8fc0"
+        commit = "411a14ac07d32073eed6ab4977f2825eba4739a7"
         action = "durable-workflow/.github/.github/actions/setup-php-linux"
         source = workflow(f"- uses: {action}@{commit} # bound-linux-php")
         predecessor = copy.deepcopy(self.policy)
@@ -714,6 +714,9 @@ class QualificationPolicyTest(unittest.TestCase):
                 self.scan(changed)
             with self.subTest(audit_path=path), self.assertRaisesRegex(PolicyError, "only its setup-php-linux action path"):
                 audit_action_releases(self.policy, None, {"test.yml": changed}, {})
+        for retired in ("8ba5caae2546f3d5f41b7616c5722b9b337b8fc0", "ed15002a156725523b23eefb935a243cb1f84952"):
+            with self.subTest(retired=retired), self.assertRaisesRegex(PolicyError, "not centrally approved"):
+                self.scan(workflow(f"- uses: {action}@{retired} # bound-linux-php"))
 
     def test_complete_repository_workflow_set_accepts_the_exact_inert_private_pip_profile(self) -> None:
         sources = {str(path.relative_to(ROOT)): path.read_text()
