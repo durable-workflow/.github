@@ -4,7 +4,8 @@
 Upstream php-ubuntu replaces its release assets in place. Each replacement
 needs new `php-linux-<profile>-archive.json` and `-normalization.json` records
 before setup can admit the new bytes. This offline command rebuilds both from a
-local copy of the exact cataloged archive.
+local copy of the exact cataloged archive, read from standard input, and
+replaces that profile's two files under `qualification/`.
 
 It reads tar headers through the same stock zstd decoder and tarfile stream
 parser that setup uses. It never extracts, installs or executes a member, makes
@@ -12,14 +13,12 @@ no network request and refuses bytes that differ from the catalog's pinned size
 and SHA-256. Setup still revalidates every recorded header, link treatment and
 count against the held archive, so a wrong record can only cause a refusal.
 
-    python3 -I -S -B scripts/php_linux_profile_records.py 24.04 ARCHIVE OUTPUT_DIRECTORY
+    python3 -I -S -B scripts/php_linux_profile_records.py 24.04 < ARCHIVE
 """
 
 from collections import Counter
-import hashlib
 import io
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -33,6 +32,7 @@ from scripts import php_linux_archive as archive  # noqa: E402
 from scripts import php_linux_bootstrap as bootstrap  # noqa: E402
 from scripts import php_linux_normalize as normalization  # noqa: E402
 
+QUALIFICATION = ROOT / "qualification"
 PROFILE_NAMES = {"26.04": "initial", "24.04": "ubuntu24"}
 COLUMNS = ["name", "type", "linkname", "size", "offset", "offset_data"]
 ALLOWED_PAX = frozenset(("path", "mtime", "atime", "ctime", "uid", "gid", "uname", "gname"))
@@ -69,14 +69,11 @@ def dump_metadata(metadata: dict) -> bytes:
     return (head[:-2] + ',\n  "members": [\n' + rows + "\n  ]\n}\n").encode()
 
 
-def records(compressed: bytes, identity: dict) -> tuple[bytes, bytes]:
-    """Return exact metadata and plan bytes for one independently bound archive."""
-    bootstrap.asset_identity(identity, identity.get("name"), bootstrap.MAX_ARCHIVE)
-    if len(compressed) != identity["size"] or bootstrap.SHA256_PREFIX + bootstrap.sha256(compressed) != identity["digest"]:
-        raise ValueError("Local archive differs from its cataloged size/digest")
+def headers(tar_bytes: bytes) -> tuple[list, list, dict, dict | None]:
+    """Header rows, complete raw headers, link index and the first strict refusal."""
     rows, inventory, index, parents, seen, strict_parents = [], [], {}, set(), {}, set()
     first_refusal = None
-    with tarfile.open(fileobj=io.BytesIO(decoded(compressed)), mode="r|") as source:
+    with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r|") as source:
         for number, member in enumerate(source, 1):
             rows.append(normalization.header_row(member))
             inventory.append(raw_header(member, number))
@@ -86,6 +83,39 @@ def records(compressed: bytes, identity: dict) -> tuple[bytes, bytes]:
                     archive.reserve_member(member, seen, strict_parents)
                 except ValueError as error:
                     first_refusal = refusal(member, number, error)
+    return rows, inventory, index, first_refusal
+
+
+def link_plan(index: dict, asset: dict, metadata_raw: bytes) -> dict:
+    """Materialize links that end at contained regular files; omit the rest explicitly."""
+    aliases, omitted = [], []
+    for name, member in index.items():
+        if member.type != tarfile.SYMTYPE:
+            continue
+        kind, target = normalization.resolve(index, name)
+        if kind == "regular":
+            aliases.append([name, target])
+        else:
+            omitted.append([name, kind, target])
+    regular = sum(member.type == tarfile.REGTYPE for member in index.values())
+    directories = sum(member.type == tarfile.DIRTYPE for member in index.values())
+    plan = {"schema": "durable-workflow.php-linux-normalization-proposal/v1", "asset": asset,
+            "metadata_sha256": bootstrap.sha256(metadata_raw),
+            "materialize_regular_aliases": sorted(aliases), "omit_aliases": sorted(omitted),
+            "expected_regular_files": regular + len(aliases), "expected_directories": directories,
+            "expected_members": regular + len(aliases) + directories, "expected_links": 0}
+    normalization.checked_plan(index, plan)
+    if any(other.startswith(name + "/") for name, _target in aliases for other in index):
+        raise ValueError("A materialized alias would parent another archive member")
+    return plan
+
+
+def records(compressed: bytes, identity: dict) -> tuple[bytes, bytes]:
+    """Return exact metadata and plan bytes for one independently bound archive."""
+    bootstrap.asset_identity(identity, identity.get("name"), bootstrap.MAX_ARCHIVE)
+    if len(compressed) != identity["size"] or bootstrap.SHA256_PREFIX + bootstrap.sha256(compressed) != identity["digest"]:
+        raise ValueError("Local archive differs from its cataloged size/digest")
+    rows, inventory, index, first_refusal = headers(decoded(compressed))
     asset = {key: identity[key] for key in ("id", "name", "size")}
     asset["sha256"] = identity["digest"].removeprefix(bootstrap.SHA256_PREFIX)
     # The raw inventory is the canonical JSON of every complete header, in order.
@@ -97,43 +127,21 @@ def records(compressed: bytes, identity: dict) -> tuple[bytes, bytes]:
                 "raw_inventory_sha256": bootstrap.sha256(normalization.canonical_json(inventory)),
                 "first_refusal": first_refusal, "members": rows}
     metadata_raw = dump_metadata(metadata)
-    aliases, omitted = [], []
-    for name, member in index.items():
-        if member.type == tarfile.SYMTYPE:
-            kind, target = normalization.resolve(index, name)
-            if kind == "regular":
-                aliases.append([name, target])
-            else:
-                omitted.append([name, kind, target])
-    regular = sum(member.type == tarfile.REGTYPE for member in index.values())
-    directories = sum(member.type == tarfile.DIRTYPE for member in index.values())
-    plan = {"schema": "durable-workflow.php-linux-normalization-proposal/v1", "asset": asset,
-            "metadata_sha256": bootstrap.sha256(metadata_raw),
-            "materialize_regular_aliases": sorted(aliases), "omit_aliases": sorted(omitted),
-            "expected_regular_files": regular + len(aliases), "expected_directories": directories,
-            "expected_members": regular + len(aliases) + directories, "expected_links": 0}
-    normalization.checked_plan(index, plan)
-    for name, _target in aliases:
-        if any(other.startswith(name + "/") for other in index):
-            raise ValueError("A materialized alias would parent another archive member")
-    return metadata_raw, (json.dumps(plan, indent=2) + "\n").encode()
+    return metadata_raw, (json.dumps(link_plan(index, asset, metadata_raw), indent=2) + "\n").encode()
 
 
-def main(arguments: list[str]) -> dict:
-    if len(arguments) != 3 or arguments[0] not in PROFILE_NAMES:
-        raise ValueError("Usage: php_linux_profile_records.py 26.04|24.04 ARCHIVE OUTPUT_DIRECTORY")
-    release, path, output = arguments
+def main(arguments: list[str], source=None) -> dict:
+    """Read the archive from stdin and replace only the selected profile's two records."""
+    if len(arguments) != 1 or arguments[0] not in PROFILE_NAMES:
+        raise ValueError("Usage: php_linux_profile_records.py 26.04|24.04 < ARCHIVE")
+    release = arguments[0]
     catalog = json.loads(bootstrap.CATALOG.read_text())
     identity = bootstrap.select(catalog, operating_system="ubuntu", release=release,
                                 architecture="x86_64", php="8.3")["asset"]
-    with open(path, "rb") as source:
-        compressed = source.read(bootstrap.MAX_ARCHIVE + 1)
+    compressed = (sys.stdin.buffer if source is None else source).read(bootstrap.MAX_ARCHIVE + 1)
     metadata_raw, plan_raw = records(compressed, identity)
-    prefix = Path(output) / ("php-linux-" + PROFILE_NAMES[release])
     for suffix, raw in (("-archive.json", metadata_raw), ("-normalization.json", plan_raw)):
-        descriptor = os.open(f"{prefix}{suffix}", os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
-        with os.fdopen(descriptor, "wb") as target:
-            target.write(raw)
+        (QUALIFICATION / f"php-linux-{PROFILE_NAMES[release]}{suffix}").write_bytes(raw)
     plan = json.loads(plan_raw)
     return {"asset_id": identity["id"], "metadata_sha256": bootstrap.sha256(metadata_raw),
             "plan_sha256": bootstrap.sha256(plan_raw),

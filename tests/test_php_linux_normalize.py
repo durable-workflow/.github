@@ -429,19 +429,20 @@ class ProfileRecordsTest(unittest.TestCase):
 
     def test_command_selects_only_the_cataloged_tuple_and_writes_both_records(self):
         with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / 'archive.tar.zst'
-            source.write_bytes(b'inert')
             plan = {'expected_members': 3, 'expected_regular_files': 2, 'expected_directories': 1}
-            with patch.object(records, 'records', return_value=(b'metadata', json.dumps(plan).encode())) as derive:
-                summary = records.main(['24.04', str(source), directory])
+            with patch.object(records, 'records', return_value=(b'metadata', json.dumps(plan).encode())) as derive, \
+                    patch.object(records, 'QUALIFICATION', Path(directory)):
+                summary = records.main(['24.04'], io.BytesIO(b'inert'))
             self.assertEqual(b'inert', derive.call_args.args[0])
             self.assertEqual(setup.HOST_ARCHIVES['24.04'], derive.call_args.args[1]['id'])
             self.assertEqual(b'metadata', (Path(directory) / 'php-linux-ubuntu24-archive.json').read_bytes())
             self.assertEqual(plan, json.loads((Path(directory) / 'php-linux-ubuntu24-normalization.json').read_text()))
+            self.assertEqual({'php-linux-ubuntu24-archive.json', 'php-linux-ubuntu24-normalization.json'},
+                             {path.name for path in Path(directory).iterdir()})
             self.assertEqual((setup.HOST_ARCHIVES['24.04'], [3, 2, 1]), (summary['asset_id'], summary['counts']))
-            for arguments in ([], ['22.04', str(source), directory], ['24.04', str(source)]):
-                with self.subTest(arguments=arguments), self.assertRaisesRegex(ValueError, 'Usage'):
-                    records.main(arguments)
+        for arguments in ([], ['22.04'], ['24.04', 'archive']):
+            with self.subTest(arguments=arguments), self.assertRaisesRegex(ValueError, 'Usage'):
+                records.main(arguments, io.BytesIO(b'inert'))
 
 
 UBUNTU24_ASSET = {'id': 739209532, 'name': 'php_8.3-nts+ubuntu24.04.tar.zst', 'size': 42500132,

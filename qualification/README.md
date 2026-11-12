@@ -32,10 +32,10 @@ Each consumer still needs its own source binding and actual caller qualification
 replaced asset ID returns 404. Setup never falls back to a newer asset. To
 re-pin, download the new asset by ID, check its size and SHA-256 against the
 release API `digest`, and update `php-linux-bootstrap.json`. Then rebuild each
-setup profile's records from that exact local file:
+setup profile's records in place from that exact local file:
 
 ```sh
-python3 -I -S -B scripts/php_linux_profile_records.py 24.04 ARCHIVE qualification
+python3 -I -S -B scripts/php_linux_profile_records.py 24.04 < ARCHIVE
 ```
 
 The command refuses bytes that differ from the catalog. It prints the record
