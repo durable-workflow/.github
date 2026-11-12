@@ -167,18 +167,18 @@ def require_asset(record: dict, identity: dict) -> int:
 
 
 def read_back(api: MirrorApi, row: dict, asset_id: int, context, fetch_mirror) -> dict:
+    """API identity always; the anonymous byte read only when fetch_mirror is given."""
     record = api.asset(asset_id)
     require_asset(record, row["asset"])
     expected_url = (f"https://github.com/{bootstrap.MIRROR_REPOSITORY}/releases/download/"
                     f"{bootstrap.MIRROR_RELEASE_TAG}/{quote(record['name'], safe='')}")
     if record.get("browser_download_url") not in (expected_url, expected_url.replace("%2B", "+")):
         raise ValueError("Mirror asset is not in the reviewed release")
-    mirrored = dict(row, mirror={"id": asset_id})
-    # Setup's own anonymous mirror-only fetch, with size/SHA-256 before sealing.
-    with fetch_mirror(mirrored, context) as held:
-        held.assert_sealed()
-        effective = held.effective
-    return {"id": asset_id, "name": record["name"], "effective_host": effective["host"]}
+    if fetch_mirror is not None:
+        # Setup's own anonymous mirror-only fetch, with size/SHA-256 before sealing.
+        with fetch_mirror(dict(row, mirror={"id": asset_id}), context) as held:
+            held.assert_sealed()
+    return {"id": asset_id, "name": record["name"]}
 
 
 def mirror(catalog: dict, api: MirrorApi, context, commit: str,
@@ -212,7 +212,10 @@ def mirror(catalog: dict, api: MirrorApi, context, commit: str,
             action, asset_id = "uploaded", uploaded.get("id")
             if type(asset_id) is not int or asset_id < 1:
                 raise ValueError("Mirror upload returned no asset ID")
-        result = read_back(api, row, asset_id, context, fetch_mirror)
+        # Recorded rows had their anonymous byte read-back when uploaded; their
+        # authenticated API identity is rechecked without spending the
+        # anonymous api.github.com rate limit again.
+        result = read_back(api, row, asset_id, context, None if action == "verified" else fetch_mirror)
         rows.append({**{key: row[key] for key in TUPLE}, "upstream_id": identity["id"],
                      "action": action, "mirror": {"id": result["id"]}, "name": result["name"]})
     return {"schema": "durable-workflow.php-linux-mirror/v1",

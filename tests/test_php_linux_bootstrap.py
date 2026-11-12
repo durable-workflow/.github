@@ -767,7 +767,10 @@ class PhpLinuxMirrorTest(unittest.TestCase):
             summary, fetched, read = self.run_mirror(api)
             self.assertEqual("verified", summary["archives"][0]["action"])
             self.assertNotIn(row["asset"]["id"], fetched)
-            self.assertIn(777, read)
+            self.assertNotIn(777, read)
+            self.assertIn(("asset", 777), api.calls)
+            with self.assertRaises(ValueError):
+                self.run_mirror(self.Api(self, self.listed(row, 777), record={"digest": "sha256:" + "0" * 64}))
             for listing in ({}, self.listed(row, 778)):
                 api = self.Api(self, listing)
                 with self.subTest(listing=listing), self.assertRaisesRegex(ValueError, "missing"):
