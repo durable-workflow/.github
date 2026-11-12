@@ -1,5 +1,6 @@
 """Complete source recipe controls with inert network/PHP/root executors."""
 
+import ast
 from contextlib import contextmanager
 import copy
 import io
@@ -378,6 +379,122 @@ setup.reexec(dict(os.environ),execute)
             actual = json.loads(after)
             self.assertEqual(int(before), actual["pid"])
             self.assertEqual([], actual["credential_names"])
+
+
+
+class SetupImportBoundaryTest(unittest.TestCase):
+    """Static check: setup can never reach the uploader's upstream authority.
+
+    The action runs scripts/setup_php_linux.py (bootstrap.js). Walk every
+    import in that graph, including function-level imports, from source text.
+    """
+
+    ENTRY = ("setup_php_linux", "php_linux_bootstrap")
+    FORBIDDEN_MODULE = "php_linux_mirror"
+    FORBIDDEN_NAMES = {"UPSTREAM_ASSET_PATH", "UPSTREAM_REDIRECT_PREFIX", "upstream_effective_url",
+                       "upstream_url", "fetch_upstream"}
+    FORBIDDEN_TEXT = ("/shivammathur/php-ubuntu", "repos/shivammathur", "shivammathur/php-ubuntu/")
+
+    @staticmethod
+    def imports(tree):
+        found = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    parts = alias.name.split(".")
+                    if parts[0] == "scripts":
+                        found.add(parts[1] if len(parts) > 1 else "")
+                    found.add(alias.name)
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                if node.level:
+                    raise AssertionError("Relative imports are outside the reviewed setup graph")
+                if module == "scripts":
+                    found.update(alias.name for alias in node.names)
+                elif module.startswith("scripts."):
+                    found.add(module.split(".")[1])
+                found.add(module)
+            elif (isinstance(node, ast.Call) and isinstance(node.func, (ast.Name, ast.Attribute))
+                  and (getattr(node.func, "id", None) or getattr(node.func, "attr", None))
+                  in {"__import__", "import_module", "spec_from_file_location", "run_path"}):
+                raise AssertionError("Dynamic imports are outside the reviewed setup graph")
+        return found
+
+    def graph(self, sources):
+        seen, pending = set(), list(self.ENTRY)
+        while pending:
+            name = pending.pop()
+            if name in seen:
+                continue
+            seen.add(name)
+            tree = ast.parse(sources[name], filename=name + ".py")
+            pending.extend(module for module in self.imports(tree) if module in sources)
+        return seen
+
+    def violations(self, sources, graph):
+        found = []
+        if self.FORBIDDEN_MODULE in graph:
+            found.append(self.FORBIDDEN_MODULE)
+        for name in sorted(graph):
+            tree = ast.parse(sources[name])
+            if any(module.endswith(self.FORBIDDEN_MODULE) for module in self.imports(tree)):
+                found.append(f"{name} imports {self.FORBIDDEN_MODULE}")
+            for node in ast.walk(tree):
+                identifier = node.id if isinstance(node, ast.Name) else getattr(node, "attr", None)
+                if identifier in self.FORBIDDEN_NAMES:
+                    found.append(f"{name} names {identifier}")
+                if isinstance(node, ast.alias) and node.name in self.FORBIDDEN_NAMES:
+                    found.append(f"{name} imports {node.name}")
+                if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                        and any(text in node.value for text in self.FORBIDDEN_TEXT)):
+                    found.append(f"{name} has an upstream fetch rule literal")
+        return found
+
+    def sources(self):
+        return {path.stem: path.read_text() for path in (bootstrap.ROOT / "scripts").glob("*.py")}
+
+    def test_setup_import_graph_never_reaches_the_uploader_or_its_upstream_rules(self):
+        action = (bootstrap.ROOT / ".github/actions/setup-php-linux/bootstrap.js").read_text()
+        self.assertIn("'../../../scripts/setup_php_linux.py'", action)
+        sources = self.sources()
+        graph = self.graph(sources)
+        # Guard against a rename silently shrinking the checked graph.
+        self.assertEqual({"setup_php_linux", "php_linux_bootstrap", "php_linux_archive", "php_linux_recipe",
+                          "php_linux_tools", "php_linux_normalize", "php_linux_configuration",
+                          "php_linux_alternatives"}, graph)
+        self.assertEqual([], self.violations(sources, graph))
+        # The uploader really holds those rules, so the names checked are live.
+        mirror = ast.parse(sources[self.FORBIDDEN_MODULE])
+        defined = {node.name for node in ast.walk(mirror) if isinstance(node, ast.FunctionDef)}
+        defined |= {target.id for node in ast.walk(mirror) if isinstance(node, ast.Assign)
+                    for target in node.targets if isinstance(target, ast.Name)}
+        self.assertLessEqual(self.FORBIDDEN_NAMES, defined)
+
+    def test_boundary_check_detects_each_kind_of_leak(self):
+        base = self.sources()
+        leaks = {
+            "module": "from scripts import php_linux_mirror as mirror\n",
+            "dotted": "import scripts.php_linux_mirror\n",
+            "from-dotted": "from scripts.php_linux_mirror import fetch_upstream\n",
+            "lazy": "def later():\n    from scripts import php_linux_mirror\n",
+            "transitive": "from scripts import leaky_helper\n",
+            "name": "x = UPSTREAM_ASSET_PATH\n",
+            "attribute": "x = something.upstream_effective_url\n",
+            "literal": "x = r'/repos/shivammathur/php-ubuntu/releases/assets/1'\n",
+        }
+        for kind, text in leaks.items():
+            sources = dict(base)
+            target = "php_linux_tools"
+            if kind == "transitive":
+                sources["leaky_helper"] = "from scripts import php_linux_mirror\n"
+            sources[target] = sources[target] + "\n" + text
+            with self.subTest(kind=kind):
+                self.assertNotEqual([], self.violations(sources, self.graph(sources)))
+        for text in ("import importlib\nimportlib.import_module('scripts.php_linux_mirror')\n",
+                     "__import__('scripts.php_linux_mirror')\n"):
+            sources = dict(base, php_linux_tools=base["php_linux_tools"] + "\n" + text)
+            with self.subTest(text=text), self.assertRaises(AssertionError):
+                self.graph(sources)
 
 
 if __name__ == "__main__":
