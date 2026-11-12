@@ -53,8 +53,11 @@ The recipe requires the existing authenticated shared CA output, exact digest
 and an empty additional-root directory. The existing `bootstrap-patched-pip`
 action's `clients: python` export can supply that predecessor without an APT
 route. Network reads use an exclusive Python TLS context and no proxy/auth.
-Archive reads use literal GitHub asset IDs and closed redirects; PHAR reads use
-literal URLs with no redirects. No tag discovery, retry or fallback exists.
+Archive reads use the literal mirror asset ID recorded for the selected row in
+this repository's `php-linux-archives` release, with redirects closed to that
+repository (see `qualification/README.md`); the upstream ID is provenance only.
+PHAR reads use literal URLs with no redirects. No tag discovery, retry or
+fallback exists.
 
 Every installer/archive/tool stream must match its independent size and digest
 before it is sealed. All four streams are held before the first installation.
