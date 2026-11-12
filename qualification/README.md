@@ -204,7 +204,7 @@ it does not approve other actions at that revision.
 - uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5 # clean-trust
   with:
     clients: python,composer,curl,git
-- uses: durable-workflow/.github/.github/actions/setup-php-linux@8ba5caae2546f3d5f41b7616c5722b9b337b8fc0 # bound-linux-php
+- uses: durable-workflow/.github/.github/actions/setup-php-linux@411a14ac07d32073eed6ab4977f2825eba4739a7 # bound-linux-php
   with:
     php-version: '8.3'
     tools: composer:2.10.3,phpunit:11.5.57
