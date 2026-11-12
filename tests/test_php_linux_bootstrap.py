@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import ssl
 import subprocess
 import tempfile
@@ -582,6 +583,46 @@ class PhpLinuxUpstreamPinsTest(unittest.TestCase):
         for malformed in ("", "x" * 5, "token with space"):
             with self.subTest(token=malformed), self.assertRaises(ValueError):
                 self.pins.ReleaseReader(malformed, self.context, factory)
+
+    @staticmethod
+    def stateless_token():
+        """Inert stand-in shaped like the 2026 stateless installation token."""
+        import base64
+        def part(data):
+            return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+        header = part(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
+        payload = part(json.dumps({"iss": "123456", "inst": "7890123", "repo": "durable-workflow/.github",
+                                   "perm": {"contents": "read", "metadata": "read"}, "exp": 1794000000,
+                                   "jti": "inert-" + "x" * 160}).encode())
+        signature = part(bytes(range(256)))
+        return f"ghs_123456_{header}.{payload}.{signature}"
+
+    def test_stateless_actions_token_is_accepted_without_disclosure(self):
+        # Reproduces run 43292858903: the ~520-character stateless GITHUB_TOKEN
+        # exceeded the old 255-character bound and refused before any request.
+        token = self.stateless_token()
+        self.assertGreater(len(token), 255)
+        self.assertEqual(2, token.count("."))
+        self.assertIsNone(re.fullmatch(r"[A-Za-z0-9_.-]{20,255}", token))
+        calls = []
+
+        class Response(io.BytesIO):
+            status = 200
+
+        def factory(*handlers):
+            return SimpleNamespace(open=lambda request, **options: calls.append(request) or Response(
+                json.dumps({"id": 39619287, "tag_name": "builds"}).encode()))
+
+        reader = self.pins.ReleaseReader(token, self.context, factory)
+        reader.get(self.pins.RELEASE_URL)
+        self.assertEqual("Bearer " + token, calls[0].get_header("Authorization"))
+        # The legacy 40-character form still works; header-unsafe input does not.
+        self.pins.ReleaseReader("ghs_" + "a" * 36, self.context, factory)
+        for malformed in (token + "\n", " " + token, token.replace(".", ":", 1), token + "\r\nX-Injected: 1",
+                          "ghs_" + "a" * (self.pins.MAX_TOKEN + 1), "short"):
+            with self.subTest(kind=len(malformed) > 255), self.assertRaisesRegex(ValueError, "missing or malformed") as raised:
+                self.pins.ReleaseReader(malformed, self.context, factory)
+            self.assertNotIn(token[4:], str(raised.exception))
 
     def test_entrypoint_fails_on_affected_pins_and_writes_the_summary(self):
         with tempfile.TemporaryDirectory() as directory:
