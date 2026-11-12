@@ -87,6 +87,13 @@ REVIEWED_UBUNTU24_PROFILE_WORKFLOWS = {
     ".github/workflows/qualify-linux-php-ubuntu24.yml":
         "46157beef7dd666b0cf7c2eb6f3d073587b01e7d6075d6f6dfda3c9005e976f7",
 }
+# The same Ubuntu 24 profile re-pointed to the re-pinned setup source 411a14ac
+# (#359). Only the six source literals differ; the live file and the native
+# reader pin change separately.
+REVIEWED_UBUNTU24_REPINNED_PROFILE_SUCCESSORS = {
+    ".github/workflows/qualify-linux-php-ubuntu24.yml":
+        "1f9df7560ff3ebb4a85b43dd176ca6591e0d285442245f674081fbe05fc0d64f",
+}
 
 # AI's existing matrix commands are reviewed only for that repository. They do
 # not enlarge the control repository's complex-workflow exceptions.
@@ -105,7 +112,8 @@ def reviewed_context_hashes(policy_target: str) -> dict[str, set[str]]:
                       REVIEWED_SELECTED_ALTERNATIVES_PROFILE_SUCCESSORS,
                       REVIEWED_CONFIGURED_CLI_PROFILE_SUCCESSORS,
                       REVIEWED_SUBJECT_REFERENCE_PROFILE_SUCCESSORS,
-                      REVIEWED_UBUNTU24_PROFILE_WORKFLOWS)
+                      REVIEWED_UBUNTU24_PROFILE_WORKFLOWS,
+                      REVIEWED_UBUNTU24_REPINNED_PROFILE_SUCCESSORS)
     elif policy_target == "ai":
         registries = (REVIEWED_AI_WORKFLOWS,)
     else:

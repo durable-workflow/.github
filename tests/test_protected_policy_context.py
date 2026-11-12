@@ -166,6 +166,29 @@ class ProtectedContextTest(unittest.TestCase):
             with self.assertRaises(InputRefused):
                 context.validate_context({path:changed})
 
+    def test_repinned_ubuntu24_successor_changes_only_six_source_literals_and_remains_target_scoped(self):
+        path = '.github/workflows/qualify-linux-php-ubuntu24.yml'
+        raw = (ROOT / 'tests/fixtures/qualify-linux-php-ubuntu24-repinned.yml').read_bytes()
+        old = (ROOT / 'tests/fixtures/qualify-linux-php-ubuntu24.yml').read_bytes()
+        previous = b'8ba5caae2546f3d5f41b7616c5722b9b337b8fc0'
+        current = b'411a14ac07d32073eed6ab4977f2825eba4739a7'
+        self.assertEqual(6, old.count(previous))
+        self.assertEqual(old.replace(previous, current), raw)
+        self.assertEqual(7108, len(raw))
+        self.assertEqual(context.REVIEWED_UBUNTU24_REPINNED_PROFILE_SUCCESSORS[path], hashlib.sha256(raw).hexdigest())
+        self.assertEqual({path}, set(context.REVIEWED_UBUNTU24_REPINNED_PROFILE_SUCCESSORS))
+        self.checked_initial_profile('qualify-linux-php-ubuntu24-repinned.yml',
+            'REVIEWED_UBUNTU24_REPINNED_PROFILE_SUCCESSORS', current, path=path)
+        # The predecessor stays accepted for the live file until it is adopted.
+        context.validate_context({path:old})
+        with self.assertRaises(InputRefused):
+            context.validate_context({'.github/workflows/qualify-linux-php-initial.yml':raw})
+        for changed in (raw.replace(current, previous, 1), raw.replace(b'ubuntu-24.04', b'ubuntu-latest'),
+                        raw.replace(b"release='24.04'", b"release='26.04'")):
+            self.assertNotEqual(raw, changed)
+            with self.assertRaises(InputRefused):
+                context.validate_context({path:changed})
+
     def test_private_pip_manual_successor_is_exact_and_keeps_php_and_control_sources_separate(self):
         path = ".github/workflows/qualify-linux-php-initial.yml"
         raw = (ROOT / "tests/fixtures/qualify-linux-php-private-pip.yml").read_bytes()

@@ -362,3 +362,45 @@ class Ubuntu24QualificationWorkflowTest(unittest.TestCase):
 
     def test_actual_inline_gate_keeps_exact_original_admission_for_the_new_path(self):
         PhpLinuxQualificationWorkflowTest.test_actual_inline_gate_refuses_wrong_head_ref_event_repo_or_rerun_before_following_code(self)
+
+
+class RepinnedUbuntu24QualificationWorkflowTest(unittest.TestCase):
+    """The Ubuntu 24 profile re-pointed to the re-pinned setup source (#359)."""
+
+    previous_source = b'8ba5caae2546f3d5f41b7616c5722b9b337b8fc0'
+    source = b'411a14ac07d32073eed6ab4977f2825eba4739a7'
+
+    def setUp(self):
+        self.raw = (ROOT / 'tests/fixtures/qualify-linux-php-ubuntu24-repinned.yml').read_bytes()
+        self.document = yaml.load(self.raw, Loader=yaml.BaseLoader)
+        self.job = self.document['jobs']['qualify-initial-linux-php']
+        self.workflow_ref = 'durable-workflow/.github/.github/workflows/qualify-linux-php-ubuntu24.yml@refs/heads/main'
+
+    def test_only_the_six_source_literals_differ_from_the_accepted_ubuntu24_profile(self):
+        previous = (ROOT / 'tests/fixtures/qualify-linux-php-ubuntu24.yml').read_bytes()
+        self.assertEqual(6, previous.count(self.previous_source))
+        self.assertEqual(previous.replace(self.previous_source, self.source), self.raw)
+        self.assertNotIn(self.previous_source, self.raw)
+        self.assertEqual(6, self.raw.count(self.source))
+
+    def test_helper_and_control_checkouts_bind_the_repinned_source_before_code(self):
+        steps = self.job['steps']
+        source = self.source.decode()
+        self.assertEqual({'repository': 'durable-workflow/.github', 'ref': source,
+                          'persist-credentials': 'false'}, steps[1]['with'])
+        self.assertEqual({'repository': 'durable-workflow/.github', 'ref': source,
+                          'path': '.qualification-control', 'persist-credentials': 'false'}, steps[2]['with'])
+        preflight = steps[3]['run']
+        for check in ('test "$(/usr/bin/git rev-parse HEAD)" = ' + source,
+                      'test "$(/usr/bin/git -C .qualification-control rev-parse HEAD)" = ' + source):
+            self.assertLess(preflight.index(check), preflight.index('/usr/bin/python3 -I -S -B'))
+        self.assertEqual('./.github/actions/setup-php-linux', steps[5]['uses'])
+        terminal = steps[6]['run']
+        self.assertIn("evidence['source']='" + source + "'", terminal)
+        self.assertIn("evidence['php_helper_source']='" + source + "'", terminal)
+        self.assertEqual('242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5', steps[4]['uses'].rsplit('@', 1)[1])
+        self.assertEqual('ubuntu-24.04', self.job['runs-on'])
+        self.assertEqual({'workflow_dispatch'}, set(self.document['on']))
+
+    def test_actual_inline_gate_keeps_exact_original_admission_for_the_new_path(self):
+        PhpLinuxQualificationWorkflowTest.test_actual_inline_gate_refuses_wrong_head_ref_event_repo_or_rerun_before_following_code(self)
