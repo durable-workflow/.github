@@ -162,7 +162,7 @@ def run_setup(state: Path, request: dict, node: dict, environment: dict, *,
             report["stage"] = "installer-source-read"
             original = stack.enter_context(bootstrap.hold_source_installer(catalog["installer"]))
             report["stage"] = "archive-read"
-            held_archive = stack.enter_context(asset_fetch(plan["archive"]["asset"], context))
+            held_archive = stack.enter_context(asset_fetch(plan["archive"], context))
             report["stage"] = "tool-reads"
             held_tools = [(row, stack.enter_context(tool_fetch(row, context))) for row in plan["tools"]]
             original.assert_sealed()

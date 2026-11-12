@@ -297,6 +297,7 @@ def validate_source_receipts(report, state, plan, catalog):
             or not isinstance(effective["path"], str) or not effective["path"].startswith("/")
             or not re.fullmatch(r"[a-f0-9]{64}", effective["url_sha256"])):
         raise ValueError("Archive receipt has no approved HTTPS handoff")
+    bootstrap.require_mirror_effective(effective)
     expected_sources = {name: bootstrap.sha256(data) for name, data in
                         recipe.derive_source(recipe.verified_source(), state / "refusal").items()}
     if report["source_hashes"] != expected_sources:

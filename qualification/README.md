@@ -26,12 +26,37 @@ The accepted installed runs recorded in
 earlier Ubuntu 26.04 and Ubuntu 24.04 assets, which upstream has since replaced.
 Each consumer still needs its own source binding and actual caller qualification.
 
-### Upstream asset replacement
+### Archive mirror
 
 `shivammathur/php-ubuntu` replaces its `builds` release assets in place, and a
-replaced asset ID returns 404. Setup never falls back to a newer asset. To
-re-pin, download the new asset by ID, check its size and SHA-256 against the
-release API `digest`, and update `php-linux-bootstrap.json`. Then rebuild each
+replaced asset ID returns 404 (on 2026-11-12 this blocked every consumer).
+Setup therefore fetches the same reviewed bytes from the `php-linux-archives`
+release in this repository
+([#358](https://github.com/durable-workflow/.github/issues/358)). Each catalog
+row keeps its upstream `asset` identity as provenance and adds
+`"mirror": {"id": <asset id>}`; the catalog's `mirror` block must equal the
+repository, release ID and tag fixed in `scripts/php_linux_bootstrap.py`.
+Setup requests only `/repos/durable-workflow/.github/releases/assets/<mirror id>`,
+follows redirects only within this repository and GitHub's release-asset host,
+and still checks the upstream size and SHA-256 before sealing. A row without a
+mirror ID refuses; there is no upstream fallback or retry.
+
+Mirror assets are named `<sha256>-<upstream name>` and are never replaced or
+deleted. To mirror rows, a maintainer dispatches
+`.github/workflows/mirror-php-linux-archives.yml` on `main` with
+`expected_workflow_sha` set to the current `main` commit; a required reviewer
+approves the protected `php-archive-mirror` environment. The job fetches each
+unmirrored row's pinned upstream ID through the same sealed download, uploads
+it, reads the asset back by ID (API name, size and `digest`, then an anonymous
+download through setup's mirror fetch) and prints a row-to-mirror-ID summary.
+Record those IDs, and the release ID on first use, in a normal reviewed PR.
+
+### Upstream asset replacement
+
+When a new upstream asset must be adopted (a new tuple or rebuilt bytes),
+download it by ID, check its size and SHA-256 against the release API
+`digest`, update `php-linux-bootstrap.json` without a `mirror` ID, then run the
+mirror workflow and record its new mirror ID. Then rebuild each
 setup profile's records in place from that exact local file:
 
 ```sh
