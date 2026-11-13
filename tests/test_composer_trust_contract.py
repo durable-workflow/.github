@@ -374,13 +374,12 @@ class WaterlineBuildMandatoryTrustContractTest(unittest.TestCase):
         repository = Path(__file__).resolve().parents[1]
         self.policy = json.loads((repository / "qualification/policy.json").read_text())
         self.document = yaml.safe_load((repository / "tests/fixtures/waterline-php82-build.yml").read_text())
-        retired = json.loads((repository / "tests/fixtures/retired-writable-runtime-setups.json").read_text())
-        self.catalog = {"requests": {}, "runtime_setups": {"waterline-php82-build": retired["waterline-php82-build"]}}
+        self.catalog = json.loads((repository / "qualification/composer-container-trust.json").read_text())
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        # Exercise mandatory enumeration using inert historical recipe data.
-        # This fixture grants no admission in the current production catalog.
+        # Bind inert bytes to the corrected recipe to exercise the actual target
+        # policy offline. Retired sources have separate refusal controls.
         recipe = self.catalog["runtime_setups"]["waterline-php82-build"]
         for name, expected in recipe["files"].items():
             path = self.root / name
@@ -398,6 +397,12 @@ class WaterlineBuildMandatoryTrustContractTest(unittest.TestCase):
         )
 
     def test_proposed_build_enumerates_all_guarded_requests(self):
+        self.assertEqual(4, len(self.check(self.document)))
+
+    def test_proposed_build_accepts_canonical_git_checkout_permissions(self):
+        recipe = self.catalog["runtime_setups"]["waterline-php82-build"]
+        for name, expected in recipe["files"].items():
+            (self.root / name).chmod(0o755 if expected["mode"] & 0o100 else 0o644)
         self.assertEqual(4, len(self.check(self.document)))
 
     def test_deleting_every_live_verifier_cannot_disable_enumeration(self):
