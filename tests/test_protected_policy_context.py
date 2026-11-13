@@ -37,7 +37,8 @@ class ProtectedContextTest(unittest.TestCase):
             context.SONAR_WORKFLOW: "f7fad8367df4a4e9565d97e13aa120d55038ed9c749fdfcd86e1312bfca3cced",
         }
         for path, previous_digest in predecessors.items():
-            raw = (ROOT / path).read_bytes()
+            name = Path(path).stem
+            raw = (ROOT / f"tests/fixtures/{name}-response-loss-source.yml").read_bytes()
             module = (b"          tests.test_command_response_loss\n" if path == context.CI_WORKFLOW
                       else b" tests.test_command_response_loss")
             self.assertEqual(1, raw.count(module))
