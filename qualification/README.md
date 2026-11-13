@@ -199,6 +199,11 @@ The older recipe remains available. Source matching alone does not qualify
 the caller: its clean predecessor, live in-container verifier and actual
 registered Compose request remain required.
 
+The `composer-container-trust` action-release role approves only the container
+verifier path. It cannot supply the clean bootstrap or host Composer verifier.
+The container request still binds its CA file and digest to an earlier,
+independently approved clean bootstrap.
+
 The container control runs the actual digest-pinned Composer image against a
 local synthetic TLS registry. The ambient store accepts its synthetic blocked
 root. The verified clean store refuses before an HTTP request. Wrong bundle
