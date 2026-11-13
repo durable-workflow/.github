@@ -27,7 +27,7 @@ outputs:
     description: Reviewed verifier directory for the dwf_composer_trust named context.
     value: ${{ steps.bind.outputs.context-directory }}
   ca-file:
-    description: Authenticated CA file for the dwf_ci_ca read-only build secret.
+    description: Owned read-only copy of the authenticated CA inside the Compose tree, for the dwf_ci_ca build secret.
     value: ${{ steps.bind.outputs.ca-file }}
   ca-sha256:
     description: Required DW_CI_CA_SHA256 build argument.

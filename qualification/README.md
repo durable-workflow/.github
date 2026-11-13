@@ -187,6 +187,29 @@ unconditional reviewed `bootstrap-patched-pip` step. Ambient or step-local CA
 values cannot supply that identity. Additional Docker, Compose or Buildx build
 commands in the registered job also refuse, including calls in shell helpers.
 
+The guard stages only that authenticated public CA into a new owned mode-0700
+directory inside the Compose tree. It verifies a single regular, non-symlink
+source object and the original SHA-256, writes a mode-0400 copy, and binds the
+rendered secret to that copy. Staging stays outside the Server and verifier
+image contexts. This satisfies Bake's workspace filesystem boundary without
+granting extra filesystem access or changing which store is trusted.
+
+After the registered stack is stopped, an always-run caller cleanup step
+uses the same guard's source and outputs, when present, to remove only the copy:
+
+```sh
+if [[ -n "$STAGED_CA" ]]; then
+  python3 "$VERIFIER_CONTEXT/../../../scripts/composer_container_trust.py" cleanup-ca \
+    --ca-file "$STAGED_CA" --ca-sha256 "$CA_SHA256" --compose-directory .
+fi
+```
+
+Here `VERIFIER_CONTEXT`, `STAGED_CA` and `CA_SHA256` are the guard's
+`context-directory`, `ca-file` and `ca-sha256` outputs. Cleanup refuses another
+path, modified bytes, symlinks, hard links or unrelated directory contents.
+The bootstrap's original selected bundle remains intact. A guard failure
+cleans its staged copy before publishing any outputs.
+
 The `sdk-php-cooperative-server` entry in `composer-container-trust.json`
 applies only to its registered Compose request and reviewed Server recipes.
 It supplies no trust for other build or runtime paths.

@@ -14,7 +14,10 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import stat
 import subprocess
+import sys
+import tempfile
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -148,11 +151,88 @@ def authenticated_bundle(environment: dict[str, str]) -> tuple[Path, str]:
     bundle_name = environment.get("COMPOSER_CAFILE", "")
     if not bundle_name or any(character in bundle_name for character in "\r\n\0"):
         raise ContainerTrustRefused("The clean bootstrap must select a CA file.")
-    bundle = Path(bundle_name).resolve(strict=True)
+    candidate = Path(bundle_name)
+    if candidate.is_symlink():
+        raise ContainerTrustRefused("The selected CA file must not be a symbolic link.")
+    bundle = candidate.resolve(strict=True)
     if (not bundle.is_file() or bundle.stat().st_size > 8 * 1024 * 1024
             or sha256(bundle.read_bytes()) != expected):
         raise ContainerTrustRefused("The selected CA file differs from the authenticated bootstrap.")
     return bundle, expected
+
+
+def regular_ca_bytes(path: Path, expected: str) -> bytes:
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or not 0 < before.st_size <= 8 * 1024 * 1024:
+            raise ContainerTrustRefused("The selected CA must be a single regular bounded file.")
+        contents = os.pread(descriptor, 8 * 1024 * 1024 + 1, 0)
+        after = os.fstat(descriptor)
+        fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(before, key) != getattr(after, key) for key in fields) or sha256(contents) != expected:
+            raise ContainerTrustRefused("The selected CA object or authenticated bytes changed.")
+        return contents
+    finally:
+        os.close(descriptor)
+
+
+def stage_compose_ca(outputs: dict[str, str], directory: Path, source: Path) -> dict[str, Any]:
+    """Copy only the authenticated public bundle inside Bake's allowed tree."""
+    if directory.is_symlink() or any(character in str(directory) for character in "\r\n\0"):
+        raise ContainerTrustRefused("The Compose directory must not be a symbolic link.")
+    directory = directory.resolve(strict=True)
+    if not directory.is_dir() or directory.stat().st_uid != os.getuid():
+        raise ContainerTrustRefused("The staged CA needs an owned Compose directory.")
+    if directory.is_relative_to(source.resolve(strict=True)) or directory.is_relative_to(Path(outputs["context-directory"])):
+        raise ContainerTrustRefused("The staged CA must stay outside all image build contexts.")
+    contents = regular_ca_bytes(Path(outputs["ca-file"]), outputs["ca-sha256"])
+    state = Path(tempfile.mkdtemp(prefix=".dw-composer-ca-", dir=directory))
+    selected = state / "ca.pem"
+    try:
+        descriptor = os.open(selected, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(contents)
+        if regular_ca_bytes(selected, outputs["ca-sha256"]) != contents:
+            raise ContainerTrustRefused("The staged CA differs from its authenticated source.")
+        info = selected.stat(follow_symlinks=False)
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o400:
+            raise ContainerTrustRefused("The staged CA must remain an owned read-only file.")
+        outputs["ca-file"] = str(selected)
+        return {"sha256": outputs["ca-sha256"], "size": len(contents), "mode": 0o400}
+    except BaseException:
+        selected.unlink(missing_ok=True)
+        state.rmdir()
+        raise
+
+
+def cleanup_compose_ca(selected: Path, directory: Path, expected: str) -> None:
+    directory = directory.resolve(strict=True)
+    state = selected.parent
+    if (not SHA256.fullmatch(expected) or not selected.is_absolute() or selected.name != "ca.pem"
+            or state.parent != directory or not re.fullmatch(r"\.dw-composer-ca-[a-z0-9_]+", state.name)
+            or state.is_symlink() or selected.is_symlink()):
+        raise ContainerTrustRefused("Only the exact owned staged CA can be removed.")
+    info = state.stat()
+    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700 or set(state.iterdir()) != {selected}:
+        raise ContainerTrustRefused("The staged CA directory identity or contents changed.")
+    regular_ca_bytes(selected, expected)
+    selected.unlink()
+    state.rmdir()
+
+
+def cleanup_main(arguments: list[str]) -> int:
+    parser = argparse.ArgumentParser(description="Remove only a verified staged public CA copy.")
+    parser.add_argument("--ca-file", type=Path, required=True)
+    parser.add_argument("--compose-directory", type=Path, required=True)
+    parser.add_argument("--ca-sha256", required=True)
+    args = parser.parse_args(arguments)
+    try:
+        cleanup_compose_ca(args.ca_file, args.compose_directory, args.ca_sha256)
+        return 0
+    except (ContainerTrustRefused, OSError, ValueError) as error:
+        print(f"Staged Composer CA cleanup refused: {type(error).__name__}.")
+        return 1
 
 
 def prepare(
@@ -276,6 +356,8 @@ def inspect_compose(directory: Path, source: Path, request: dict[str, Any], outp
 
 
 def main() -> int:
+    if sys.argv[1:2] == ["cleanup-ca"]:
+        return cleanup_main(sys.argv[2:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-directory", type=Path, required=True)
     parser.add_argument("--source-commit", required=True)
@@ -283,12 +365,16 @@ def main() -> int:
     parser.add_argument("--compose-directory", type=Path, required=True)
     parser.add_argument("--provenance", type=Path, required=True)
     args = parser.parse_args()
+    staged: Path | None = None
+    outputs: dict[str, str] = {}
     try:
         catalog = json.loads((ROOT / "qualification/composer-container-trust.json").read_text())
         outputs, evidence = prepare(
             args.source_directory, args.source_commit, args.request, catalog, dict(os.environ),
             ROOT / ".github/actions/verify-composer-trust",
         )
+        evidence["staged_ca"] = stage_compose_ca(outputs, args.compose_directory, args.source_directory)
+        staged = Path(outputs["ca-file"])
         evidence["compose_services"] = inspect_compose(
             args.compose_directory, args.source_directory, catalog["requests"][args.request], outputs,
         )
@@ -303,6 +389,11 @@ def main() -> int:
         print(f"Verified container Composer recipe for {evidence['source_repository']} at {args.source_commit}.")
         return 0
     except (ContainerTrustRefused, OSError, ValueError, KeyError, TypeError) as error:
+        if staged is not None:
+            try:
+                cleanup_compose_ca(staged, args.compose_directory, outputs["ca-sha256"])
+            except (ContainerTrustRefused, OSError, ValueError):
+                print("Staged Composer CA changed; automatic cleanup refused.")
         message = str(error) if isinstance(error, ContainerTrustRefused) else "Container trust input inspection failed."
         print(f"Container Composer trust refused: {message}")
         return 1

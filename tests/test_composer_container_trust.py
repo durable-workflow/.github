@@ -207,6 +207,76 @@ class ComposerContainerSourceTest(unittest.TestCase):
         with self.assertRaises(ContainerTrustRefused):
             self.check(environment={**self.environment, "COMPOSER_CAFILE": str(bundle)})
 
+    def test_selected_ca_symlink_cannot_supply_staged_bytes(self):
+        linked = self.root / "linked-ca.pem"
+        linked.symlink_to(self.bundle)
+        with self.assertRaisesRegex(ContainerTrustRefused, "symbolic link"):
+            self.check(environment=self.environment | {"COMPOSER_CAFILE": str(linked)})
+
+    def test_ca_staging_preserves_exact_authority_in_private_compose_state(self):
+        outputs, _ = self.check()
+        summary = container_trust.stage_compose_ca(outputs, self.root, self.source)
+        selected = Path(outputs["ca-file"])
+        self.assertEqual(self.bundle.read_bytes(), selected.read_bytes())
+        self.assertEqual(self.root, selected.parent.parent)
+        self.assertEqual(0o700, selected.parent.stat().st_mode & 0o777)
+        self.assertEqual(0o400, selected.stat().st_mode & 0o777)
+        self.assertEqual({"sha256": self.environment["DW_CI_CA_SHA256"], "size": self.bundle.stat().st_size,
+                          "mode": 0o400}, summary)
+        container_trust.cleanup_compose_ca(selected, self.root, outputs["ca-sha256"])
+        self.assertFalse(selected.parent.exists())
+        self.assertTrue(self.bundle.exists(), "The bootstrap's selected original is never removed.")
+
+    def test_ca_changed_or_hardlinked_before_staging_refuses_without_copy(self):
+        for mutation in ("changed", "hardlinked"):
+            outputs, _ = self.check()
+            if mutation == "changed":
+                original = self.bundle.read_bytes()
+                self.bundle.write_bytes(b"changed bytes")
+            else:
+                os.link(self.bundle, self.root / "ca-alias")
+            with self.subTest(mutation=mutation), self.assertRaises(ContainerTrustRefused):
+                container_trust.stage_compose_ca(outputs, self.root, self.source)
+            self.assertEqual([], list(self.root.glob(".dw-composer-ca-*")))
+            if mutation == "changed":
+                self.bundle.write_bytes(original)
+
+    def test_staged_ca_cleanup_refuses_other_files_and_changed_state(self):
+        outputs, _ = self.check()
+        with self.assertRaises(ContainerTrustRefused):
+            container_trust.cleanup_compose_ca(self.bundle, self.root, outputs["ca-sha256"])
+        container_trust.stage_compose_ca(outputs, self.root, self.source)
+        selected = Path(outputs["ca-file"])
+        selected.chmod(0o600)
+        selected.write_bytes(b"changed copy")
+        with self.assertRaises(ContainerTrustRefused):
+            container_trust.cleanup_compose_ca(selected, self.root, outputs["ca-sha256"])
+        self.assertTrue(selected.exists())
+        selected.write_bytes(self.bundle.read_bytes())
+        selected.chmod(0o400)
+        extra = selected.parent / "unrelated"
+        extra.write_text("preserve this file")
+        with self.assertRaises(ContainerTrustRefused):
+            container_trust.cleanup_compose_ca(selected, self.root, outputs["ca-sha256"])
+        self.assertTrue(extra.exists())
+
+    def test_ca_copy_cannot_enter_source_or_verifier_context_or_follow_a_directory_link(self):
+        outputs, _ = self.check()
+        for directory in (self.source, self.verifier):
+            with self.subTest(directory=directory), self.assertRaises(ContainerTrustRefused):
+                container_trust.stage_compose_ca(outputs.copy(), directory, self.source)
+            self.assertEqual([], list(directory.glob(".dw-composer-ca-*")))
+        linked = self.root / "linked-compose"
+        linked.symlink_to(self.root, target_is_directory=True)
+        with self.assertRaises(ContainerTrustRefused):
+            container_trust.stage_compose_ca(outputs.copy(), linked, self.source)
+
+    def test_nonregular_ca_source_refuses_without_blocking(self):
+        fifo = self.root / "ca-fifo"
+        os.mkfifo(fifo)
+        with self.assertRaises(ContainerTrustRefused):
+            container_trust.regular_ca_bytes(fifo, self.environment["DW_CI_CA_SHA256"])
+
     def test_actual_context_rejects_tracked_staged_untracked_and_ignored_bytes(self):
         runtime = self.source / "runtime.php"
         runtime.write_text("<?php // selected source\n")
@@ -267,6 +337,15 @@ class ComposerContainerSourceTest(unittest.TestCase):
             self.assertEqual(self.commit, json.loads(record.read_text())["source_commit"])
             self.assertIn("source-commit=" + self.commit, output.read_text())
             self.assertEqual(1, container_trust.main(), "A repeat must not clobber provenance.")
+        values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+        selected = Path(values["ca-file"])
+        self.assertEqual(self.root, selected.parent.parent)
+        self.assertEqual(self.bundle.read_bytes(), selected.read_bytes())
+        cleanup = ["container-trust", "cleanup-ca", "--ca-file", str(selected),
+                   "--ca-sha256", values["ca-sha256"], "--compose-directory", str(self.root)]
+        with patch.object(sys, "argv", cleanup):
+            self.assertEqual(0, container_trust.main())
+        self.assertFalse(selected.parent.exists())
 
 
 class ComposerContainerComposeTest(unittest.TestCase):
