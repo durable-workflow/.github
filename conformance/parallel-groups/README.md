@@ -19,7 +19,9 @@ the innermost frame, as the other group fields do today.
 The policy belongs to a group identity and is immutable after admission. Every
 member's frame for that group must agree, including presence versus absence.
 An unknown, null, empty or inconsistent value is refused before writes.
-Selection frames (`parallel_group_mode: select`) retain their existing contract.
+Policy is refused on selection frames (`parallel_group_mode: select`). An
+enclosing ordinary all-group frame may carry its own policy; that does not
+change the selection frame's winner/handle contract.
 
 Absence preserves the recording binding's legacy behavior, including failure
 selection and replay clock. In particular, legacy Python list groups wait for
@@ -48,6 +50,15 @@ The worker capability manifest uses the same `parallel_group_policies`
 descriptor. Producer discovery alone does not establish consumer support.
 Admission requires both sides to support the selected policy. A worker must
 not advertise a policy implemented only by a test flag or source proposal.
+
+The same fence applies to replacement-worker claim and replay eligibility.
+Before assigning or confirming a claim, the producer verifies that the worker
+supports every explicit policy needed by that run's retained history. A legacy
+worker must not claim an explicit-policy run merely because it supports the
+workflow type. If no eligible worker exists, keep the run waiting with an
+operator-visible capability reason. Never strip recorded policy or downgrade
+it during repair, registration replacement, retry or cold replay. Completion
+also retains the existing current-worker, lease and attempt fences.
 
 If either side lacks the selected policy, refuse explicit admission before
 recording commands. Never drop the policy, silently downgrade it to legacy
@@ -80,6 +91,10 @@ selected failure's qualified event clock. Later sibling results and later
 signals cannot supply that boundary's time. Absent-policy histories keep their
 binding's original clock rule. A terminal run-close settlement is not a member
 outcome, as defined by the existing run-close contract.
+
+Activity-group failure clocks keep the established canonical-v1 millisecond
+normalization. If resource identity or timestamp checks cannot prove the selected
+boundary, the clock remains unavailable rather than borrowing another event.
 
 Nested groups record policy per group frame. Initial consumers may support only
 uniform explicit `propagate` frames; mixed nested policies must remain refused
