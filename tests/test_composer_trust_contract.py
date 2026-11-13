@@ -352,8 +352,8 @@ class ComposerRuntimeSetupContractTest(unittest.TestCase):
         self.command = 'bash "$GITHUB_WORKSPACE/scripts/setup.sh" "8.4"'
         self.recipe = {"target": "fixture", "workflows": {"ci.yml": ["test"]}, "commands": [self.command],
                        "environment": ["FIXTURE_PHP_IMAGE"], "files": files}
-        catalog = {"requests": {}, "runtime_setups": {"fixture-php": self.recipe}}
-        patched = mock.patch("scripts.qualification_policy._composer_container_catalog", return_value=catalog)
+        self.catalog = {"requests": {}, "runtime_setups": {"fixture-php": self.recipe}}
+        patched = mock.patch("scripts.qualification_policy._composer_container_catalog", return_value=self.catalog)
         patched.start()
         self.addCleanup(patched.stop)
         self.steps = [
@@ -480,6 +480,19 @@ class ComposerRuntimeSetupContractTest(unittest.TestCase):
                        {"php": ["8.4", "8.5"], "exclude": [{"php": "8.5"}]}):
             with self.subTest(matrix=matrix), self.assertRaises(PolicyError):
                 self.check(matrix=matrix)
+
+    def test_ambiguous_recipes_do_not_authorize_a_runtime(self):
+        self.catalog["runtime_setups"]["duplicate"] = deepcopy(self.recipe)
+        with self.assertRaisesRegex(PolicyError, "ambiguous"):
+            self.check()
+
+    def test_a_symlinked_build_input_directory_refuses_even_when_bytes_match(self):
+        original = self.root / "docker/php"
+        moved = self.root / "actual-build-input"
+        original.rename(moved)
+        original.symlink_to(moved, target_is_directory=True)
+        with self.assertRaisesRegex(PolicyError, "symlinks"):
+            self.check()
 
 
 class ScopedComposerMigrationTest(unittest.TestCase):
