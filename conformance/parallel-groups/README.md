@@ -43,8 +43,14 @@ The proposed discovery field is
 
 `policies` is a nonempty unique subset of the three policy names. Producers may
 admit one policy before the others, and list only policies actually implemented
-and qualified. Wrong types, unknown versions or names, duplicates, missing
-fields and `supported: false` do not authorize admission.
+and qualified. This descriptor is a closed object with exactly `supported`,
+`version` and `policies`. `supported` must be the boolean `true`, `version` must
+be the integer `1`, and every policy must be a string. Unknown members, wrong
+types (including boolean or string versions), unknown versions or names,
+duplicates, missing fields, an empty policy list and `supported: false` refuse
+explicit admission. No value is coerced or silently discarded. The same closed
+descriptor rules apply to discovery and worker registration. Workers without
+support omit the registration flag and descriptor.
 
 Worker registration uses the existing `POST /worker/register` body fields:
 

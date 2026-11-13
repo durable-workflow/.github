@@ -1443,6 +1443,289 @@
         "registration": "refused",
         "writes": false
       }
+    },
+    {
+      "id": "unknown-registration-descriptor-member",
+      "registration": {
+        "capabilities": [
+          "parallel_group_policies"
+        ],
+        "capability_manifest": {
+          "parallel_group_policies": {
+            "supported": true,
+            "version": 1,
+            "policies": [
+              "propagate"
+            ],
+            "allow_legacy": true
+          }
+        }
+      },
+      "expected": {
+        "registration": "refused",
+        "writes": false
+      }
+    },
+    {
+      "id": "registration-supported-false",
+      "registration": {
+        "capabilities": [
+          "parallel_group_policies"
+        ],
+        "capability_manifest": {
+          "parallel_group_policies": {
+            "supported": false,
+            "version": 1,
+            "policies": [
+              "propagate"
+            ]
+          }
+        }
+      },
+      "expected": {
+        "registration": "refused",
+        "writes": false
+      }
+    },
+    {
+      "id": "registration-supported-string",
+      "registration": {
+        "capabilities": [
+          "parallel_group_policies"
+        ],
+        "capability_manifest": {
+          "parallel_group_policies": {
+            "supported": "true",
+            "version": 1,
+            "policies": [
+              "propagate"
+            ]
+          }
+        }
+      },
+      "expected": {
+        "registration": "refused",
+        "writes": false
+      }
+    },
+    {
+      "id": "registration-supported-number",
+      "registration": {
+        "capabilities": [
+          "parallel_group_policies"
+        ],
+        "capability_manifest": {
+          "parallel_group_policies": {
+            "supported": 1,
+            "version": 1,
+            "policies": [
+              "propagate"
+            ]
+          }
+        }
+      },
+      "expected": {
+        "registration": "refused",
+        "writes": false
+      }
+    },
+    {
+      "id": "registration-version-boolean",
+      "registration": {
+        "capabilities": [
+          "parallel_group_policies"
+        ],
+        "capability_manifest": {
+          "parallel_group_policies": {
+            "supported": true,
+            "version": true,
+            "policies": [
+              "propagate"
+            ]
+          }
+        }
+      },
+      "expected": {
+        "registration": "refused",
+        "writes": false
+      }
+    },
+    {
+      "id": "registration-version-string",
+      "registration": {
+        "capabilities": [
+          "parallel_group_policies"
+        ],
+        "capability_manifest": {
+          "parallel_group_policies": {
+            "supported": true,
+            "version": "1",
+            "policies": [
+              "propagate"
+            ]
+          }
+        }
+      },
+      "expected": {
+        "registration": "refused",
+        "writes": false
+      }
+    },
+    {
+      "id": "registration-version-fractional-number",
+      "registration": {
+        "capabilities": [
+          "parallel_group_policies"
+        ],
+        "capability_manifest": {
+          "parallel_group_policies": {
+            "supported": true,
+            "version": 1.0,
+            "policies": [
+              "propagate"
+            ]
+          }
+        }
+      },
+      "expected": {
+        "registration": "refused",
+        "writes": false
+      }
+    },
+    {
+      "id": "registration-policies-empty",
+      "registration": {
+        "capabilities": [
+          "parallel_group_policies"
+        ],
+        "capability_manifest": {
+          "parallel_group_policies": {
+            "supported": true,
+            "version": 1,
+            "policies": []
+          }
+        }
+      },
+      "expected": {
+        "registration": "refused",
+        "writes": false
+      }
+    },
+    {
+      "id": "registration-policy-unknown",
+      "registration": {
+        "capabilities": [
+          "parallel_group_policies"
+        ],
+        "capability_manifest": {
+          "parallel_group_policies": {
+            "supported": true,
+            "version": 1,
+            "policies": [
+              "future"
+            ]
+          }
+        }
+      },
+      "expected": {
+        "registration": "refused",
+        "writes": false
+      }
+    },
+    {
+      "id": "registration-policy-member-wrong-type",
+      "registration": {
+        "capabilities": [
+          "parallel_group_policies"
+        ],
+        "capability_manifest": {
+          "parallel_group_policies": {
+            "supported": true,
+            "version": 1,
+            "policies": [
+              "propagate",
+              1
+            ]
+          }
+        }
+      },
+      "expected": {
+        "registration": "refused",
+        "writes": false
+      }
+    },
+    {
+      "id": "registration-descriptor-wrong-object-type",
+      "registration": {
+        "capabilities": [
+          "parallel_group_policies"
+        ],
+        "capability_manifest": {
+          "parallel_group_policies": []
+        }
+      },
+      "expected": {
+        "registration": "refused",
+        "writes": false
+      }
+    },
+    {
+      "id": "registration-missing-supported",
+      "registration": {
+        "capabilities": [
+          "parallel_group_policies"
+        ],
+        "capability_manifest": {
+          "parallel_group_policies": {
+            "version": 1,
+            "policies": [
+              "propagate"
+            ]
+          }
+        }
+      },
+      "expected": {
+        "registration": "refused",
+        "writes": false
+      }
+    },
+    {
+      "id": "registration-missing-version",
+      "registration": {
+        "capabilities": [
+          "parallel_group_policies"
+        ],
+        "capability_manifest": {
+          "parallel_group_policies": {
+            "supported": true,
+            "policies": [
+              "propagate"
+            ]
+          }
+        }
+      },
+      "expected": {
+        "registration": "refused",
+        "writes": false
+      }
+    },
+    {
+      "id": "registration-missing-policies",
+      "registration": {
+        "capabilities": [
+          "parallel_group_policies"
+        ],
+        "capability_manifest": {
+          "parallel_group_policies": {
+            "supported": true,
+            "version": 1
+          }
+        }
+      },
+      "expected": {
+        "registration": "refused",
+        "writes": false
+      }
     }
   ]
 }
