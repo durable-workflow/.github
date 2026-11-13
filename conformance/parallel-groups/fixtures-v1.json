@@ -1,0 +1,773 @@
+{
+  "schema": "durable-workflow.parallel-group-policy-fixtures/v1",
+  "status": "proposal-not-qualified",
+  "capability": {
+    "discovery_path": "worker_protocol.server_capabilities.parallel_group_policies",
+    "descriptor": {
+      "supported": true,
+      "version": 1,
+      "policies": [
+        "propagate"
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "legacy-python-pending",
+      "history": [
+        {
+          "event_type": "WorkflowStarted",
+          "recorded_at": "2026-01-01T00:00:00Z",
+          "payload": {}
+        },
+        {
+          "event_type": "ActivityScheduled",
+          "recorded_at": "2026-01-01T00:00:00Z",
+          "payload": {
+            "sequence": 1,
+            "activity_execution_id": "execution-0",
+            "activity_type": "slow-first",
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-activities:1:2",
+                "parallel_group_kind": "activity",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 0
+              }
+            ]
+          }
+        },
+        {
+          "event_type": "ActivityScheduled",
+          "recorded_at": "2026-01-01T00:00:00Z",
+          "payload": {
+            "sequence": 2,
+            "activity_execution_id": "execution-1",
+            "activity_type": "fast-second",
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-activities:1:2",
+                "parallel_group_kind": "activity",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 1
+              }
+            ]
+          }
+        },
+        {
+          "event_type": "ActivityFailed",
+          "recorded_at": "2026-01-01T00:00:01Z",
+          "payload": {
+            "sequence": 2,
+            "activity_execution_id": "execution-1",
+            "activity_type": "fast-second",
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-activities:1:2",
+                "parallel_group_kind": "activity",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 1
+              }
+            ],
+            "message": "higher position failed first"
+          }
+        }
+      ],
+      "expected": {
+        "continuation": "pending",
+        "failure": null,
+        "open_member_indexes": [
+          0
+        ]
+      },
+      "legacy_binding": "python"
+    },
+    {
+      "id": "propagate-first-recorded-failure",
+      "history": [
+        {
+          "event_type": "WorkflowStarted",
+          "recorded_at": "2026-01-01T00:00:00Z",
+          "payload": {}
+        },
+        {
+          "event_type": "ActivityScheduled",
+          "recorded_at": "2026-01-01T00:00:00Z",
+          "payload": {
+            "sequence": 1,
+            "activity_execution_id": "execution-0",
+            "activity_type": "slow-first",
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-activities:1:2",
+                "parallel_group_kind": "activity",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 0,
+                "parallel_group_policy": "propagate"
+              }
+            ],
+            "parallel_group_policy": "propagate"
+          }
+        },
+        {
+          "event_type": "ActivityScheduled",
+          "recorded_at": "2026-01-01T00:00:00Z",
+          "payload": {
+            "sequence": 2,
+            "activity_execution_id": "execution-1",
+            "activity_type": "fast-second",
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-activities:1:2",
+                "parallel_group_kind": "activity",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 1,
+                "parallel_group_policy": "propagate"
+              }
+            ],
+            "parallel_group_policy": "propagate"
+          }
+        },
+        {
+          "event_type": "ActivityFailed",
+          "recorded_at": "2026-01-01T00:00:01Z",
+          "payload": {
+            "sequence": 2,
+            "activity_execution_id": "execution-1",
+            "activity_type": "fast-second",
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-activities:1:2",
+                "parallel_group_kind": "activity",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 1,
+                "parallel_group_policy": "propagate"
+              }
+            ],
+            "message": "higher position failed first",
+            "parallel_group_policy": "propagate"
+          }
+        }
+      ],
+      "expected": {
+        "continuation": "failed",
+        "failure_member_index": 1,
+        "failure_event_index": 3,
+        "cancellation_requests": [],
+        "open_member_indexes": [
+          0
+        ],
+        "clock_event_index": 3
+      }
+    },
+    {
+      "id": "cancel-remaining-targets-open-sibling",
+      "history": [
+        {
+          "event_type": "WorkflowStarted",
+          "recorded_at": "2026-01-01T00:00:00Z",
+          "payload": {}
+        },
+        {
+          "event_type": "ActivityScheduled",
+          "recorded_at": "2026-01-01T00:00:00Z",
+          "payload": {
+            "sequence": 1,
+            "activity_execution_id": "execution-0",
+            "activity_type": "slow-first",
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-activities:1:2",
+                "parallel_group_kind": "activity",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 0,
+                "parallel_group_policy": "cancel_remaining"
+              }
+            ],
+            "parallel_group_policy": "cancel_remaining"
+          }
+        },
+        {
+          "event_type": "ActivityScheduled",
+          "recorded_at": "2026-01-01T00:00:00Z",
+          "payload": {
+            "sequence": 2,
+            "activity_execution_id": "execution-1",
+            "activity_type": "fast-second",
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-activities:1:2",
+                "parallel_group_kind": "activity",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 1,
+                "parallel_group_policy": "cancel_remaining"
+              }
+            ],
+            "parallel_group_policy": "cancel_remaining"
+          }
+        },
+        {
+          "event_type": "ActivityFailed",
+          "recorded_at": "2026-01-01T00:00:01Z",
+          "payload": {
+            "sequence": 2,
+            "activity_execution_id": "execution-1",
+            "activity_type": "fast-second",
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-activities:1:2",
+                "parallel_group_kind": "activity",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 1,
+                "parallel_group_policy": "cancel_remaining"
+              }
+            ],
+            "message": "higher position failed first",
+            "parallel_group_policy": "cancel_remaining"
+          }
+        }
+      ],
+      "expected": {
+        "continuation": "failed",
+        "failure_member_index": 1,
+        "cancellation_requests": [
+          {
+            "member_index": 0,
+            "sequence": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "settle-waits-for-open-sibling",
+      "history": [
+        {
+          "event_type": "WorkflowStarted",
+          "recorded_at": "2026-01-01T00:00:00Z",
+          "payload": {}
+        },
+        {
+          "event_type": "ActivityScheduled",
+          "recorded_at": "2026-01-01T00:00:00Z",
+          "payload": {
+            "sequence": 1,
+            "activity_execution_id": "execution-0",
+            "activity_type": "slow-first",
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-activities:1:2",
+                "parallel_group_kind": "activity",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 0,
+                "parallel_group_policy": "settle"
+              }
+            ],
+            "parallel_group_policy": "settle"
+          }
+        },
+        {
+          "event_type": "ActivityScheduled",
+          "recorded_at": "2026-01-01T00:00:00Z",
+          "payload": {
+            "sequence": 2,
+            "activity_execution_id": "execution-1",
+            "activity_type": "fast-second",
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-activities:1:2",
+                "parallel_group_kind": "activity",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 1,
+                "parallel_group_policy": "settle"
+              }
+            ],
+            "parallel_group_policy": "settle"
+          }
+        },
+        {
+          "event_type": "ActivityFailed",
+          "recorded_at": "2026-01-01T00:00:01Z",
+          "payload": {
+            "sequence": 2,
+            "activity_execution_id": "execution-1",
+            "activity_type": "fast-second",
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-activities:1:2",
+                "parallel_group_kind": "activity",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 1,
+                "parallel_group_policy": "settle"
+              }
+            ],
+            "message": "higher position failed first",
+            "parallel_group_policy": "settle"
+          }
+        }
+      ],
+      "expected": {
+        "continuation": "pending",
+        "open_member_indexes": [
+          0
+        ]
+      }
+    },
+    {
+      "id": "legacy-python-positional-failure",
+      "history": [
+        {
+          "event_type": "WorkflowStarted",
+          "recorded_at": "2026-01-01T00:00:00Z",
+          "payload": {}
+        },
+        {
+          "event_type": "ActivityScheduled",
+          "recorded_at": "2026-01-01T00:00:00Z",
+          "payload": {
+            "sequence": 1,
+            "activity_execution_id": "execution-0",
+            "activity_type": "slow-first",
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-activities:1:2",
+                "parallel_group_kind": "activity",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 0
+              }
+            ]
+          }
+        },
+        {
+          "event_type": "ActivityScheduled",
+          "recorded_at": "2026-01-01T00:00:00Z",
+          "payload": {
+            "sequence": 2,
+            "activity_execution_id": "execution-1",
+            "activity_type": "fast-second",
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-activities:1:2",
+                "parallel_group_kind": "activity",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 1
+              }
+            ]
+          }
+        },
+        {
+          "event_type": "ActivityFailed",
+          "recorded_at": "2026-01-01T00:00:01Z",
+          "payload": {
+            "sequence": 2,
+            "activity_execution_id": "execution-1",
+            "activity_type": "fast-second",
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-activities:1:2",
+                "parallel_group_kind": "activity",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 1
+              }
+            ],
+            "message": "higher position failed first"
+          }
+        },
+        {
+          "event_type": "ActivityFailed",
+          "recorded_at": "2026-01-01T00:00:03Z",
+          "payload": {
+            "sequence": 1,
+            "activity_execution_id": "execution-0",
+            "activity_type": "slow-first",
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-activities:1:2",
+                "parallel_group_kind": "activity",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 0
+              }
+            ],
+            "message": "lower position failed later"
+          }
+        }
+      ],
+      "expected": {
+        "continuation": "failed",
+        "failure_member_index": 0
+      },
+      "legacy_binding": "python"
+    },
+    {
+      "id": "propagate-preserves-first-after-late-loser",
+      "history": [
+        {
+          "event_type": "WorkflowStarted",
+          "recorded_at": "2026-01-01T00:00:00Z",
+          "payload": {}
+        },
+        {
+          "event_type": "ActivityScheduled",
+          "recorded_at": "2026-01-01T00:00:00Z",
+          "payload": {
+            "sequence": 1,
+            "activity_execution_id": "execution-0",
+            "activity_type": "slow-first",
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-activities:1:2",
+                "parallel_group_kind": "activity",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 0,
+                "parallel_group_policy": "propagate"
+              }
+            ],
+            "parallel_group_policy": "propagate"
+          }
+        },
+        {
+          "event_type": "ActivityScheduled",
+          "recorded_at": "2026-01-01T00:00:00Z",
+          "payload": {
+            "sequence": 2,
+            "activity_execution_id": "execution-1",
+            "activity_type": "fast-second",
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-activities:1:2",
+                "parallel_group_kind": "activity",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 1,
+                "parallel_group_policy": "propagate"
+              }
+            ],
+            "parallel_group_policy": "propagate"
+          }
+        },
+        {
+          "event_type": "ActivityFailed",
+          "recorded_at": "2026-01-01T00:00:01Z",
+          "payload": {
+            "sequence": 2,
+            "activity_execution_id": "execution-1",
+            "activity_type": "fast-second",
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-activities:1:2",
+                "parallel_group_kind": "activity",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 1,
+                "parallel_group_policy": "propagate"
+              }
+            ],
+            "message": "higher position failed first",
+            "parallel_group_policy": "propagate"
+          }
+        },
+        {
+          "event_type": "ActivityFailed",
+          "recorded_at": "2026-01-01T00:00:03Z",
+          "payload": {
+            "sequence": 1,
+            "activity_execution_id": "execution-0",
+            "activity_type": "slow-first",
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-activities:1:2",
+                "parallel_group_kind": "activity",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 0,
+                "parallel_group_policy": "propagate"
+              }
+            ],
+            "message": "lower position failed later",
+            "parallel_group_policy": "propagate"
+          }
+        }
+      ],
+      "expected": {
+        "continuation": "failed",
+        "failure_member_index": 1,
+        "failure_event_index": 3,
+        "clock_event_index": 3
+      }
+    },
+    {
+      "id": "settle-orders-failures-by-member",
+      "history": [
+        {
+          "event_type": "WorkflowStarted",
+          "recorded_at": "2026-01-01T00:00:00Z",
+          "payload": {}
+        },
+        {
+          "event_type": "ActivityScheduled",
+          "recorded_at": "2026-01-01T00:00:00Z",
+          "payload": {
+            "sequence": 1,
+            "activity_execution_id": "execution-0",
+            "activity_type": "slow-first",
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-activities:1:2",
+                "parallel_group_kind": "activity",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 0,
+                "parallel_group_policy": "settle"
+              }
+            ],
+            "parallel_group_policy": "settle"
+          }
+        },
+        {
+          "event_type": "ActivityScheduled",
+          "recorded_at": "2026-01-01T00:00:00Z",
+          "payload": {
+            "sequence": 2,
+            "activity_execution_id": "execution-1",
+            "activity_type": "fast-second",
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-activities:1:2",
+                "parallel_group_kind": "activity",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 1,
+                "parallel_group_policy": "settle"
+              }
+            ],
+            "parallel_group_policy": "settle"
+          }
+        },
+        {
+          "event_type": "ActivityFailed",
+          "recorded_at": "2026-01-01T00:00:01Z",
+          "payload": {
+            "sequence": 2,
+            "activity_execution_id": "execution-1",
+            "activity_type": "fast-second",
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-activities:1:2",
+                "parallel_group_kind": "activity",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 1,
+                "parallel_group_policy": "settle"
+              }
+            ],
+            "message": "higher position failed first",
+            "parallel_group_policy": "settle"
+          }
+        },
+        {
+          "event_type": "ActivityFailed",
+          "recorded_at": "2026-01-01T00:00:03Z",
+          "payload": {
+            "sequence": 1,
+            "activity_execution_id": "execution-0",
+            "activity_type": "slow-first",
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-activities:1:2",
+                "parallel_group_kind": "activity",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 0,
+                "parallel_group_policy": "settle"
+              }
+            ],
+            "message": "lower position failed later",
+            "parallel_group_policy": "settle"
+          }
+        }
+      ],
+      "expected": {
+        "continuation": "completed",
+        "outcomes": [
+          {
+            "member_index": 0,
+            "status": "failed"
+          },
+          {
+            "member_index": 1,
+            "status": "failed"
+          }
+        ]
+      }
+    }
+  ],
+  "refusal_vectors": [
+    {
+      "id": "unknown-policy",
+      "policy": "best_effort"
+    },
+    {
+      "id": "null-policy",
+      "policy": null
+    },
+    {
+      "id": "inconsistent-member-policy",
+      "member_policies": [
+        "propagate",
+        "settle"
+      ]
+    },
+    {
+      "id": "missing-producer-capability",
+      "producer_capability": null,
+      "policy": "propagate"
+    },
+    {
+      "id": "unsupported-selected-policy",
+      "producer_capability": {
+        "supported": true,
+        "version": 1,
+        "policies": [
+          "propagate"
+        ]
+      },
+      "policy": "settle"
+    }
+  ]
+}
