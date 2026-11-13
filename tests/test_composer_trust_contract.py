@@ -653,6 +653,12 @@ class ComposerRuntimeSetupContractTest(unittest.TestCase):
         changed["jobs"]["test"]["strategy"]["matrix"]["php"] = ["8.2", "8.4"]
         with self.assertRaises(PolicyError):
             validate(changed, catalog)
+        changed = deepcopy(document)
+        setup = next(step for step in changed["jobs"]["carbon-2"]["steps"]
+                     if "setup-php-container.sh" in step.get("run", ""))
+        setup["run"] = setup["run"].removesuffix(" carbon2")
+        with self.assertRaises(PolicyError):
+            validate(changed, catalog)
 
     def test_a_symlinked_build_input_directory_refuses_even_when_bytes_match(self):
         original = self.root / "docker/php"

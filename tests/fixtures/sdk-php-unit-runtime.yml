@@ -1,4 +1,4 @@
-# Proposed SDK caller 960c23efb3d2d456bb70cada938c1d28517ad7d0; runtime jobs only.
+# Proposed SDK caller 0ee1d57b7debe081a6f65eff75763f9db3379d4b; read-only runtime jobs only.
 jobs:
   test:
     name: PHP ${{ matrix.php }}
@@ -104,7 +104,7 @@ jobs:
       run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries
         >/dev/null
     - name: Prepare the reviewed PHP container runtime
-      run: bash "$GITHUB_WORKSPACE/scripts/ci/setup-php-container.sh" "8.1"
+      run: bash "$GITHUB_WORKSPACE/scripts/ci/setup-php-container.sh" "8.1" carbon2
     - name: Constrain the manifest to the oldest supported Carbon major
       run: "php -r '$path = \"composer.json\";\n  $manifest = json_decode((string)\
         \ file_get_contents($path), flags: JSON_THROW_ON_ERROR);\n  $manifest->require->{\"\

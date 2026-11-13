@@ -264,15 +264,15 @@
           "mode": 420
         },
         "scripts/ci/setup-php-container.sh": {
-          "sha256": "37dd931f07749ebd29ec6700816e4c8b42ee16d52ae05f426647def250867553",
+          "sha256": "ae216b71a15ab40098e4341e6ab2ebe4f2a3cecc497cbb9eb412bfd19c446cf9",
           "mode": 493
         },
         "scripts/ci/run-php-container.sh": {
-          "sha256": "96727d850846f1bd0b96468e9de8d34c6f6131896b5a80157dc1b71ec39b9392",
+          "sha256": "3381acfe8ef0eddd2b88b6acce0ae1143357ff3a61884d2c7ae274ba3ee81bd9",
           "mode": 493
         },
         "tests/ci/test_php_container_tls.py": {
-          "sha256": "94decbb86d8b6112ba864f927463a41462fb6455707c19b6127f217007d82423",
+          "sha256": "d73a2a3c494bd31bd4f8b5215070aa7ff4807c3e4cb75e8b3eb51d2fe057c0ae",
           "mode": 420
         },
         "docker/brotli/install-vendor.sh": {
@@ -290,6 +290,10 @@
         "docker/brotli/version": {
           "sha256": "e064953e075ddb99fb7b48ad29e215f2dfa075812c127eb1d6ab680e9920fba2",
           "mode": 420
+        },
+        "tests/ci/test_php_container_isolation.py": {
+          "sha256": "209b1382e473f674dad3f6a1fbc447557dba647df2d23b70c8af1db2dab97697",
+          "mode": 420
         }
       }
     },
@@ -301,7 +305,7 @@
         ]
       },
       "commands": [
-        "bash \"$GITHUB_WORKSPACE/scripts/ci/setup-php-container.sh\" \"8.1\""
+        "bash \"$GITHUB_WORKSPACE/scripts/ci/setup-php-container.sh\" \"8.1\" carbon2"
       ],
       "environment": [
         "SDK_PHP_CI_IMAGE",
@@ -338,15 +342,15 @@
           "mode": 420
         },
         "scripts/ci/setup-php-container.sh": {
-          "sha256": "37dd931f07749ebd29ec6700816e4c8b42ee16d52ae05f426647def250867553",
+          "sha256": "ae216b71a15ab40098e4341e6ab2ebe4f2a3cecc497cbb9eb412bfd19c446cf9",
           "mode": 493
         },
         "scripts/ci/run-php-container.sh": {
-          "sha256": "96727d850846f1bd0b96468e9de8d34c6f6131896b5a80157dc1b71ec39b9392",
+          "sha256": "3381acfe8ef0eddd2b88b6acce0ae1143357ff3a61884d2c7ae274ba3ee81bd9",
           "mode": 493
         },
         "tests/ci/test_php_container_tls.py": {
-          "sha256": "94decbb86d8b6112ba864f927463a41462fb6455707c19b6127f217007d82423",
+          "sha256": "d73a2a3c494bd31bd4f8b5215070aa7ff4807c3e4cb75e8b3eb51d2fe057c0ae",
           "mode": 420
         },
         "docker/brotli/install-vendor.sh": {
@@ -363,6 +367,10 @@
         },
         "docker/brotli/version": {
           "sha256": "e064953e075ddb99fb7b48ad29e215f2dfa075812c127eb1d6ab680e9920fba2",
+          "mode": 420
+        },
+        "tests/ci/test_php_container_isolation.py": {
+          "sha256": "209b1382e473f674dad3f6a1fbc447557dba647df2d23b70c8af1db2dab97697",
           "mode": 420
         }
       }
