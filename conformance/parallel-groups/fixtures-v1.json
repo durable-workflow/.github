@@ -9,7 +9,9 @@
       "policies": [
         "propagate"
       ]
-    }
+    },
+    "registration_path": "capability_manifest.parallel_group_policies",
+    "registration_flag": "parallel_group_policies"
   },
   "cases": [
     {
@@ -1092,6 +1094,355 @@
       "id": "policy-on-select-frame",
       "parallel_group_mode": "select",
       "parallel_group_policy": "propagate"
+    }
+  ],
+  "registration_claim_vectors": [
+    {
+      "id": "legacy-registration-legacy-run",
+      "registration": {
+        "capabilities": [],
+        "capability_manifest": {}
+      },
+      "run_required_policies": [],
+      "expected": {
+        "registration": "accepted",
+        "claim": "eligible"
+      }
+    },
+    {
+      "id": "qualified-propagate-registration",
+      "registration": {
+        "capabilities": [
+          "parallel_group_policies"
+        ],
+        "capability_manifest": {
+          "parallel_group_policies": {
+            "supported": true,
+            "version": 1,
+            "policies": [
+              "propagate"
+            ]
+          }
+        }
+      },
+      "producer_descriptor": {
+        "supported": true,
+        "version": 1,
+        "policies": [
+          "propagate"
+        ]
+      },
+      "run_required_policies": [
+        "propagate"
+      ],
+      "expected": {
+        "registration": "accepted",
+        "stored_descriptor": {
+          "supported": true,
+          "version": 1,
+          "policies": [
+            "propagate"
+          ]
+        },
+        "claim": "eligible"
+      }
+    },
+    {
+      "id": "flat-flag-without-descriptor",
+      "registration": {
+        "capabilities": [
+          "parallel_group_policies"
+        ],
+        "capability_manifest": {}
+      },
+      "expected": {
+        "registration": "refused",
+        "writes": false
+      }
+    },
+    {
+      "id": "descriptor-without-flat-flag",
+      "registration": {
+        "capabilities": [],
+        "capability_manifest": {
+          "parallel_group_policies": {
+            "supported": true,
+            "version": 1,
+            "policies": [
+              "propagate"
+            ]
+          }
+        }
+      },
+      "expected": {
+        "registration": "refused",
+        "writes": false
+      }
+    },
+    {
+      "id": "object-in-flat-capabilities",
+      "registration": {
+        "capabilities": [
+          {
+            "parallel_group_policies": {
+              "supported": true,
+              "version": 1,
+              "policies": [
+                "propagate"
+              ]
+            }
+          }
+        ],
+        "capability_manifest": {
+          "parallel_group_policies": {
+            "supported": true,
+            "version": 1,
+            "policies": [
+              "propagate"
+            ]
+          }
+        }
+      },
+      "expected": {
+        "registration": "refused",
+        "writes": false
+      }
+    },
+    {
+      "id": "descriptor-at-wrong-registration-path",
+      "registration": {
+        "capabilities": [
+          "parallel_group_policies"
+        ],
+        "parallel_group_policies": {
+          "supported": true,
+          "version": 1,
+          "policies": [
+            "propagate"
+          ]
+        },
+        "capability_manifest": {}
+      },
+      "expected": {
+        "registration": "refused",
+        "writes": false
+      }
+    },
+    {
+      "id": "duplicate-registration-policies",
+      "registration": {
+        "capabilities": [
+          "parallel_group_policies"
+        ],
+        "capability_manifest": {
+          "parallel_group_policies": {
+            "supported": true,
+            "version": 1,
+            "policies": [
+              "propagate",
+              "propagate"
+            ]
+          }
+        }
+      },
+      "expected": {
+        "registration": "refused",
+        "writes": false
+      }
+    },
+    {
+      "id": "future-registration-version",
+      "registration": {
+        "capabilities": [
+          "parallel_group_policies"
+        ],
+        "capability_manifest": {
+          "parallel_group_policies": {
+            "supported": true,
+            "version": 2,
+            "policies": [
+              "propagate"
+            ]
+          }
+        }
+      },
+      "expected": {
+        "registration": "refused",
+        "writes": false
+      }
+    },
+    {
+      "id": "legacy-worker-cannot-claim-explicit-run",
+      "registration": {
+        "capabilities": [],
+        "capability_manifest": {}
+      },
+      "run_required_policies": [
+        "propagate"
+      ],
+      "expected": {
+        "registration": "accepted",
+        "claim": "ineligible",
+        "run": "waiting"
+      }
+    },
+    {
+      "id": "settled-group-retains-policy-requirement",
+      "registration": {
+        "capabilities": [
+          "parallel_group_policies"
+        ],
+        "capability_manifest": {
+          "parallel_group_policies": {
+            "supported": true,
+            "version": 1,
+            "policies": [
+              "propagate"
+            ]
+          }
+        }
+      },
+      "run_required_policies": [
+        "propagate",
+        "settle"
+      ],
+      "open_group_policies": [],
+      "expected": {
+        "registration": "accepted",
+        "claim": "ineligible",
+        "run": "waiting"
+      },
+      "producer_descriptor": {
+        "supported": true,
+        "version": 1,
+        "policies": [
+          "propagate",
+          "settle"
+        ]
+      }
+    },
+    {
+      "id": "descriptor-change-invalidates-held-poll",
+      "held_poll_registration": {
+        "capabilities": [
+          "parallel_group_policies"
+        ],
+        "capability_manifest": {
+          "parallel_group_policies": {
+            "supported": true,
+            "version": 1,
+            "policies": [
+              "propagate",
+              "settle"
+            ]
+          }
+        }
+      },
+      "replacement_registration": {
+        "capabilities": [
+          "parallel_group_policies"
+        ],
+        "capability_manifest": {
+          "parallel_group_policies": {
+            "supported": true,
+            "version": 1,
+            "policies": [
+              "propagate"
+            ]
+          }
+        }
+      },
+      "producer_descriptor": {
+        "supported": true,
+        "version": 1,
+        "policies": [
+          "propagate",
+          "settle"
+        ]
+      },
+      "run_required_policies": [
+        "propagate"
+      ],
+      "expected": {
+        "registration": "accepted",
+        "held_poll_claim": "stale_worker_registration",
+        "replacement_claim": "eligible"
+      }
+    },
+    {
+      "id": "policy-order-canonicalization",
+      "registration": {
+        "capabilities": [
+          "parallel_group_policies"
+        ],
+        "capability_manifest": {
+          "parallel_group_policies": {
+            "supported": true,
+            "version": 1,
+            "policies": [
+              "settle",
+              "propagate"
+            ]
+          }
+        }
+      },
+      "producer_descriptor": {
+        "supported": true,
+        "version": 1,
+        "policies": [
+          "propagate",
+          "settle"
+        ]
+      },
+      "run_required_policies": [
+        "settle"
+      ],
+      "expected": {
+        "registration": "accepted",
+        "stored_descriptor": {
+          "supported": true,
+          "version": 1,
+          "policies": [
+            "propagate",
+            "settle"
+          ]
+        },
+        "claim": "eligible"
+      }
+    },
+    {
+      "id": "null-registration-descriptor",
+      "registration": {
+        "capabilities": [
+          "parallel_group_policies"
+        ],
+        "capability_manifest": {
+          "parallel_group_policies": null
+        }
+      },
+      "expected": {
+        "registration": "refused",
+        "writes": false
+      }
+    },
+    {
+      "id": "registration-policy-list-wrong-type",
+      "registration": {
+        "capabilities": [
+          "parallel_group_policies"
+        ],
+        "capability_manifest": {
+          "parallel_group_policies": {
+            "supported": true,
+            "version": 1,
+            "policies": "propagate"
+          }
+        }
+      },
+      "expected": {
+        "registration": "refused",
+        "writes": false
+      }
     }
   ]
 }

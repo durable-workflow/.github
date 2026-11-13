@@ -46,10 +46,37 @@ admit one policy before the others, and list only policies actually implemented
 and qualified. Wrong types, unknown versions or names, duplicates, missing
 fields and `supported: false` do not authorize admission.
 
-The worker capability manifest uses the same `parallel_group_policies`
-descriptor. Producer discovery alone does not establish consumer support.
-Admission requires both sides to support the selected policy. A worker must
-not advertise a policy implemented only by a test flag or source proposal.
+Worker registration uses the existing `POST /worker/register` body fields:
+
+```json
+{
+  "capabilities": ["parallel_group_policies"],
+  "capability_manifest": {
+    "parallel_group_policies": {"supported": true, "version": 1, "policies": ["propagate"]}
+  }
+}
+```
+
+The structured descriptor is exactly at
+`capability_manifest.parallel_group_policies`, separate from the existing flat
+string array `capabilities`. The flag and descriptor must both be present.
+Neither alone establishes policy support. A legacy worker omits both. An object
+inside `capabilities`, a misplaced descriptor, an invalid descriptor, or a
+flag/descriptor mismatch refuses registration before normalization or writes.
+Other existing capability entries retain their contracts.
+
+The producer validates and persists this entry as structured metadata. It must
+not discard the descriptor during registration normalization or route it through
+the flat string-list normalizer. It validates exact version and policy names, rejects
+duplicates, and canonicalizes the policy list in `propagate`, `cancel_remaining`,
+`settle` order. The canonical descriptor participates in registration identity,
+held-poll snapshots and in-transaction claim/confirmation fences. A descriptor
+change during a held poll makes that old poll stale, even if its flat flag is
+unchanged. It cannot become the replacement process's claim authority.
+
+Producer discovery alone does not establish consumer support. Admission requires
+both sides to support the selected policy. A worker must not advertise a policy
+implemented only by a test flag or source proposal.
 
 The same fence applies to replacement-worker claim and replay eligibility.
 Before assigning or confirming a claim, the producer verifies that the worker
@@ -108,6 +135,9 @@ remote activities work.
 prefixes and expected semantic outcomes. Binding owners copy applicable inputs
 into their existing replay suites and retain legacy fixtures unchanged. These
 source vectors are not an installed conformance result.
+Registration/claim vectors separately cover the exact manifest placement,
+legacy eligibility, malformed or incomplete declarations, retained-policy
+requirements and a capability change during a held poll.
 
 The propagate wire discriminator and proposed per-policy capability can be
 reviewed independently of the producer mappings for `cancel_remaining` and
