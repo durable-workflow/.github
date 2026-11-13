@@ -660,6 +660,35 @@ class ComposerRuntimeSetupContractTest(unittest.TestCase):
         with self.assertRaises(PolicyError):
             validate(changed, catalog)
 
+    def test_sdk_framework_jobs_cannot_borrow_another_jobs_runtime(self):
+        repository = Path(__file__).resolve().parents[1]
+        catalog = json.loads((repository / "qualification/composer-container-trust.json").read_text())
+        catalog["requests"] = {}
+        document = yaml.safe_load((repository / "tests/fixtures/sdk-php-framework-runtime.yml").read_text())
+        policy = json.loads((repository / "qualification/policy.json").read_text())
+
+        def validate(candidate):
+            with (mock.patch("scripts.qualification_policy._composer_container_catalog", return_value=catalog),
+                  mock.patch("scripts.qualification_policy._require_composer_runtime_sources")):
+                return verify_composer_network_sinks(policy, "sdk-php", {"ci.yml": yaml.safe_dump(candidate)}, self.root)
+
+        self.assertTrue(validate(document))
+        for job in ("framework-compat81", "framework-compat", "framework-compat84"):
+            for command in (catalog["runtime_setups"]["sdk-php-carbon-ci"]["commands"][0],
+                            catalog["runtime_setups"]["sdk-php-unit-ci"]["commands"][0]):
+                changed = deepcopy(document)
+                setup = next(step for step in changed["jobs"][job]["steps"]
+                             if "setup-php-container.sh" in step.get("run", ""))
+                setup["run"] = command
+                with self.subTest(job=job, command=command), self.assertRaises(PolicyError):
+                    validate(changed)
+        changed = deepcopy(document)
+        setup = next(step for step in changed["jobs"]["framework-compat"]["steps"]
+                     if "setup-php-container.sh" in step.get("run", ""))
+        setup["run"] = catalog["runtime_setups"]["sdk-php-framework-84-ci"]["commands"][0]
+        with self.assertRaises(PolicyError):
+            validate(changed)
+
     def test_a_symlinked_build_input_directory_refuses_even_when_bytes_match(self):
         original = self.root / "docker/php"
         moved = self.root / "actual-build-input"
