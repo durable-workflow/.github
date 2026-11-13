@@ -68,6 +68,12 @@ REVIEWED_APT_NO_RETRIES_SOURCE_CI_SUCCESSORS = {
 REVIEWED_BOUND_PHP_SOURCE_CI_SUCCESSORS = {
     CI_WORKFLOW: "363540f9e81e4842099f0cad394ce3fc2a83835ce1355ffef5b16722547699b4",
 }
+# Exact reviewed successors add the response-loss socket controls to CI and
+# their actual source to coverage. Existing workflow identities remain valid.
+REVIEWED_RESPONSE_LOSS_SOURCE_CI_SUCCESSORS = {
+    CI_WORKFLOW: "ee4ddc9ad665490681b3f1a2676cdd4ce791d90677e2a931bdb4fea7cc9deb15",
+    SONAR_WORKFLOW: "4eed5d82d6e5decf47d4aab1d1d203eb1060f8892216360b9308c3e710bbcd77",
+}
 # The successor remains inert until its separate runtime pin and manual-only
 # workflow integration. Keep the consumed predecessor's identity unchanged.
 REVIEWED_INITIAL_PROFILE_SUCCESSORS = {
@@ -116,6 +122,7 @@ def reviewed_context_hashes(policy_target: str) -> dict[str, set[str]]:
                       REVIEWED_PHP_CONFIGURATION_SOURCE_CI_SUCCESSORS,
                       REVIEWED_APT_NO_RETRIES_SOURCE_CI_SUCCESSORS,
                       REVIEWED_BOUND_PHP_SOURCE_CI_SUCCESSORS,
+                      REVIEWED_RESPONSE_LOSS_SOURCE_CI_SUCCESSORS,
                       REVIEWED_INITIAL_PROFILE_SUCCESSORS, REVIEWED_NORMALIZED_PROFILE_SUCCESSORS,
                       REVIEWED_ALTERNATIVES_PROFILE_SUCCESSORS,
                       REVIEWED_SELECTED_ALTERNATIVES_PROFILE_SUCCESSORS,
