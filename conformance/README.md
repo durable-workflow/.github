@@ -9,10 +9,67 @@ a maintainer from the published-artifact command below. Every result is recorded
 as a concise update on the active release issue so the tuple, outcome, and next
 action remain visible without creating a second backlog.
 
-## Stable 2.0 tier
+## Native Server qualification
+
+Native Server is the continuing Server line. Use its
+[publication and promotion runbook](https://github.com/durable-workflow/server/blob/main/docs/native-release-promotion.md)
+for a native release. The PHP Server line is frozen; its published image remains
+a comparison reference. The PHP image commands in the experiment table below
+do not become native probes by changing `DW_SERVER_IMAGE`.
+
+Qualify the exact published native image index from its immutable release tag.
+The release runbook supplies the tag, image digest and dispatch inputs for two
+separate checks:
+
+- [Native image parity](https://github.com/durable-workflow/server/blob/main/.github/workflows/native-image-parity.yml)
+  records the shared fixture corpus on SQLite against the published native
+  image, frozen PHP reference and embedded PHP. A pull-request run builds its
+  own candidate image; that source result does not qualify a published index.
+- [Published Compose Smoke](https://github.com/durable-workflow/server/blob/main/.github/workflows/published-compose.yml)
+  runs local and production profiles on both `linux/amd64` and `linux/arm64`.
+  All four cells must finish, including cleanup and their promotion receipts.
+
+The publication run, corpus run and Compose run are inputs to the existing
+promotion evidence manifest. A passing body without a finalized receipt is
+incomplete. Keep run attempts, image identities, cleanup results and any named
+PHP/native divergences with the release evidence. These checks do not replace
+the SDK worker experiments for the behavior being shipped.
+
+For authored PHP/Python/Rust execution, use Server's
+[published SDK direction profiles](https://github.com/durable-workflow/server/blob/main/scripts/conformance/server-parity/sdk-directions/README.md)
+and the owning
+[Shared Server fixtures workflow](https://github.com/durable-workflow/server/blob/main/.github/workflows/server-parity.yml).
+The activity and child profiles exercise all nine directions; timer profiles
+exercise each workflow language. Signal, selected-run signal, namespace signal,
+query, update and update-failure profiles have their own actors and assertions.
+Read the profile's pinned component manifest and actual scenario evidence before
+claiming a language or failure mode. Embedded PHP is a separate comparison
+surface, with SDK transport marked inapplicable.
+
+These profiles require prepared, isolated backend databases and native servers,
+installed SDK adapters, dedicated queues and the owning workflow's cleanup.
+The current lane wrapper takes two native URLs, each backed by its own database:
+
+```sh
+bash scripts/conformance/server-parity/sdk-direction-lanes.sh \
+  BACKEND NATIVE_URL SECOND_NATIVE_URL
+```
+
+This is a prepared-profile entry point, not a command that provisions the
+databases or servers. Follow the owning workflow for `RESOURCE_SCOPE`, backend
+images, adapter preparation, per-profile cleanup and final database/network
+removal. Record the runner revision and component identities separately from
+the native target. A source-built target or a profile's historical pinned tuple
+does not establish acceptance of a newer published release tuple.
+
+## Product experiment inventory
 
 Run every row against the same exact published Workflow, Waterline, Server,
 CLI, PHP SDK, Python SDK, and Rust SDK tuple.
+
+Select the runner for the deployment mode being qualified. Server's PHP-hosted
+probes below retain their frozen-reference and embedded scope; use the native
+qualification path above and applicable SDK profiles for native Server.
 
 The [SDK coverage inventory](sdk-coverage.md) identifies actual runtime
 directions, language-specific boundaries and remaining executable gaps for
