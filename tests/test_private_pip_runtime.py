@@ -192,7 +192,10 @@ class PrivatePipRuntimeTest(unittest.TestCase):
             old_environment = runtime.private_environment(old)
             with self.assertRaises(subprocess.CalledProcessError) as refused:
                 runtime.manager_command(interpreter, before, old_arguments, old_environment)
-            self.assertIn("uninstall-no-record-file", refused.exception.stderr)
+            self.assertNotEqual(0, refused.exception.returncode)
+            self.assertRegex(refused.exception.stderr, r"(?i)cannot uninstall pip")
+            self.assertRegex(refused.exception.stderr,
+                             r"(?i)(?:RECORD file not found|no RECORD file (?:was )?found)")
             self.assertEqual(old_contents, runtime._tree_files(old_site))
             private_python, purelib = runtime.venv_layout(new, interpreter)
             runtime.manager_command(interpreter, before, ["--python", str(private_python), "install",
