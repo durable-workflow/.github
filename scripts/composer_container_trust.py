@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "durable-workflow.composer-container-trust.v1"
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 COMMIT = re.compile(r"[0-9a-f]{40}\Z")
+STAGED_CA_FILE = "ca.pem"
 COMPOSER_IMAGE = re.compile(
     r"(?:docker\.io/library/)?composer(?::2\.10\.3)?@sha256:[0-9a-f]{64}\Z"
 )
@@ -226,9 +227,9 @@ def verified_ca(directory: int, name: str, expected: str):
 
 def regular_ca_bytes(path: Path, expected: str, allowed_root: Path) -> bytes:
     selected = no_alias_path(path)
-    with confined_directory(selected.parent, allowed_root) as directory:
-        with verified_ca(directory, selected.name, expected) as (contents, _):
-            return contents
+    with (confined_directory(selected.parent, allowed_root) as directory,
+          verified_ca(directory, selected.name, expected) as (contents, _)):
+        return contents
 
 
 def stage_compose_ca(outputs: dict[str, str], directory: Path, source: Path) -> dict[str, Any]:
@@ -251,19 +252,19 @@ def stage_compose_ca(outputs: dict[str, str], directory: Path, source: Path) -> 
             if (not same_object(identity, os.fstat(state)) or identity.st_uid != os.getuid()
                     or stat.S_IMODE(identity.st_mode) != 0o700):
                 raise ContainerTrustRefused("The newly created private CA directory changed.")
-            descriptor = os.open("ca.pem", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400, dir_fd=state)
+            descriptor = os.open(STAGED_CA_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400, dir_fd=state)
             with os.fdopen(descriptor, "wb") as stream:
                 stream.write(contents)
-            with verified_ca(state, "ca.pem", outputs["ca-sha256"]) as (copied, info):
+            with verified_ca(state, STAGED_CA_FILE, outputs["ca-sha256"]) as (copied, info):
                 if (copied != contents or stat.S_IMODE(info.st_mode) != 0o400
                         or not same_object(os.fstat(compose), directory.stat(follow_symlinks=False))
                         or not same_object(identity, os.stat(name, dir_fd=compose, follow_symlinks=False))):
                     raise ContainerTrustRefused("The staged CA must remain an exact read-only copy.")
-            outputs["ca-file"] = str(directory / name / "ca.pem")
+            outputs["ca-file"] = str(directory / name / STAGED_CA_FILE)
             return {"sha256": outputs["ca-sha256"], "size": len(contents), "mode": 0o400}
         except BaseException:
-            if "ca.pem" in os.listdir(state):
-                os.unlink("ca.pem", dir_fd=state)
+            if STAGED_CA_FILE in os.listdir(state):
+                os.unlink(STAGED_CA_FILE, dir_fd=state)
             if same_object(os.fstat(state), os.stat(name, dir_fd=compose, follow_symlinks=False)):
                 os.rmdir(name, dir_fd=compose)
             raise
@@ -277,24 +278,26 @@ def cleanup_compose_ca(selected: Path, directory: Path, expected: str) -> None:
     if not directory.is_relative_to(workspace):
         raise ContainerTrustRefused("Staged cleanup must remain inside the trusted runner workspace.")
     state = selected.parent
-    if (not SHA256.fullmatch(expected) or not selected.is_absolute() or selected.name != "ca.pem"
-            or state.parent != directory or not re.fullmatch(r"\.dw-composer-ca-[a-z0-9_]+", state.name)
+    state_name = re.fullmatch(r"\.dw-composer-ca-[0-9a-f]{24}", state.name)
+    if (not SHA256.fullmatch(expected) or not selected.is_absolute() or selected.name != STAGED_CA_FILE
+            or state.parent != directory or state_name is None
             or state.is_symlink() or selected.is_symlink()):
         raise ContainerTrustRefused("Only the exact owned staged CA can be removed.")
-    with confined_directory(directory, workspace) as compose:
-        with confined_directory(state, directory) as held_state:
-            info = os.fstat(held_state)
-            if stat.S_IMODE(info.st_mode) != 0o700 or set(os.listdir(held_state)) != {"ca.pem"}:
-                raise ContainerTrustRefused("The staged CA directory identity or contents changed.")
-            with verified_ca(held_state, "ca.pem", expected) as (_, file_info):
-                if (stat.S_IMODE(file_info.st_mode) != 0o400
-                        or not same_object(os.fstat(compose), directory.stat(follow_symlinks=False))
-                        or not same_object(info, os.stat(state.name, dir_fd=compose, follow_symlinks=False))):
-                    raise ContainerTrustRefused("The staged cleanup parent or file identity changed.")
-                os.unlink("ca.pem", dir_fd=held_state)
-            if not same_object(info, os.stat(state.name, dir_fd=compose, follow_symlinks=False)):
-                raise ContainerTrustRefused("The staged cleanup directory changed before removal.")
-            os.rmdir(state.name, dir_fd=compose)
+    name = state_name.group(0)
+    with (confined_directory(directory, workspace) as compose,
+          confined_directory(directory / name, directory) as held_state):
+        info = os.fstat(held_state)
+        if stat.S_IMODE(info.st_mode) != 0o700 or set(os.listdir(held_state)) != {STAGED_CA_FILE}:
+            raise ContainerTrustRefused("The staged CA directory identity or contents changed.")
+        with verified_ca(held_state, STAGED_CA_FILE, expected) as (_, file_info):
+            if (stat.S_IMODE(file_info.st_mode) != 0o400
+                    or not same_object(os.fstat(compose), directory.stat(follow_symlinks=False))
+                    or not same_object(info, os.stat(name, dir_fd=compose, follow_symlinks=False))):
+                raise ContainerTrustRefused("The staged cleanup parent or file identity changed.")
+            os.unlink(STAGED_CA_FILE, dir_fd=held_state)
+        if not same_object(info, os.stat(name, dir_fd=compose, follow_symlinks=False)):
+            raise ContainerTrustRefused("The staged cleanup directory changed before removal.")
+        os.rmdir(name, dir_fd=compose)
 
 
 def cleanup_main(arguments: list[str]) -> int:
