@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import sys
 import time
 import urllib.error
@@ -2536,8 +2537,8 @@ def _composer_step_source(source: str, root: Path, visited: set[Path] | None = N
     return "\n".join(contents)
 
 
-def _composer_trust_modified(source: str) -> bool:
-    fields = "|".join(sorted(COMPOSER_TRUST_FIELDS))
+def _composer_trust_modified(source: str, runtime_fields: set[str] | None = None) -> bool:
+    fields = "|".join(sorted(COMPOSER_TRUST_FIELDS | (runtime_fields or set())))
     assignment = r"\b(?:" + fields + r")\b[\"']?\s*(?::?=)|\bunset\s+[^\n]*(?:" + fields + ")"
     configuration = r"\bcomposer\b[^;\n]*\bconfig\b[^;\n]*\b(?:cafile|capath|disable-tls|secure-http)\b"
     return re.search(assignment, source) is not None or re.search(configuration, source) is not None
@@ -2584,30 +2585,111 @@ def _advance_composer_trust(step: dict[str, Any], state: tuple[bool, bool, bool,
     return clean, checked, setup_safe, python_clean
 
 
-def _require_composer_request_trust(step: dict[str, Any], state: tuple[bool, bool, bool, bool], label: str, source: str) -> None:
+def _require_composer_request_trust(step: dict[str, Any], state: tuple[bool, bool, bool, bool], label: str, source: str,
+                                    runtime_fields: set[str] | None = None) -> None:
     clean, checked, _, _ = state
     if not clean or not checked:
         raise PolicyError(f"{label} Composer requests lack the reviewed clean bootstrap and live verifier")
     if re.search(r"(?:always|failure|cancelled)\s*\(", step.get("if", "")):
         raise PolicyError(f"{label} Composer requests may run after trust refusal")
-    overrides = set(step.get("env") or {}) & COMPOSER_TRUST_FIELDS
+    overrides = set(step.get("env") or {}) & (COMPOSER_TRUST_FIELDS | (runtime_fields or set()))
     if overrides:
         raise PolicyError(f"{label} overrides Composer trust after verification")
-    if _composer_trust_modified(source):
+    if _composer_trust_modified(source, runtime_fields):
         raise PolicyError(f"{label} changes Composer trust inside its request step or helper")
 
 
-def _composer_job_sinks(job: dict[str, Any], root: Path, approved: set[str], bound_setups: set[str], local: bool, label: str) -> list[str]:
-    if set(job.get("env") or {}) & COMPOSER_TRUST_FIELDS:
+def _composer_runtime_setups(catalog: dict[str, Any], target: str, filename: str, job: str) -> list[dict[str, Any]]:
+    return [recipe for recipe in catalog.get("runtime_setups", {}).values()
+            if recipe["target"] == target and job in recipe["workflows"].get(Path(filename).name, [])]
+
+
+def _require_composer_runtime_matrix(step: dict[str, Any], job: dict[str, Any], recipe: dict[str, Any]) -> None:
+    for dimension, allowed in recipe.get("matrix", {}).items():
+        if "${{ matrix." + dimension + " }}" not in step["run"]:
+            continue
+        matrix = (job.get("strategy") or {}).get("matrix")
+        if (not isinstance(matrix, dict) or "include" in matrix or "exclude" in matrix
+                or not isinstance(matrix.get(dimension), list) or matrix[dimension] != allowed):
+            raise PolicyError("Composer runtime setup requires its reviewed literal PHP matrix")
+
+
+def _composer_runtime_path(root: Path, name: str) -> Path:
+    relative = Path(name)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise PolicyError("Composer runtime recipe path must stay inside the repository")
+    path = root / relative
+    if (not path.resolve().is_relative_to(root.resolve())
+            or any(parent.is_symlink() for parent in path.parents if parent != root and root in parent.parents)):
+        raise PolicyError("Composer runtime recipe path must not traverse symlinks")
+    return path
+
+
+def _require_composer_runtime_file(root: Path, name: str, expected: dict[str, Any]) -> None:
+    path = _composer_runtime_path(root, name)
+    try:
+        metadata = path.lstat()
+        mode = stat.S_IMODE(metadata.st_mode)
+        # Git binds executability, while the checkout umask may remove read
+        # permissions. Keep private 0600/0700 and canonical 0644/0755 valid,
+        # without admitting extra execute, group/other write, or special bits.
+        if (not stat.S_ISREG(metadata.st_mode) or mode & ~expected["mode"]
+                or bool(mode & stat.S_IXUSR) != bool(expected["mode"] & stat.S_IXUSR)
+                or hashlib.sha256(path.read_bytes()).hexdigest() != expected["sha256"]):
+            raise PolicyError(f"Reviewed Composer runtime source differs: {name}")
+    except OSError as error:
+        raise PolicyError(f"Reviewed Composer runtime source is unavailable: {name}") from error
+
+
+def _require_composer_runtime_sources(root: Path, recipe: dict[str, Any]) -> None:
+    if not recipe["files"]:
+        raise PolicyError("Composer runtime setup has no reviewed source files")
+    for name in recipe.get("absent_files", []):
+        path = _composer_runtime_path(root, name)
+        if path.exists() or path.is_symlink():
+            raise PolicyError(f"Unreviewed Composer runtime input is present: {name}")
+    for name, expected in recipe["files"].items():
+        _require_composer_runtime_file(root, name, expected)
+
+
+def _reviewed_composer_runtime(step: dict[str, Any], root: Path, recipes: list[dict[str, Any]], job: dict[str, Any]) -> bool:
+    """Recognize setup only; the next request still requires its live verifier."""
+    matching = [recipe for recipe in recipes if step.get("run", "").strip() in recipe["commands"]]
+    if not matching:
+        return False
+    if len(matching) != 1:
+        raise PolicyError("Composer runtime setup has ambiguous reviewed recipes")
+    if (step.get("uses") or step.get("if") or step.get("env") or step.get("working-directory")
+            or step.get("shell", "bash") != "bash"
+            or str(step.get("continue-on-error", "false")) != "false"):
+        raise PolicyError("Composer runtime setup must run unconditionally without overrides")
+    _require_composer_runtime_matrix(step, job, matching[0])
+    _require_composer_runtime_sources(root, matching[0])
+    return True
+
+
+def _composer_job_sinks(job: dict[str, Any], root: Path, approved: set[str], bound_setups: set[str], local: bool, label: str,
+                        runtime_setups: list[dict[str, Any]] | None = None) -> list[str]:
+    recipes = runtime_setups or []
+    runtime_fields = {name for recipe in recipes for name in recipe["environment"]}
+    if set(job.get("env") or {}) & (COMPOSER_TRUST_FIELDS | runtime_fields):
         raise PolicyError(f"{label} declares unverified job-level Composer trust overrides")
     evidence = []
     state = (False, False, False, False)
     for index, step in enumerate(job.get("steps") or []):
         step_label = f"{label}:step-{index + 1}"
+        if _reviewed_composer_runtime(step, root, recipes, job):
+            clean, _, _, python_clean = state
+            state = (clean, False, clean and python_clean, python_clean)
+            continue
         expanded = _composer_step_source(step.get("run", ""), root)
         if _composer_network_commands(expanded):
-            _require_composer_request_trust(step, state, step_label, expanded)
+            _require_composer_request_trust(step, state, step_label, expanded, runtime_fields)
             evidence.append(step_label)
+        if (set(step.get("env") or {}) & runtime_fields
+                or runtime_fields and _composer_trust_modified(expanded, runtime_fields)):
+            clean, _, _, python_clean = state
+            state = (clean, False, False, python_clean)
         state = _advance_composer_trust(step, state, approved, bound_setups, local)
     return evidence
 
@@ -2659,21 +2741,29 @@ def _unscoped_composer_guard(documents: dict[str, Any], selected: set[tuple[str,
     return False
 
 
-def _composer_document_sinks(documents: dict[str, Any], root: Path, approved: set[str], bound_setups: set[str], local: bool, selected: set[tuple[str, str]] | None) -> list[str]:
+def _composer_document_sinks(documents: dict[str, Any], root: Path, approved: set[str], bound_setups: set[str], local: bool,
+                            selected: set[tuple[str, str]] | None, catalog: dict[str, Any], target: str) -> list[str]:
     evidence = []
     for filename, document in documents.items():
         jobs = {name: job for name, job in (document.get("jobs") or {}).items()
                 if selected is None or (filename, name) in selected}
         if not jobs:
             continue
-        if set(document.get("env") or {}) & COMPOSER_TRUST_FIELDS:
+        runtime_fields = {field for name in jobs for recipe in _composer_runtime_setups(catalog, target, filename, name)
+                          for field in recipe["environment"]}
+        if set(document.get("env") or {}) & (COMPOSER_TRUST_FIELDS | runtime_fields):
             raise PolicyError(f"{filename} declares unverified workflow-level Composer trust overrides")
         for name, job in jobs.items():
-            requests = _composer_job_sinks(job, root, approved, bound_setups, local, f"{filename}:{name}")
+            recipes = _composer_runtime_setups(catalog, target, filename, name)
+            requests = _composer_job_sinks(job, root, approved, bound_setups, local, f"{filename}:{name}", recipes)
             if selected is not None and not requests:
                 raise PolicyError("A scoped Composer job has no enumerated dependency request")
             evidence.extend(requests)
     return evidence
+
+
+def _composer_container_catalog() -> dict[str, Any]:
+    return json.loads((Path(__file__).resolve().parents[1] / "qualification/composer-container-trust.json").read_text())
 
 
 def verify_composer_network_sinks(policy: dict[str, Any], target: str, sources: dict[str, str], root: Path) -> list[str]:
@@ -2688,9 +2778,9 @@ def verify_composer_network_sinks(policy: dict[str, Any], target: str, sources: 
     documents = {filename: _parse_yaml(source, filename) for filename, source in sources.items()}
     selected = _composer_scoped_jobs(scopes, documents, bound_setups, target == "github-control-plane")
     full = whole or not scopes or _unscoped_composer_guard(documents, selected)
+    catalog = _composer_container_catalog()
     evidence = _composer_document_sinks(documents, root, approved, bound_setups, target == "github-control-plane",
-                                        None if full else selected)
-    catalog = json.loads((Path(__file__).resolve().parents[1] / "qualification/composer-container-trust.json").read_text())
+                                        None if full else selected, catalog, target)
     evidence.extend(verify_composer_container_callers(target, sources, approved, catalog, root))
     return evidence
 

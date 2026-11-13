@@ -187,11 +187,9 @@ unconditional reviewed `bootstrap-patched-pip` step. Ambient or step-local CA
 values cannot supply that identity. Additional Docker, Compose or Buildx build
 commands in the registered job also refuse, including calls in shell helpers.
 
-The initial `sdk-php-cooperative-server` entry in
-`composer-container-trust.json` has no approved recipes. It therefore refuses
-every build until the Server hook and caller pass combined container controls.
-This preparation action does not make SDK-PHP's Composer migration mandatory or
-authorize its new audit job. Those changes follow combined qualification.
+The `sdk-php-cooperative-server` entry in `composer-container-trust.json`
+applies only to its registered Compose request and reviewed Server recipes.
+It supplies no trust for other build or runtime paths.
 
 The container control runs the actual digest-pinned Composer image against a
 local synthetic TLS registry. The ambient store accepts its synthetic blocked
@@ -199,6 +197,26 @@ root. The verified clean store refuses before an HTTP request. Wrong bundle
 digests, extra roots and a missing verifier also refuse. This exercises the
 container client; BuildKit mount lifetime and final-image inspection remain
 part of the Server hook's combined qualification.
+
+### Composer through a reviewed PHP launcher
+
+The same catalog has a separate `runtime_setups` entry for Sample App's PHP CI
+launcher. It binds the exact setup command, target, workflow/jobs, literal PHP
+matrix, build inputs, launcher and TLS control by file hash and mode. An
+unreviewed Dockerfile exclusion file refuses. The setup probes and exports an
+immutable local image config ID; subsequent PHP and Composer invocations use
+that ID. The actual Composer TLS control runs in both PHP profiles: ambient
+trust reaches a synthetic HTTPS repository, while the selected clean bundle
+refuses before an HTTP request.
+
+This recognizes the PHP setup only. The reviewed clean bootstrap must still
+precede it, and the reviewed live Composer verifier must run in the container
+immediately before every dependency-request step. The launcher mounts the
+selected CA file and empty additional-root directory read-only and inspects the
+real Composer PHAR. Runtime selector overrides, changed source bytes or modes,
+conditional/ignored setup, another target/job, and missing/intervening guards
+refuse. This entry does not approve arbitrary Docker commands or another
+repository's launcher.
 
 ### Composer on the runner
 
