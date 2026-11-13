@@ -374,12 +374,13 @@ class WaterlineBuildMandatoryTrustContractTest(unittest.TestCase):
         repository = Path(__file__).resolve().parents[1]
         self.policy = json.loads((repository / "qualification/policy.json").read_text())
         self.document = yaml.safe_load((repository / "tests/fixtures/waterline-php82-build.yml").read_text())
-        self.catalog = json.loads((repository / "qualification/composer-container-trust.json").read_text())
+        retired = json.loads((repository / "tests/fixtures/retired-writable-runtime-setups.json").read_text())
+        self.catalog = {"requests": {}, "runtime_setups": {"waterline-php82-build": retired["waterline-php82-build"]}}
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        # Source hashing is covered independently. Bind harmless local bytes so
-        # this regression tests the real target policy and proposed caller offline.
+        # Exercise mandatory enumeration using inert historical recipe data.
+        # This fixture grants no admission in the current production catalog.
         recipe = self.catalog["runtime_setups"]["waterline-php82-build"]
         for name, expected in recipe["files"].items():
             path = self.root / name
@@ -412,6 +413,47 @@ class WaterlineBuildMandatoryTrustContractTest(unittest.TestCase):
         document = {"jobs": {"build": {"steps": [{"run": "composer install --no-interaction"}]}}}
         with self.assertRaises(PolicyError):
             self.check(document)
+
+
+class RetiredWritableRuntimeContractTest(unittest.TestCase):
+    def test_retired_callers_cannot_borrow_their_old_runtime_admission(self):
+        repository = Path(__file__).resolve().parents[1]
+        policy = json.loads((repository / "qualification/policy.json").read_text())
+        current = json.loads((repository / "qualification/composer-container-trust.json").read_text())
+        retired = json.loads((repository / "tests/fixtures/retired-writable-runtime-setups.json").read_text())
+        revision = "75587fc33ff40c34f32ef777293dad56bb6f48c7"
+        for name, original in retired.items():
+            with self.subTest(runtime=name), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                recipe = deepcopy(original)
+                for path, expected in recipe["files"].items():
+                    selected = root / path
+                    selected.parent.mkdir(parents=True, exist_ok=True)
+                    selected.write_text("# inert retired runtime input\n")
+                    selected.chmod(expected["mode"])
+                    expected["sha256"] = hashlib.sha256(selected.read_bytes()).hexdigest()
+                filename, jobs = next(iter(recipe["workflows"].items()))
+                job = {"steps": [
+                    {"uses": PREFIX + "bootstrap-patched-pip@" + revision,
+                     "with": {"clients": "python,composer,curl,git"}},
+                    {"run": recipe["commands"][0]},
+                    {"uses": PREFIX + "verify-composer-trust@" + revision},
+                    {"run": "composer install --no-interaction"},
+                ]}
+                if "matrix" in recipe:
+                    job["strategy"] = {"matrix": recipe["matrix"]}
+                sources = {filename: yaml.safe_dump({"jobs": {jobs[0]: job}})}
+                historical = {"requests": {}, "runtime_setups": {name: recipe}}
+                with mock.patch("scripts.qualification_policy._composer_container_catalog", return_value=historical):
+                    self.assertEqual(1, len(verify_composer_network_sinks(policy, recipe["target"], sources, root)))
+                actual = deepcopy(current)
+                # A predecessor's real record is bound to inert bytes for this
+                # behavioral control. Corrected future records are not changed.
+                if actual.get("runtime_setups", {}).get(name) == original:
+                    actual["runtime_setups"][name] = recipe
+                with mock.patch("scripts.qualification_policy._composer_container_catalog", return_value=actual):
+                    with self.assertRaises(PolicyError):
+                        verify_composer_network_sinks(policy, recipe["target"], sources, root)
 
 
 class ComposerRuntimeSetupContractTest(unittest.TestCase):
