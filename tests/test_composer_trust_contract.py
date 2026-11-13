@@ -1,7 +1,9 @@
 from copy import deepcopy
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 import yaml
 
@@ -325,6 +327,159 @@ class BoundPhpComposerContractTest(ComposerNetworkContractTest):
         steps[1]["uses"] = PREFIX + "verify-composer-trust@" + BOUND_REVISION
         with self.assertRaises(PolicyError):
             self.check(steps)
+
+
+class ComposerRuntimeSetupContractTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.policy = {
+            "targets": {"fixture": {"composer_trust_required": True}},
+            "action_runtime": {"allowed_releases": {"durable-workflow/.github": {REVISION: "clean-trust"}}},
+        }
+        files = {}
+        for name, contents, mode in (
+            ("scripts/setup.sh", "#!/bin/bash\nln -sf scripts/launch.sh runtime/composer\n", 0o755),
+            ("scripts/launch.sh", "#!/bin/bash\nexec docker run sha256:fixture composer \"$@\"\n", 0o755),
+            ("docker/php/Dockerfile", "FROM php@sha256:fixture\n", 0o644),
+        ):
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(contents)
+            path.chmod(mode)
+            files[name] = {"sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "mode": mode}
+        self.command = 'bash "$GITHUB_WORKSPACE/scripts/setup.sh" "8.4"'
+        self.recipe = {"target": "fixture", "workflows": {"ci.yml": ["test"]}, "commands": [self.command],
+                       "environment": ["FIXTURE_PHP_IMAGE"], "files": files}
+        catalog = {"requests": {}, "runtime_setups": {"fixture-php": self.recipe}}
+        patched = mock.patch("scripts.qualification_policy._composer_container_catalog", return_value=catalog)
+        patched.start()
+        self.addCleanup(patched.stop)
+        self.steps = [
+            {"uses": PREFIX + "bootstrap-patched-pip@" + REVISION, "with": {"clients": "python,composer,curl,git"}},
+            {"run": self.command},
+            {"uses": PREFIX + "verify-composer-trust@" + REVISION},
+            {"run": "composer install --prefer-dist"},
+        ]
+
+    def check(self, steps=None, *, target="fixture", filename="ci.yml", job="test", env=None, job_env=None, matrix=None):
+        document = {"jobs": {job: {"steps": self.steps if steps is None else steps}}}
+        if env is not None:
+            document["env"] = env
+        if job_env is not None:
+            document["jobs"][job]["env"] = job_env
+        if matrix is not None:
+            document["jobs"][job]["strategy"] = {"matrix": matrix}
+        policy = deepcopy(self.policy)
+        policy["targets"][target] = policy["targets"]["fixture"]
+        return verify_composer_network_sinks(policy, target, {filename: yaml.safe_dump(document)}, self.root)
+
+    def test_exact_runtime_setup_still_needs_a_fresh_live_verifier(self):
+        self.assertEqual(["ci.yml:test:step-4"], self.check())
+        with self.assertRaises(PolicyError):
+            self.check([*self.steps[:2], self.steps[-1]])
+        with self.assertRaises(PolicyError):
+            self.check([*self.steps[:3], {"run": "pwd"}, self.steps[-1]])
+
+    def test_setup_does_not_supply_bootstrap_or_request_authority(self):
+        for removed in (0, 1, 2):
+            steps = deepcopy(self.steps)
+            steps.pop(removed)
+            with self.subTest(removed=removed), self.assertRaises(PolicyError):
+                self.check(steps)
+        for index in (0, 2):
+            steps = deepcopy(self.steps)
+            steps[index]["uses"] = steps[index]["uses"].replace(REVISION, "b" * 40)
+            with self.subTest(index=index), self.assertRaises(PolicyError):
+                self.check(steps)
+
+    def test_recipe_is_confined_to_the_registered_target_workflow_and_job(self):
+        for change in ({"target": "another"}, {"filename": "release.yml"}, {"job": "publish"}):
+            with self.subTest(change=change), self.assertRaises(PolicyError):
+                self.check(**change)
+
+    def test_changed_missing_nonregular_and_mode_changed_inputs_refuse(self):
+        for name in self.recipe["files"]:
+            path = self.root / name
+            contents, mode = path.read_bytes(), path.stat().st_mode & 0o777
+            for change in ("bytes", "missing", "symlink", "mode"):
+                if change == "bytes":
+                    path.write_bytes(contents + b"\n# changed\n")
+                elif change == "missing":
+                    path.unlink()
+                elif change == "symlink":
+                    path.unlink()
+                    path.symlink_to(self.root / "absent")
+                else:
+                    path.chmod(0o600)
+                with self.subTest(name=name, change=change), self.assertRaises(PolicyError):
+                    self.check()
+                path.unlink(missing_ok=True)
+                path.write_bytes(contents)
+                path.chmod(mode)
+
+    def test_conditional_ignored_or_overridden_runtime_setups_refuse(self):
+        for field, value in (("if", "always()"), ("continue-on-error", True), ("env", {"ANY": "value"}),
+                             ("working-directory", "another"), ("shell", "sh")):
+            steps = deepcopy(self.steps)
+            steps[1][field] = value
+            with self.subTest(field=field), self.assertRaises(PolicyError):
+                self.check(steps)
+        steps = deepcopy(self.steps)
+        steps[1]["run"] += "\ncomposer install"
+        with self.assertRaises(PolicyError):
+            self.check(steps)
+
+    def test_runtime_selector_overrides_and_mutations_cannot_follow_setup(self):
+        for index in (2, 3):
+            steps = deepcopy(self.steps)
+            steps[index]["env"] = {"FIXTURE_PHP_IMAGE": "unreviewed"}
+            with self.subTest(index=index), self.assertRaises(PolicyError):
+                self.check(steps)
+        for command in ("export FIXTURE_PHP_IMAGE=unreviewed", "unset FIXTURE_PHP_IMAGE"):
+            with self.subTest(command=command), self.assertRaises(PolicyError):
+                self.check([*self.steps[:2], {"run": command}, *self.steps[2:]])
+        for kwargs in ({"env": {"FIXTURE_PHP_IMAGE": "unreviewed"}},
+                       {"job_env": {"FIXTURE_PHP_IMAGE": "unreviewed"}}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(PolicyError):
+                self.check(**kwargs)
+
+    def test_runtime_setup_requires_the_python_and_composer_trust_clients(self):
+        for clients in ("composer,curl,git", "python,curl,git", "python,composer"):
+            steps = deepcopy(self.steps)
+            steps[0]["with"]["clients"] = clients
+            with self.subTest(clients=clients), self.assertRaises(PolicyError):
+                self.check(steps)
+
+    def test_empty_or_escaping_source_recipes_refuse(self):
+        original = self.recipe["files"]
+        for files in ({}, {"../outside": next(iter(original.values()))},
+                      {"/absolute": next(iter(original.values()))}):
+            self.recipe["files"] = files
+            with self.subTest(files=files), self.assertRaises(PolicyError):
+                self.check()
+        self.recipe["files"] = original
+
+    def test_an_unreviewed_dockerfile_exclusion_file_refuses(self):
+        self.recipe["absent_files"] = ["docker/php/Dockerfile.dockerignore"]
+        self.assertEqual(["ci.yml:test:step-4"], self.check())
+        (self.root / "docker/php/Dockerfile.dockerignore").write_text("*\n")
+        with self.assertRaises(PolicyError):
+            self.check()
+
+    def test_interpolated_matrix_values_are_closed_to_the_reviewed_minors(self):
+        command = self.command.replace('"8.4"', '"${{ matrix.php }}"')
+        self.recipe["commands"] = [command]
+        self.recipe["matrix"] = {"php": ["8.4", "8.5"]}
+        self.steps[1]["run"] = command
+        self.assertEqual(["ci.yml:test:step-4"], self.check(matrix={"php": ["8.4", "8.5"]}))
+        for matrix in ({}, {"php": ["8.4"]}, {"php": ["8.4", "8.6"]},
+                       {"php": ["8.4", '8.5"; composer install; #']},
+                       {"php": ["8.4", "8.5"], "include": [{"php": "8.6"}]},
+                       {"php": ["8.4", "8.5"], "exclude": [{"php": "8.5"}]}):
+            with self.subTest(matrix=matrix), self.assertRaises(PolicyError):
+                self.check(matrix=matrix)
 
 
 class ScopedComposerMigrationTest(unittest.TestCase):
