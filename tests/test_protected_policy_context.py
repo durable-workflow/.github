@@ -31,6 +31,40 @@ class ProtectedContextTest(unittest.TestCase):
         with self.assertRaisesRegex(InputRefused, "context target"):
             context.validate_context({}, policy_target="elsewhere")
 
+    def test_response_loss_ci_successors_preserve_predecessors_and_require_exact_review(self):
+        predecessors = {
+            context.CI_WORKFLOW: "363540f9e81e4842099f0cad394ce3fc2a83835ce1355ffef5b16722547699b4",
+            context.SONAR_WORKFLOW: "f7fad8367df4a4e9565d97e13aa120d55038ed9c749fdfcd86e1312bfca3cced",
+        }
+        for path, previous_digest in predecessors.items():
+            raw = (ROOT / path).read_bytes()
+            module = (b"          tests.test_command_response_loss\n" if path == context.CI_WORKFLOW
+                      else b" tests.test_command_response_loss")
+            self.assertEqual(1, raw.count(module))
+            previous = raw.replace(module, b"", 1)
+            if path == context.SONAR_WORKFLOW:
+                self.assertEqual(1, previous.count(b",conformance/command-keys"))
+                previous = previous.replace(b",conformance/command-keys", b"", 1)
+            self.assertEqual(previous_digest, hashlib.sha256(previous).hexdigest())
+            self.assertIn(previous_digest, context.reviewed_context_hashes("github-control-plane")[path])
+            context.validate_context({path: previous})
+            self.assertEqual(context.REVIEWED_RESPONSE_LOSS_SOURCE_CI_SUCCESSORS[path],
+                             hashlib.sha256(raw).hexdigest())
+            with self.subTest(path=path):
+                context.validate_context({path: raw})
+                with patch.object(context, "REVIEWED_RESPONSE_LOSS_SOURCE_CI_SUCCESSORS", {}), \
+                        self.assertRaises(InputRefused):
+                    context.validate_context({path: raw})
+                for changed in (raw + b"\n# unreviewed\n",
+                                raw.replace(b"tests.test_command_response_loss", b"tests.unreviewed", 1)):
+                    self.assertNotEqual(raw, changed)
+                    with self.assertRaises(InputRefused):
+                        context.validate_context({path: changed})
+                with self.assertRaises(InputRefused):
+                    context.validate_context({WORKFLOW: raw})
+                with self.assertRaises(InputRefused):
+                    context.validate_context({path: raw}, policy_target="ai")
+
     def test_bound_php_source_ci_successor_preserves_checks_and_requires_exact_review(self):
         path = context.CI_WORKFLOW
         raw = (ROOT / "tests/fixtures/ci-bound-php-source.yml").read_bytes()
