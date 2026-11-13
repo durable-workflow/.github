@@ -57,6 +57,12 @@ REVIEWED_PHP_CONFIGURATION_SOURCE_CI_SUCCESSORS = {
     CI_WORKFLOW: "44953364dc6aceff2c2f16e04980805418f7601cecfecbf519244132e9980e3e",
     SONAR_WORKFLOW: "829ac16a197305d64701a8f423f14544d17658b062fc0c6dca5c1e838d51be0d",
 }
+# The live CI/Sonar workflows above, plus one step before setup-php that writes
+# APT's Acquire::Retries "0" (CVE-2026-109518, issue 295). Exact reviewed bytes.
+REVIEWED_APT_NO_RETRIES_SOURCE_CI_SUCCESSORS = {
+    CI_WORKFLOW: "760de748e04a5c652d0174b8bb68b689aed98c17aed10a06b628af6b931719fc",
+    SONAR_WORKFLOW: "f7fad8367df4a4e9565d97e13aa120d55038ed9c749fdfcd86e1312bfca3cced",
+}
 # The successor remains inert until its separate runtime pin and manual-only
 # workflow integration. Keep the consumed predecessor's identity unchanged.
 REVIEWED_INITIAL_PROFILE_SUCCESSORS = {
@@ -103,6 +109,7 @@ def reviewed_context_hashes(policy_target: str) -> dict[str, set[str]]:
     if policy_target == "github-control-plane":
         registries = (REVIEWED_COMPLEX_WORKFLOWS, REVIEWED_SOURCE_CI_SUCCESSORS,
                       REVIEWED_PHP_CONFIGURATION_SOURCE_CI_SUCCESSORS,
+                      REVIEWED_APT_NO_RETRIES_SOURCE_CI_SUCCESSORS,
                       REVIEWED_INITIAL_PROFILE_SUCCESSORS, REVIEWED_NORMALIZED_PROFILE_SUCCESSORS,
                       REVIEWED_ALTERNATIVES_PROFILE_SUCCESSORS,
                       REVIEWED_SELECTED_ALTERNATIVES_PROFILE_SUCCESSORS,
