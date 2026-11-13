@@ -193,13 +193,18 @@ source object and the original SHA-256, writes a mode-0400 copy, and binds the
 rendered secret to that copy. Staging stays outside the Server and verifier
 image contexts. This satisfies Bake's workspace filesystem boundary without
 granting extra filesystem access or changing which store is trusted.
+The authenticated original must remain under the owned `RUNNER_TEMP`; staging
+and cleanup stay under the owned `GITHUB_WORKSPACE`. Both Python entry points
+ignore workspace imports and site configuration. Directory descriptors hold
+the selected parents while reading or removing the copy; aliases and changed
+parent, state or file identities refuse before removal.
 
 After the registered stack is stopped, an always-run caller cleanup step
 uses the same guard's source and outputs, when present, to remove only the copy:
 
 ```sh
 if [[ -n "$STAGED_CA" ]]; then
-  python3 "$VERIFIER_CONTEXT/../../../scripts/composer_container_trust.py" cleanup-ca \
+  python3 -I -S -B "$VERIFIER_CONTEXT/../../../scripts/composer_container_trust.py" cleanup-ca \
     --ca-file "$STAGED_CA" --ca-sha256 "$CA_SHA256" --compose-directory .
 fi
 ```

@@ -56,7 +56,7 @@ runs:
         COMPOSER_CAFILE: ${{ inputs.ca-file }}
         DW_CI_CA_SHA256: ${{ inputs.ca-sha256 }}
       run: >-
-        python3 "$GITHUB_ACTION_PATH/../../../scripts/composer_container_trust.py"
+        python3 -I -S -B "$GITHUB_ACTION_PATH/../../../scripts/composer_container_trust.py"
         --request "$TRUST_REQUEST"
         --source-directory "$TRUST_SOURCE_DIRECTORY"
         --source-commit "$TRUST_SOURCE_COMMIT"

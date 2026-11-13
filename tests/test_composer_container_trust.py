@@ -2,6 +2,7 @@ from copy import deepcopy
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -42,6 +43,9 @@ class ComposerContainerSourceTest(unittest.TestCase):
             "DW_CI_CA_SHA256": sha256(self.bundle.read_bytes()),
             "COMPOSER_CAFILE": str(self.bundle),
         }
+        authority = patch.dict(os.environ, {"GITHUB_WORKSPACE": str(self.root), "RUNNER_TEMP": str(self.root)})
+        authority.start()
+        self.addCleanup(authority.stop)
         self.catalog = {
             "schema": "durable-workflow.composer-container-trust.v1",
             "requests": {"fixture": {
@@ -186,7 +190,7 @@ class ComposerContainerSourceTest(unittest.TestCase):
             with self.subTest(environment=environment), self.assertRaises(ContainerTrustRefused):
                 self.check(environment=environment)
         self.bundle.write_bytes(b"changed CA bytes")
-        with self.assertRaisesRegex(ContainerTrustRefused, "authenticated bootstrap"):
+        with self.assertRaisesRegex(ContainerTrustRefused, "authenticated bytes"):
             self.check()
 
     def test_symlinked_recipe_and_missing_verifier_are_refused(self):
@@ -263,19 +267,124 @@ class ComposerContainerSourceTest(unittest.TestCase):
     def test_ca_copy_cannot_enter_source_or_verifier_context_or_follow_a_directory_link(self):
         outputs, _ = self.check()
         for directory in (self.source, self.verifier):
+            candidate = outputs.copy()
             with self.subTest(directory=directory), self.assertRaises(ContainerTrustRefused):
-                container_trust.stage_compose_ca(outputs.copy(), directory, self.source)
+                container_trust.stage_compose_ca(candidate, directory, self.source)
             self.assertEqual([], list(directory.glob(".dw-composer-ca-*")))
         linked = self.root / "linked-compose"
         linked.symlink_to(self.root, target_is_directory=True)
+        candidate = outputs.copy()
         with self.assertRaises(ContainerTrustRefused):
-            container_trust.stage_compose_ca(outputs.copy(), linked, self.source)
+            container_trust.stage_compose_ca(candidate, linked, self.source)
 
     def test_nonregular_ca_source_refuses_without_blocking(self):
         fifo = self.root / "ca-fifo"
         os.mkfifo(fifo)
         with self.assertRaises(ContainerTrustRefused):
-            container_trust.regular_ca_bytes(fifo, self.environment["DW_CI_CA_SHA256"])
+            container_trust.regular_ca_bytes(fifo, self.environment["DW_CI_CA_SHA256"], self.root)
+
+    def test_guard_and_cleanup_commands_ignore_workspace_and_pythonpath_imports(self):
+        repository = Path(container_trust.__file__).resolve().parents[1]
+        sources = (repository / ".github/actions/verify-composer-container-trust/action.yml",
+                   repository / "qualification/README.md")
+        marker = self.root / "import-executed"
+        shadow = self.root / "imports"
+        shadow.mkdir()
+        (shadow / "json.py").write_text(f"from pathlib import Path\nPath({str(marker)!r}).touch()\nraise RuntimeError('shadow')\n")
+        environment = dict(os.environ, PYTHONPATH=str(shadow))
+        script = str(Path(container_trust.__file__).resolve())
+        # The predecessor command proves this fixture can intercept a real import.
+        predecessor = subprocess.run([sys.executable, script, "--help"], cwd=shadow, env=environment,
+                                     capture_output=True)
+        self.assertNotEqual(0, predecessor.returncode)
+        self.assertTrue(marker.exists())
+        marker.unlink()
+        for source, arguments in zip(sources, (["--help"], ["cleanup-ca", "--help"])):
+            invocation = next(line.strip() for line in source.read_text().splitlines()
+                              if line.strip().startswith("python3 ") and "composer_container_trust.py" in line)
+            command = shlex.split(invocation.split(' "$', 1)[0])
+            with self.subTest(entrypoint=source):
+                result = subprocess.run([*command, script, *arguments], cwd=shadow, env=environment,
+                                        capture_output=True)
+                self.assertEqual(0, result.returncode, result.stderr.decode())
+                self.assertFalse(marker.exists())
+
+    def test_authenticated_digest_cannot_authorize_a_ca_outside_runner_temp(self):
+        with tempfile.TemporaryDirectory() as outside:
+            selected = Path(outside) / "ca.pem"
+            selected.write_bytes(self.bundle.read_bytes())
+            with self.assertRaisesRegex(ContainerTrustRefused, "outside"):
+                self.check(environment=self.environment | {"COMPOSER_CAFILE": str(selected)})
+
+    def test_staging_and_cleanup_refuse_compose_aliases_and_outside_paths(self):
+        compose = self.root / "compose"
+        compose.mkdir()
+        outputs, _ = self.check()
+        container_trust.stage_compose_ca(outputs, compose, self.source)
+        selected = Path(outputs["ca-file"])
+        linked = self.root / "compose-link"
+        linked.symlink_to(compose, target_is_directory=True)
+        parent_link = self.root / "parent-link"
+        parent_link.symlink_to(self.root, target_is_directory=True)
+        aliases = (linked, parent_link / "compose", compose / ".." / "compose",
+                   self.root / "compose\n", self.bundle)
+        for directory in aliases:
+            with self.subTest(directory=directory), self.assertRaises((ContainerTrustRefused, OSError)):
+                container_trust.cleanup_compose_ca(selected, directory, outputs["ca-sha256"])
+            self.assertTrue(selected.exists())
+        with tempfile.TemporaryDirectory() as outside:
+            candidate = outputs.copy()
+            with self.assertRaisesRegex(ContainerTrustRefused, "owned Compose"):
+                container_trust.stage_compose_ca(candidate, Path(outside), self.source)
+            with self.assertRaisesRegex(ContainerTrustRefused, "trusted runner workspace"):
+                container_trust.cleanup_compose_ca(selected, Path(outside), outputs["ca-sha256"])
+        container_trust.cleanup_compose_ca(selected, compose, outputs["ca-sha256"])
+
+    def test_cleanup_holds_parent_and_state_identity_before_removal(self):
+        original_pread = os.pread
+        for replaced in ("compose", "state"):
+            compose = self.root / ("compose-" + replaced)
+            compose.mkdir()
+            outputs, _ = self.check()
+            container_trust.stage_compose_ca(outputs, compose, self.source)
+            selected = Path(outputs["ca-file"])
+            target = compose if replaced == "compose" else selected.parent
+            preserved = target.with_name(target.name + "-original")
+
+            def replace_parent(*arguments):
+                contents = original_pread(*arguments)
+                target.rename(preserved)
+                target.mkdir(mode=0o700)
+                unrelated = target / "ca.pem"
+                unrelated.write_text("unrelated replacement contents")
+                return contents
+
+            with patch.object(os, "pread", side_effect=replace_parent):
+                with self.subTest(replaced=replaced), self.assertRaises(ContainerTrustRefused):
+                    container_trust.cleanup_compose_ca(selected, compose, outputs["ca-sha256"])
+            self.assertEqual("unrelated replacement contents", (target / "ca.pem").read_text())
+            original = preserved / selected.relative_to(target)
+            self.assertEqual(self.bundle.read_bytes(), original.read_bytes())
+
+    def test_ca_file_replacement_during_read_cannot_supply_bytes_or_be_removed(self):
+        outputs, _ = self.check()
+        container_trust.stage_compose_ca(outputs, self.root, self.source)
+        selected = Path(outputs["ca-file"])
+        original = selected.with_name("original.pem")
+        original_pread = os.pread
+
+        def replace_file(*arguments):
+            contents = original_pread(*arguments)
+            selected.rename(original)
+            selected.write_bytes(self.bundle.read_bytes())
+            selected.chmod(0o400)
+            return contents
+
+        with patch.object(os, "pread", side_effect=replace_file):
+            with self.assertRaisesRegex(ContainerTrustRefused, "object or authenticated bytes"):
+                container_trust.cleanup_compose_ca(selected, self.root, outputs["ca-sha256"])
+        self.assertTrue(selected.exists())
+        self.assertTrue(original.exists())
 
     def test_actual_context_rejects_tracked_staged_untracked_and_ignored_bytes(self):
         runtime = self.source / "runtime.php"
