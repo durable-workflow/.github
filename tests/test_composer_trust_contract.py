@@ -689,6 +689,32 @@ class ComposerRuntimeSetupContractTest(unittest.TestCase):
         with self.assertRaises(PolicyError):
             validate(changed)
 
+    def test_sdk_transition_job_requires_its_own_fixed_minor_runtime(self):
+        repository = Path(__file__).resolve().parents[1]
+        catalog = json.loads((repository / "qualification/composer-container-trust.json").read_text())
+        catalog["requests"] = {}
+        document = yaml.safe_load((repository / "tests/fixtures/sdk-php-transition-runtime.yml").read_text())
+        policy = json.loads((repository / "qualification/policy.json").read_text())
+        # Expand the actual driver path into its first request sink. The SDK's
+        # full transition qualification owns execution of the complete script.
+        driver = self.root / "scripts/ci/laravel-service-transition-smoke.sh"
+        driver.parent.mkdir(parents=True, exist_ok=True)
+        driver.write_text('composer create-project "laravel/laravel:${laravel_requirement}" "$application"\n')
+
+        def validate(candidate):
+            with (mock.patch("scripts.qualification_policy._composer_container_catalog", return_value=catalog),
+                  mock.patch("scripts.qualification_policy._require_composer_runtime_sources")):
+                return verify_composer_network_sinks(policy, "sdk-php", {"ci.yml": yaml.safe_dump(candidate)}, self.root)
+
+        self.assertTrue(validate(document))
+        for recipe in ("sdk-php-unit-ci", "sdk-php-carbon-ci", "sdk-php-framework-81-ci", "sdk-php-framework-84-ci"):
+            changed = deepcopy(document)
+            setup = next(step for step in changed["jobs"]["laravel-transition-compat"]["steps"]
+                         if "setup-php-container.sh" in step.get("run", ""))
+            setup["run"] = catalog["runtime_setups"][recipe]["commands"][0]
+            with self.subTest(recipe=recipe), self.assertRaises(PolicyError):
+                validate(changed)
+
     def test_a_symlinked_build_input_directory_refuses_even_when_bytes_match(self):
         original = self.root / "docker/php"
         moved = self.root / "actual-build-input"

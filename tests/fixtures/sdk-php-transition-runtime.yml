@@ -1,0 +1,52 @@
+# Proposed SDK source 094eb50771d8e5a42297b85c51aba1021888d031.
+jobs:
+  laravel-transition-compat:
+    name: Laravel ${{ matrix.source }} to service mode
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs: action-policy
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - source: embedded-v1
+          source_mode: embedded_v1
+          php: '8.2'
+          laravel: ^12.0
+          workflow: ^1.0
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      with:
+        persist-credentials: false
+    - name: Check out the fixed APT prerequisite
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      with:
+        repository: durable-workflow/.github
+        ref: 18783be6bef737cc778e4c7282a8797e39daa61a
+        path: .central-apt-source
+        persist-credentials: false
+    - name: Select Ubuntu's Python 3.12
+      run: '/usr/bin/python3 -I -S -c ''import sys; assert sys.version_info[:2] ==
+        (3, 12)''
+
+        echo /usr/bin >> "$GITHUB_PATH"
+
+        '
+    - name: Select authenticated dependency trust
+      uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5
+      with:
+        clients: pip,python,composer,curl,git
+    - name: Disable APT download retries (CVE-2026-109518)
+      run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries
+        >/dev/null
+    - name: Prepare the reviewed PHP container runtime
+      run: bash "$GITHUB_WORKSPACE/scripts/ci/setup-php-container.sh" "8.2"
+    - name: Verify Composer trust before requests
+      uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5
+    - name: Exercise the established Laravel application transition
+      env:
+        LARAVEL_REQUIREMENT: ${{ matrix.laravel }}
+        SDK_PATH: ${{ github.workspace }}
+        SOURCE_MODE: ${{ matrix.source_mode }}
+        WORKFLOW_REQUIREMENT: ${{ matrix.workflow }}
+      run: scripts/ci/laravel-service-transition-smoke.sh
