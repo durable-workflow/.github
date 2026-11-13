@@ -215,6 +215,13 @@ path, modified bytes, symlinks, hard links or unrelated directory contents.
 The bootstrap's original selected bundle remains intact. A guard failure
 cleans its staged copy before publishing any outputs.
 
+Container verification uses only its dedicated `composer-container-trust`
+release. The isolated verifier at `06efa32de898cff5766ef9f3a9db6a368fced981`
+replaces the retired `d12a1e2` container release. Older `clean-trust` releases,
+including `699d09d`, retain their other approved action paths but cannot supply
+the container verifier. Callers must adopt the corrected verifier and complete
+their actual build qualification.
+
 The `sdk-php-cooperative-server` entry in `composer-container-trust.json`
 applies only to its registered Compose request and reviewed Server recipes.
 It supplies no trust for other build or runtime paths.
