@@ -6,14 +6,25 @@ successful upstream response, then closes the client connection before sending
 an HTTP status line. The next request forwards normally. The fixture does not
 retry a request or decide whether command admission was idempotent.
 
-`CommittedResponseLoss(upstream)` binds an ephemeral loopback port. Start its
+`CommittedResponseLoss(upstream)` accepts only `http://127.0.0.1:<port>` with a
+canonical explicit port. Credentials, hostnames, paths, query and fragment
+components refuse. It binds an ephemeral loopback port. Start its
 `serve_forever` method in a thread and route the installed client through `url`.
 Call `arm(method, path)` with the exact admission route before the selected
 request. The caller owns shutdown, the runtime, synthetic data and cleanup.
 
-`records` retains method/path, complete upstream status/body length/hash, parsed
-synthetic JSON and the dropped flag. It records no headers. Use only synthetic
-payloads and retain only the sanitized fields needed by the experiment.
+Requests and responses each have a fixed 1 MiB wire-body cap and bounded socket
+timeouts. POST requires one canonical Content-Length; request transfer encodings
+refuse. GET is bodyless and may omit Content-Length. Complete bounded chunked
+upstream responses are supported. Invalid, oversized or incomplete upstream
+responses produce a generic 502 and no success record. A matching valid request
+consumes the arm even if its upstream attempt fails; re-arming is explicit.
+
+`records` contains method/path, request byte count/hash, complete upstream status,
+response byte count/hash and the dropped flag. It retains no headers, parsed
+JSON, caller keys, results or payloads. SDK adapters compare their own request
+and retained-admission identities independently. Use synthetic inputs and
+retain only the metadata needed by the experiment.
 
 Run the socket controls without dependencies or an external runtime:
 
@@ -21,11 +32,13 @@ Run the socket controls without dependencies or an external runtime:
 python3 -I -S -B conformance/command-keys/test_committed_response_loss.py
 ```
 
-The control proves upstream success was complete before the client received
+The controls prove upstream success was complete before the client received
 `RemoteDisconnected`, and that one incoming request caused exactly one upstream
 request. It also checks one-shot path selection, ordinary forwarding, errors
-and loopback confinement. The proxy source is byte-identical to CLI's reviewed
-fixture, SHA-256 `5418903ee570c7e205824adb3e8fcec6ab8a959daca6d52e13f59dddbde8834c`.
+and numeric loopback confinement. Negative controls cover framing, byte caps,
+incomplete upstream responses and body/header evidence minimization. The earlier
+CLI fixture is preserved in Git history; this correction tightens its reusable
+authority, resource and evidence boundaries.
 
 An SDK/CLI adapter still verifies the actual published tuple, original/generated
 key, durable admission count, concurrent identical retries, changed-intent
