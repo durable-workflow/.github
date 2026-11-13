@@ -191,6 +191,14 @@ The `sdk-php-cooperative-server` entry in `composer-container-trust.json`
 applies only to its registered Compose request and reviewed Server recipes.
 It supplies no trust for other build or runtime paths.
 
+Its additional Server 3.8.0 recipe comes from published source
+`28f084513235f6647e740c4b3d9e3aace7a323b7`. It binds the fixed APT parent
+Dockerfile, lockfile, copied/executed `docker/apt/require-fixed-apt.sh` and
+`docker/apt/parent.v1.json` proof alongside the existing preparation inputs.
+The older recipe remains available. Source matching alone does not qualify
+the caller: its clean predecessor, live in-container verifier and actual
+registered Compose request remain required.
+
 The container control runs the actual digest-pinned Composer image against a
 local synthetic TLS registry. The ambient store accepts its synthetic blocked
 root. The verified clean store refuses before an HTTP request. Wrong bundle

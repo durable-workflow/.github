@@ -28,6 +28,22 @@
           },
           "composer_image": "composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee",
           "composer_stage": "composer"
+        },
+        {
+          "files": {
+            "Dockerfile": "d70f15b575b98f0cfd6c5b6abc95a9d53b9560b03aeed9c1996fec46d4d9d41a",
+            ".dockerignore": "9ae64622b015a660f64c594f6948540e224255ffe64ab1a766ee0633f1d5f5c4",
+            "Dockerfile.dockerignore": "e7bf60d34720f0639193f44ce715d74165bba3355c0dacb5445fe5e82c64ba33",
+            "composer.json": "e22b3c192ac024781142c44a6cc2c81deb6abdd364cf84cba5f15381be98c4f5",
+            "composer.lock": "c622d912e8367c8a1bc5a532adf302c1c28d4b2479bbdac043eb2b2ffbf78bfc",
+            "scripts/ci/WorkflowPackageAuthority.php": "24960bb0afe9078ee0522c81f6be45aa85122e76655fe0a1dfabd5f4ee4de9a3",
+            "scripts/ci/resolve-workflow-package-authority.php": "53ae520195192c20efe6531c3c2a50aef599ff0dcf99ebaf0933cbb6b5a04f86",
+            "scripts/ci/prepare-release-workflow-composer-metadata.php": "a96f9a3d0472646de3476fc1a07ba4754b5832f8cf8739223b16ca8d57a122fd",
+            "docker/apt/require-fixed-apt.sh": "082e4bcf3aebaf8da74658c2f15c4b6df259e0cb8f2b09e4e16a737e223a94a3",
+            "docker/apt/parent.v1.json": "09078d7166cd57d8781ef344f5f7b2f69712ace54aa867d320d99954f039cd60"
+          },
+          "composer_image": "composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee",
+          "composer_stage": "composer"
         }
       ]
     }
