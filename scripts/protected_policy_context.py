@@ -63,6 +63,11 @@ REVIEWED_APT_NO_RETRIES_SOURCE_CI_SUCCESSORS = {
     CI_WORKFLOW: "760de748e04a5c652d0174b8bb68b689aed98c17aed10a06b628af6b931719fc",
     SONAR_WORKFLOW: "f7fad8367df4a4e9565d97e13aa120d55038ed9c749fdfcd86e1312bfca3cced",
 }
+# Inert successor for the existing contracts job's qualified Ubuntu24 PHP8.3
+# setup. Live workflow adoption and the protected runtime pin follow review.
+REVIEWED_BOUND_PHP_SOURCE_CI_SUCCESSORS = {
+    CI_WORKFLOW: "363540f9e81e4842099f0cad394ce3fc2a83835ce1355ffef5b16722547699b4",
+}
 # The successor remains inert until its separate runtime pin and manual-only
 # workflow integration. Keep the consumed predecessor's identity unchanged.
 REVIEWED_INITIAL_PROFILE_SUCCESSORS = {
@@ -110,6 +115,7 @@ def reviewed_context_hashes(policy_target: str) -> dict[str, set[str]]:
         registries = (REVIEWED_COMPLEX_WORKFLOWS, REVIEWED_SOURCE_CI_SUCCESSORS,
                       REVIEWED_PHP_CONFIGURATION_SOURCE_CI_SUCCESSORS,
                       REVIEWED_APT_NO_RETRIES_SOURCE_CI_SUCCESSORS,
+                      REVIEWED_BOUND_PHP_SOURCE_CI_SUCCESSORS,
                       REVIEWED_INITIAL_PROFILE_SUCCESSORS, REVIEWED_NORMALIZED_PROFILE_SUCCESSORS,
                       REVIEWED_ALTERNATIVES_PROFILE_SUCCESSORS,
                       REVIEWED_SELECTED_ALTERNATIVES_PROFILE_SUCCESSORS,

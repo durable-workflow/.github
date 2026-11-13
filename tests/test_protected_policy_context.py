@@ -3,6 +3,8 @@ import hashlib
 import unittest
 from unittest.mock import patch
 
+import yaml
+
 from scripts import protected_policy_context as context
 from scripts.protected_policy_inputs import InputRefused
 
@@ -28,6 +30,39 @@ class ProtectedContextTest(unittest.TestCase):
     def test_unknown_context_target_refuses_without_interpreting_a_workflow(self):
         with self.assertRaisesRegex(InputRefused, "context target"):
             context.validate_context({}, policy_target="elsewhere")
+
+    def test_bound_php_source_ci_successor_preserves_checks_and_requires_exact_review(self):
+        path = context.CI_WORKFLOW
+        raw = (ROOT / "tests/fixtures/ci-bound-php-source.yml").read_bytes()
+        previous = yaml.safe_load((ROOT / "tests/fixtures/ci-php-configuration-source.yml").read_text())
+        job = previous["jobs"]["contracts"]
+        job["runs-on"] = "ubuntu-24.04"
+        job["steps"][0]["with"] = {"persist-credentials": False}
+        setup = next(step for step in job["steps"] if step.get("uses", "").startswith("shivammathur/setup-php@"))
+        index = job["steps"].index(setup)
+        job["steps"].insert(index, {
+            "name": "Disable APT download retries (CVE-2026-109518)",
+            "run": "echo 'Acquire::Retries \"0\";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null",
+        })
+        setup["uses"] = "durable-workflow/.github/.github/actions/setup-php-linux@411a14ac07d32073eed6ab4977f2825eba4739a7"
+        setup["with"]["ini-file"] = "production"
+        setup["with"]["tools"] = "composer:2.10.3,phpunit:11.5.57"
+        self.assertEqual(previous, yaml.safe_load(raw))
+        self.assertEqual(context.REVIEWED_BOUND_PHP_SOURCE_CI_SUCCESSORS[path], hashlib.sha256(raw).hexdigest())
+        with patch.object(context, "REVIEWED_BOUND_PHP_SOURCE_CI_SUCCESSORS", {}), self.assertRaises(InputRefused):
+            context.validate_context({path: raw})
+        context.validate_context({path: raw})
+        for changed in (raw + b"\n# unreviewed\n",
+                        raw.replace(b"411a14ac07d32073eed6ab4977f2825eba4739a7", b"a" * 40),
+                        raw.replace(b"coverage: none", b"coverage: xdebug"),
+                        raw.replace(b"tests.test_composer_trust_contract", b"tests.unreviewed")):
+            self.assertNotEqual(raw, changed)
+            with self.assertRaises(InputRefused):
+                context.validate_context({path: changed})
+        with self.assertRaises(InputRefused):
+            context.validate_context({WORKFLOW: raw})
+        with self.assertRaises(InputRefused):
+            context.validate_context({path: raw}, policy_target="ai")
 
     def test_initial_qualification_is_only_the_exact_reviewed_future_workflow(self):
         path=".github/workflows/qualify-linux-php-initial.yml"
