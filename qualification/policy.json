@@ -264,6 +264,7 @@
     "sample-app": {
       "branch": "main",
       "repository": "sample-app",
+      "composer_trust_required": true,
       "workflows": [
         {
           "action_policy_preflight": true,

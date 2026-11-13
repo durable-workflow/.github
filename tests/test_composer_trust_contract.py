@@ -1,5 +1,6 @@
 from copy import deepcopy
 import hashlib
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -152,6 +153,12 @@ class ComposerNetworkContractTest(unittest.TestCase):
 
     def test_reviewed_order_is_enumerated(self):
         self.assertEqual(["ci.yml:test:step-4"], self.check())
+
+    def test_adopted_sample_app_cannot_remove_every_composer_guard(self):
+        policy = json.loads((Path(__file__).resolve().parents[1] / "qualification/policy.json").read_text())
+        source = yaml.safe_dump({"jobs": {"test": {"steps": [{"run": "composer install"}]}}})
+        with self.assertRaisesRegex(PolicyError, "clean bootstrap and live verifier"):
+            verify_composer_network_sinks(policy, "sample-app", {"ci.yml": source}, self.root)
 
     def test_an_omitted_job_is_not_hidden_by_a_safe_job(self):
         with self.assertRaisesRegex(PolicyError, "forgotten"):
@@ -412,7 +419,7 @@ class ComposerRuntimeSetupContractTest(unittest.TestCase):
                     path.unlink()
                     path.symlink_to(self.root / "absent")
                 else:
-                    path.chmod(0o600)
+                    path.chmod(mode ^ 0o100)
                 with self.subTest(name=name, change=change), self.assertRaises(PolicyError):
                     self.check()
                 path.unlink(missing_ok=True)
@@ -493,6 +500,19 @@ class ComposerRuntimeSetupContractTest(unittest.TestCase):
         original.symlink_to(moved, target_is_directory=True)
         with self.assertRaisesRegex(PolicyError, "symlinks"):
             self.check()
+
+    def test_git_executability_is_portable_across_private_checkout_umasks(self):
+        self.assertEqual(["ci.yml:test:step-4"], self.check())
+        for name, expected in self.recipe["files"].items():
+            (self.root / name).chmod(expected["mode"] & 0o700)
+        self.assertEqual(["ci.yml:test:step-4"], self.check())
+
+    def test_writable_and_special_permission_bits_refuse(self):
+        path = self.root / "scripts/launch.sh"
+        for mode in (0o777, 0o775, 0o4755, 0o2755, 0o1755):
+            path.chmod(mode)
+            with self.subTest(mode=mode), self.assertRaises(PolicyError):
+                self.check()
 
 
 class ScopedComposerMigrationTest(unittest.TestCase):

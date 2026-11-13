@@ -2629,7 +2629,12 @@ def _require_composer_runtime_file(root: Path, name: str, expected: dict[str, An
     path = _composer_runtime_path(root, name)
     try:
         metadata = path.lstat()
-        if (not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != expected["mode"]
+        mode = stat.S_IMODE(metadata.st_mode)
+        # Git binds executability, while the checkout umask may remove read
+        # permissions. Keep private 0600/0700 and canonical 0644/0755 valid,
+        # without admitting extra execute, group/other write, or special bits.
+        if (not stat.S_ISREG(metadata.st_mode) or mode & ~expected["mode"]
+                or bool(mode & stat.S_IXUSR) != bool(expected["mode"] & stat.S_IXUSR)
                 or hashlib.sha256(path.read_bytes()).hexdigest() != expected["sha256"]):
             raise PolicyError(f"Reviewed Composer runtime source differs: {name}")
     except OSError as error:
