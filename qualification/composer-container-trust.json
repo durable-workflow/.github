@@ -7,10 +7,22 @@
       "workflow": "ci.yml",
       "job": "cooperative-integration",
       "command": "docker compose --env-file /dev/null up -d --build --wait --wait-timeout 300",
-      "services": ["bootstrap", "server", "worker", "repair"],
+      "services": [
+        "bootstrap",
+        "server",
+        "worker",
+        "repair"
+      ],
       "compose_files": [
-        ["docker-compose.test.yml", "docker-compose.composer-trust.yml"],
-        ["docker-compose.test.yml", "docker-compose.composer-trust.yml", "docker-compose.child-policy.yml"]
+        [
+          "docker-compose.test.yml",
+          "docker-compose.composer-trust.yml"
+        ],
+        [
+          "docker-compose.test.yml",
+          "docker-compose.composer-trust.yml",
+          "docker-compose.child-policy.yml"
+        ]
       ],
       "dockerfile": "Dockerfile",
       "stage": "production",
@@ -49,148 +61,6 @@
     }
   },
   "runtime_setups": {
-    "sample-app-php-ci": {
-      "target": "sample-app",
-      "matrix": {
-        "php": ["8.4", "8.5"]
-      },
-      "workflows": {
-        "ci.yml": [
-          "test",
-          "microservice-test"
-        ],
-        "composer-lock-audit.yml": [
-          "audit"
-        ],
-        "playground-journeys.yml": [
-          "journeys"
-        ]
-      },
-      "commands": [
-        "bash \"$GITHUB_WORKSPACE/scripts/ci/setup-php-container.sh\" \"${{ matrix.php }}\"",
-        "bash \"$GITHUB_WORKSPACE/scripts/ci/setup-php-container.sh\" \"8.4\""
-      ],
-      "environment": [
-        "SAMPLE_APP_PHP_CI_IMAGE",
-        "SAMPLE_APP_PHP_CI_ROOT",
-        "SAMPLE_APP_PHP_CI_STATE"
-      ],
-      "absent_files": [
-        "docker/php-ci/Dockerfile.dockerignore"
-      ],
-      "files": {
-        ".dockerignore": {
-          "sha256": "3d3b99f9bbf9d4ce35b7dc8462c4da1c87983b2b65a3a829d8ec9d80f43551cc",
-          "mode": 420
-        },
-        "docker/php-ci/Dockerfile": {
-          "sha256": "dcdd1e2f99db98825f9cf6b89ab2b0191252d2816001af09f391b6fb1a8b035a",
-          "mode": 420
-        },
-        "scripts/ci/php-container-images.json": {
-          "sha256": "fc4d410589d1fdb322107e404bfcf9f4593e6ac7e3fcce729b1d78fafd9be1c4",
-          "mode": 420
-        },
-        "scripts/ci/run-php-container.sh": {
-          "sha256": "56aef0c6ca67f277dce114eac3d5de396f5b751697df6c01e8f760cb18cc9f49",
-          "mode": 493
-        },
-        "scripts/ci/setup-php-container.sh": {
-          "sha256": "cf290fd8e9978d2a4a0edb894485e66df4e9ee695e53eae9da22bf9f35ca12ee",
-          "mode": 493
-        },
-        "tests/ci/test_php_container_tls.py": {
-          "sha256": "936a6584fbe2b3523a8835e4f18df272b9bf384b9d95419b6ff3368e986052e4",
-          "mode": 420
-        },
-        ".devcontainer/docker/verify-php-trust.php": {
-          "sha256": "bd8682984a757eb28887e996f77c9cafed32634cc7e19155b9885da1bb5b48c9",
-          "mode": 420
-        },
-        "docker/install-phpredis.sh": {
-          "sha256": "17b21ea9724199f502605abeeff6856f8af721027691e1de74d12cc6ccb7d33b",
-          "mode": 420
-        },
-        "docker/brotli/install-vendor.sh": {
-          "sha256": "d7eb8b2a3e0af1c3072a56bcb81632b22f061f211d8fe5e57ee901c8bf94c92f",
-          "mode": 420
-        },
-        "docker/brotli/verify-runtime.php": {
-          "sha256": "580cc465e349f3872eca592355294e7320fe7f1a4560ff5d4c83d5900921c00e",
-          "mode": 420
-        },
-        "docker/brotli/verify-system-brotli.c": {
-          "sha256": "3353927d206aaf5e63157e46be715c6cbee46bac777e29f8f9e25c4c1f656667",
-          "mode": 420
-        },
-        "docker/brotli/version": {
-          "sha256": "e064953e075ddb99fb7b48ad29e215f2dfa075812c127eb1d6ab680e9920fba2",
-          "mode": 420
-        }
-      }
-    },
-    "waterline-php82-build": {
-      "target": "waterline",
-      "workflows": {
-        "php.yml": [
-          "build"
-        ]
-      },
-      "commands": [
-        "bash \"$GITHUB_WORKSPACE/scripts/ci/setup-php-container.sh\" \"8.2\""
-      ],
-      "environment": [
-        "WATERLINE_PHP_CI_IMAGE",
-        "WATERLINE_PHP_CI_ROOT",
-        "WATERLINE_PHP_CI_STATE"
-      ],
-      "files": {
-        "docker/php-ci/Dockerfile": {
-          "sha256": "81d23fbbee7e4ee97ca14df9d17982aa664335b94499c5019662259fe0387eaa",
-          "mode": 384
-        },
-        "docker/php-ci/Dockerfile.dockerignore": {
-          "sha256": "a26d7f1f5ae2cac900e5e32bfaa0f08bd7a8435847095990c9bfe09d0edbf264",
-          "mode": 384
-        },
-        "docker/php-ci/verify-php-trust.php": {
-          "sha256": "529c282e7422202bf25565431a6391de388f86dfe5bfd6c75cf21daa56ffa75e",
-          "mode": 384
-        },
-        "docker/brotli/install-vendor.sh": {
-          "sha256": "d7eb8b2a3e0af1c3072a56bcb81632b22f061f211d8fe5e57ee901c8bf94c92f",
-          "mode": 384
-        },
-        "docker/brotli/verify-runtime.php": {
-          "sha256": "580cc465e349f3872eca592355294e7320fe7f1a4560ff5d4c83d5900921c00e",
-          "mode": 384
-        },
-        "docker/brotli/verify-system-brotli.c": {
-          "sha256": "3353927d206aaf5e63157e46be715c6cbee46bac777e29f8f9e25c4c1f656667",
-          "mode": 384
-        },
-        "docker/brotli/version": {
-          "sha256": "e064953e075ddb99fb7b48ad29e215f2dfa075812c127eb1d6ab680e9920fba2",
-          "mode": 384
-        },
-        "scripts/ci/php-container-images.json": {
-          "sha256": "3314ecfd6c32641af1d5475f8e57f4421979f67e05db1f98c79ef7b08d41b944",
-          "mode": 384
-        },
-        "scripts/ci/run-php-container.sh": {
-          "sha256": "456f9716edbfaa8429edba92f958c4e1b3551bcbfd849a722764ae47daffb8fd",
-          "mode": 448
-        },
-        "scripts/ci/setup-php-container.sh": {
-          "sha256": "5064d48df69940cdf609be7bccd82ee71624d1017a8486a29028c765bb311f13",
-          "mode": 448
-        },
-        "tests/ci/test_php_container_tls.py": {
-          "sha256": "7e365ff0f27c4efea0f7cf8ec3778f48fb1fe03e80a5b5b0c9500a6935f3d767",
-          "mode": 384
-        }
-      }
-    },
     "cli-php-ci": {
       "target": "cli",
       "matrix": {
@@ -272,6 +142,72 @@
         },
         "scripts/ci/test-php-container-boundary.py": {
           "sha256": "8d4db79b20598e5e9f1fc64f6a730b574d6f2161cc42a01442ac0095dc8684e9",
+          "mode": 420
+        }
+      }
+    },
+    "waterline-php82-build": {
+      "target": "waterline",
+      "workflows": {
+        "php.yml": [
+          "build"
+        ]
+      },
+      "commands": [
+        "bash \"$GITHUB_WORKSPACE/scripts/ci/setup-php-container.sh\" \"8.2\""
+      ],
+      "environment": [
+        "WATERLINE_PHP_CI_IMAGE",
+        "WATERLINE_PHP_CI_ROOT",
+        "WATERLINE_PHP_CI_STATE"
+      ],
+      "files": {
+        "docker/php-ci/Dockerfile": {
+          "sha256": "81d23fbbee7e4ee97ca14df9d17982aa664335b94499c5019662259fe0387eaa",
+          "mode": 420
+        },
+        "docker/php-ci/Dockerfile.dockerignore": {
+          "sha256": "a26d7f1f5ae2cac900e5e32bfaa0f08bd7a8435847095990c9bfe09d0edbf264",
+          "mode": 420
+        },
+        "docker/php-ci/verify-php-trust.php": {
+          "sha256": "529c282e7422202bf25565431a6391de388f86dfe5bfd6c75cf21daa56ffa75e",
+          "mode": 420
+        },
+        "docker/brotli/install-vendor.sh": {
+          "sha256": "d7eb8b2a3e0af1c3072a56bcb81632b22f061f211d8fe5e57ee901c8bf94c92f",
+          "mode": 420
+        },
+        "docker/brotli/verify-runtime.php": {
+          "sha256": "580cc465e349f3872eca592355294e7320fe7f1a4560ff5d4c83d5900921c00e",
+          "mode": 420
+        },
+        "docker/brotli/verify-system-brotli.c": {
+          "sha256": "3353927d206aaf5e63157e46be715c6cbee46bac777e29f8f9e25c4c1f656667",
+          "mode": 420
+        },
+        "docker/brotli/version": {
+          "sha256": "e064953e075ddb99fb7b48ad29e215f2dfa075812c127eb1d6ab680e9920fba2",
+          "mode": 420
+        },
+        "scripts/ci/php-container-images.json": {
+          "sha256": "3314ecfd6c32641af1d5475f8e57f4421979f67e05db1f98c79ef7b08d41b944",
+          "mode": 420
+        },
+        "scripts/ci/run-php-container.sh": {
+          "sha256": "27b2601a4907737efa9ce157524e36ef0932df97d2d23b515cf65997e4f3725b",
+          "mode": 493
+        },
+        "scripts/ci/setup-php-container.sh": {
+          "sha256": "db0a276dea94aef70c3873ffc14e0ebf88e5baf4a6145e1a61a281d5835f59e4",
+          "mode": 493
+        },
+        "tests/ci/test_php_container_tls.py": {
+          "sha256": "9b229ac8400a047bfc6cf60ede16db899298e01b3543b840ab692656c2ef28fb",
+          "mode": 420
+        },
+        "tests/ci/test_php_container_isolation.py": {
+          "sha256": "821e1c8db3da47ec502efd704044bffb55b744ce7fe1d42c71c367ba0c9e9924",
           "mode": 420
         }
       }

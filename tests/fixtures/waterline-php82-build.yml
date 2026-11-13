@@ -2,6 +2,7 @@
 jobs:
   build:
     needs:
+    - action-policy
     - classify
     - frontend
     if: ${{ needs.classify.outputs.qualification-class == 'complete' }}
