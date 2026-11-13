@@ -248,8 +248,10 @@ part of the Server hook's combined qualification.
 
 ### Composer through a reviewed PHP launcher
 
-The catalog currently admits no PHP CI launcher in `runtime_setups`. The earlier
-Sample App, CLI and Waterline records were withdrawn after the
+The catalog admits only Waterline's corrected PHP 8.2 build launcher in
+`runtime_setups`, with read-only controls, twelve exact source bindings and
+canonical Git modes. Its final hosted caller qualification remains separate.
+The earlier writable Sample App, CLI and Waterline records were withdrawn after the
 [writable control-path finding](https://github.com/durable-workflow/.github/issues/297#issuecomment-6854260334).
 Their repository/state mounts allowed container code to replace a host launcher
 or wrapper before a later nominal verifier invocation. Historical source or TLS
