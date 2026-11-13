@@ -62,6 +62,20 @@ class ComposerContainerCallerContractTest(unittest.TestCase):
         with self.assertRaisesRegex(PolicyError, "reviewed unconditional clean bootstrap"):
             verify()
 
+    def test_clean_trust_role_cannot_authorize_a_container_verifier(self):
+        policy = {"targets": {"fixture": {"composer_trust_required": True}}, "action_runtime": {
+            "allowed_releases": {"durable-workflow/.github": {REVISION: "clean-trust", "b" * 40: "composer-container-trust"}}}}
+
+        def verify():
+            source = yaml.safe_dump({"jobs": {"connected": {"steps": [self.bootstrap, self.guard, self.build]}}})
+            with mock.patch("scripts.qualification_policy._composer_container_catalog", return_value=self.catalog):
+                return verify_composer_network_sinks(policy, "fixture", {"ci.yml": source}, self.root)
+
+        with self.assertRaisesRegex(PolicyError, "preceding reviewed container verifier"):
+            verify()
+        self.guard["uses"] = PREFIX + "verify-composer-container-trust@" + "b" * 40
+        self.assertEqual(["ci.yml:connected:container-fixture"], verify())
+
     def test_missing_unreviewed_or_intervening_guard_refuses(self):
         with self.assertRaises(PolicyError):
             self.check([self.build])

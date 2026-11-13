@@ -699,8 +699,8 @@ class QualificationPolicyTest(unittest.TestCase):
             with self.subTest(ref=ref), self.assertRaises(PolicyError):
                 self.scan(candidate)
 
-    def test_server38_container_verifier_release_is_path_limited(self) -> None:
-        commit = "d12a1e247ea28b89912cc87a8c0b596686d8c323"
+    def test_isolated_container_verifier_release_is_path_limited(self) -> None:
+        commit = "06efa32de898cff5766ef9f3a9db6a368fced981"
         action = "durable-workflow/.github/.github/actions/verify-composer-container-trust"
         source = workflow(f"- uses: {action}@{commit} # composer-container-trust")
         predecessor = copy.deepcopy(self.policy)
@@ -715,6 +715,26 @@ class QualificationPolicyTest(unittest.TestCase):
                 self.scan(changed)
             with self.subTest(audit_path=path), self.assertRaisesRegex(PolicyError, "only its verify-composer-container-trust"):
                 audit_action_releases(self.policy, None, {"test.yml": changed}, {})
+
+    def test_legacy_container_verifiers_are_retired_without_removing_other_clean_trust_paths(self) -> None:
+        prefix = "durable-workflow/.github/.github/actions/"
+        retired = "d12a1e247ea28b89912cc87a8c0b596686d8c323"
+        legacy = "699d09d602fc0353160bdecaa2b23f07ef4c7c21"
+        for commit, label, reason in ((retired, "composer-container-trust", "not centrally approved"),
+                                      (legacy, "clean-trust", "dedicated reviewed release")):
+            source = workflow(f"- uses: {prefix}verify-composer-container-trust@{commit} # {label}")
+            with self.subTest(scan=commit), self.assertRaisesRegex(PolicyError, reason):
+                self.scan(source)
+            with self.subTest(audit=commit), self.assertRaisesRegex(PolicyError, reason):
+                audit_action_releases(self.policy, None, {"test.yml": source}, {})
+        for path in ("bootstrap-patched-pip", "verify-composer-trust"):
+            specification = f"{prefix}{path}@{legacy}"
+            source = workflow(f"- uses: {specification} # clean-trust")
+            with self.subTest(path=path):
+                self.assertEqual([specification], self.scan(source)[".github/workflows/test.yml"]["external_actions"])
+                cache = {specification: {"runtime": "composite", "commit": legacy, "action": prefix + path,
+                                         "reference": legacy, "repository": "durable-workflow/.github"}}
+                self.assertEqual(1, len(audit_action_releases(self.policy, None, {"test.yml": source}, cache)))
 
     def test_bound_php_setup_pin_is_approved_only_for_its_exact_action_path(self) -> None:
         commit = "411a14ac07d32073eed6ab4977f2825eba4739a7"

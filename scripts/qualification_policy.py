@@ -2420,6 +2420,9 @@ def _inspect_action_release(
 
 
 def _verify_action_release_path(repository: str, directory: str, version: str) -> None:
+    if (repository == CENTRAL_ACTION_REPOSITORY and directory == ".github/actions/verify-composer-container-trust"
+            and version != "composer-container-trust"):
+        raise PolicyError("The Composer container verifier requires its dedicated reviewed release")
     if (repository == CENTRAL_ACTION_REPOSITORY and version == "bound-linux-php"
             and directory != ".github/actions/setup-php-linux"):
         raise PolicyError("The bound Linux PHP release approves only its setup-php-linux action path")
@@ -2777,7 +2780,7 @@ def verify_composer_network_sinks(policy: dict[str, Any], target: str, sources: 
         return []
     releases = policy["action_runtime"]["allowed_releases"][CENTRAL_ACTION_REPOSITORY]
     approved = {sha for sha, label in releases.items() if label == "clean-trust"}
-    container_approved = approved | {sha for sha, label in releases.items() if label == "composer-container-trust"}
+    container_approved = {sha for sha, label in releases.items() if label == "composer-container-trust"}
     bound_setups = {sha for sha, label in releases.items() if label == "bound-linux-php"}
     documents = {filename: _parse_yaml(source, filename) for filename, source in sources.items()}
     selected = _composer_scoped_jobs(scopes, documents, bound_setups, target == "github-control-plane")
