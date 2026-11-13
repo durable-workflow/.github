@@ -120,6 +120,37 @@ class ComposerContainerSourceTest(unittest.TestCase):
         self.commit = self.git("rev-parse", "HEAD")
         self.assertEqual(self.commit, self.check()[1]["source_commit"])
 
+    def test_a_successor_recipe_binds_its_added_executed_helper(self):
+        helper = self.source / "docker/apt/require-fixed-apt.sh"
+        helper.parent.mkdir(parents=True)
+        helper.write_text("#!/bin/sh\nexit 0\n")
+        self.dockerfile += "COPY docker/apt/require-fixed-apt.sh /fixed-apt.sh\nRUN sh /fixed-apt.sh\n"
+        (self.source / "Dockerfile").write_text(self.dockerfile)
+        self.git("add", ".")
+        self.git("commit", "--quiet", "-m", "successor with fixed APT prerequisite")
+        self.commit = self.git("rev-parse", "HEAD")
+        with self.assertRaisesRegex(ContainerTrustRefused, "no uniquely approved"):
+            self.check()
+
+        successor = deepcopy(self.catalog["requests"]["fixture"]["approved_recipes"][0])
+        successor["files"]["Dockerfile"] = sha256(self.dockerfile.encode())
+        successor["files"]["docker/apt/require-fixed-apt.sh"] = sha256(helper.read_bytes())
+        self.catalog["requests"]["fixture"]["approved_recipes"].append(successor)
+        self.assertEqual(self.commit, self.check()[1]["source_commit"])
+
+        helper.write_text("#!/bin/sh\nexit 1\n")
+        self.git("add", ".")
+        self.git("commit", "--quiet", "-m", "changed helper without recipe review")
+        self.commit = self.git("rev-parse", "HEAD")
+        with self.assertRaisesRegex(ContainerTrustRefused, "reviewed recipe files"):
+            self.check()
+
+        self.git("rm", "docker/apt/require-fixed-apt.sh")
+        self.git("commit", "--quiet", "-m", "missing helper")
+        self.commit = self.git("rev-parse", "HEAD")
+        with self.assertRaisesRegex(ContainerTrustRefused, "required recipe file is missing"):
+            self.check()
+
     def test_a_new_dockerfile_specific_context_policy_requires_recipe_review(self):
         (self.source / "Dockerfile.dockerignore").write_text("# Changes the actual Docker context\n")
         self.git("add", "Dockerfile.dockerignore")
