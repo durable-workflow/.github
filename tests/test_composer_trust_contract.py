@@ -397,7 +397,7 @@ class WaterlineBuildMandatoryTrustContractTest(unittest.TestCase):
         )
 
     def test_proposed_build_enumerates_all_guarded_requests(self):
-        self.assertEqual(len(self.check(self.document)), 4)
+        self.assertEqual(4, len(self.check(self.document)))
 
     def test_deleting_every_live_verifier_cannot_disable_enumeration(self):
         document = deepcopy(self.document)
