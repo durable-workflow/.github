@@ -6,6 +6,17 @@ portable behavior still requiring a runtime check. A row describes executable
 scope, not a passing result for an arbitrary release tuple. Results and remaining
 work belong to [the experiment audit](https://github.com/durable-workflow/.github/issues/122).
 
+For native Server, start with the
+[native qualification path](README.md#native-server-qualification). Server's
+[published SDK profiles](https://github.com/durable-workflow/server/blob/main/scripts/conformance/server-parity/sdk-directions/README.md)
+compare installed PHP/Python/Rust workers against native and frozen PHP targets,
+with embedded PHP recorded separately. Their activity and child profiles cover
+all nine directions, and the timer profile covers each workflow language.
+The lane wrapper also selects signal, selected-run signal, namespace signal,
+query, update and update-failure variants. Each profile's actual actor,
+manifest, assertions and result determine its scope. Do not carry historical
+profile results onto a newer native image or SDK tuple.
+
 ## Choose the meaningful directions
 
 - Workflow authoring and durable replay require PHP, Python and Rust workflow
