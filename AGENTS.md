@@ -274,9 +274,11 @@ approval workflow or aesthetic restrictions.
 - Each package repository owns ordinary semantic-version releases and
   publication through a small repository-local workflow. Sample App, Cloud,
   and the documentation site do not publish versioned packages.
-- A major release issue states the proposed versions, checks, conformance links,
-  and human decision. Patch and minor releases follow repository policy and
-  semantic versioning without a central cross-repository release controller.
+- A major release issue records the proposed versions, migration and rollback
+  impact, required checks and conformance links, and the responsible maintainer's
+  release decision. Honor any approval explicitly reserved for that release.
+  Patch and minor releases follow repository policy and semantic versioning
+  without a central cross-repository release controller.
 
 ### Cross-Repository Release Follow-Through
 
