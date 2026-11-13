@@ -24,7 +24,7 @@ class NativePolicyWorkflowTest(unittest.TestCase):
         self.assertEqual(1, len(checkouts))
         settings = checkouts[0]["with"]
         self.assertEqual("durable-workflow/.github", settings["repository"])
-        self.assertRegex(settings["ref"], r"^[0-9a-f]{40}$")
+        self.assertEqual("d4770e6555fdb59b044f2e5919e95a24c0a25073", settings["ref"])
         self.assertIs(False, settings["persist-credentials"])
         self.assertEqual(".native-policy-control", settings["path"])
 
