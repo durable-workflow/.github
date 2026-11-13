@@ -96,7 +96,7 @@
           "mode": 493
         },
         "scripts/ci/setup-php-container.sh": {
-          "sha256": "104481886027a954f0af0d614933f6b8d934302c9ce55d1dc1f71e50130445ab",
+          "sha256": "cf290fd8e9978d2a4a0edb894485e66df4e9ee695e53eae9da22bf9f35ca12ee",
           "mode": 493
         },
         "tests/ci/test_php_container_tls.py": {
@@ -193,7 +193,7 @@
           "mode": 420
         },
         "scripts/ci/setup-php-container.sh": {
-          "sha256": "4a6ec5fe725a4d7bf7ac21d118c0bba67f2c29e17a019c88a1156c1fb8fbe79d",
+          "sha256": "376959ca3cf6ab96600d6d8c1715c62de4236864496f594671f22592c27c985d",
           "mode": 493
         },
         "scripts/ci/run-php-container.sh": {
