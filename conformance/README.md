@@ -141,6 +141,11 @@ actions work. Report its scope separately from the stable protocol experiments.
 
 ## Evidence scope
 
+Command-admission retry experiments under #216 can reuse the
+[committed-response-loss fixture](command-keys/README.md). Its socket control
+proves response loss after upstream success; the installed SDK/CLI adapter and
+producer-owned legacy fixtures supply the remaining admission/retention proof.
+
 A pinned or successfully installed SDK is not evidence that its worker executed
 an experiment. For each claimed language or cross-language direction, check the
 scenario-level result for the actual caller/parent and worker/child runtime,
