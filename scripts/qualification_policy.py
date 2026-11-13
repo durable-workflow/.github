@@ -2423,6 +2423,9 @@ def _verify_action_release_path(repository: str, directory: str, version: str) -
     if (repository == CENTRAL_ACTION_REPOSITORY and version == "bound-linux-php"
             and directory != ".github/actions/setup-php-linux"):
         raise PolicyError("The bound Linux PHP release approves only its setup-php-linux action path")
+    if (repository == CENTRAL_ACTION_REPOSITORY and version == "composer-container-trust"
+            and directory != ".github/actions/verify-composer-container-trust"):
+        raise PolicyError("The Composer container release approves only its verify-composer-container-trust action path")
 
 
 def audit_action_releases(
@@ -2774,6 +2777,7 @@ def verify_composer_network_sinks(policy: dict[str, Any], target: str, sources: 
         return []
     releases = policy["action_runtime"]["allowed_releases"][CENTRAL_ACTION_REPOSITORY]
     approved = {sha for sha, label in releases.items() if label == "clean-trust"}
+    container_approved = approved | {sha for sha, label in releases.items() if label == "composer-container-trust"}
     bound_setups = {sha for sha, label in releases.items() if label == "bound-linux-php"}
     documents = {filename: _parse_yaml(source, filename) for filename, source in sources.items()}
     selected = _composer_scoped_jobs(scopes, documents, bound_setups, target == "github-control-plane")
@@ -2781,7 +2785,8 @@ def verify_composer_network_sinks(policy: dict[str, Any], target: str, sources: 
     catalog = _composer_container_catalog()
     evidence = _composer_document_sinks(documents, root, approved, bound_setups, target == "github-control-plane",
                                         None if full else selected, catalog, target)
-    evidence.extend(verify_composer_container_callers(target, sources, approved, catalog, root))
+    evidence.extend(verify_composer_container_callers(target, sources, approved, catalog, root,
+                                                     verifier_approved=container_approved))
     return evidence
 
 
@@ -2829,14 +2834,14 @@ def _require_only_registered_build(steps: list[dict[str, Any]], selected: int, r
             raise PolicyError(f"{request_id} contains an additional unguarded Docker build")
 
 
-def _require_container_caller(steps: list[dict[str, Any]], request_id: str, request: dict[str, Any], approved: set[str], local: bool, root: Path) -> None:
+def _require_container_caller(steps: list[dict[str, Any]], request_id: str, request: dict[str, Any], approved: set[str], local: bool, root: Path, verifier_approved: set[str]) -> None:
     matches = [index for index, step in enumerate(steps) if step.get("run", "").strip() == request["command"]]
     if len(matches) != 1 or matches[0] == 0:
         raise PolicyError(f"{request_id} must retain its single registered Compose build command")
     build, guard = steps[matches[0]], steps[matches[0] - 1]
     _require_bootstrap_binding(steps[:matches[0] - 1], guard, approved, local, request_id)
     _require_only_registered_build(steps, matches[0], root, request_id)
-    if not _reviewed_composer_action(guard.get("uses", ""), "verify-composer-container-trust", approved, local):
+    if not _reviewed_composer_action(guard.get("uses", ""), "verify-composer-container-trust", verifier_approved, local):
         raise PolicyError(f"{request_id} lacks the immediately preceding reviewed container verifier")
     if any(step.get("if") or str(step.get("continue-on-error", "false")) != "false" for step in (guard, build)):
         raise PolicyError(f"{request_id} cannot skip or ignore the verifier or build refusal")
@@ -2856,7 +2861,8 @@ def _require_container_caller(steps: list[dict[str, Any]], request_id: str, requ
         raise PolicyError(f"{request_id} has additional unverified trust overrides")
 
 
-def verify_composer_container_callers(target: str, sources: dict[str, str], approved: set[str], catalog: dict[str, Any], root: Path) -> list[str]:
+def verify_composer_container_callers(target: str, sources: dict[str, str], approved: set[str], catalog: dict[str, Any], root: Path, *, verifier_approved: set[str] | None = None) -> list[str]:
+    verifier_approved = approved if verifier_approved is None else verifier_approved
     evidence = []
     for request_id, request in catalog["requests"].items():
         if request.get("target") != target:
@@ -2867,7 +2873,8 @@ def verify_composer_container_callers(target: str, sources: dict[str, str], appr
         job = _parse_yaml(candidates[0], request["workflow"]).get("jobs", {}).get(request["job"])
         if not isinstance(job, dict):
             raise PolicyError(f"{request_id} is missing its registered build job")
-        _require_container_caller(job.get("steps", []), request_id, request, approved, target == "github-control-plane", root)
+        _require_container_caller(job.get("steps", []), request_id, request, approved,
+                                  target == "github-control-plane", root, verifier_approved)
         evidence.append(f"{request['workflow']}:{request['job']}:container-{request_id}")
     return evidence
 

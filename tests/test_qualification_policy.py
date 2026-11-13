@@ -699,6 +699,23 @@ class QualificationPolicyTest(unittest.TestCase):
             with self.subTest(ref=ref), self.assertRaises(PolicyError):
                 self.scan(candidate)
 
+    def test_server38_container_verifier_release_is_path_limited(self) -> None:
+        commit = "d12a1e247ea28b89912cc87a8c0b596686d8c323"
+        action = "durable-workflow/.github/.github/actions/verify-composer-container-trust"
+        source = workflow(f"- uses: {action}@{commit} # composer-container-trust")
+        predecessor = copy.deepcopy(self.policy)
+        del predecessor["action_runtime"]["allowed_releases"]["durable-workflow/.github"][commit]
+        with self.assertRaisesRegex(PolicyError, "not centrally approved"):
+            scan_workflow_sources(predecessor, "github-control-plane", {"test.yml": source})
+        self.assertEqual([f"{action}@{commit}"], self.scan(source)[".github/workflows/test.yml"]["external_actions"])
+        for path in ("bootstrap-patched-pip", "setup-php-linux", "verify-composer-trust",
+                     "verify-composer-container-trust/other"):
+            changed = workflow(f"- uses: durable-workflow/.github/.github/actions/{path}@{commit} # composer-container-trust")
+            with self.subTest(path=path), self.assertRaisesRegex(PolicyError, "only its verify-composer-container-trust"):
+                self.scan(changed)
+            with self.subTest(audit_path=path), self.assertRaisesRegex(PolicyError, "only its verify-composer-container-trust"):
+                audit_action_releases(self.policy, None, {"test.yml": changed}, {})
+
     def test_bound_php_setup_pin_is_approved_only_for_its_exact_action_path(self) -> None:
         commit = "411a14ac07d32073eed6ab4977f2825eba4739a7"
         action = "durable-workflow/.github/.github/actions/setup-php-linux"
