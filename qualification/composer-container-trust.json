@@ -255,11 +255,11 @@
           "mode": 420
         },
         "scripts/ci/setup-php-container.sh": {
-          "sha256": "376959ca3cf6ab96600d6d8c1715c62de4236864496f594671f22592c27c985d",
+          "sha256": "a7007c0fbef886b7e29b62d20b76404839746620361a9dd9e6024f1ff546d49b",
           "mode": 493
         },
         "scripts/ci/run-php-container.sh": {
-          "sha256": "97e87647dec2d102619114b6c836467f935180ec87f20e94052af5f02d0a1381",
+          "sha256": "baef1e07ac53ce31fed01eac37ced2f98e363fa677e129952f6e15e47213db0e",
           "mode": 493
         },
         "scripts/ci/probe-php-test-runtime.php": {
@@ -267,7 +267,11 @@
           "mode": 420
         },
         "scripts/ci/test-php-container-tls.py": {
-          "sha256": "625b6d7cf444f27a34c0f63a3755d49dea09d397333240f46e29ce30149e519e",
+          "sha256": "da11950ff46810ba425fea6bb6a453869995204388570d1f764a160154f3e7b0",
+          "mode": 420
+        },
+        "scripts/ci/test-php-container-boundary.py": {
+          "sha256": "8d4db79b20598e5e9f1fc64f6a730b574d6f2161cc42a01442ac0095dc8684e9",
           "mode": 420
         }
       }
