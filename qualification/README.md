@@ -248,23 +248,21 @@ part of the Server hook's combined qualification.
 
 ### Composer through a reviewed PHP launcher
 
-The same catalog has a separate `runtime_setups` entry for Sample App's PHP CI
-launcher. It binds the exact setup command, target, workflow/jobs, literal PHP
-matrix, build inputs, launcher and TLS control by file hash and mode. An
-unreviewed Dockerfile exclusion file refuses. The setup probes and exports an
-immutable local image config ID; subsequent PHP and Composer invocations use
-that ID. The actual Composer TLS control runs in both PHP profiles: ambient
-trust reaches a synthetic HTTPS repository, while the selected clean bundle
-refuses before an HTTP request.
+The catalog currently admits no PHP CI launcher in `runtime_setups`. The earlier
+Sample App, CLI and Waterline records were withdrawn after the
+[writable control-path finding](https://github.com/durable-workflow/.github/issues/297#issuecomment-6854260334).
+Their repository/state mounts allowed container code to replace a host launcher
+or wrapper before a later nominal verifier invocation. Historical source or TLS
+passes do not qualify that boundary. Whole-target Composer enforcement remains
+in place, so the withdrawn setup cannot authorize dependency requests.
 
-This recognizes the PHP setup only. The reviewed clean bootstrap must still
-precede it, and the reviewed live Composer verifier must run in the container
-immediately before every dependency-request step. The launcher mounts the
-selected CA file and empty additional-root directory read-only and inspects the
-real Composer PHAR. Runtime selector overrides, changed source bytes or modes,
-conditional/ignored setup, another target/job, and missing/intervening guards
-refuse. This entry does not approve arbitrary Docker commands or another
-repository's launcher.
+Replacement source must mount repository/control and wrapper/launcher paths
+read-only, expose only required data/cache/output paths as writable, and pass
+actual-container predecessor-failing replacement controls. Each corrected recipe
+needs exact file hashes/canonical Git modes, closed jobs/commands/matrix,
+selector and exclusion boundaries, live in-container Composer verification and
+its own caller qualification. Existing container-build recipes and the bound
+host PHP helper are separate and remain unchanged.
 
 ### Composer on the runner
 
