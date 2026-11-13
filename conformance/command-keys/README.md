@@ -10,8 +10,9 @@ retry a request or decide whether command admission was idempotent.
 canonical explicit port. Credentials, hostnames, paths, query and fragment
 components refuse. It binds an ephemeral loopback port. Start its
 `serve_forever` method in a thread and route the installed client through `url`.
-Call `arm(method, path)` with the exact admission route before the selected
-request. The caller owns shutdown, the runtime, synthetic data and cleanup.
+Call `arm(method, path)` with the exact origin-form admission route before
+the selected request. Query strings and fragments refuse before forwarding or
+recording; put no credentials in route identifiers. The caller owns shutdown, the runtime, synthetic data and cleanup.
 
 Requests and responses each have a fixed 1 MiB wire-body cap and bounded socket
 timeouts. POST requires one canonical Content-Length; request transfer encodings
@@ -19,6 +20,9 @@ refuse. GET is bodyless and may omit Content-Length. Complete bounded chunked
 upstream responses are supported. Invalid, oversized or incomplete upstream
 responses produce a generic 502 and no success record. A matching valid request
 consumes the arm even if its upstream attempt fails; re-arming is explicit.
+At most 1024 metadata records, including reserved in-flight slots, are allowed.
+Capacity exhaustion returns a generic 503 before contacting upstream and does
+not consume the arm. Failed upstream attempts release their reserved slot.
 
 `records` contains method/path, request byte count/hash, complete upstream status,
 response byte count/hash and the dropped flag. It retains no headers, parsed

@@ -1,5 +1,6 @@
 """Socket-level controls for the shared command-admission loss fixture."""
 
+import concurrent.futures
 import hashlib
 import http.client
 import http.server
@@ -9,6 +10,7 @@ from pathlib import Path
 import socket
 import threading
 import unittest
+from unittest import mock
 
 
 SOURCE = Path(__file__).with_name("committed_response_loss.py")
@@ -31,6 +33,9 @@ class Upstream(http.server.BaseHTTPRequestHandler):
 
     def reply(self, request):
         self.server.requests.append((self.path, request))
+        if self.server.response_gate is not None:
+            self.server.response_started.set()
+            self.server.response_gate.wait(timeout=2)
         self.close_connection = True
         if self.server.fail_before_headers:
             return
@@ -64,6 +69,8 @@ class CommittedResponseLossTest(unittest.TestCase):
         self.upstream.body_override = None
         self.upstream.length_override = None
         self.upstream.framing = "length"
+        self.upstream.response_gate = None
+        self.upstream.response_started = threading.Event()
         self.serve(self.upstream)
         self.proxy = CommittedResponseLoss(f"http://127.0.0.1:{self.upstream.server_port}")
         self.serve(self.proxy)
@@ -145,7 +152,7 @@ class CommittedResponseLossTest(unittest.TestCase):
                         "http://localhost:1234", "http://127.0.0.2:1234", "http://127.0.0.1",
                         "http://user:password@127.0.0.1:1234", "http://127.0.0.1:1234/",
                         "http://127.0.0.1:1234?q=x", "http://127.0.0.1:1234#fragment",
-                        "http://127.0.0.1:0", "http://127.0.0.1:65536", "http://127.0.0.1:0123", None):
+                        "http://127.0.0.1:0", "http://127.0.0.1:65536", "http://127.0.0.1:0123", "http://127.0.0.1:1٢3", "http://127.0.0.1:1２3", None):
             with self.subTest(address=address), self.assertRaises(ValueError):
                 CommittedResponseLoss(address)
 
@@ -163,12 +170,47 @@ class CommittedResponseLossTest(unittest.TestCase):
                 self.assertEqual([], self.proxy.records)
 
     def test_only_origin_form_paths_can_be_forwarded_or_armed(self):
-        for path in ("http://example.invalid/", "//example.invalid/", "/path#fragment"):
+        for path in ("http://example.invalid/", "//example.invalid/", "/path#fragment", "/commit?token=synthetic-private-query"):
             with self.subTest(path=path):
-                self.assertEqual(400, self.raw_request("Content-Length: 0\r\n", path=path)[0])
+                status, body = self.raw_request("Content-Length: 0\r\n", path=path)
+                self.assertEqual(400, status)
+                self.assertNotIn(b"synthetic-private-query", body)
+                self.assertEqual([], self.proxy.records)
                 self.assertEqual([], self.upstream.requests)
                 with self.assertRaises(ValueError):
                     self.proxy.arm("POST", path)
+
+    def test_content_length_accepts_only_ascii_digits(self):
+        for value in ("1٢3", "1２3", "١23", "+1", "1.0"):
+            headers = http.client.HTTPMessage()
+            headers.add_header("Content-Length", value)
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                MODULE.content_length(headers, True)
+
+    def test_record_capacity_reserves_inflight_before_any_upstream_contact(self):
+        with mock.patch.object(MODULE, "MAX_RECORDS", 1):
+            self.upstream.response_gate = threading.Event()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                first = executor.submit(self.request)
+                try:
+                    self.assertTrue(self.upstream.response_started.wait(timeout=2))
+                    self.assertEqual(1, self.proxy.pending_records)
+                    self.proxy.arm("POST", "/blocked")
+                    body = b'{"request_id":"synthetic-key"}'
+                    status, _ = self.raw_request(f"Content-Length: {len(body)}\r\n", body, path="/blocked")
+                    self.assertEqual(503, status)
+                    self.assertEqual(1, len(self.upstream.requests))
+                    self.assertEqual([], self.proxy.records)
+                    self.assertEqual(("POST", "/blocked"), self.proxy.armed)
+                finally:
+                    self.upstream.response_gate.set()
+                self.assertEqual(202, first.result(timeout=2)[0])
+            self.assertEqual(1, len(self.proxy.records))
+            self.assertEqual(0, self.proxy.pending_records)
+            status, _ = self.raw_request(f"Content-Length: {len(body)}\r\n", body, path="/blocked")
+            self.assertEqual(503, status)
+            self.assertEqual(1, len(self.upstream.requests))
+            self.assertEqual(1, len(self.proxy.records))
 
     def test_bodyless_get_needs_no_content_length(self):
         status, body = self.raw_request("", method="GET")
@@ -207,6 +249,7 @@ class CommittedResponseLossTest(unittest.TestCase):
                 self.assertNotIn(marker, reply)
                 self.assertEqual([], self.proxy.records)
                 self.assertIsNone(self.proxy.armed)
+                self.assertEqual(0, self.proxy.pending_records)
 
     def test_complete_chunked_upstream_can_supply_a_bounded_loss(self):
         self.upstream.framing = "chunked"

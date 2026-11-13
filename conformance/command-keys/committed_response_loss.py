@@ -9,19 +9,20 @@ import threading
 
 MAX_REQUEST_BYTES = 1_048_576
 MAX_RESPONSE_BYTES = 1_048_576
+MAX_RECORDS = 1024
 SOCKET_TIMEOUT_SECONDS = 40
 
 
 def origin_path(path):
     return (isinstance(path, str) and len(path) <= 4096 and not path.startswith("//")
-            and re.fullmatch(r"/[^\x00-\x20\x7f#]*", path) is not None)
+            and re.fullmatch(r"/[^\x00-\x20\x7f#?]*", path) is not None)
 
 
 def content_length(headers, required):
     values = headers.get_all("Content-Length", [])
     if not values and not required:
         return None
-    if len(values) != 1 or re.fullmatch(r"0|[1-9][0-9]{0,6}", values[0]) is None:
+    if len(values) != 1 or re.fullmatch(r"0|[1-9]\d{0,6}", values[0], re.ASCII) is None:
         raise ValueError("A single canonical bounded Content-Length is required")
     return int(values[0])
 
@@ -36,11 +37,12 @@ class CommittedResponseLoss(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, upstream):
-        match = re.fullmatch(r"http://127\.0\.0\.1:([1-9][0-9]{0,4})", upstream) if isinstance(upstream, str) else None
+        match = re.fullmatch(r"http://127\.0\.0\.1:([1-9]\d{0,4})", upstream, re.ASCII) if isinstance(upstream, str) else None
         if match is None or not 1 <= int(match.group(1)) <= 65535:
             raise ValueError("Fixture upstream must be canonical numeric loopback HTTP with an explicit port")
         self.upstream_port = int(match.group(1))
         self.records = []
+        self.pending_records = 0
         self.armed = None
         self.lock = threading.Lock()
         super().__init__(("127.0.0.1", 0), _Handler)
@@ -53,12 +55,30 @@ class CommittedResponseLoss(http.server.ThreadingHTTPServer):
                 raise ValueError("a response loss is already armed")
             self.armed = (method, path)
 
+    def reserve_record(self, method, path):
+        with self.lock:
+            if len(self.records) + self.pending_records >= MAX_RECORDS:
+                raise RequestRefused(503, "Fixture evidence capacity exhausted")
+            self.pending_records += 1
+            selected = self.armed == (method, path)
+            if selected:
+                self.armed = None
+            return selected
+
+    def finish_record(self, record):
+        with self.lock:
+            self.pending_records -= 1
+            if record is not None:
+                self.records.append(record)
+
     @property
     def url(self):
         return f"http://127.0.0.1:{self.server_port}"
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
+    timeout = SOCKET_TIMEOUT_SECONDS
+
     def log_message(self, *_args):
         # Evidence uses closed metadata records rather than HTTP request logs.
         pass
@@ -66,7 +86,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def send_error(self, code, message=None, explain=None):
         # Base parser messages can include an untrusted raw request line.
         reasons = {400: "Fixture request framing refused", 413: "Fixture byte cap exceeded",
-                   501: "Fixture method unsupported", 502: "Fixture upstream response unverified"}
+                   501: "Fixture method unsupported", 502: "Fixture upstream response unverified",
+                   503: "Fixture evidence capacity exhausted"}
         super().send_error(code, reasons.get(code, "Fixture request refused"),
                            "The fixture refused the request without retaining its content.")
 
@@ -136,26 +157,23 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def forward(self):
         try:
             raw = self.request_body()
+            selected = self.server.reserve_record(self.command, self.path)
         except RequestRefused as error:
             self.refuse(error.status)
             return
-        with self.server.lock:
-            selected = self.server.armed == (self.command, self.path)
-            if selected:
-                self.server.armed = None
         try:
             status, headers, body = self.upstream_response(raw)
+            drop = selected and 200 <= status < 300
+            record = {"method": self.command, "path": self.path,
+                      "request_body_bytes": len(raw), "request_body_sha256": hashlib.sha256(raw).hexdigest(),
+                      "upstream_status": status, "upstream_complete": True,
+                      "upstream_body_bytes": len(body), "upstream_body_sha256": hashlib.sha256(body).hexdigest(),
+                      "dropped": drop}
         except (http.client.HTTPException, OSError, ValueError):
+            self.server.finish_record(None)
             self.refuse(502)
             return
-        drop = selected and 200 <= status < 300
-        record = {"method": self.command, "path": self.path,
-                  "request_body_bytes": len(raw), "request_body_sha256": hashlib.sha256(raw).hexdigest(),
-                  "upstream_status": status, "upstream_complete": True,
-                  "upstream_body_bytes": len(body), "upstream_body_sha256": hashlib.sha256(body).hexdigest(),
-                  "dropped": drop}
-        with self.server.lock:
-            self.server.records.append(record)
+        self.server.finish_record(record)
         self.close_connection = True
         try:
             if drop:
