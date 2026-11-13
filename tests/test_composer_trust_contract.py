@@ -526,6 +526,42 @@ class ComposerRuntimeSetupContractTest(unittest.TestCase):
         with self.assertRaisesRegex(PolicyError, "ambiguous"):
             self.check()
 
+    def test_sdk_unit_matrix_cannot_borrow_the_fixed_carbon_runtime_command(self):
+        repository = Path(__file__).resolve().parents[1]
+        catalog = json.loads((repository / "qualification/composer-container-trust.json").read_text())
+        # This fixture is the two actual proposed SDK runtime jobs. File identity
+        # has separate controls; this regression exercises only job/command scope.
+        catalog["requests"] = {}
+        document = yaml.safe_load((repository / "tests/fixtures/sdk-php-unit-runtime.yml").read_text())
+        policy = json.loads((repository / "qualification/policy.json").read_text())
+
+        def validate(candidate, recipes):
+            with (mock.patch("scripts.qualification_policy._composer_container_catalog", return_value=recipes),
+                  mock.patch("scripts.qualification_policy._require_composer_runtime_sources")):
+                return verify_composer_network_sinks(policy, "sdk-php", {"ci.yml": yaml.safe_dump(candidate)}, self.root)
+
+        self.assertTrue(validate(document, catalog))
+        changed = deepcopy(document)
+        setup = next(step for step in changed["jobs"]["test"]["steps"]
+                     if "setup-php-container.sh" in step.get("run", ""))
+        setup["run"] = catalog["runtime_setups"]["sdk-php-carbon-ci"]["commands"][0]
+        predecessor = deepcopy(catalog)
+        unit = predecessor["runtime_setups"]["sdk-php-unit-ci"]
+        carbon = predecessor["runtime_setups"].pop("sdk-php-carbon-ci")
+        unit["workflows"]["ci.yml"].append("carbon-2")
+        unit["commands"].extend(carbon["commands"])
+        self.assertTrue(validate(changed, predecessor), "The predecessor accepted the wrong runtime in the unit job.")
+        with self.assertRaises(PolicyError):
+            validate(changed, catalog)
+        changed["jobs"]["test"]["strategy"]["matrix"]["php"] = ["8.2", "8.4"]
+        self.assertTrue(validate(changed, predecessor), "The predecessor also lost the represented PHP8.1 cell.")
+        with self.assertRaises(PolicyError):
+            validate(changed, catalog)
+        changed = deepcopy(document)
+        changed["jobs"]["test"]["strategy"]["matrix"]["php"] = ["8.2", "8.4"]
+        with self.assertRaises(PolicyError):
+            validate(changed, catalog)
+
     def test_a_symlinked_build_input_directory_refuses_even_when_bytes_match(self):
         original = self.root / "docker/php"
         moved = self.root / "actual-build-input"
