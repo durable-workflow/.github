@@ -399,6 +399,12 @@ class WaterlineBuildMandatoryTrustContractTest(unittest.TestCase):
     def test_proposed_build_enumerates_all_guarded_requests(self):
         self.assertEqual(4, len(self.check(self.document)))
 
+    def test_proposed_build_accepts_canonical_git_checkout_permissions(self):
+        recipe = self.catalog["runtime_setups"]["waterline-php82-build"]
+        for name, expected in recipe["files"].items():
+            (self.root / name).chmod(0o755 if expected["mode"] & 0o100 else 0o644)
+        self.assertEqual(4, len(self.check(self.document)))
+
     def test_deleting_every_live_verifier_cannot_disable_enumeration(self):
         document = deepcopy(self.document)
         steps = document["jobs"]["build"]["steps"]
