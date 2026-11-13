@@ -1,0 +1,60 @@
+# Proposed caller for the Waterline PHP 8.2 runtime admission contract.
+jobs:
+  build:
+    needs:
+    - classify
+    - frontend
+    if: ${{ needs.classify.outputs.qualification-class == 'complete' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      with:
+        fetch-depth: 10
+        persist-credentials: false
+    - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+      with:
+        python-version: '3.13'
+    - name: Select authenticated dependency trust
+      uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7
+      with:
+        clients: pip,python,composer,curl,git
+    - name: Disable APT download retries (CVE-2026-109518)
+      run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries
+        >/dev/null
+    - name: Check out the fixed APT prerequisite
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      with:
+        repository: durable-workflow/.github
+        ref: 18783be6bef737cc778e4c7282a8797e39daa61a
+        path: .central-apt-source
+        persist-credentials: false
+    - name: Install the bound PHP 8.2 build runtime
+      run: bash "$GITHUB_WORKSPACE/scripts/ci/setup-php-container.sh" "8.2"
+    - name: Verify Composer configuration before requests
+      uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7
+    - name: Validate Composer manifest
+      run: composer validate --strict --no-check-all
+    - name: Cache Composer packages
+      if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name
+        == github.repository }}
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+      with:
+        path: vendor
+        key: ${{ github.event_name }}-${{ runner.os }}-php-8.2-${{ hashFiles('composer.json')
+          }}
+        restore-keys: '${{ github.event_name }}-${{ runner.os }}-php-8.2-
+
+          '
+    - name: Verify Composer after cache restoration
+      uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7
+    - name: Install maintained qualification dependencies
+      run: composer install --prefer-dist --no-progress --no-interaction
+    - name: Verify Composer before the dependency audit
+      uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7
+    - name: Audit qualification dependencies
+      run: composer audit --no-interaction
+    - name: Verify Composer before Workbench scaffolding
+      uses: durable-workflow/.github/.github/actions/verify-composer-trust@75587fc33ff40c34f32ef777293dad56bb6f48c7
+    - name: Build Laravel 12 Workbench scaffold
+      run: composer build

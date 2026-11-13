@@ -369,6 +369,51 @@ class BoundPhpComposerContractTest(ComposerNetworkContractTest):
             self.check(steps)
 
 
+class WaterlineBuildMandatoryTrustContractTest(unittest.TestCase):
+    def setUp(self):
+        repository = Path(__file__).resolve().parents[1]
+        self.policy = json.loads((repository / "qualification/policy.json").read_text())
+        self.document = yaml.safe_load((repository / "tests/fixtures/waterline-php82-build.yml").read_text())
+        self.catalog = json.loads((repository / "qualification/composer-container-trust.json").read_text())
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        # Source hashing is covered independently. Bind harmless local bytes so
+        # this regression tests the real target policy and proposed caller offline.
+        recipe = self.catalog["runtime_setups"]["waterline-php82-build"]
+        for name, expected in recipe["files"].items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("# reviewed runtime fixture\n")
+            path.chmod(expected["mode"])
+            expected["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        patch = mock.patch("scripts.qualification_policy._composer_container_catalog", return_value=self.catalog)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def check(self, document):
+        return verify_composer_network_sinks(
+            self.policy, "waterline", {"php.yml": yaml.safe_dump(document)}, self.root,
+        )
+
+    def test_proposed_build_enumerates_all_guarded_requests(self):
+        self.assertEqual(4, len(self.check(self.document)))
+
+    def test_deleting_every_live_verifier_cannot_disable_enumeration(self):
+        document = deepcopy(self.document)
+        steps = document["jobs"]["build"]["steps"]
+        document["jobs"]["build"]["steps"] = [
+            step for step in steps if "verify-composer-trust@" not in step.get("uses", "")
+        ]
+        with self.assertRaises(PolicyError):
+            self.check(document)
+
+    def test_guardless_build_cannot_opt_out_before_loading_the_catalog(self):
+        document = {"jobs": {"build": {"steps": [{"run": "composer install --no-interaction"}]}}}
+        with self.assertRaises(PolicyError):
+            self.check(document)
+
+
 class ComposerRuntimeSetupContractTest(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()

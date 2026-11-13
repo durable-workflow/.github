@@ -336,6 +336,7 @@
       ]
     },
     "waterline": {
+      "composer_trust_required": true,
       "branch": "main",
       "repository": "waterline",
       "workflows": [
