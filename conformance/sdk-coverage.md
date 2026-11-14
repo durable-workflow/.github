@@ -189,9 +189,13 @@ Default cleanup calls Compose down with volumes for the selected project.
 `--keep-stack` retains the stack for inspection. Retire that same stack after
 review, and remove this run's disposable results after recording the sanitized
 outcomes. Backend recovery alone does not qualify SDK workflow continuity.
-The audited c367 runner can [lose its JSON result when cleanup times out](https://github.com/durable-workflow/server/issues/325#issuecomment-6369070712).
-A missing result is incomplete qualification. This documentation change does
-not correct that runner defect.
+The historical c367 runner could [lose its JSON result when cleanup timed out](https://github.com/durable-workflow/server/issues/325#issuecomment-6369070712).
+[Server #700](https://github.com/durable-workflow/server/pull/700) merged the fix.
+The [repaired runner](https://github.com/durable-workflow/server/blob/c40707776ba0ae424985024d2ea341a6bdbe71c9/scripts/conformance/single-region-failover-published-artifacts.py#L2216-L2290)
+records cleanup failure separately and still writes the phase result. Check
+the selected runner's bytes rather than assuming an older published copy has
+that fix. A failed cleanup or a missing result remains incomplete qualification;
+the source repair alone is not a new failover result.
 
 ## Run the MCP operator loop
 
