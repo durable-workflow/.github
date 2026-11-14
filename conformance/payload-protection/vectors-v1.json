@@ -25,6 +25,8 @@
       "inner_plain_value_hex": "c301e2a33dff558022370e08026904ffffffffffffffffff01026d0e02026b0a027600026e0002750a4849c3b174c3ab726ec3a27469c3b46ec3a06c697ac3a67469c3b86e20e2988320f0908d8800",
       "ciphertext_and_tag_hex": "5dc3eddcad2dd82e117328c6c93bac17b4b8d75a0229e2147e1852b83faf9e535c70b6e62f670b11dfdde79a7e5590c903d421fb331d38ad69583351e69d8752c6493c0b66b9861daf7fd651d6ed097dd23b12f1a5be86cc6dd24eecb9163a",
       "outer_single_object_base64": "wwELpww/1sMRygIseGNoYWNoYTIwcG9seTEzMDUtaWV0Zhh2ZWN0b3Ita2V5LTEwAAECAwQFBgcICQoLDA0ODxAREhMUFRYXvgFdw+3crS3YLhFzKMbJO6wXtLjXWgIp4hR+GFK4P6+eU1xwtuYvZwsR393nmn5VkMkD1CH7Mx04rWlYM1HmnYdSxkk8C2a5hh2vf9ZR1u0JfdI7EvGlvobMbdJO7LkWOg==",
+      "decoded_outer_single_object_bytes": 169,
+      "external_object_encoding": "ascii-base64-no-whitespace",
       "external_object_ascii_bytes": 228,
       "external_object_sha256": "2647b8aa410b36f1de317bf0946052967585f79d7ea025e6fc9f2efc3967c6d3"
     }

@@ -80,6 +80,10 @@ class PayloadProtectionContractTest(unittest.TestCase):
         outer_ascii = vector["outer_single_object_base64"].encode("ascii")
         outer = base64.b64decode(outer_ascii, validate=True)
 
+        self.assertEqual(
+            "ascii-base64-no-whitespace", vector["external_object_encoding"]
+        )
+        self.assertEqual(vector["decoded_outer_single_object_bytes"], len(outer))
         self.assertEqual(vector["external_object_ascii_bytes"], len(outer_ascii))
         self.assertEqual(
             vector["external_object_sha256"], hashlib.sha256(outer_ascii).hexdigest()
@@ -187,6 +191,98 @@ class PayloadProtectionContractTest(unittest.TestCase):
             }.issubset(unsupported)
         )
         self.assertTrue(self.call_sites["plaintext_metadata"])
+
+    def test_every_call_site_has_exact_fields_and_representation(self) -> None:
+        revisions = set(self.call_sites["source_revisions"])
+        representations = set(self.call_sites["representations"])
+        self.assertEqual(
+            {
+                "inline_envelope",
+                "bare_inline_value",
+                "external_runtime_reference",
+                "external_embedded_reference",
+                "external_native_reference",
+                "protected_external_object",
+                "plain_json",
+            },
+            representations,
+        )
+
+        for boundary in self.call_sites["boundaries"]:
+            with self.subTest(boundary=boundary["name"]):
+                mappings = boundary["field_mappings"]
+                self.assertTrue(mappings)
+                bindings = [mapping["binding"] for mapping in mappings]
+                self.assertEqual(len(bindings), len(set(bindings)))
+                self.assertTrue(set(bindings).issubset(revisions))
+                for mapping in mappings:
+                    self.assertTrue(mapping["anchors"])
+                    self.assertTrue(mapping["fields"])
+                    self.assertTrue(
+                        all(isinstance(value, str) and value for value in mapping["anchors"])
+                    )
+                    self.assertTrue(
+                        all(isinstance(value, str) and value for value in mapping["fields"])
+                    )
+                    if boundary["status"] == "protected":
+                        self.assertIn(mapping["inline"], representations)
+                        external = mapping["external"]
+                        self.assertTrue(external is None or external in representations)
+                    else:
+                        self.assertIsInstance(mapping["representation"], str)
+                        self.assertTrue(mapping["representation"])
+
+        protected = [
+            boundary
+            for boundary in self.call_sites["boundaries"]
+            if boundary["status"] == "protected"
+        ]
+        for boundary in protected:
+            self.assertEqual(revisions, {item["binding"] for item in boundary["field_mappings"]})
+
+    def test_inventory_closes_plaintext_shadows_and_binding_mistakes(self) -> None:
+        boundaries = {
+            boundary["name"]: boundary for boundary in self.call_sites["boundaries"]
+        }
+        query = boundaries["query result"]
+        update = boundaries["update result"]
+        self.assertIn("plaintext", query["strict_notes"])
+        self.assertIn("raw fallback", query["strict_notes"])
+        self.assertIn("plaintext", update["strict_notes"])
+        self.assertIn("raw", update["strict_notes"])
+
+        all_anchors = [
+            anchor
+            for boundary in self.call_sites["boundaries"]
+            for mapping in boundary["field_mappings"]
+            for anchor in mapping["anchors"]
+        ]
+        self.assertFalse(any(anchor.startswith("server:app/") for anchor in all_anchors))
+        self.assertFalse(any("Worker.php::queryContext" in anchor for anchor in all_anchors))
+
+        workflow_query = next(
+            item for item in boundaries["query input"]["field_mappings"]
+            if item["binding"] == "workflow"
+        )
+        self.assertEqual("plain_json", workflow_query["inline"])
+        self.assertIsNone(workflow_query["external"])
+
+        native_signal = next(
+            item for item in boundaries["signal input"]["field_mappings"]
+            if item["binding"] == "server"
+        )
+        self.assertIn("SignalApplied payload.value", native_signal["fields"])
+        self.assertNotIn("SignalApplied payload.arguments", native_signal["fields"])
+
+        native_external = next(
+            item
+            for item in boundaries["external payload object for a supported boundary"]["field_mappings"]
+            if item["binding"] == "server"
+        )
+        self.assertEqual("external_native_reference", native_external["external"])
+        self.assertTrue(
+            any("dw-native-external-payload-v1" in field for field in native_external["fields"])
+        )
 
 
 if __name__ == "__main__":

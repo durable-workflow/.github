@@ -7,279 +7,210 @@
     "workflow": "8bb05a6368b4046602fcae2fdd3a075f36dbf3ae",
     "server": "00f20996a18d4795fa0a09319470df1f5160c079"
   },
+  "representations": {
+    "inline_envelope": "JSON object {codec:\"avro\",blob:<canonical base64 text of one complete Avro single-object Value>}",
+    "bare_inline_value": "canonical base64 text of one complete Avro single-object Value without a surrounding envelope",
+    "external_runtime_reference": "JSON object {codec:\"avro\",external_payload:{schema,codec,reference_id,size_bytes,sha256}} whose object body is the exact ASCII base64 blob text",
+    "external_embedded_reference": "database text dw-external-payload:v1:<encoded reference>; history uses {codec,external_storage}",
+    "external_native_reference": "wire object {codec:\"avro\",external_payload:<reference>}; persisted payload text dw-native-external-payload-v1:<reference JSON>",
+    "protected_external_object": "exact ASCII bytes of canonical base64 text for the complete ProtectedValue single-object frame, with no whitespace or trailing newline",
+    "plain_json": "ordinary JSON document value with no portable Value envelope"
+  },
+  "global_requirements": [
+    "Protected is a v1 requirement, not a claim that a pinned implementation already encrypts payloads.",
+    "Protection is boundary-aware; diagnostic kind strings, generic codec hooks and external-upload allowlists are not AAD or protection admission.",
+    "Strict enabled mode suppresses every parallel plaintext projection and refuses every raw fallback for a protected boundary.",
+    "Unsupported boundaries refuse before encoding or upload even when their current transport happens to use an Avro Value envelope.",
+    "Absent optional arguments retain omission semantics and do not create an empty protected value."
+  ],
   "boundaries": [
     {
-      "name": "workflow input",
-      "status": "protected",
-      "boundary_kind": "workflow_input",
-      "namespace_authority": "destination workflow namespace",
-      "write_sites": [
-        "SDK client start and schedule input",
-        "workflow child start",
-        "workflow continue-as-new"
+      "name": "workflow input", "status": "protected", "boundary_kind": "workflow_input", "namespace_authority": "destination workflow namespace",
+      "field_mappings": [
+        {"binding":"sdk-python","anchors":["src/durable_workflow/client.py:4052,1383,5403","src/durable_workflow/workflow.py:1268,1140","src/durable_workflow/worker.py:3921"],"fields":["POST /workflows input","schedule action.input","child/continue commands[].arguments","task.arguments"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"sdk-php","anchors":["src/Client.php:522","src/Model/ScheduleAction.php:23","src/Worker/WorkflowCommand.php:910","src/Worker.php:1920,4534"],"fields":["start input","schedule action.input","child/continue commands[].arguments","task.arguments"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"sdk-rust","anchors":["src/lib.rs:3320,16660,12242,17036"],"fields":["start input","child/continue commands[].arguments","task.arguments"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"workflow","anchors":["src/V2/WorkflowStub.php:1872,2158","src/V2/Support/WorkflowExecutor.php:2921,3932"],"fields":["workflow_runs.arguments/payload_codec","workflow_commands.payload","child/continued workflow_runs.arguments"],"inline":"bare_inline_value","external":"external_embedded_reference"},
+        {"binding":"server","anchors":["rust/src/runtime/execution.rs::Runtime::start","rust/src/runtime/store.rs::Store::start_in","rust/src/runtime/schedule_storage.rs::Store::create_schedule","rust/src/runtime/schedule_execution.rs::Store::start_scheduled","rust/src/runtime/children.rs::Store::start_child","rust/src/runtime/continuations.rs::Store::continue_run"],"fields":["direct input","schedule action.input","child/continue commands[].arguments","task.arguments","workflow_runs.arguments/payload_codec","workflow_commands.payload","workflow_schedules.action.input","ScheduleCreated payload.action.input"],"inline":"inline_envelope","external":"external_native_reference"}
       ],
-      "read_sites": [
-        "workflow task entry arguments",
-        "child workflow task entry arguments"
-      ],
-      "source_anchors": [
-        "sdk-python:src/durable_workflow/client.py::_payload_envelope",
-        "sdk-python:src/durable_workflow/workflow.py::_payload_envelope",
-        "sdk-php:src/Client.php::startWorkflow",
-        "sdk-php:src/Worker/WorkflowCommand.php::toWire",
-        "workflow:src/Serializers/Serializer.php",
-        "workflow:src/V2/WorkflowStub.php",
-        "server:app/Http/Controllers/Api/WorkflowController.php::start",
-        "server:app/Http/Controllers/Api/WorkerController.php::completeWorkflowTask"
-      ],
-      "notes": "Direct starts, scheduled starts, child starts and continue-as-new deliberately share one AAD kind."
+      "notes": "Direct, scheduled, child and continue-as-new starts share one AAD kind. SDK diagnostic labels map to workflow_input; they are not AAD themselves. Native offload is path-specific and does not create a uniform WorkflowStarted.arguments field."
     },
     {
-      "name": "workflow result",
-      "status": "protected",
-      "boundary_kind": "workflow_result",
-      "namespace_authority": "owning workflow run namespace",
-      "write_sites": [
-        "workflow completion command"
-      ],
-      "read_sites": [
-        "client result read",
-        "parent child-result resolution"
-      ],
-      "source_anchors": [
-        "sdk-python:src/durable_workflow/worker.py",
-        "sdk-python:src/durable_workflow/client.py",
-        "sdk-php:src/Worker.php",
-        "workflow:src/V2/WorkflowStub.php",
-        "server:app/Http/Controllers/Api/WorkerController.php::completeWorkflowTask"
+      "name": "workflow result", "status": "protected", "boundary_kind": "workflow_result", "namespace_authority": "owning workflow run namespace",
+      "field_mappings": [
+        {"binding":"sdk-python","anchors":["src/durable_workflow/workflow.py:1000,3248","src/durable_workflow/client.py:4109,5358"],"fields":["complete_workflow result","describe output_envelope","WorkflowCompleted payload.output","ChildRunCompleted payload.result/output"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"sdk-php","anchors":["src/Worker/Replayer.php:3955,3502","src/Client.php:3388"],"fields":["complete_workflow commands[].result","terminal payload.output/result","child result"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"sdk-rust","anchors":["src/lib.rs:10290,6919,6584,17153"],"fields":["complete_workflow commands[].result","describe output_envelope/output","WorkflowCompleted payload.output","ChildRunCompleted payload.result/output"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"workflow","anchors":["src/V2/Support/WorkflowExecutor.php:4387","src/V2/WorkflowStub.php"],"fields":["workflow_runs.output/output_payload_codec","WorkflowCompleted payload.output/payload_codec"],"inline":"bare_inline_value","external":"external_embedded_reference"},
+        {"binding":"server","anchors":["rust/src/runtime/store.rs::Store::complete_or_checkpoint_in","rust/src/runtime/children.rs::Store::resolve_child","rust/src/runtime/run_describe.rs","rust/src/runtime/history_presentation.rs"],"fields":["complete_workflow result","workflow_runs.output","WorkflowCompleted payload.output","ChildRunCompleted payload.output/result","describe output_envelope"],"inline":"inline_envelope","external":"external_native_reference"}
       ]
     },
     {
-      "name": "activity input",
-      "status": "protected",
-      "boundary_kind": "activity_input",
-      "namespace_authority": "owning workflow run namespace",
-      "write_sites": [
-        "ordinary durable schedule-activity command"
+      "name": "activity input", "status": "protected", "boundary_kind": "activity_input", "namespace_authority": "owning workflow run namespace",
+      "field_mappings": [
+        {"binding":"sdk-python","anchors":["src/durable_workflow/workflow.py:717","src/durable_workflow/worker.py:3516"],"fields":["schedule_activity arguments","task.arguments"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"sdk-php","anchors":["src/Worker/WorkflowCommand.php:910","src/Worker.php:3335,4534"],"fields":["schedule_activity commands[].arguments","task.arguments"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"sdk-rust","anchors":["src/lib.rs:15853,17036"],"fields":["schedule_activity arguments","task.arguments"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"workflow","anchors":["src/V2/Support/WorkflowExecutor.php:2686","src/V2/Support/ActivitySnapshot.php:52"],"fields":["activity_executions.arguments/payload_codec","ActivityScheduled payload.activity.arguments"],"inline":"bare_inline_value","external":"external_embedded_reference"},
+        {"binding":"server","anchors":["rust/src/runtime/store.rs::Store::apply_non_terminal","rust/src/runtime/store.rs::Store::activity_payload_with_completion"],"fields":["schedule_activity arguments","activity_executions.arguments","ActivityScheduled payload.activity.arguments","activity task arguments"],"inline":"inline_envelope","external":"external_native_reference"}
       ],
-      "read_sites": [
-        "ordinary activity task arguments"
-      ],
-      "source_anchors": [
-        "sdk-python:src/durable_workflow/workflow.py",
-        "sdk-php:src/Worker/WorkflowCommand.php::activity",
-        "sdk-php:src/Worker.php::decodeArguments",
-        "workflow:src/V2/Models/ActivityExecution.php",
-        "server:app/Http/Controllers/Api/WorkerController.php::completeWorkflowTask"
-      ],
-      "notes": "This row does not admit local, prepared or external-task variants; those remain separate unsupported rows."
+      "notes": "Only ordinary durable activity tasks are admitted; local, prepared and other external tasks remain unsupported."
     },
     {
-      "name": "activity result",
-      "status": "protected",
-      "boundary_kind": "activity_result",
-      "namespace_authority": "owning workflow run namespace",
-      "write_sites": [
-        "ordinary activity-task completion"
-      ],
-      "read_sites": [
-        "activity-completed history replay"
-      ],
-      "source_anchors": [
-        "sdk-python:src/durable_workflow/client.py::complete_activity_task",
-        "sdk-php:src/Client.php::completeActivityTask",
-        "workflow:src/V2/Events/ActivityCompleted.php",
-        "server:app/Http/Controllers/Api/ActivityResultController.php"
+      "name": "activity result", "status": "protected", "boundary_kind": "activity_result", "namespace_authority": "owning workflow run namespace",
+      "field_mappings": [
+        {"binding":"sdk-python","anchors":["src/durable_workflow/client.py:6789","src/durable_workflow/workflow.py:3248"],"fields":["activity completion result","ActivityCompleted payload.result/output"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"sdk-php","anchors":["src/Client.php:2645-2684","src/Worker/Replayer.php:1870,3502"],"fields":["activity completion result","ActivityCompleted payload.result"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"sdk-rust","anchors":["src/lib.rs:5026,18934"],"fields":["activity completion result","ActivityCompleted payload.result/payload_codec"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"workflow","anchors":["src/V2/Support/ActivityOutcomeRecorder.php:235,342"],"fields":["activity_executions.result/payload_codec","ActivityCompleted payload.result","ActivityCompleted payload.activity.result"],"inline":"bare_inline_value","external":"external_embedded_reference"},
+        {"binding":"server","anchors":["rust/src/runtime/execution.rs::Runtime::complete_activity","rust/src/runtime/store.rs::Store::complete_activity_in","rust/src/runtime/activity_completion_uploads.rs","rust/src/runtime/activity_results.rs"],"fields":["activity completion result","activity_executions.result/payload_codec","ActivityCompleted payload.result","result_envelope"],"inline":"inline_envelope","external":"external_native_reference"}
       ]
     },
     {
-      "name": "signal input",
-      "status": "protected",
-      "boundary_kind": "signal_input",
-      "namespace_authority": "target workflow namespace",
-      "write_sites": [
-        "client signal",
-        "workflow signal command"
+      "name": "signal input", "status": "protected", "boundary_kind": "signal_input", "namespace_authority": "target workflow namespace",
+      "field_mappings": [
+        {"binding":"sdk-python","anchors":["src/durable_workflow/client.py:4873,4917","src/durable_workflow/workflow.py:3274"],"fields":["signal input","SignalReceived/SignalApplied value/input/arguments"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"sdk-php","anchors":["src/Client.php:1065","src/Worker/WorkflowContext.php:887"],"fields":["signal input","history value/input/arguments"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"sdk-rust","anchors":["src/lib.rs:3479,17046,19577"],"fields":["signal input","task signal_arguments","history value/input/arguments"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"workflow","anchors":["src/V2/WorkflowStub.php:4572,3449"],"fields":["workflow_signals.arguments/payload_codec","workflow_commands.payload","SignalReceived payload.arguments/payload_codec"],"inline":"bare_inline_value","external":"external_embedded_reference"},
+        {"binding":"server","anchors":["rust/src/runtime/execution.rs::Runtime::signal_command","rust/src/runtime/store.rs::Store::signal/record_accepted_signal/apply_task_signal","rust/src/runtime/signal_payloads.rs"],"fields":["signal input","workflow_signal_records.arguments","workflow_commands.payload","SignalReceived payload.arguments","SignalApplied payload.value"],"inline":"inline_envelope","external":"external_native_reference"}
       ],
-      "read_sites": [
-        "workflow signal history delivery"
+      "notes": "The pinned Python, PHP and Rust SDKs have no workflow-originated cross-workflow signal helper; this row does not claim that missing capability."
+    },
+    {
+      "name": "update input", "status": "protected", "boundary_kind": "update_input", "namespace_authority": "target workflow namespace",
+      "field_mappings": [
+        {"binding":"sdk-python","anchors":["src/durable_workflow/client.py:5157","src/durable_workflow/workflow.py:3304"],"fields":["update input","accepted-history/task arguments"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"sdk-php","anchors":["src/Client.php:1265","src/Worker.php:3902"],"fields":["update input","accepted-history/task arguments"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"sdk-rust","anchors":["src/lib.rs:3866,10488"],"fields":["update input","accepted-history/task arguments"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"workflow","anchors":["src/V2/WorkflowStub.php:2857,2927","src/V2/Support/WorkflowExecutor.php:6727"],"fields":["workflow_updates.arguments/payload_codec","UpdateAccepted payload.arguments","UpdateApplied payload.arguments"],"inline":"bare_inline_value","external":null},
+        {"binding":"server","anchors":["rust/src/runtime/execution.rs::Runtime::update_command","rust/src/runtime/updates.rs::Store::update_workflow","rust/src/runtime/update_validation.rs"],"fields":["update input","worker/update arguments","workflow_updates.arguments","workflow_commands.payload","UpdateAccepted/UpdateApplied payload.arguments"],"inline":"inline_envelope","external":null}
       ],
-      "source_anchors": [
-        "sdk-python:src/durable_workflow/client.py::signal_workflow",
-        "sdk-php:src/Client.php::signalWorkflow",
-        "workflow:src/V2/Models/WorkflowSignal.php",
-        "server:app/Http/Controllers/Api/WorkflowController.php::signal"
+      "notes": "The embedded Workflow producer admits update input inline only; do not infer symmetric offload from update result."
+    },
+    {
+      "name": "update result", "status": "protected", "boundary_kind": "update_result", "namespace_authority": "owning workflow run namespace",
+      "field_mappings": [
+        {"binding":"sdk-python","anchors":["src/durable_workflow/workflow.py:1071","src/durable_workflow/client.py:2959,5190"],"fields":["complete_update result","receipt result_envelope","retained result projection"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"sdk-php","anchors":["src/Worker.php:3903","src/Client.php:1170,3376"],"fields":["complete_update commands[].result","result_envelope","raw result fallback"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"sdk-rust","anchors":["src/lib.rs:10510","src/update_outcome.rs:185"],"fields":["complete_update result","receipt/outcome result_envelope","raw result fallback"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"workflow","anchors":["src/V2/Support/WorkflowExecutor.php:6746","src/V2/Models/WorkflowUpdate.php:120"],"fields":["workflow_updates.result","UpdateCompleted payload.result"],"inline":"bare_inline_value","external":"external_embedded_reference"},
+        {"binding":"server","anchors":["rust/src/runtime/updates.rs::Store::apply_update","rust/src/runtime/terminal_updates.rs","rust/src/runtime/update_summary.rs"],"fields":["complete_update result","workflow_updates.result","UpdateCompleted payload.result","result_envelope/result response"],"inline":"inline_envelope","external":null}
+      ],
+          "strict_notes": "Suppress every plaintext result projection and raw fallback, and require authenticated envelope decoding; current readers can otherwise bypass the envelope when result is non-null."
+    },
+    {
+      "name": "query input", "status": "protected", "boundary_kind": "query_input", "namespace_authority": "target workflow namespace",
+      "field_mappings": [
+        {"binding":"sdk-python","anchors":["src/durable_workflow/client.py:4967","src/durable_workflow/worker.py:3921"],"fields":["query input","query task arguments"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"sdk-php","anchors":["src/Client.php:1103","src/Worker.php:3674"],"fields":["query input","task.query_arguments/task.arguments"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"sdk-rust","anchors":["src/lib.rs:3783","src/lib.rs::Worker::execute_query_task_with_authority"],"fields":["query input","query task arguments"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"workflow","anchors":["src/V2/WorkflowStub.php:820","src/V2/Support/QueryStateReplayer.php:34"],"fields":["in-memory validated PHP arguments"],"inline":"plain_json","external":null},
+        {"binding":"server","anchors":["rust/src/runtime/execution.rs::Runtime::query_workflow","rust/src/runtime/queries.rs::Store::query_workflow","rust/src/runtime/query_poll_requests.rs"],"fields":["query input","dw_query_cache.value.query_arguments","query claim query_arguments"],"inline":"inline_envelope","external":null}
+      ],
+      "notes": "The embedded Workflow binding is in-memory read-only replay with no durable query-task input field; native query-task transport is distinct."
+    },
+    {
+      "name": "query result", "status": "protected", "boundary_kind": "query_result", "namespace_authority": "owning workflow run namespace",
+      "field_mappings": [
+        {"binding":"sdk-python","anchors":["src/durable_workflow/client.py:6591,6625,2959"],"fields":["complete_query_task result_envelope","plaintext result projection","response raw fallback"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"sdk-php","anchors":["src/Client.php:2865,3376"],"fields":["completeQueryTask result_envelope","plaintext result projection","response raw fallback"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"sdk-rust","anchors":["src/lib.rs:4531,3762,3750"],"fields":["complete query result_envelope","plaintext result projection","Value-reader raw fallback"],"inline":"inline_envelope","external":"external_runtime_reference"},
+        {"binding":"workflow","anchors":["src/V2/Support/QueryStateReplayer.php:40","src/V2/Support/QueryResponse.php:68"],"fields":["in-memory PHP return value","HTTP result"],"inline":"plain_json","external":null},
+        {"binding":"server","anchors":["rust/src/runtime/queries.rs::Store::finish_query/query_outcome","rust/src/runtime/execution.rs::complete_query"],"fields":["worker result_envelope","plaintext result alias","dw_query_cache.value.result_envelope/result","query response result_envelope/result"],"inline":"inline_envelope","external":null}
+      ],
+      "strict_notes": "Omit or refuse the JSON-compatible plaintext result and every raw fallback. Encrypting only result_envelope leaks the result and permits a strict-reader bypass."
+    },
+    {
+      "name": "side-effect result", "status": "protected", "boundary_kind": "side_effect_result", "namespace_authority": "owning workflow run namespace",
+      "field_mappings": [
+        {"binding":"sdk-python","anchors":["src/durable_workflow/workflow.py:1177,554,3248","src/durable_workflow/client.py:2536"],"fields":["record_side_effect result","SideEffectRecorded payload.result"],"inline":"bare_inline_value","external":"external_runtime_reference"},
+        {"binding":"sdk-php","anchors":["src/Worker/WorkflowCommand.php:917","src/Worker/Replayer.php:3502"],"fields":["record_side_effect commands[].result","SideEffectRecorded payload.result"],"inline":"bare_inline_value","external":"external_runtime_reference"},
+        {"binding":"sdk-rust","anchors":["src/lib.rs:11674","recorded command/history readers"],"fields":["record_side_effect result","SideEffectRecorded payload.result"],"inline":"bare_inline_value","external":"external_runtime_reference"},
+        {"binding":"workflow","anchors":["src/V2/Support/WorkflowExecutor.php:5582"],"fields":["SideEffectRecorded payload.result"],"inline":"bare_inline_value","external":"external_embedded_reference"},
+        {"binding":"server","anchors":["rust/src/runtime/mod.rs::side_effect_result","rust/src/runtime/store.rs::Store::apply_non_terminal"],"fields":["record_side_effect result/payload_codec","SideEffectRecorded payload.result"],"inline":"bare_inline_value","external":null}
+      ],
+      "notes": "The inline field is a bare base64 Value string in several bindings, not uniformly {codec,blob}."
+    },
+    {
+      "name": "external payload object for a supported boundary", "status": "protected", "boundary_kind": "inherited", "namespace_authority": "inherited from the logical boundary",
+      "field_mappings": [
+        {"binding":"sdk-python","anchors":["src/durable_workflow/serializer.py:287,448","src/durable_workflow/client.py:2536,2570,2790"],"fields":["external object body","external_payload size/hash"],"inline":"protected_external_object","external":"external_runtime_reference"},
+        {"binding":"sdk-php","anchors":["src/Transport/RuntimePayloadUploads.php:296,426,586","src/Transport/RuntimePayloads.php:150"],"fields":["external object body","external_payload size/hash"],"inline":"protected_external_object","external":"external_runtime_reference"},
+        {"binding":"sdk-rust","anchors":["src/runtime_uploads.rs:149","src/runtime_payloads.rs:34"],"fields":["external object body","external_payload size/hash"],"inline":"protected_external_object","external":"external_runtime_reference"},
+        {"binding":"workflow","anchors":["src/V2/Support/ExternalPayloads.php:17,36,143,161","src/V2/Support/ExternalPayloadStorage.php:26,38"],"fields":["stored object bytes","DB external reference","history external_storage reference"],"inline":"protected_external_object","external":"external_embedded_reference"},
+        {"binding":"server","anchors":["rust/src/runtime/external_resolution.rs::PreparedExternal::blob/stored/stored_envelope","rust/src/runtime/external_registry.rs","rust/src/runtime/external_transport.rs"],"fields":["runtime_external_payloads metadata","UTF-8 Avro blob object bytes","external_payload reference","dw-native-external-payload-v1 persisted text"],"inline":"protected_external_object","external":"external_native_reference"}
+      ],
+      "notes": "Protect before size/offload selection. Size and SHA-256 cover ASCII base64 object bytes; verify before strict base64 decoding and decryption. Storage does not change the inherited AAD kind."
+    },
+    {
+      "name": "activity heartbeat details", "status": "unsupported_refuse", "boundary_kind": null, "namespace_authority": "none until a portable envelope replaces raw JSON",
+      "field_mappings": [
+        {"binding":"sdk-python","anchors":["src/durable_workflow/client.py:7050"],"fields":["heartbeat body details"],"representation":"plain_json"},
+        {"binding":"sdk-php","anchors":["src/Client.php:2735","src/Worker.php:4133"],"fields":["heartbeat body details"],"representation":"plain_json"},
+        {"binding":"sdk-rust","anchors":["src/lib.rs::Client::heartbeat_activity_task_value","src/lib.rs::ActivityContext::heartbeat"],"fields":["heartbeat body details"],"representation":"plain_json"},
+        {"binding":"workflow","anchors":["src/V2/Activity.php:109","src/V2/Support/ActivityHeartbeatHistory.php:37","src/V2/Support/HeartbeatProgress.php:23"],"fields":["activity_attempts.last_heartbeat_progress","ActivityHeartbeatRecorded payload.progress"],"representation":"plain_json"},
+        {"binding":"server","anchors":["rust/src/runtime/activity_heartbeats.rs"],"fields":["heartbeat details/progress"],"representation":"plain_json"}
       ]
     },
     {
-      "name": "update input",
-      "status": "protected",
-      "boundary_kind": "update_input",
-      "namespace_authority": "target workflow namespace",
-      "write_sites": [
-        "client update admission"
-      ],
-      "read_sites": [
-        "workflow update validation and handler"
-      ],
-      "source_anchors": [
-        "sdk-python:src/durable_workflow/client.py",
-        "sdk-php:src/Client.php::updateWorkflow",
-        "workflow:src/V2/Models/WorkflowUpdate.php",
-        "server:app/Http/Controllers/Api/WorkflowController.php::update"
+      "name": "workflow message stream item", "status": "unsupported_refuse", "boundary_kind": null, "namespace_authority": "none until stream framing and replay semantics are specified",
+      "field_mappings": [
+        {"binding":"sdk-python","anchors":["src/durable_workflow/client.py:4526,4943","src/durable_workflow/workflow.py:2638"],"fields":["items[].payload","stream input","workflow_stream.items[].payload"],"representation":"mixed Value envelopes/references"},
+        {"binding":"sdk-php","anchors":["src/Client.php:941,1086","src/Model/WorkflowStreamAppendItem.php:22"],"fields":["items[].payload/payload_reference","stream input"],"representation":"mixed Value envelopes/references"},
+        {"binding":"sdk-rust","anchors":["src/lib.rs::Client::append_message_stream","src/lib.rs::WorkflowStreamAppendItem"],"fields":["input","items[].payload/payload_envelope/opaque reference"],"representation":"mixed Value envelopes/references"},
+        {"binding":"workflow","anchors":["src/V2/MessageStream.php:159","src/V2/Support/MessageService.php:99"],"fields":["workflow_messages.payload_reference","JSON metadata"],"representation":"separate referenced bytes"},
+        {"binding":"server","anchors":["rust/src/runtime/message_streams.rs","rust/src/runtime/workflow_streams.rs"],"fields":["stream item payload/payload_reference"],"representation":"mixed Value envelopes/references"}
       ]
     },
     {
-      "name": "update result",
-      "status": "protected",
-      "boundary_kind": "update_result",
-      "namespace_authority": "owning workflow run namespace",
-      "write_sites": [
-        "workflow complete-update command"
-      ],
-      "read_sites": [
-        "client completion-wait and retained update outcome"
-      ],
-      "source_anchors": [
-        "sdk-python:src/durable_workflow/workflow.py",
-        "sdk-php:src/Client.php::updateOutcome",
-        "sdk-rust:src/update_outcome.rs",
-        "server:app/Support/ExternalWorkflowUpdateAdmission.php"
+      "name": "Nexus request or result", "status": "unsupported_refuse", "boundary_kind": null, "namespace_authority": "none until caller and target namespace binding is specified",
+      "field_mappings": [
+        {"binding":"sdk-python","anchors":["src/durable_workflow/client.py:3318,3356","src/durable_workflow/workflow.py:1371,3051"],"fields":["service arguments","request_payload","response_payload"],"representation":"Value envelopes/references"},
+        {"binding":"sdk-php","anchors":["src/Client.php:3488","src/Worker/WorkflowCommand.php:906"],"fields":["arguments/payload_codec","request_payload"],"representation":"bare Value or envelope"},
+        {"binding":"sdk-rust","anchors":["src/nexus.rs::NexusServiceCall::poll_avro_value"],"fields":["request_payload","response_payload"],"representation":"Value envelopes/references"},
+        {"binding":"workflow","anchors":["src/V2/Support/WorkflowExecutor.php:6135,6332","src/V2/Support/ServiceCallWorkflowDelivery.php:243"],"fields":["request_payload","response_payload","response_or_failure_surface"],"representation":"Value envelopes/references"},
+        {"binding":"server","anchors":["rust/src/runtime/nexus_operations.rs","rust/src/runtime/service_calls.rs"],"fields":["request_payload","response_payload"],"representation":"Value envelopes/references"}
       ]
     },
     {
-      "name": "query input",
-      "status": "protected",
-      "boundary_kind": "query_input",
-      "namespace_authority": "target workflow namespace",
-      "write_sites": [
-        "client query request"
-      ],
-      "read_sites": [
-        "workflow query task arguments"
-      ],
-      "source_anchors": [
-        "sdk-python:src/durable_workflow/client.py::query_workflow",
-        "sdk-php:src/Client.php::queryWorkflow",
-        "sdk-php:src/Worker.php::queryContext",
-        "server:app/Http/Controllers/Api/WorkflowController.php::query",
-        "server:app/Support/WorkflowQueryTaskBroker.php::query"
+      "name": "local or prepared activity payload", "status": "unsupported_refuse", "boundary_kind": null, "namespace_authority": "none until every local/prepared persistence path uses the portable envelope",
+      "field_mappings": [
+        {"binding":"sdk-python","anchors":["src/durable_workflow/workflow.py:861,889"],"fields":["local arguments/result/marker"],"representation":"Value envelopes/references"},
+        {"binding":"sdk-php","anchors":["src/Worker/WorkflowCommand.php:473","src/Worker/PreparedLocalActivityRunner.php:154"],"fields":["descriptor.arguments","report.result"],"representation":"Value envelopes/references"},
+        {"binding":"sdk-rust","anchors":["src/lib.rs::ActivityCall","src/local_activity.rs","src/runtime_uploads.rs::payload_paths"],"fields":["local arguments/results/heartbeat reports"],"representation":"Value envelopes/references"},
+        {"binding":"workflow","anchors":["src/V2/Support/LocalActivityExecutor.php:746,1041,1281"],"fields":["local execution arguments/result","ActivityCompleted payload"],"representation":"codec blobs/external references"},
+        {"binding":"server","anchors":["rust/src/runtime/local_activities.rs","rust/src/runtime/prepared_local.rs"],"fields":["local/prepared arguments/result/report"],"representation":"Value envelopes/references"}
       ]
     },
     {
-      "name": "query result",
-      "status": "protected",
-      "boundary_kind": "query_result",
-      "namespace_authority": "owning workflow run namespace",
-      "write_sites": [
-        "workflow complete-query-task"
-      ],
-      "read_sites": [
-        "client query response"
-      ],
-      "source_anchors": [
-        "sdk-python:src/durable_workflow/client.py::complete_query_task",
-        "sdk-php:src/Worker.php",
-        "sdk-rust:src/metrics/routes.rs",
-        "server:app/Http/Controllers/Api/WorkerController.php::completeQueryTask",
-        "server:app/Support/WorkflowQueryTaskBroker.php::complete"
+      "name": "external task payload outside ordinary activity envelope", "status": "unsupported_refuse", "boundary_kind": null, "namespace_authority": "none until proven to reuse an admitted activity boundary",
+      "field_mappings": [
+        {"binding":"workflow","anchors":["src/V2/Support/ExternalTaskInput.php:41"],"fields":["payloads[] transport objects"],"representation":"unproven task-specific transport"},
+        {"binding":"server","anchors":["rust/src/runtime/external_transport.rs"],"fields":["unmapped external task body"],"representation":"unproven task-specific transport"}
       ]
     },
     {
-      "name": "side-effect result",
-      "status": "protected",
-      "boundary_kind": "side_effect_result",
-      "namespace_authority": "owning workflow run namespace",
-      "write_sites": [
-        "workflow record-side-effect command"
+      "name": "failure details", "status": "unsupported_refuse", "boundary_kind": null, "namespace_authority": "none until every producer/reader shares one portable envelope",
+      "field_mappings": [
+        {"binding":"sdk-python","anchors":["src/durable_workflow/client.py:6845"],"fields":["failure.details","message/type/stack"],"representation":"optional Value details plus plaintext metadata"},
+        {"binding":"sdk-php","anchors":["src/Client.php:2706"],"fields":["failure.details","message/type/stack/diagnostics"],"representation":"optional Value details plus plaintext metadata"},
+        {"binding":"sdk-rust","anchors":["src/lib.rs::Client::fail_activity_task_with_failure","src/lib.rs::Client::fail_workflow_task_with_failure","src/failure_reporting.rs"],"fields":["failure details","message/type/stack"],"representation":"optional Value details plus plaintext metadata"},
+        {"binding":"workflow","anchors":["src/V2/Support/FailureFactory.php:46","src/V2/Models/WorkflowFailure.php:15","src/V2/Support/ActivityOutcomeRecorder.php:265"],"fields":["workflow_failures fields","activity exception snapshot"],"representation":"plaintext fields plus selected codec snapshot"},
+        {"binding":"server","anchors":["rust/src/runtime/activity_failures.rs","rust/src/runtime/task_failures.rs","rust/src/runtime/workflow_failures.rs"],"fields":["failure details","message/type/stack"],"representation":"optional Value details plus plaintext metadata"}
       ],
-      "read_sites": [
-        "workflow history replay"
+      "notes": "Messages, stacks and exception types remain plaintext metadata; v1 must not partially protect an ad hoc details field."
+    },
+    {
+      "name": "raw JSON or generic binary payload", "status": "unsupported_refuse", "boundary_kind": null, "namespace_authority": "none",
+      "field_mappings": [
+        {"binding":"sdk-python","anchors":["src/durable_workflow/serializer.py:193","HTTP document transport"],"fields":["untyped raw JSON/binary body"],"representation":"plain_json"},
+        {"binding":"sdk-php","anchors":["src/Client.php:2959","src/Codec/AvroPayloadCodec.php:57"],"fields":["untyped raw JSON/binary body"],"representation":"plain_json"},
+        {"binding":"sdk-rust","anchors":["src/raw_request.rs:104","Client::send_raw_request/control_plane_request/worker_plane_request"],"fields":["raw body bytes/JSON"],"representation":"uninterpreted raw transport"},
+        {"binding":"workflow","anchors":["JSON history/task metadata and arbitrary HTTP bodies"],"fields":["untyped raw JSON/binary body"],"representation":"plain_json"},
+        {"binding":"server","anchors":["rust/src/runtime/json_body.rs","rust/src/runtime/http.rs"],"fields":["untyped raw JSON/binary body"],"representation":"plain_json"}
       ],
-      "source_anchors": [
-        "sdk-python:src/durable_workflow/workflow.py",
-        "sdk-php:src/Worker/WorkflowCommand.php::sideEffect",
-        "workflow:src/V2/Support/WorkflowExecutor.php::recordSideEffect",
-        "server:app/Http/Controllers/Api/WorkerController.php::completeWorkflowTask"
-      ]
-    },
-    {
-      "name": "external payload object for a supported boundary",
-      "status": "protected",
-      "boundary_kind": "inherited",
-      "namespace_authority": "inherited from the logical boundary",
-      "write_sites": [
-        "protect complete inner Value before size decision and offload"
-      ],
-      "read_sites": [
-        "fetch and verify object size/hash before decrypting"
-      ],
-      "source_anchors": [
-        "sdk-python:src/durable_workflow/client.py::_externalize_runtime_payloads",
-        "sdk-php:src/Transport/RuntimePayloads.php"
-      ],
-      "notes": "Storage location is not an AAD kind and cannot change the logical boundary."
-    },
-    {
-      "name": "activity heartbeat details",
-      "status": "unsupported_refuse",
-      "boundary_kind": null,
-      "namespace_authority": "none until a portable envelope replaces raw JSON",
-      "source_anchors": [
-        "sdk-php:src/Client.php::heartbeatActivityTask",
-        "workflow:src/V2/Activity.php::heartbeat",
-        "sdk-rust:src/run_activities.rs"
-      ],
-      "notes": "The current transport is raw JSON. Enabling protection must refuse this boundary rather than send plaintext."
-    },
-    {
-      "name": "workflow message stream item",
-      "status": "unsupported_refuse",
-      "boundary_kind": null,
-      "namespace_authority": "none until stream framing and replay semantics are specified",
-      "source_anchors": [
-        "workflow:src/V2/MessageStream.php"
-      ]
-    },
-    {
-      "name": "Nexus request or result",
-      "status": "unsupported_refuse",
-      "boundary_kind": null,
-      "namespace_authority": "none until caller and target namespace binding is specified",
-      "source_anchors": [
-        "workflow:src/V2/Support/ServiceCallWorkflowDelivery.php",
-        "workflow:src/V2/Support/ServiceOperationResult.php"
-      ]
-    },
-    {
-      "name": "local or prepared activity payload",
-      "status": "unsupported_refuse",
-      "boundary_kind": null,
-      "namespace_authority": "none until every local/prepared persistence path uses the portable envelope",
-      "source_anchors": [
-        "sdk-php:src/Worker/PreparedLocalActivityRunner.php",
-        "workflow:src/V2/Contracts/PreparedLocalActivityTaskBridge.php"
-      ]
-    },
-    {
-      "name": "external task payload outside ordinary activity envelope",
-      "status": "unsupported_refuse",
-      "boundary_kind": null,
-      "namespace_authority": "none until the external task is proven to reuse an admitted activity boundary"
-    },
-    {
-      "name": "failure details",
-      "status": "unsupported_refuse",
-      "boundary_kind": null,
-      "namespace_authority": "none until all failure-detail producers and replay readers share one portable envelope",
-      "notes": "Failure messages, stacks and exception types remain plaintext metadata; no implementation may partially protect an ad hoc details field."
-    },
-    {
-      "name": "raw JSON or generic binary payload",
-      "status": "unsupported_refuse",
-      "boundary_kind": null,
-      "namespace_authority": "none",
-      "notes": "Protection never falls back to wrapping an untyped transport body."
+      "notes": "Typed bytes inside an admitted Avro Value remain legitimate. Protection never wraps an untyped transport body as fallback."
     }
   ],
   "plaintext_metadata": [

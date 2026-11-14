@@ -101,9 +101,13 @@ contains the operation, destination namespace, boundary kind, command key and
 protected bytes or reference. It contains no credentials or key material.
 Retry code must not regenerate a nonce or ciphertext.
 
-Protection precedes the inline-size/offload decision. An external object is
-the protected envelope bytes. A reader verifies the object's declared
-size/hash before decrypting it.
+Protection precedes the inline-size/offload decision. The logical protected
+value is the binary Avro single-object frame. The v1 HTTP and external-payload
+representation is the canonical base64 text of that frame: an external object
+contains exactly the ASCII bytes of the base64 string, with no whitespace or
+trailing newline. It does **not** contain the decoded Avro frame. The external
+reference size and SHA-256 cover those ASCII bytes. A reader verifies that
+declared size/hash before strict base64 decoding and decryption.
 
 ## Initial call-site scope
 
@@ -114,6 +118,14 @@ side-effect results. Heartbeats, streams, Nexus, local/prepared activities,
 unmapped external tasks, failure details and raw JSON/binary paths are
 unsupported in v1. When protection is enabled, those paths refuse instead of
 leaking plaintext.
+
+The inventory is pinned to exact SDK, embedded Workflow and native Server
+revisions. Each row names the actual wire, database, history or cache fields
+and distinguishes inline envelopes, bare Value strings, in-memory values and
+the two existing external-reference formats. An Avro-shaped field is not
+automatically in scope. Strict mode must remove query/update plaintext
+projections and raw-result fallbacks, and it must refuse unsupported paths
+before their existing codec or upload hooks run.
 
 | Call site | v1 disposition | AAD boundary | Required behavior |
 | --- | --- | --- | --- |
@@ -145,9 +157,9 @@ record encryption.
 
 [`vectors-v1.json`](vectors-v1.json) contains the canonical Unicode and integer
 boundary vector, exact AAD and inner bytes, deterministic ciphertext, complete
-outer Avro object, external-object hash and required negative cases. The fixed
-key and nonce are test data only and must never be used outside conformance
-tests.
+outer Avro object, the decoded-frame length, and the external ASCII-base64
+object size/hash. The fixed key and nonce are test data only and must never be
+used outside conformance tests.
 
 The contract originates from the accepted decisions in
 [durable-workflow/.github#217](https://github.com/durable-workflow/.github/issues/217).
