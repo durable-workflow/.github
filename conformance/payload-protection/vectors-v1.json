@@ -1,0 +1,86 @@
+{
+  "contract": "durable-workflow.payload-protection/v1",
+  "protected_value_schema_fingerprint_hex": "0ba70c3fd6c311ca",
+  "plain_value_schema_fingerprint_hex": "e2a33dff55802237",
+  "algorithm": "xchacha20poly1305-ietf",
+  "key_id_pattern": "^[A-Za-z0-9._:-]{1,128}$",
+  "aad_prefix_hex": "64757261626c652d776f726b666c6f772e7061796c6f61642d70726f74656374696f6e00",
+  "vectors": [
+    {
+      "name": "workflow-input-unicode-boundaries",
+      "namespace": "tenant-a",
+      "boundary_kind": "workflow_input",
+      "key_id": "vector-key-1",
+      "key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "nonce_hex": "000102030405060708090a0b0c0d0e0f1011121314151617",
+      "value_json": {
+        "i": -9223372036854775808,
+        "m": {
+          "k": "v"
+        },
+        "n": null,
+        "u": "Iñtërnâtiônàlizætiøn ☃ 𐍈"
+      },
+      "aad_hex": "64757261626c652d776f726b666c6f772e7061796c6f61642d70726f74656374696f6e000100000016786368616368613230706f6c79313330352d696574660000000c766563746f722d6b65792d310000000874656e616e742d610000000e776f726b666c6f775f696e707574",
+      "inner_plain_value_hex": "c301e2a33dff558022370e08026904ffffffffffffffffff01026d0e02026b0a027600026e0002750a4849c3b174c3ab726ec3a27469c3b46ec3a06c697ac3a67469c3b86e20e2988320f0908d8800",
+      "ciphertext_and_tag_hex": "5dc3eddcad2dd82e117328c6c93bac17b4b8d75a0229e2147e1852b83faf9e535c70b6e62f670b11dfdde79a7e5590c903d421fb331d38ad69583351e69d8752c6493c0b66b9861daf7fd651d6ed097dd23b12f1a5be86cc6dd24eecb9163a",
+      "outer_single_object_base64": "wwELpww/1sMRygIseGNoYWNoYTIwcG9seTEzMDUtaWV0Zhh2ZWN0b3Ita2V5LTEwAAECAwQFBgcICQoLDA0ODxAREhMUFRYXvgFdw+3crS3YLhFzKMbJO6wXtLjXWgIp4hR+GFK4P6+eU1xwtuYvZwsR393nmn5VkMkD1CH7Mx04rWlYM1HmnYdSxkk8C2a5hh2vf9ZR1u0JfdI7EvGlvobMbdJO7LkWOg==",
+      "external_object_ascii_bytes": 228,
+      "external_object_sha256": "2647b8aa410b36f1de317bf0946052967585f79d7ea025e6fc9f2efc3967c6d3"
+    }
+  ],
+  "required_negative_cases": [
+    {
+      "name": "ordinary-map-with-protection-like-keys",
+      "result": "plain_value"
+    },
+    {
+      "name": "protected-version-not-one",
+      "result": "payload_envelope_unsupported"
+    },
+    {
+      "name": "protected-algorithm-not-exact",
+      "result": "payload_envelope_unsupported"
+    },
+    {
+      "name": "key-id-outside-closed-grammar",
+      "result": "payload_envelope_unsupported"
+    },
+    {
+      "name": "nonce-length-not-24",
+      "result": "payload_envelope_unsupported"
+    },
+    {
+      "name": "ciphertext-shorter-than-tag",
+      "result": "payload_envelope_unsupported"
+    },
+    {
+      "name": "unknown-key-id",
+      "result": "payload_key_unavailable"
+    },
+    {
+      "name": "namespace-substitution",
+      "result": "payload_authentication_failed"
+    },
+    {
+      "name": "boundary-kind-substitution",
+      "result": "payload_authentication_failed"
+    },
+    {
+      "name": "ciphertext-bit-flip",
+      "result": "payload_authentication_failed"
+    },
+    {
+      "name": "authenticated-inner-value-with-wrong-fingerprint",
+      "result": "payload_plaintext_invalid"
+    },
+    {
+      "name": "protected-envelope-seen-without-enabled-reader",
+      "result": "payload_envelope_unsupported"
+    },
+    {
+      "name": "plain-value-at-strict-enabled-boundary",
+      "result": "payload_protection_required"
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "type": "record",
+  "name": "ProtectedValue",
+  "namespace": "durable_workflow.protocol",
+  "fields": [
+    {
+      "name": "dw_protected",
+      "type": "int"
+    },
+    {
+      "name": "alg",
+      "type": "string"
+    },
+    {
+      "name": "key_id",
+      "type": "string"
+    },
+    {
+      "name": "nonce",
+      "type": "bytes"
+    },
+    {
+      "name": "ciphertext",
+      "type": "bytes"
+    }
+  ]
+}

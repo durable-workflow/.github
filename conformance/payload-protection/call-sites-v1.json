@@ -1,0 +1,293 @@
+{
+  "contract": "durable-workflow.payload-protection/call-sites-v1",
+  "source_revisions": {
+    "sdk-python": "949d38bb59aa7221f1e05f1309f3a6f0f53c8d96",
+    "sdk-php": "61477048340e8ab374822381a9018df7db050872",
+    "sdk-rust": "1129d797f266e518eedf642460c89b412dca9dad",
+    "workflow": "8bb05a6368b4046602fcae2fdd3a075f36dbf3ae",
+    "server": "00f20996a18d4795fa0a09319470df1f5160c079"
+  },
+  "boundaries": [
+    {
+      "name": "workflow input",
+      "status": "protected",
+      "boundary_kind": "workflow_input",
+      "namespace_authority": "destination workflow namespace",
+      "write_sites": [
+        "SDK client start and schedule input",
+        "workflow child start",
+        "workflow continue-as-new"
+      ],
+      "read_sites": [
+        "workflow task entry arguments",
+        "child workflow task entry arguments"
+      ],
+      "source_anchors": [
+        "sdk-python:src/durable_workflow/client.py::_payload_envelope",
+        "sdk-python:src/durable_workflow/workflow.py::_payload_envelope",
+        "sdk-php:src/Client.php::startWorkflow",
+        "sdk-php:src/Worker/WorkflowCommand.php::toWire",
+        "workflow:src/Serializers/Serializer.php",
+        "workflow:src/V2/WorkflowStub.php",
+        "server:app/Http/Controllers/Api/WorkflowController.php::start",
+        "server:app/Http/Controllers/Api/WorkerController.php::completeWorkflowTask"
+      ],
+      "notes": "Direct starts, scheduled starts, child starts and continue-as-new deliberately share one AAD kind."
+    },
+    {
+      "name": "workflow result",
+      "status": "protected",
+      "boundary_kind": "workflow_result",
+      "namespace_authority": "owning workflow run namespace",
+      "write_sites": [
+        "workflow completion command"
+      ],
+      "read_sites": [
+        "client result read",
+        "parent child-result resolution"
+      ],
+      "source_anchors": [
+        "sdk-python:src/durable_workflow/worker.py",
+        "sdk-python:src/durable_workflow/client.py",
+        "sdk-php:src/Worker.php",
+        "workflow:src/V2/WorkflowStub.php",
+        "server:app/Http/Controllers/Api/WorkerController.php::completeWorkflowTask"
+      ]
+    },
+    {
+      "name": "activity input",
+      "status": "protected",
+      "boundary_kind": "activity_input",
+      "namespace_authority": "owning workflow run namespace",
+      "write_sites": [
+        "ordinary durable schedule-activity command"
+      ],
+      "read_sites": [
+        "ordinary activity task arguments"
+      ],
+      "source_anchors": [
+        "sdk-python:src/durable_workflow/workflow.py",
+        "sdk-php:src/Worker/WorkflowCommand.php::activity",
+        "sdk-php:src/Worker.php::decodeArguments",
+        "workflow:src/V2/Models/ActivityExecution.php",
+        "server:app/Http/Controllers/Api/WorkerController.php::completeWorkflowTask"
+      ],
+      "notes": "This row does not admit local, prepared or external-task variants; those remain separate unsupported rows."
+    },
+    {
+      "name": "activity result",
+      "status": "protected",
+      "boundary_kind": "activity_result",
+      "namespace_authority": "owning workflow run namespace",
+      "write_sites": [
+        "ordinary activity-task completion"
+      ],
+      "read_sites": [
+        "activity-completed history replay"
+      ],
+      "source_anchors": [
+        "sdk-python:src/durable_workflow/client.py::complete_activity_task",
+        "sdk-php:src/Client.php::completeActivityTask",
+        "workflow:src/V2/Events/ActivityCompleted.php",
+        "server:app/Http/Controllers/Api/ActivityResultController.php"
+      ]
+    },
+    {
+      "name": "signal input",
+      "status": "protected",
+      "boundary_kind": "signal_input",
+      "namespace_authority": "target workflow namespace",
+      "write_sites": [
+        "client signal",
+        "workflow signal command"
+      ],
+      "read_sites": [
+        "workflow signal history delivery"
+      ],
+      "source_anchors": [
+        "sdk-python:src/durable_workflow/client.py::signal_workflow",
+        "sdk-php:src/Client.php::signalWorkflow",
+        "workflow:src/V2/Models/WorkflowSignal.php",
+        "server:app/Http/Controllers/Api/WorkflowController.php::signal"
+      ]
+    },
+    {
+      "name": "update input",
+      "status": "protected",
+      "boundary_kind": "update_input",
+      "namespace_authority": "target workflow namespace",
+      "write_sites": [
+        "client update admission"
+      ],
+      "read_sites": [
+        "workflow update validation and handler"
+      ],
+      "source_anchors": [
+        "sdk-python:src/durable_workflow/client.py",
+        "sdk-php:src/Client.php::updateWorkflow",
+        "workflow:src/V2/Models/WorkflowUpdate.php",
+        "server:app/Http/Controllers/Api/WorkflowController.php::update"
+      ]
+    },
+    {
+      "name": "update result",
+      "status": "protected",
+      "boundary_kind": "update_result",
+      "namespace_authority": "owning workflow run namespace",
+      "write_sites": [
+        "workflow complete-update command"
+      ],
+      "read_sites": [
+        "client completion-wait and retained update outcome"
+      ],
+      "source_anchors": [
+        "sdk-python:src/durable_workflow/workflow.py",
+        "sdk-php:src/Client.php::updateOutcome",
+        "sdk-rust:src/update_outcome.rs",
+        "server:app/Support/ExternalWorkflowUpdateAdmission.php"
+      ]
+    },
+    {
+      "name": "query input",
+      "status": "protected",
+      "boundary_kind": "query_input",
+      "namespace_authority": "target workflow namespace",
+      "write_sites": [
+        "client query request"
+      ],
+      "read_sites": [
+        "workflow query task arguments"
+      ],
+      "source_anchors": [
+        "sdk-python:src/durable_workflow/client.py::query_workflow",
+        "sdk-php:src/Client.php::queryWorkflow",
+        "sdk-php:src/Worker.php::queryContext",
+        "server:app/Http/Controllers/Api/WorkflowController.php::query",
+        "server:app/Support/WorkflowQueryTaskBroker.php::query"
+      ]
+    },
+    {
+      "name": "query result",
+      "status": "protected",
+      "boundary_kind": "query_result",
+      "namespace_authority": "owning workflow run namespace",
+      "write_sites": [
+        "workflow complete-query-task"
+      ],
+      "read_sites": [
+        "client query response"
+      ],
+      "source_anchors": [
+        "sdk-python:src/durable_workflow/client.py::complete_query_task",
+        "sdk-php:src/Worker.php",
+        "sdk-rust:src/metrics/routes.rs",
+        "server:app/Http/Controllers/Api/WorkerController.php::completeQueryTask",
+        "server:app/Support/WorkflowQueryTaskBroker.php::complete"
+      ]
+    },
+    {
+      "name": "side-effect result",
+      "status": "protected",
+      "boundary_kind": "side_effect_result",
+      "namespace_authority": "owning workflow run namespace",
+      "write_sites": [
+        "workflow record-side-effect command"
+      ],
+      "read_sites": [
+        "workflow history replay"
+      ],
+      "source_anchors": [
+        "sdk-python:src/durable_workflow/workflow.py",
+        "sdk-php:src/Worker/WorkflowCommand.php::sideEffect",
+        "workflow:src/V2/Support/WorkflowExecutor.php::recordSideEffect",
+        "server:app/Http/Controllers/Api/WorkerController.php::completeWorkflowTask"
+      ]
+    },
+    {
+      "name": "external payload object for a supported boundary",
+      "status": "protected",
+      "boundary_kind": "inherited",
+      "namespace_authority": "inherited from the logical boundary",
+      "write_sites": [
+        "protect complete inner Value before size decision and offload"
+      ],
+      "read_sites": [
+        "fetch and verify object size/hash before decrypting"
+      ],
+      "source_anchors": [
+        "sdk-python:src/durable_workflow/client.py::_externalize_runtime_payloads",
+        "sdk-php:src/Transport/RuntimePayloads.php"
+      ],
+      "notes": "Storage location is not an AAD kind and cannot change the logical boundary."
+    },
+    {
+      "name": "activity heartbeat details",
+      "status": "unsupported_refuse",
+      "boundary_kind": null,
+      "namespace_authority": "none until a portable envelope replaces raw JSON",
+      "source_anchors": [
+        "sdk-php:src/Client.php::heartbeatActivityTask",
+        "workflow:src/V2/Activity.php::heartbeat",
+        "sdk-rust:src/run_activities.rs"
+      ],
+      "notes": "The current transport is raw JSON. Enabling protection must refuse this boundary rather than send plaintext."
+    },
+    {
+      "name": "workflow message stream item",
+      "status": "unsupported_refuse",
+      "boundary_kind": null,
+      "namespace_authority": "none until stream framing and replay semantics are specified",
+      "source_anchors": [
+        "workflow:src/V2/MessageStream.php"
+      ]
+    },
+    {
+      "name": "Nexus request or result",
+      "status": "unsupported_refuse",
+      "boundary_kind": null,
+      "namespace_authority": "none until caller and target namespace binding is specified",
+      "source_anchors": [
+        "workflow:src/V2/Support/ServiceCallWorkflowDelivery.php",
+        "workflow:src/V2/Support/ServiceOperationResult.php"
+      ]
+    },
+    {
+      "name": "local or prepared activity payload",
+      "status": "unsupported_refuse",
+      "boundary_kind": null,
+      "namespace_authority": "none until every local/prepared persistence path uses the portable envelope",
+      "source_anchors": [
+        "sdk-php:src/Worker/PreparedLocalActivityRunner.php",
+        "workflow:src/V2/Contracts/PreparedLocalActivityTaskBridge.php"
+      ]
+    },
+    {
+      "name": "external task payload outside ordinary activity envelope",
+      "status": "unsupported_refuse",
+      "boundary_kind": null,
+      "namespace_authority": "none until the external task is proven to reuse an admitted activity boundary"
+    },
+    {
+      "name": "failure details",
+      "status": "unsupported_refuse",
+      "boundary_kind": null,
+      "namespace_authority": "none until all failure-detail producers and replay readers share one portable envelope",
+      "notes": "Failure messages, stacks and exception types remain plaintext metadata; no implementation may partially protect an ad hoc details field."
+    },
+    {
+      "name": "raw JSON or generic binary payload",
+      "status": "unsupported_refuse",
+      "boundary_kind": null,
+      "namespace_authority": "none",
+      "notes": "Protection never falls back to wrapping an untyped transport body."
+    }
+  ],
+  "plaintext_metadata": [
+    "workflow, run, task, command, attempt and request identifiers",
+    "workflow, activity, signal, update and query names",
+    "task queues and namespaces",
+    "memo, search attributes and visibility labels",
+    "failure message, stack and exception type",
+    "deadlines, retry policy and status fields"
+  ]
+}

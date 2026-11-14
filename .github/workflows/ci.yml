@@ -70,6 +70,7 @@ jobs:
           tests.test_regression_corpus
           tests.test_regression_evidence_schema
           tests.test_server_codec_counterfactual_schema
+          tests.test_payload_protection_contract
           tests.test_visual_evidence
           tests.test_temporal_runtime
           tests.test_cancellation_workflow_policy
