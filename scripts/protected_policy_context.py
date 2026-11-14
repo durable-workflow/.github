@@ -113,6 +113,15 @@ REVIEWED_UBUNTU24_REPINNED_PROFILE_SUCCESSORS = {
         "1f9df7560ff3ebb4a85b43dd176ca6591e0d285442245f674081fbe05fc0d64f",
 }
 
+# The two original manual profiles retain their full gates and bounds; only
+# six immutable setup/control source literals change in each workflow.
+REVIEWED_PHP_ARCHIVE_REPAIR_PROFILE_SUCCESSORS = {
+    ".github/workflows/qualify-linux-php-initial.yml":
+        "afebd85cd43762140e099bda98879339f16675ead05b9a75be22a69469d6706f",
+    ".github/workflows/qualify-linux-php-ubuntu24.yml":
+        "71db64b8396635dc45b310ee582bae30d6a24875268a6971baa149e31230da44",
+}
+
 # AI's existing matrix commands are reviewed only for that repository. They do
 # not enlarge the control repository's complex-workflow exceptions.
 REVIEWED_AI_WORKFLOWS = {
@@ -134,7 +143,8 @@ def reviewed_context_hashes(policy_target: str) -> dict[str, set[str]]:
                       REVIEWED_SELECTED_ALTERNATIVES_PROFILE_SUCCESSORS,
                       REVIEWED_CONFIGURED_CLI_PROFILE_SUCCESSORS,
                       REVIEWED_SUBJECT_REFERENCE_PROFILE_SUCCESSORS,
-                      REVIEWED_UBUNTU24_REPINNED_PROFILE_SUCCESSORS)
+                      REVIEWED_UBUNTU24_REPINNED_PROFILE_SUCCESSORS,
+                      REVIEWED_PHP_ARCHIVE_REPAIR_PROFILE_SUCCESSORS)
     elif policy_target == "ai":
         registries = (REVIEWED_AI_WORKFLOWS,)
     else:
