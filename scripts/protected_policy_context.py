@@ -74,6 +74,11 @@ REVIEWED_RESPONSE_LOSS_SOURCE_CI_SUCCESSORS = {
     CI_WORKFLOW: "ee4ddc9ad665490681b3f1a2676cdd4ce791d90677e2a931bdb4fea7cc9deb15",
     SONAR_WORKFLOW: "4eed5d82d6e5decf47d4aab1d1d203eb1060f8892216360b9308c3e710bbcd77",
 }
+# The archive-repair CI calls one independently reviewed immutable setup
+# predecessor. A PR cannot replace that action with its checked-out source.
+REVIEWED_PHP_ARCHIVE_REPAIR_SOURCE_CI_SUCCESSORS = {
+    CI_WORKFLOW: "d43a91ff2d7e004e213d4cb27fef34b8b83fcf3142bebb9310d5d7183d46f279",
+}
 # The successor remains inert until its separate runtime pin and manual-only
 # workflow integration. Keep the consumed predecessor's identity unchanged.
 REVIEWED_INITIAL_PROFILE_SUCCESSORS = {
@@ -123,6 +128,7 @@ def reviewed_context_hashes(policy_target: str) -> dict[str, set[str]]:
                       REVIEWED_APT_NO_RETRIES_SOURCE_CI_SUCCESSORS,
                       REVIEWED_BOUND_PHP_SOURCE_CI_SUCCESSORS,
                       REVIEWED_RESPONSE_LOSS_SOURCE_CI_SUCCESSORS,
+                      REVIEWED_PHP_ARCHIVE_REPAIR_SOURCE_CI_SUCCESSORS,
                       REVIEWED_INITIAL_PROFILE_SUCCESSORS, REVIEWED_NORMALIZED_PROFILE_SUCCESSORS,
                       REVIEWED_ALTERNATIVES_PROFILE_SUCCESSORS,
                       REVIEWED_SELECTED_ALTERNATIVES_PROFILE_SUCCESSORS,

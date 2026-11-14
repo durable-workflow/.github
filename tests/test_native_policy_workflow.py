@@ -28,11 +28,12 @@ class NativePolicyWorkflowTest(unittest.TestCase):
         self.assertIs(False, settings["persist-credentials"])
         self.assertEqual(".native-policy-control", settings["path"])
 
-    def test_response_loss_adoption_binds_accepted_runtime_and_exact_workflow_fixtures(self):
+    def test_current_ci_and_sonar_bind_exact_reviewed_workflow_fixtures(self):
         checkout = self.workflow["jobs"]["policy"]["steps"][0]
         self.assertEqual("d4770e6555fdb59b044f2e5919e95a24c0a25073", checkout["with"]["ref"])
-        for name in ("ci", "sonar"):
-            self.assertEqual((ROOT / f"tests/fixtures/{name}-response-loss-source.yml").read_bytes(),
+        for name, fixture in (("ci", "ci-php-archive-repair-source.yml"),
+                              ("sonar", "sonar-response-loss-source.yml")):
+            self.assertEqual((ROOT / "tests/fixtures" / fixture).read_bytes(),
                              (ROOT / f".github/workflows/{name}.yml").read_bytes())
 
     def test_no_issuer_key_or_write_permission_is_introduced(self):
