@@ -911,7 +911,7 @@
           "mode": 420
         },
         "tests/fixtures/php-reference-workflow.yml": {
-          "sha256": "b4c31c7dbddce6ad7b00a010f8c1cb073acf28c2ef4a1969a32e8806595b8920",
+          "sha256": "68131102fff3bb1fda11cc63c58454d1788e3bbe69482231fbad332247f8befe",
           "mode": 420
         }
       }

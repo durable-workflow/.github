@@ -67,4 +67,3 @@ jobs:
         run: |
           python3 -m unittest discover -s parity -p 'test_*.py'
           python3 parity/parity.py --verbose
-
