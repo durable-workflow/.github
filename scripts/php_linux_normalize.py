@@ -22,9 +22,9 @@ METADATA_SHA256 = '6cecceedccc27b553c16fd94fb2f52c4621652ef4e41fc2d73c5d2f6b9efe
 PLAN_SHA256 = '06d623e7793501d03b18902be0e4141bf2a3948f07b8cd60cf82036cc5d9197e'
 SOURCE_PROFILES = {
     739711545: ('initial', METADATA_SHA256, PLAN_SHA256, (3900, 3509, 391)),
-    739209532: ('ubuntu24',
-        'e60de15982b6f0d71af4d27aff3f82fcd4551cb29efa00c92972cf2e5d44abb4',
-        '424fded62f2f4b85d7b5eaa131a98497eed1ab9a35c933f027baf9460c50ddbd',
+    747287433: ('ubuntu24',
+        '680f8c67e7d26d14fff95484e3b8ec3c5170082f0552ff29e824c553d9b56033',
+        '42534e26b143b932099f98606f3439089ddf490d444e2c6111d3572290abeee1',
         (3588, 3215, 373)),
 }
 SCHEMA = 'durable-workflow.php-linux-normalization/v1'

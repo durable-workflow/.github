@@ -22,9 +22,11 @@ directory or unresolved omissions; the derived inventory has 3,215 files and
 26.04 x64 host and matching complete archive identity, PHP 8.3, both literal
 PHARs, coverage none and no extension override. Other catalog tuples refuse.
 The accepted installed runs recorded in
-[#297](https://github.com/durable-workflow/.github/issues/297) covered the
-earlier Ubuntu 26.04 and Ubuntu 24.04 assets, which upstream has since replaced.
-Each consumer still needs its own source binding and actual caller qualification.
+[#297](https://github.com/durable-workflow/.github/issues/297) covered earlier
+archive identities. The current Ubuntu 24.04 records bind replacement asset
+747287433; hosted qualification must use that exact identity before consumer
+pins move. Each consumer still needs its own source binding and actual caller
+qualification.
 
 ### Upstream asset replacement
 

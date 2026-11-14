@@ -445,8 +445,8 @@ class ProfileRecordsTest(unittest.TestCase):
                 records.main(arguments, io.BytesIO(b'inert'))
 
 
-UBUNTU24_ASSET = {'id': 739209532, 'name': 'php_8.3-nts+ubuntu24.04.tar.zst', 'size': 42500132,
-         'digest': 'sha256:b81626ab8a7d91c23f3b8dee7fc0860fbd3ef99c9f4b22c5321b0e0545771768'}
+UBUNTU24_ASSET = {'id': 747287433, 'name': 'php_8.3-nts+ubuntu24.04.tar.zst', 'size': 43826053,
+         'digest': 'sha256:c60a4af4c7806c8c123268305b35ba1f7250a8356b195997bd0860359b101784'}
 
 
 class Ubuntu24ArchiveMetadataTest(unittest.TestCase):
@@ -476,7 +476,7 @@ class Ubuntu24ArchiveMetadataTest(unittest.TestCase):
                          dict(Counter(member.type.decode() for member in self.index.values())))
         self.assertEqual(0, self.metadata['pax_headers'])
         self.assertEqual(0, self.metadata['sparse_members'])
-        self.assertEqual('caa3cfcc5c45016abe0acd1f0cf248f66003dd40cafda0ee0adbc5c665c40485',
+        self.assertEqual('f34b9bee51ba4486ef0b89f51fe3855b35a7bd46cd26603b63d2697e70018620',
                          self.metadata['raw_inventory_sha256'])
         raw = (bootstrap.ROOT / 'qualification/php-linux-ubuntu24-archive.json').read_bytes()
         self.assertEqual(hashlib.sha256(raw).hexdigest(), self.plan['metadata_sha256'])

@@ -50,7 +50,7 @@ class CliConfigurationTest(unittest.TestCase):
 
     def test_asset_profile_is_external_authority_for_configuration_recomputation(self):
         template, files, initial, outputs = self.fixture()
-        original = self.archive_identity(739209532)
+        original = self.archive_identity(747287433)
         document, actual = configuration.derive(template, files, self.source, original=original)
         self.assertEqual(outputs, actual)
         self.assertEqual('ubuntu24.04-x64-php8.3-production-coverage-none', document['profile'])
@@ -65,7 +65,7 @@ class CliConfigurationTest(unittest.TestCase):
 
     def test_asset_specific_manifest_capture_and_writer_refuse_a_foreign_profile(self):
         template, files, _, _ = self.fixture()
-        original = self.archive_identity(739209532)
+        original = self.archive_identity(747287433)
         document, outputs = configuration.derive(template, files, self.source, original=original)
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory)

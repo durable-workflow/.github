@@ -126,7 +126,7 @@ class PhpLinuxBootstrapTest(unittest.TestCase):
     def test_catalog_has_exact_distinct_current_asset_tuples(self):
         self.assertIs(self.catalog, bootstrap.validate_catalog(self.catalog))
         # Only the setup-profile archives are pinned (setup_php_linux.HOST_ARCHIVES).
-        self.assertEqual([("24.04", "x86_64", "8.3", 739209532), ("26.04", "x86_64", "8.3", 739711545)],
+        self.assertEqual([("24.04", "x86_64", "8.3", 747287433), ("26.04", "x86_64", "8.3", 739711545)],
                          sorted((row["release"], row["arch"], row["php"], row["asset"]["id"])
                                 for row in self.catalog["archives"]))
         self.assertEqual(713206915, self.catalog["installer"]["id"])

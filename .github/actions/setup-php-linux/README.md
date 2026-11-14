@@ -15,10 +15,12 @@ own review.
 The candidate PHP archive is asset 739711545,
 `php_8.3-nts+ubuntu26.04.tar.zst`, 40,568,012 bytes, SHA-256
 `11c1a56755ec5d90567265719b21bc08e7c5ac4a539866a56f55c0fe5b6d196a`.
-Upstream replaced every catalog archive except four PHP 8.1/8.2 rows on
-2026-11-12, so the earlier asset IDs return 404. The catalog, archive records,
-normalization plans and alternatives inventories now bind the replacement
-bytes. Earlier installed qualifications covered the replaced bytes only.
+The Ubuntu 24.04 archive was replaced again on 2026-11-14. Its current exact
+asset is 747287433, `php_8.3-nts+ubuntu24.04.tar.zst`, 43,826,053 bytes,
+SHA-256 `c60a4af4c7806c8c123268305b35ba1f7250a8356b195997bd0860359b101784`.
+The catalog, archive records, normalization plans and alternatives inventories
+bind those current bytes. Earlier installed qualifications covered replaced
+bytes only.
 The original installer is asset 713206915, 3,406 bytes, SHA-256
 `7bc5bfea71696b0927367eb887e2710d44c6f17216fbd47add5a4cb181543e99`.
 The reviewed snapshot of those exact bytes is committed under
