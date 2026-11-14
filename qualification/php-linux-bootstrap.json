@@ -23,10 +23,10 @@
       "thread_safety": "nts",
       "build": "release",
       "asset": {
-        "id": 739209532,
+        "id": 747287433,
         "name": "php_8.3-nts+ubuntu24.04.tar.zst",
-        "size": 42500132,
-        "digest": "sha256:b81626ab8a7d91c23f3b8dee7fc0860fbd3ef99c9f4b22c5321b0e0545771768"
+        "size": 43826053,
+        "digest": "sha256:c60a4af4c7806c8c123268305b35ba1f7250a8356b195997bd0860359b101784"
       }
     },
     {
@@ -37,10 +37,10 @@
       "thread_safety": "nts",
       "build": "release",
       "asset": {
-        "id": 739711545,
+        "id": 747290740,
         "name": "php_8.3-nts+ubuntu26.04.tar.zst",
-        "size": 40568012,
-        "digest": "sha256:11c1a56755ec5d90567265719b21bc08e7c5ac4a539866a56f55c0fe5b6d196a"
+        "size": 40600860,
+        "digest": "sha256:d4959f02ae28e3936ad2ae3bcaca25aff8c2eca38ae11ab53a72a76a3711a7ab"
       }
     }
   ]

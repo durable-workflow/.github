@@ -1,7 +1,7 @@
 {
   "schema": "durable-workflow.php-linux-initial-alternatives/v1",
   "installer_sha256": "7bc5bfea71696b0927367eb887e2710d44c6f17216fbd47add5a4cb181543e99",
-  "archive_metadata_sha256": "e60de15982b6f0d71af4d27aff3f82fcd4551cb29efa00c92972cf2e5d44abb4",
+  "archive_metadata_sha256": "680f8c67e7d26d14fff95484e3b8ec3c5170082f0552ff29e824c553d9b56033",
   "order": [
     "install",
     "fix_alternatives",

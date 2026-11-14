@@ -25,6 +25,20 @@ a reviewed runtime-pin update; do not assume the pin follows a moving branch.
 The rule selects the central workflow from protected main. Protect changes to
 that source and record the actual workflow/runtime commits in pilot evidence.
 
+An upstream input disappearing can prevent the policy repository's own required
+CI from admitting its repair. The old runtime also cannot admit new workflow
+bytes or action pins. Do not disable the rule or add bypass actors to break
+that cycle. Prepare and independently review the complete source successor,
+including its exact workflow/action registries. The successor workflow must pin
+an earlier reviewed runtime commit in the same ancestry. An authorized
+organization administrator can then select that frozen workflow with the
+ruleset's `sha` field while keeping enforcement Active and every other rule
+unchanged. This administrative selection is separate from source review and
+requires existing authorized access; never silently expand credential scopes.
+Trigger fresh accepted and refused PR events to verify the new enforcer before
+merging the repair through the protected path. Restore a moving main ref only
+after verifying that it selects the same accepted workflow and runtime.
+
 After source acceptance, the bounded live rollout is:
 
 1. An authorized organization admin imports the disabled rule and verifies its
