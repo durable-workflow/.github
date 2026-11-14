@@ -21,8 +21,8 @@ from scripts import php_linux_normalize as normalization
 SCHEMA = "durable-workflow.php-linux-cli-configuration/v1"
 PROFILE = "ubuntu26.04-x64-php8.3-production-coverage-none"
 PROFILES = {
-    739711545: PROFILE,
-    739209532: "ubuntu24.04-x64-php8.3-production-coverage-none",
+    747290740: PROFILE,
+    747287433: "ubuntu24.04-x64-php8.3-production-coverage-none",
 }
 TEMPLATE = "usr/lib/php/8.3/php.ini-production.cli"
 CLI = "etc/php/8.3/cli/php.ini"
