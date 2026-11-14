@@ -804,6 +804,117 @@
           "mode": 420
         }
       }
+    },
+    "cli-php-reference": {
+      "target": "cli",
+      "workflows": {
+        "build.yml": [
+          "rust"
+        ]
+      },
+      "commands": [
+        "bash \"$GITHUB_WORKSPACE/scripts/ci/setup-php-reference-container.sh\""
+      ],
+      "environment": [
+        "CLI_PHP_CI_IMAGE",
+        "CLI_PHP_CI_ROOT",
+        "CLI_PHP_CI_STATE",
+        "DW_PARITY_PHP"
+      ],
+      "absent_files": [
+        "docker/php-ci/Dockerfile.dockerignore",
+        "docker/php-ci/cli.Dockerfile.dockerignore"
+      ],
+      "files": {
+        ".dockerignore": {
+          "sha256": "19f259d2473129b500ed107780da5b5bc4a7dea47fde4500539bff4b919d4aee",
+          "mode": 420
+        },
+        "docker/php-ci/Dockerfile": {
+          "sha256": "81d23fbbee7e4ee97ca14df9d17982aa664335b94499c5019662259fe0387eaa",
+          "mode": 420
+        },
+        "docker/php-ci/cli.Dockerfile": {
+          "sha256": "c2b64bd82040083fbd812a470b266861f04303ea800ba58908f1e4601fe4179f",
+          "mode": 420
+        },
+        "docker/php-ci/verify-php-trust.php": {
+          "sha256": "529c282e7422202bf25565431a6391de388f86dfe5bfd6c75cf21daa56ffa75e",
+          "mode": 420
+        },
+        "docker/brotli/install-vendor.sh": {
+          "sha256": "d7eb8b2a3e0af1c3072a56bcb81632b22f061f211d8fe5e57ee901c8bf94c92f",
+          "mode": 420
+        },
+        "docker/brotli/verify-runtime.php": {
+          "sha256": "580cc465e349f3872eca592355294e7320fe7f1a4560ff5d4c83d5900921c00e",
+          "mode": 420
+        },
+        "docker/brotli/verify-system-brotli.c": {
+          "sha256": "3353927d206aaf5e63157e46be715c6cbee46bac777e29f8f9e25c4c1f656667",
+          "mode": 420
+        },
+        "docker/brotli/version": {
+          "sha256": "e064953e075ddb99fb7b48ad29e215f2dfa075812c127eb1d6ab680e9920fba2",
+          "mode": 420
+        },
+        "scripts/ci/php-container-images.json": {
+          "sha256": "85c87a2dff21225109581876befc00177c62824e44c044765dc921879ca41a4d",
+          "mode": 420
+        },
+        "scripts/ci/setup-php-container.sh": {
+          "sha256": "a7007c0fbef886b7e29b62d20b76404839746620361a9dd9e6024f1ff546d49b",
+          "mode": 493
+        },
+        "scripts/ci/run-php-container.sh": {
+          "sha256": "baef1e07ac53ce31fed01eac37ced2f98e363fa677e129952f6e15e47213db0e",
+          "mode": 493
+        },
+        "scripts/ci/probe-php-test-runtime.php": {
+          "sha256": "a0bbef217128b8ffe81de5c126dfafbfd93ebed28244c2a69204a8f4991be264",
+          "mode": 420
+        },
+        "scripts/ci/test-php-container-tls.py": {
+          "sha256": "da11950ff46810ba425fea6bb6a453869995204388570d1f764a160154f3e7b0",
+          "mode": 420
+        },
+        "scripts/ci/test-php-container-boundary.py": {
+          "sha256": "8d4db79b20598e5e9f1fc64f6a730b574d6f2161cc42a01442ac0095dc8684e9",
+          "mode": 420
+        },
+        "docker/php-ci/reference.ini": {
+          "sha256": "94b40d9558a170b09785010b8016b19c32fadc2c43cd2b7518b2c74aac1d6b55",
+          "mode": 420
+        },
+        "scripts/ci/setup-php-reference-container.sh": {
+          "sha256": "7daf89ec02bed806218c4c33d8746db921cb5d1a4ad415c03fdc1072c52f0480",
+          "mode": 493
+        },
+        "scripts/ci/prepare-php-reference-container.sh": {
+          "sha256": "f82fb1434c1c0efbf198474c9174574c0690a946ae19a85925d7109bde1b9c5d",
+          "mode": 493
+        },
+        "scripts/ci/run-php-reference-container.sh": {
+          "sha256": "b1ab4dc87b55bb6693f3e39dbd1b0ba8152c0f950984d70d62c9ab123693f8dd",
+          "mode": 493
+        },
+        "scripts/ci/probe-php-reference-runtime.php": {
+          "sha256": "855e21c5d444038f116ea5523494d8b28c2cb59053e932cf1fff2e61c7efd1c2",
+          "mode": 420
+        },
+        "scripts/ci/test_php_reference_container.py": {
+          "sha256": "a6c2f0c1bd06d386f94876c0c5dcfe1278a1a13281270af7d43223730cc7f99c",
+          "mode": 420
+        },
+        "rust/parity/test_php_reference_container.py": {
+          "sha256": "71b1e8207bc3e3df28e7b9210ed23226139e6cd896d2baf64592f1b0dc05017c",
+          "mode": 420
+        },
+        "tests/fixtures/php-reference-workflow.yml": {
+          "sha256": "68131102fff3bb1fda11cc63c58454d1788e3bbe69482231fbad332247f8befe",
+          "mode": 420
+        }
+      }
     }
   }
 }
