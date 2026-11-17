@@ -1,0 +1,68 @@
+name: Committed Composer lock audit
+
+on:
+  pull_request:
+    paths:
+      - '**/composer.json'
+      - '**/composer.lock'
+      - composer.json
+      - composer.lock
+      - scripts/ci/audit-committed-composer-locks.sh
+      - .github/workflows/composer-lock-audit.yml
+  push:
+    branches: [main]
+    paths:
+      - '**/composer.json'
+      - '**/composer.lock'
+      - composer.json
+      - composer.lock
+      - scripts/ci/audit-committed-composer-locks.sh
+      - .github/workflows/composer-lock-audit.yml
+  schedule:
+    - cron: '43 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: committed-composer-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Audit every committed Composer lock
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.13'
+
+      - name: Select authenticated dependency trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@52283e2e8ea9a2cf7e3865ee30f2a72a38b098a2 # clean-trust
+        with:
+          clients: pip,python,composer,curl,git,npm
+
+      - name: Disable APT download retries (CVE-2026-109518)
+        run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
+
+      - name: Check out the accepted PHP container build source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: durable-workflow/.github
+          ref: 18783be6bef737cc778e4c7282a8797e39daa61a
+          path: .central-apt-source
+          persist-credentials: false
+      - name: Build the pinned PHP runtime and install launchers
+        run: bash "$GITHUB_WORKSPACE/scripts/ci/setup-php-container.sh" "8.4"
+
+      - name: Verify actual Composer trust before advisory requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@52283e2e8ea9a2cf7e3865ee30f2a72a38b098a2 # clean-trust
+
+      - name: Audit the committed lock inventory
+        run: bash scripts/ci/audit-committed-composer-locks.sh
