@@ -1,0 +1,123 @@
+name: Repository checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repository-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    name: Shared contract tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+
+      - uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7 # clean-trust
+        with:
+          clients: pip,python,composer,curl,git,npm,cargo
+
+      - name: Disable APT download retries (CVE-2026-109518)
+        run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
+
+      - uses: durable-workflow/.github/.github/actions/setup-php-linux@5c1ddbff59bcfad8a686a72a9b09804b359c382a # bound-linux-php
+        with:
+          php-version: '8.3'
+          ini-file: production
+          tools: composer:2.10.3,phpunit:11.5.57
+          coverage: none
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.22.1
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@4d407b29186a635f0cc27475ef0bc0ae605a8866 # 1.86.0
+        with:
+          toolchain: 1.86.0
+
+      - uses: ./.github/actions/verify-composer-trust # local
+
+      - name: Install Python test dependencies
+        run: >-
+          python -m pip install --only-binary :all: jsonschema==4.23.0 PyYAML==6.0.2
+
+      - name: Test retained shared contracts
+        run: >-
+          python -m unittest
+          tests.test_qualification_policy
+          tests.test_protected_policy_context
+          tests.test_protected_policy_check
+          tests.test_protected_policy_inputs
+          tests.test_protected_policy_issue
+          tests.test_native_policy_check
+          tests.test_native_policy_workflow
+          tests.test_regression_corpus
+          tests.test_regression_evidence_schema
+          tests.test_server_codec_counterfactual_schema
+          tests.test_visual_evidence
+          tests.test_temporal_runtime
+          tests.test_cancellation_workflow_policy
+          tests.test_sdk_metrics_contract
+          tests.test_command_response_loss
+          tests.test_ci_trust
+          tests.test_pip_effective_trust
+          tests.test_cli_effective_trust
+          tests.test_composer_trust_contract
+          tests.test_composer_container_trust
+          tests.test_composer_container_effective_trust
+          tests.test_php_linux_bootstrap
+          tests.test_php_linux_archive
+          tests.test_php_linux_normalize
+          tests.test_php_linux_recipe
+          tests.test_php_linux_tools
+          tests.test_php_linux_alternatives
+          tests.test_setup_php_linux
+          tests.test_php_linux_qualification
+          tests.test_php_linux_qualification_workflow
+          tests.test_php_linux_configuration
+
+      - name: Test actual Composer trust selection
+        run: COMPOSER_BINARY="$(command -v composer)" phpunit --configuration phpunit-composer-trust.xml --do-not-cache-result
+
+      - name: Install Node dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Test browser evidence boundary
+        run: npm run test:visual-capture
+
+  protected-parser-install:
+    name: Protected parser installer controls
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Create a disposable installer runtime
+        run: |
+          python -I -m venv "$RUNNER_TEMP/protected-parser-install"
+          printf '%s\n' "$RUNNER_TEMP/protected-parser-install/bin" >> "$GITHUB_PATH"
+      - uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7 # clean-trust
+        with:
+          clients: pip,python
+      - name: Exercise the actual isolated hash-locked installer
+        run: python -I tests/test_policy_dependency_install.py

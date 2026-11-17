@@ -9,6 +9,11 @@ a maintainer from the published-artifact command below. Every result is recorded
 as a concise update on the active release issue so the tuple, outcome, and next
 action remain visible without creating a second backlog.
 
+The [payload protection v1 contract](payload-protection/README.md) fixes the
+portable protected envelope, authenticated context, deterministic vector and
+initial supported/refused call-site inventory. It is an implementation contract,
+not a runtime qualification or key-provider grant.
+
 ## Native Server qualification
 
 Native Server is the continuing Server line. Use its
