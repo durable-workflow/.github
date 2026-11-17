@@ -49,7 +49,7 @@ class PhpLinuxNormalizeTest(unittest.TestCase):
         source = raw.getvalue()
         compressed = subprocess.run(['/usr/bin/zstd', '--compress', '--stdout', '--quiet'],
             input=source, capture_output=True, check=True).stdout
-        identity = {'id': 739711545, 'name': 'php_8.3-nts+ubuntu26.04.tar.zst',
+        identity = {'id': 747290740, 'name': 'php_8.3-nts+ubuntu26.04.tar.zst',
                     'size': len(compressed), 'digest': 'sha256:' + bootstrap.sha256(compressed)}
         asset = {key: identity[key] for key in ('id', 'name', 'size')}
         asset['sha256'] = bootstrap.sha256(compressed)
@@ -88,10 +88,24 @@ class PhpLinuxNormalizeTest(unittest.TestCase):
 
     def test_real_profile_has_only_its_reviewed_source_hashes_and_asset(self):
         selected = normalization.profile()
-        self.assertEqual(739711545, selected.metadata['asset']['id'])
-        self.assertEqual(3900, selected.plan['expected_members'])
+        self.assertEqual(747290740, selected.metadata['asset']['id'])
+        self.assertEqual(3924, selected.plan['expected_members'])
         self.assertEqual(normalization.METADATA_SHA256, selected.metadata_sha256)
         self.assertEqual(normalization.PLAN_SHA256, selected.plan_sha256)
+
+    def test_retired_upstream_assets_refuse_before_normalization(self):
+        retired = (
+            {'id': 739209532, 'name': 'php_8.3-nts+ubuntu24.04.tar.zst', 'size': 42500132,
+             'digest': 'sha256:b81626ab8a7d91c23f3b8dee7fc0860fbd3ef99c9f4b22c5321b0e0545771768'},
+            {'id': 739711545, 'name': 'php_8.3-nts+ubuntu26.04.tar.zst', 'size': 40568012,
+             'digest': 'sha256:11c1a56755ec5d90567265719b21bc08e7c5ac4a539866a56f55c0fe5b6d196a'},
+        )
+        with patch.object(normalization, 'codec') as codec:
+            for identity in retired:
+                held = SimpleNamespace(identity=identity, assert_sealed=lambda: None)
+                with self.subTest(asset_id=identity['id']), self.assertRaisesRegex(ValueError, 'reviewed normalization asset'):
+                    self.enter_derivation(held)
+            codec.assert_not_called()
 
     def test_deterministic_sealed_output_uses_target_bytes_and_target_metadata(self):
         compressed, identity, selected, _ = self.fixture()
@@ -445,8 +459,8 @@ class ProfileRecordsTest(unittest.TestCase):
                 records.main(arguments, io.BytesIO(b'inert'))
 
 
-UBUNTU24_ASSET = {'id': 739209532, 'name': 'php_8.3-nts+ubuntu24.04.tar.zst', 'size': 42500132,
-         'digest': 'sha256:b81626ab8a7d91c23f3b8dee7fc0860fbd3ef99c9f4b22c5321b0e0545771768'}
+UBUNTU24_ASSET = {'id': 747287433, 'name': 'php_8.3-nts+ubuntu24.04.tar.zst', 'size': 43826053,
+         'digest': 'sha256:c60a4af4c7806c8c123268305b35ba1f7250a8356b195997bd0860359b101784'}
 
 
 class Ubuntu24ArchiveMetadataTest(unittest.TestCase):
@@ -476,7 +490,7 @@ class Ubuntu24ArchiveMetadataTest(unittest.TestCase):
                          dict(Counter(member.type.decode() for member in self.index.values())))
         self.assertEqual(0, self.metadata['pax_headers'])
         self.assertEqual(0, self.metadata['sparse_members'])
-        self.assertEqual('caa3cfcc5c45016abe0acd1f0cf248f66003dd40cafda0ee0adbc5c665c40485',
+        self.assertEqual('f34b9bee51ba4486ef0b89f51fe3855b35a7bd46cd26603b63d2697e70018620',
                          self.metadata['raw_inventory_sha256'])
         raw = (bootstrap.ROOT / 'qualification/php-linux-ubuntu24-archive.json').read_bytes()
         self.assertEqual(hashlib.sha256(raw).hexdigest(), self.plan['metadata_sha256'])
@@ -509,7 +523,7 @@ class Ubuntu24ArchiveMetadataTest(unittest.TestCase):
                                             'architecture': 'x86_64'})
 
     def test_incomplete_foreign_and_cross_profile_identities_refuse_before_codec(self):
-        candidates = [None, {}, [], dict(UBUNTU24_ASSET, id=True), dict(UBUNTU24_ASSET, id=739711545),
+        candidates = [None, {}, [], dict(UBUNTU24_ASSET, id=True), dict(UBUNTU24_ASSET, id=747290740),
                       dict(UBUNTU24_ASSET, id=999), dict(UBUNTU24_ASSET, path='caller-map.json'),
                       dict(UBUNTU24_ASSET, id=672921837)]
         for key in ('name', 'size', 'digest'):
@@ -525,7 +539,7 @@ class Ubuntu24ArchiveMetadataTest(unittest.TestCase):
                 with self.subTest(identity=candidate), self.assertRaises(ValueError):
                     self.enter_derivation(held)
             codec.assert_not_called()
-        self.assertEqual(739711545, normalization.profile().metadata['asset']['id'])
+        self.assertEqual(747290740, normalization.profile().metadata['asset']['id'])
 
     def test_missing_duplicate_and_changed_target_treatments_refuse(self):
         for mutation in ('missing', 'duplicate', 'target', 'omission'):
