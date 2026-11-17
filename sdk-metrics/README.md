@@ -12,8 +12,13 @@ and [exporter guides in all eight locales](https://github.com/durable-workflow/d
 Python's recorder correction and Prometheus adapter have a
 [normal registry-installed receipt](https://github.com/durable-workflow/sdk-python/pull/213#issuecomment-6368689818)
 and a published [metrics and exporter reference](https://python.durable-workflow.com/reference/metrics/).
-PHP implementation, emitted worker-task controls, installed acceptance and
-exporter guidance stay open in [#233](https://github.com/durable-workflow/.github/issues/233).
+PHP's client and worker recorder is shipped, with
+[normal registry-installed Worker acceptance](https://github.com/durable-workflow/sdk-php/actions/runs/43400585178)
+and a published [OpenTelemetry/exporter guide](https://php.durable-workflow.com/operate/metrics/).
+The original six-instrument feature in
+[#233](https://github.com/durable-workflow/.github/issues/233#issuecomment-6839951301)
+is complete. Later contract revisions and installed tuples retain their own
+adoption and qualification receipts.
 One SDK's delivery does not establish another SDK's adoption.
 
 Consumers should pin the contract's Git commit. SDK tests load that one list
