@@ -48,21 +48,21 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: durable-workflow/.github
-          ref: 140f937cf245f39a495467fe6bab2bd30f93a17a
+          ref: 5c1ddbff59bcfad8a686a72a9b09804b359c382a
           persist-credentials: false
       - name: Check out the accepted private-pip and terminal control source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: durable-workflow/.github
-          ref: 140f937cf245f39a495467fe6bab2bd30f93a17a
+          ref: 5c1ddbff59bcfad8a686a72a9b09804b359c382a
           path: .qualification-control
           persist-credentials: false
       - name: Bind source and require the existing host prerequisites
         shell: bash
         run: |
           set -euo pipefail
-          test "$(/usr/bin/git rev-parse HEAD)" = 140f937cf245f39a495467fe6bab2bd30f93a17a
-          test "$(/usr/bin/git -C .qualification-control rev-parse HEAD)" = 140f937cf245f39a495467fe6bab2bd30f93a17a
+          test "$(/usr/bin/git rev-parse HEAD)" = 5c1ddbff59bcfad8a686a72a9b09804b359c382a
+          test "$(/usr/bin/git -C .qualification-control rev-parse HEAD)" = 5c1ddbff59bcfad8a686a72a9b09804b359c382a
           /usr/bin/python3 -I -S -B - <<'PY'
           import hashlib,json,os,pathlib,shutil,sys
           sys.path.insert(0,str(pathlib.Path.cwd()))
@@ -123,8 +123,8 @@ jobs:
               os.environ.clear()
               os.environ.update(closed)
               def publish(evidence):
-                  evidence['source']='140f937cf245f39a495467fe6bab2bd30f93a17a'
-                  evidence['php_helper_source']='140f937cf245f39a495467fe6bab2bd30f93a17a'
+                  evidence['source']='5c1ddbff59bcfad8a686a72a9b09804b359c382a'
+                  evidence['php_helper_source']='5c1ddbff59bcfad8a686a72a9b09804b359c382a'
                   evidence['pip_predecessor_source']='242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5'
                   evidence['control']=control
                   text=json.dumps(evidence,sort_keys=True)
