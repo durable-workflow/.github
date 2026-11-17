@@ -74,6 +74,11 @@ REVIEWED_RESPONSE_LOSS_SOURCE_CI_SUCCESSORS = {
     CI_WORKFLOW: "ee4ddc9ad665490681b3f1a2676cdd4ce791d90677e2a931bdb4fea7cc9deb15",
     SONAR_WORKFLOW: "4eed5d82d6e5decf47d4aab1d1d203eb1060f8892216360b9308c3e710bbcd77",
 }
+# The archive-repair CI calls one independently reviewed immutable setup
+# predecessor. A PR cannot replace that action with its checked-out source.
+REVIEWED_PHP_ARCHIVE_REPAIR_SOURCE_CI_SUCCESSORS = {
+    CI_WORKFLOW: "d43a91ff2d7e004e213d4cb27fef34b8b83fcf3142bebb9310d5d7183d46f279",
+}
 # The successor remains inert until its separate runtime pin and manual-only
 # workflow integration. Keep the consumed predecessor's identity unchanged.
 REVIEWED_INITIAL_PROFILE_SUCCESSORS = {
@@ -108,6 +113,15 @@ REVIEWED_UBUNTU24_REPINNED_PROFILE_SUCCESSORS = {
         "1f9df7560ff3ebb4a85b43dd176ca6591e0d285442245f674081fbe05fc0d64f",
 }
 
+# The two original manual profiles retain their full gates and bounds; only
+# six immutable setup/control source literals change in each workflow.
+REVIEWED_PHP_ARCHIVE_REPAIR_PROFILE_SUCCESSORS = {
+    ".github/workflows/qualify-linux-php-initial.yml":
+        "afebd85cd43762140e099bda98879339f16675ead05b9a75be22a69469d6706f",
+    ".github/workflows/qualify-linux-php-ubuntu24.yml":
+        "71db64b8396635dc45b310ee582bae30d6a24875268a6971baa149e31230da44",
+}
+
 # AI's existing matrix commands are reviewed only for that repository. They do
 # not enlarge the control repository's complex-workflow exceptions.
 REVIEWED_AI_WORKFLOWS = {
@@ -123,12 +137,14 @@ def reviewed_context_hashes(policy_target: str) -> dict[str, set[str]]:
                       REVIEWED_APT_NO_RETRIES_SOURCE_CI_SUCCESSORS,
                       REVIEWED_BOUND_PHP_SOURCE_CI_SUCCESSORS,
                       REVIEWED_RESPONSE_LOSS_SOURCE_CI_SUCCESSORS,
+                      REVIEWED_PHP_ARCHIVE_REPAIR_SOURCE_CI_SUCCESSORS,
                       REVIEWED_INITIAL_PROFILE_SUCCESSORS, REVIEWED_NORMALIZED_PROFILE_SUCCESSORS,
                       REVIEWED_ALTERNATIVES_PROFILE_SUCCESSORS,
                       REVIEWED_SELECTED_ALTERNATIVES_PROFILE_SUCCESSORS,
                       REVIEWED_CONFIGURED_CLI_PROFILE_SUCCESSORS,
                       REVIEWED_SUBJECT_REFERENCE_PROFILE_SUCCESSORS,
-                      REVIEWED_UBUNTU24_REPINNED_PROFILE_SUCCESSORS)
+                      REVIEWED_UBUNTU24_REPINNED_PROFILE_SUCCESSORS,
+                      REVIEWED_PHP_ARCHIVE_REPAIR_PROFILE_SUCCESSORS)
     elif policy_target == "ai":
         registries = (REVIEWED_AI_WORKFLOWS,)
     else:

@@ -31,6 +31,24 @@ class ProtectedContextTest(unittest.TestCase):
         with self.assertRaisesRegex(InputRefused, "context target"):
             context.validate_context({}, policy_target="elsewhere")
 
+    def test_archive_repair_ci_changes_only_the_reviewed_immutable_setup_pin(self):
+        path = context.CI_WORKFLOW
+        previous = (ROOT / "tests/fixtures/ci-response-loss-source.yml").read_bytes()
+        raw = (ROOT / "tests/fixtures/ci-php-archive-repair-source.yml").read_bytes()
+        self.assertEqual(1, previous.count(b"411a14ac07d32073eed6ab4977f2825eba4739a7"))
+        self.assertEqual(previous.replace(b"411a14ac07d32073eed6ab4977f2825eba4739a7",
+                                         b"5c1ddbff59bcfad8a686a72a9b09804b359c382a"), raw)
+        context.validate_context({path: raw})
+        with patch.object(context, "REVIEWED_PHP_ARCHIVE_REPAIR_SOURCE_CI_SUCCESSORS", {}), \
+                self.assertRaises(InputRefused):
+            context.validate_context({path: raw})
+        for changed in (raw + b"\n# changed\n",
+                        raw.replace(b"durable-workflow/.github/.github/actions/setup-php-linux@"
+                                    b"5c1ddbff59bcfad8a686a72a9b09804b359c382a",
+                                    b"./.github/actions/setup-php-linux")):
+            with self.subTest(change=changed[-40:]), self.assertRaises(InputRefused):
+                context.validate_context({path: changed})
+
     def test_response_loss_ci_successors_preserve_predecessors_and_require_exact_review(self):
         predecessors = {
             context.CI_WORKFLOW: "363540f9e81e4842099f0cad394ce3fc2a83835ce1355ffef5b16722547699b4",
@@ -235,7 +253,7 @@ class ProtectedContextTest(unittest.TestCase):
         with self.assertRaises(InputRefused):
             context.validate_context({'.github/workflows/qualify-linux-php-initial.yml':raw})
         live = (ROOT / path).read_bytes()
-        self.assertEqual((ROOT / 'tests/fixtures/qualify-linux-php-ubuntu24-repinned.yml').read_bytes(), live)
+        self.assertEqual((ROOT / 'tests/fixtures/qualify-linux-php-ubuntu24-archive-repair.yml').read_bytes(), live)
         context.validate_context({path:live})
         with self.assertRaises(InputRefused):
             context.validate_context({path:live, '.github/workflows/other.yml':raw})

@@ -404,3 +404,33 @@ class RepinnedUbuntu24QualificationWorkflowTest(unittest.TestCase):
 
     def test_actual_inline_gate_keeps_exact_original_admission_for_the_new_path(self):
         PhpLinuxQualificationWorkflowTest.test_actual_inline_gate_refuses_wrong_head_ref_event_repo_or_rerun_before_following_code(self)
+
+
+class ArchiveRepairQualificationWorkflowTest(unittest.TestCase):
+    def test_both_original_profiles_change_only_six_immutable_source_literals(self):
+        from scripts import protected_policy_context as context
+        from scripts.protected_policy_inputs import InputRefused
+
+        source = b'5c1ddbff59bcfad8a686a72a9b09804b359c382a'
+        profiles = (
+            ('initial', 'qualify-linux-php-subject-references.yml',
+             b'140f937cf245f39a495467fe6bab2bd30f93a17a'),
+            ('ubuntu24', 'qualify-linux-php-ubuntu24-repinned.yml',
+             b'411a14ac07d32073eed6ab4977f2825eba4739a7'),
+        )
+        for name, previous_name, previous_source in profiles:
+            path = f'.github/workflows/qualify-linux-php-{name}.yml'
+            previous = (ROOT / 'tests/fixtures' / previous_name).read_bytes()
+            raw = (ROOT / f'tests/fixtures/qualify-linux-php-{name}-archive-repair.yml').read_bytes()
+            with self.subTest(profile=name):
+                self.assertEqual(6, previous.count(previous_source))
+                self.assertEqual(previous.replace(previous_source, source), raw)
+                self.assertEqual(raw, (ROOT / path).read_bytes())
+                context.validate_context({path: raw})
+                with patch.object(context, 'REVIEWED_PHP_ARCHIVE_REPAIR_PROFILE_SUCCESSORS', {}), \
+                        self.assertRaises(InputRefused):
+                    context.validate_context({path: raw})
+                self.document = yaml.load(raw, Loader=yaml.BaseLoader)
+                self.job = self.document['jobs']['qualify-initial-linux-php']
+                self.workflow_ref = f'durable-workflow/.github/{path}@refs/heads/main'
+                PhpLinuxQualificationWorkflowTest.test_actual_inline_gate_refuses_wrong_head_ref_event_repo_or_rerun_before_following_code(self)

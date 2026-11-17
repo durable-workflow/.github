@@ -11,6 +11,7 @@ from jsonschema import Draft202012Validator
 
 from scripts import regression_corpus as corpus
 from scripts.regression_corpus import CorpusError, validate
+from tests import test_payload_protection_contract
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -734,3 +735,14 @@ class RegressionCorpusTest(unittest.TestCase):
             codec_fixture("avro-value-v1-long-zero", "wwHioz3/VYAiNwQA")
         )
         Draft202012Validator(evidence_schema).validate(replay_fixture("worker-v1-activity-completion"))
+
+
+def load_tests(
+    loader: unittest.TestLoader,
+    standard_tests: unittest.TestSuite,
+    pattern: str | None,
+) -> unittest.TestSuite:
+    standard_tests.addTests(
+        loader.loadTestsFromModule(test_payload_protection_contract, pattern=pattern)
+    )
+    return standard_tests
