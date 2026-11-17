@@ -461,6 +461,151 @@ class RetiredWritableRuntimeContractTest(unittest.TestCase):
                         verify_composer_network_sinks(policy, recipe["target"], sources, root)
 
 
+class SampleAppReadOnlyRuntimeContractTest(unittest.TestCase):
+    """Sample's read-only launcher at f069b118 is admitted only for its existing callers."""
+
+    LAUNCHER = ("scripts/ci/run-php-container.sh", "scripts/ci/setup-php-container.sh")
+    NAMES = ("sample-app-php-ci", "sample-app-php84-ci")
+
+    def setUp(self):
+        repository = Path(__file__).resolve().parents[1]
+        self.fixtures = repository / "tests/fixtures/sample-app-php-ci"
+        self.policy = json.loads((repository / "qualification/policy.json").read_text())
+        self.catalog = json.loads((repository / "qualification/composer-container-trust.json").read_text())
+        self.recorded = deepcopy(self.catalog)
+        self.documents = {name: yaml.safe_load((self.fixtures / name).read_text())
+                          for name in ("ci.yml", "composer-lock-audit.yml", "playground-journeys.yml")}
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        # The launcher pair uses the reviewed f069b118 bytes and recorded hashes.
+        # Unchanged image inputs are inert; independent review binds their real blobs.
+        for name, expected in self.catalog["runtime_setups"]["sample-app-php-ci"]["files"].items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if name in self.LAUNCHER:
+                path.write_bytes((self.fixtures / "f069b118" / Path(name).name).read_bytes())
+            else:
+                path.write_text("# inert reviewed runtime input\n")
+            path.chmod(expected["mode"])
+            for recipe in self.NAMES:
+                self.catalog["runtime_setups"][recipe]["files"][name]["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        # The audit caller's actual request helper keeps its request enumerable.
+        helper = self.root / "scripts/ci/audit-committed-composer-locks.sh"
+        helper.write_bytes((self.fixtures / "f069b118" / helper.name).read_bytes())
+        patch = mock.patch("scripts.qualification_policy._composer_container_catalog", return_value=self.catalog)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def check(self, documents=None, target="sample-app"):
+        selected = self.documents if documents is None else documents
+        sources = {name: yaml.safe_dump(document) for name, document in selected.items()}
+        return verify_composer_network_sinks(self.policy, target, sources, self.root)
+
+    def setup_step(self, document, job):
+        return next(step for step in document["jobs"][job]["steps"]
+                    if "setup-php-container.sh" in step.get("run", ""))
+
+    def test_recorded_launcher_hashes_are_the_exact_reviewed_bytes(self):
+        retired = json.loads((self.fixtures.parent / "retired-writable-runtime-setups.json").read_text())["sample-app-php-ci"]
+        for recipe in self.NAMES:
+            files = self.recorded["runtime_setups"][recipe]["files"]
+            self.assertEqual(set(retired["files"]), set(files))
+            for name in self.LAUNCHER:
+                with self.subTest(recipe=recipe, file=name):
+                    self.assertEqual(hashlib.sha256((self.fixtures / "f069b118" / Path(name).name).read_bytes()).hexdigest(),
+                                     files[name]["sha256"])
+                    self.assertEqual(hashlib.sha256((self.fixtures / "799df847" / Path(name).name).read_bytes()).hexdigest(),
+                                     retired["files"][name]["sha256"])
+                    self.assertNotEqual(retired["files"][name]["sha256"], files[name]["sha256"])
+
+    def test_exact_callers_enumerate_every_guarded_request(self):
+        self.assertEqual(sorted(["ci.yml:test:step-8", "ci.yml:test:step-10", "ci.yml:microservice-test:step-8",
+                                 "composer-lock-audit.yml:audit:step-8", "playground-journeys.yml:journeys:step-9"]),
+                         sorted(self.check()))
+
+    def test_retired_writable_launcher_or_any_changed_input_refuses(self):
+        for name in self.LAUNCHER:
+            with self.subTest(retired=name):
+                path = self.root / name
+                before = path.read_bytes()
+                path.write_bytes((self.fixtures / "799df847" / Path(name).name).read_bytes())
+                with self.assertRaisesRegex(PolicyError, "runtime source differs"):
+                    self.check()
+                path.write_bytes(before)
+        launcher = self.root / self.LAUNCHER[0]
+        before = launcher.read_bytes()
+        writable = before.replace(b'target=$root,readonly"', b'target=$root"', 1)
+        self.assertNotEqual(before, writable)
+        launcher.write_bytes(writable)
+        with self.assertRaisesRegex(PolicyError, "runtime source differs"):
+            self.check()
+        launcher.write_bytes(before)
+        for name in self.catalog["runtime_setups"]["sample-app-php-ci"]["files"]:
+            with self.subTest(changed=name):
+                path = self.root / name
+                before = path.read_bytes()
+                path.write_bytes(before + b"# changed\n")
+                with self.assertRaises(PolicyError):
+                    self.check()
+                path.write_bytes(before)
+        launcher.chmod(0o644)
+        with self.assertRaises(PolicyError):
+            self.check()
+        launcher.chmod(0o755)
+        (self.root / "docker/php-ci/Dockerfile.dockerignore").touch()
+        with self.assertRaisesRegex(PolicyError, "Unreviewed Composer runtime input"):
+            self.check()
+
+    def test_admission_does_not_extend_to_other_jobs_commands_matrices_or_targets(self):
+        with self.assertRaises(PolicyError):
+            self.check(target="cli")
+        moved = deepcopy(self.documents)
+        moved["ci.yml"]["jobs"]["other"] = moved["ci.yml"]["jobs"].pop("test")
+        with self.assertRaises(PolicyError):
+            self.check(moved)
+        moved = deepcopy(self.documents)
+        moved["other.yml"] = moved.pop("composer-lock-audit.yml")
+        with self.assertRaises(PolicyError):
+            self.check(moved)
+        literal = deepcopy(self.documents)
+        self.setup_step(literal["ci.yml"], "test")["run"] = 'bash "$GITHUB_WORKSPACE/scripts/ci/setup-php-container.sh" "8.4"'
+        with self.assertRaises(PolicyError):
+            self.check(literal)
+        literal = deepcopy(self.documents)
+        self.setup_step(literal["composer-lock-audit.yml"], "audit")["run"] = 'bash "$GITHUB_WORKSPACE/scripts/ci/setup-php-container.sh" "8.5"'
+        with self.assertRaises(PolicyError):
+            self.check(literal)
+        for matrix in ({"php": ["8.4", "8.5", "8.3"]}, {"php": ["8.4", "8.5"], "include": [{"php": "8.3"}]}):
+            altered = deepcopy(self.documents)
+            altered["ci.yml"]["jobs"]["microservice-test"]["strategy"]["matrix"] = matrix
+            with self.subTest(matrix=matrix), self.assertRaisesRegex(PolicyError, "literal PHP matrix"):
+                self.check(altered)
+        extra = deepcopy(self.documents)
+        extra["ci.yml"]["jobs"]["unguarded"] = {"steps": [{"run": "composer install --no-interaction"}]}
+        with self.assertRaises(PolicyError):
+            self.check(extra)
+
+    def test_setup_overrides_or_verifier_removal_fail_closed(self):
+        for workflow, job in (("ci.yml", "test"), ("ci.yml", "microservice-test"),
+                              ("composer-lock-audit.yml", "audit"), ("playground-journeys.yml", "journeys")):
+            for field, value in (("if", "false"), ("continue-on-error", True),
+                                 ("env", {"SAMPLE_APP_PHP_CI_IMAGE": "unreviewed"})):
+                altered = deepcopy(self.documents)
+                self.setup_step(altered[workflow], job)[field] = value
+                with self.subTest(job=job, field=field), self.assertRaises(PolicyError):
+                    self.check(altered)
+            altered = deepcopy(self.documents)
+            steps = altered[workflow]["jobs"][job]["steps"]
+            steps[:] = [step for step in steps if "verify-composer-trust@" not in step.get("uses", "")]
+            with self.subTest(job=job, verifier="removed"), self.assertRaises(PolicyError):
+                self.check(altered)
+            altered = deepcopy(self.documents)
+            altered[workflow]["jobs"][job]["env"] = {"SAMPLE_APP_PHP_CI_ROOT": "/unreviewed"}
+            with self.subTest(job=job, job_env="override"), self.assertRaises(PolicyError):
+                self.check(altered)
+
+
 class ComposerRuntimeSetupContractTest(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
