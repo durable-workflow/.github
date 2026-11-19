@@ -121,7 +121,7 @@
           "mode": 420
         },
         "scripts/ci/php-container-images.json": {
-          "sha256": "85c87a2dff21225109581876befc00177c62824e44c044765dc921879ca41a4d",
+          "sha256": "f0f040c863c4ec8c200336c6f11988d06da24a09e5f7db08c85bde48a2e7a198",
           "mode": 420
         },
         "scripts/ci/setup-php-container.sh": {
@@ -191,7 +191,7 @@
           "mode": 420
         },
         "scripts/ci/php-container-images.json": {
-          "sha256": "3314ecfd6c32641af1d5475f8e57f4421979f67e05db1f98c79ef7b08d41b944",
+          "sha256": "3d70eb4cef668b96238ff56ab0bab1a5b651821c84c30c7b66fb75d4539176e7",
           "mode": 420
         },
         "scripts/ci/run-php-container.sh": {
@@ -260,7 +260,7 @@
           "mode": 420
         },
         "scripts/ci/php-container-images.json": {
-          "sha256": "389247efc6e551b553314bfe64f66aaef3a96c0bf659e6f78322b84b0dc9860b",
+          "sha256": "f2bb1fd819d66b4b9cd9f724c52dc03edb46aafc48a19da14f78e298ccc5bc3a",
           "mode": 420
         },
         "scripts/ci/setup-php-container.sh": {
@@ -338,7 +338,7 @@
           "mode": 420
         },
         "scripts/ci/php-container-images.json": {
-          "sha256": "389247efc6e551b553314bfe64f66aaef3a96c0bf659e6f78322b84b0dc9860b",
+          "sha256": "f2bb1fd819d66b4b9cd9f724c52dc03edb46aafc48a19da14f78e298ccc5bc3a",
           "mode": 420
         },
         "scripts/ci/setup-php-container.sh": {
@@ -416,7 +416,7 @@
           "mode": 420
         },
         "scripts/ci/php-container-images.json": {
-          "sha256": "389247efc6e551b553314bfe64f66aaef3a96c0bf659e6f78322b84b0dc9860b",
+          "sha256": "f2bb1fd819d66b4b9cd9f724c52dc03edb46aafc48a19da14f78e298ccc5bc3a",
           "mode": 420
         },
         "scripts/ci/setup-php-container.sh": {
@@ -494,7 +494,7 @@
           "mode": 420
         },
         "scripts/ci/php-container-images.json": {
-          "sha256": "389247efc6e551b553314bfe64f66aaef3a96c0bf659e6f78322b84b0dc9860b",
+          "sha256": "f2bb1fd819d66b4b9cd9f724c52dc03edb46aafc48a19da14f78e298ccc5bc3a",
           "mode": 420
         },
         "scripts/ci/setup-php-container.sh": {
@@ -572,7 +572,7 @@
           "mode": 420
         },
         "scripts/ci/php-container-images.json": {
-          "sha256": "389247efc6e551b553314bfe64f66aaef3a96c0bf659e6f78322b84b0dc9860b",
+          "sha256": "f2bb1fd819d66b4b9cd9f724c52dc03edb46aafc48a19da14f78e298ccc5bc3a",
           "mode": 420
         },
         "scripts/ci/setup-php-container.sh": {
@@ -650,7 +650,7 @@
           "mode": 420
         },
         "scripts/ci/php-container-images.json": {
-          "sha256": "389247efc6e551b553314bfe64f66aaef3a96c0bf659e6f78322b84b0dc9860b",
+          "sha256": "f2bb1fd819d66b4b9cd9f724c52dc03edb46aafc48a19da14f78e298ccc5bc3a",
           "mode": 420
         },
         "scripts/ci/setup-php-container.sh": {
@@ -740,7 +740,7 @@
           "mode": 420
         },
         "scripts/ci/php-container-images.json": {
-          "sha256": "85c87a2dff21225109581876befc00177c62824e44c044765dc921879ca41a4d",
+          "sha256": "f0f040c863c4ec8c200336c6f11988d06da24a09e5f7db08c85bde48a2e7a198",
           "mode": 420
         },
         "scripts/ci/setup-php-container.sh": {
@@ -780,7 +780,7 @@
           "mode": 493
         },
         "scripts/ci/probe-php-phar-runtime.php": {
-          "sha256": "28deb9870754643ad6a89a6c1b107446f11fef18d0dd9f8f1c09170b7fec1ecf",
+          "sha256": "2fe14289f6739d83b726f5e271fb3d554f90484fe8f3685d2a368693beaf91bb",
           "mode": 420
         },
         "scripts/ci/run-php-phar-container.sh": {
@@ -859,7 +859,7 @@
           "mode": 420
         },
         "scripts/ci/php-container-images.json": {
-          "sha256": "85c87a2dff21225109581876befc00177c62824e44c044765dc921879ca41a4d",
+          "sha256": "f0f040c863c4ec8c200336c6f11988d06da24a09e5f7db08c85bde48a2e7a198",
           "mode": 420
         },
         "scripts/ci/setup-php-container.sh": {
@@ -899,7 +899,7 @@
           "mode": 493
         },
         "scripts/ci/probe-php-reference-runtime.php": {
-          "sha256": "855e21c5d444038f116ea5523494d8b28c2cb59053e932cf1fff2e61c7efd1c2",
+          "sha256": "4b102615e8971255c1e3d08062510678c181f3dd5ace9d8ce7be83adaf7295cd",
           "mode": 420
         },
         "scripts/ci/test_php_reference_container.py": {
@@ -951,7 +951,7 @@
           "mode": 420
         },
         "scripts/ci/php-container-images.json": {
-          "sha256": "fc4d410589d1fdb322107e404bfcf9f4593e6ac7e3fcce729b1d78fafd9be1c4",
+          "sha256": "ab785a7f8c2f76fff2c06936af2ce62e01e9db8645d940fe275ad11a722e2b4d",
           "mode": 420
         },
         "scripts/ci/run-php-container.sh": {
@@ -1023,7 +1023,7 @@
           "mode": 420
         },
         "scripts/ci/php-container-images.json": {
-          "sha256": "fc4d410589d1fdb322107e404bfcf9f4593e6ac7e3fcce729b1d78fafd9be1c4",
+          "sha256": "ab785a7f8c2f76fff2c06936af2ce62e01e9db8645d940fe275ad11a722e2b4d",
           "mode": 420
         },
         "scripts/ci/run-php-container.sh": {
@@ -1118,7 +1118,7 @@
           "mode": 420
         },
         "scripts/ci/php-container-images.json": {
-          "sha256": "85c87a2dff21225109581876befc00177c62824e44c044765dc921879ca41a4d",
+          "sha256": "f0f040c863c4ec8c200336c6f11988d06da24a09e5f7db08c85bde48a2e7a198",
           "mode": 420
         },
         "scripts/ci/setup-php-container.sh": {
@@ -1158,7 +1158,7 @@
           "mode": 493
         },
         "scripts/ci/probe-php-phar-runtime.php": {
-          "sha256": "28deb9870754643ad6a89a6c1b107446f11fef18d0dd9f8f1c09170b7fec1ecf",
+          "sha256": "2fe14289f6739d83b726f5e271fb3d554f90484fe8f3685d2a368693beaf91bb",
           "mode": 420
         },
         "scripts/ci/run-php-phar-container.sh": {
