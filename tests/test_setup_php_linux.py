@@ -41,9 +41,11 @@ class SetupPhpLinuxTest(unittest.TestCase):
             "INPUT_TOOLS": "composer:2.10.3,phpunit:11.5.57", "INPUT_COVERAGE": "none"})
         catalog = json.loads(bootstrap.CATALOG.read_text())
         host = dict(operating_system="ubuntu", release="26.04", architecture="x86_64")
-        archive = bootstrap.select(catalog, **host, php="8.3")["asset"]
+        selected = bootstrap.select(catalog, **host, php="8.3")
+        archive = selected["asset"]
         archive_bytes, _identity, selected_profile, _raw = normalize_tests.PhpLinuxNormalizeTest().fixture()
         archive.update(size=len(archive_bytes), digest="sha256:" + bootstrap.sha256(archive_bytes))
+        selected["mirror"] = None  # the synthetic archive has no mirror release
         catalog_path = root / "catalog.json"
         catalog_path.write_text(json.dumps(catalog))
         calls = []
