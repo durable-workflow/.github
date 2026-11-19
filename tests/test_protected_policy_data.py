@@ -161,7 +161,9 @@ def approve_pin(files: dict[str, bytes], pin: str, old_pin: str = CURRENT_PIN) -
     updated[data.POLICY_PATH] = (json.dumps(policy, indent=2) + "\n").encode()
     document = json.loads(files[data.DATA_PATH])
     entries = document["reviewed_workflows"]["github-control-plane"]
-    for path, fixture in ((CI, CI_FIXTURE), *zip(QUALIFY, QUALIFY_FIXTURES)):
+    # Only the setup action `uses:` position is data-swappable; the qualification
+    # workflows check out the repository at the pin and stay a runtime review.
+    for path, fixture in ((CI, CI_FIXTURE),):
         old = files[fixture]
         new = old.replace(old_pin.encode(), pin.encode())
         name = f"tests/fixtures/{Path(path).stem}-setup-{pin[:12]}.yml"
@@ -174,8 +176,7 @@ def approve_pin(files: dict[str, bytes], pin: str, old_pin: str = CURRENT_PIN) -
 
 def adopt_workflows(files: dict[str, bytes], pin: str, old_pin: str = CURRENT_PIN) -> dict[str, bytes]:
     updated = dict(files)
-    for path in (CI, *QUALIFY):
-        updated[path] = files[path].replace(old_pin.encode(), pin.encode())
+    updated[CI] = files[CI].replace(old_pin.encode(), pin.encode())
     return updated
 
 
@@ -361,21 +362,54 @@ class DataGateTest(Scenario):
         with self.assertRaisesRegex(InputRefused, "immutable"):
             self.gate({**self.files, data.DATA_PATH: json.dumps(document).encode()}, "a1" * 20)
 
-    def test_derivation_admits_only_approved_pin_substitution(self):
-        old = self.files[QUALIFY_FIXTURES[0]]
-        self.assertEqual(6, old.count(CURRENT_PIN.encode()))
+    def test_derivation_admits_only_setup_action_pin_substitution(self):
+        old = self.files[CI_FIXTURE]
+        self.assertEqual(1, old.count(CURRENT_PIN.encode()))
         pin, other = git_sha("pin"), git_sha("other")
         new = old.replace(CURRENT_PIN.encode(), pin.encode())
         self.assertEqual(pin, data.routine_substitution(old, new, frozenset({CURRENT_PIN}), frozenset({pin})))
         unapproved = old.replace(CURRENT_PIN.encode(), git_sha("x").encode())
         for label, before, after, pins in (
-                ("extra edit", old, new.replace(b"set -euo pipefail", b"set -eu; curl evil", 1), {pin}),
+                ("extra edit", old, new.replace(b"python -m unittest", b"python -m unittest ; curl evil", 1), {pin}),
+                ("comment edit", old, new.replace(b"# bound-linux-php", b"# other"), {pin}),
                 ("unapproved new pin", old, new, set()),
-                ("two different pins", old, new.replace(pin.encode(), other.encode(), 1), {pin, other}),
                 ("unapproved old pin", unapproved, new, {pin}),
+                ("new pin also checked out", old, new.replace(b"persist-credentials: false",
+                                                              b"ref: " + pin.encode(), 1), {pin}),
                 ("identical bytes", old, old, {pin})):
             with self.subTest(label), self.assertRaises(InputRefused):
                 data.routine_substitution(before, after, frozenset({CURRENT_PIN}), frozenset(pins))
+
+    def test_a_pin_swap_in_a_checkout_position_needs_a_runtime_review(self):
+        old = self.files[QUALIFY_FIXTURES[0]]
+        self.assertEqual(6, old.count(CURRENT_PIN.encode()))
+        self.assertIn(b"ref: " + CURRENT_PIN.encode(), old)
+        new = old.replace(CURRENT_PIN.encode(), git_sha("pin").encode())
+        with self.assertRaisesRegex(InputRefused, "setup action `uses:` pins"):
+            data.routine_substitution(old, new, frozenset({CURRENT_PIN}), frozenset({git_sha("pin")}))
+        pin = git_sha("pin")
+        files = dict(self.files)
+        document = json.loads(files[data.DATA_PATH])
+        name = "tests/fixtures/qualify-initial-swapped.yml"
+        files[name] = new
+        document["reviewed_workflows"]["github-control-plane"].append({
+            "registry": "routine_setup_pin", "path": QUALIFY[0], "sha256": hashlib.sha256(new).hexdigest(),
+            "fixture": name, "derived_from": hashlib.sha256(old).hexdigest()})
+        files[data.DATA_PATH] = json.dumps(document).encode()
+        policy = json.loads(files[data.POLICY_PATH])
+        policy["action_runtime"]["allowed_releases"][REPOSITORY][pin] = data.BOUND_LABEL
+        files[data.POLICY_PATH] = json.dumps(policy).encode()
+        with self.assertRaisesRegex(InputRefused, "uses:|already be a commit"):
+            self.gate(files, "a2" * 20)
+
+    def test_catalog_installer_and_upstream_sources_are_not_data(self):
+        for field, value in (("installer", {"id": 1, "name": "install.sh", "size": 1,
+                                            "digest": "sha256:" + "1" * 64}),
+                             ("upstream_sources", {"unix.sh": "1" * 64, "linux.sh": "2" * 64})):
+            catalog = json.loads(self.files[data.CATALOG_PATH])
+            catalog[field] = value
+            with self.subTest(field), self.assertRaisesRegex(InputRefused, "only catalog archive rows"):
+                self.gate({**self.files, data.CATALOG_PATH: json.dumps(catalog).encode()}, git_sha(field))
 
     def test_new_bound_pin_must_already_be_on_main_and_bind_only_mirrored_archives(self):
         document = json.loads(self.files[data.DATA_PATH])
@@ -394,6 +428,13 @@ class DataGateTest(Scenario):
         self.github.merged(unmerged, self.base)
         with self.assertRaisesRegex(InputRefused, "only approved mirrored archives"):
             self.gate(approve_pin(self.files, unmerged), "b4" * 20)
+        for label, planted in (("root module", {"hashlib.py": b"raise SystemExit('shadowed')\n"}),
+                               ("planted bytecode", {"scripts/__pycache__/php_linux_bootstrap.cpython-312.pyc":
+                                                     b"\xcb\r\r\n\x03\x00\x00\x00planted"})):
+            shadowed = self.github.commit(git_sha(label), mirrored({**self.files, **planted}, self.github))
+            self.github.merged(shadowed, self.base)
+            with self.subTest(label), self.assertRaisesRegex(InputRefused, "bytecode or root Python"):
+                self.gate(approve_pin(self.files, shadowed), git_sha("gate " + label))
         changed_code = {**self.files, "scripts/php_linux_normalize.py": b"# substituted setup code\n"}
         substituted = self.github.commit(git_sha("changed code"), mirrored(changed_code, self.github))
         self.github.merged(substituted, self.base)
@@ -521,7 +562,7 @@ class RoutineUpdateSimulationTest(Scenario):
         approval = approve_pin(update, setup_pin)
         report = self.propose(main, approval, "c" * 40)
         self.assertEqual([setup_pin], report["data_gate"]["pins"])
-        self.assertEqual({CI, *QUALIFY}, {item["path"] for item in report["data_gate"]["workflows"]})
+        self.assertEqual({CI}, {item["path"] for item in report["data_gate"]["workflows"]})
         main = self.merge("c" * 40, approval)
 
         # 3. Ordinary adoption PR: the workflows now pass against main's data.
@@ -536,3 +577,147 @@ class RoutineUpdateSimulationTest(Scenario):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+STARTUP_PROBE = r'''
+import json, runpy, sys
+entry, report = sys.argv[1], sys.argv[2]
+opened = []
+def audit(event, arguments):
+    if event == "open" and isinstance(arguments[0], str):
+        opened.append(arguments[0])
+sys.addaudithook(audit)
+sys.argv = [entry]
+code = None
+try:
+    runpy.run_path(entry, run_name="__main__")
+except SystemExit as stop:
+    code = stop.code
+with open(report, "w") as output:
+    json.dump({"code": code, "opened": opened, "path": sys.path,
+               "modules": {name: getattr(module, "__file__", None) for name, module in list(sys.modules.items())}},
+              output)
+'''
+SHADOWS = ("hashlib", "ssl", "tarfile", "base64", "json", "tempfile")
+
+
+class SetupStartupClosureTest(unittest.TestCase):
+    """Everything setup loads is inside the reviewed setup-code digest.
+
+    The tree is a copy of this checkout with a planted root `hashlib.py` (and
+    other stdlib names) and a planted unchecked-hash `.pyc`. Each plant runs
+    under a naive start-up (the negative controls) and never under the
+    action's exact `python3 -I -S -B -X pycache_prefix=<fresh>` start-up.
+    """
+
+    def setUp(self):
+        import shutil
+        import tempfile
+
+        self.directory = Path(tempfile.mkdtemp(prefix="setup-closure-"))
+        self.addCleanup(shutil.rmtree, self.directory)
+        self.root = self.directory / "repo"
+        ignore = shutil.ignore_patterns("__pycache__", "*.pyc")
+        for top in ("scripts", ".github/actions/setup-php-linux", "qualification"):
+            shutil.copytree(ROOT / top, self.root / top, ignore=ignore)
+        self.marker = self.directory / "planted-code-ran"
+        payload = f"open({str(self.marker)!r}, 'a').write(__name__ + '\\n')\n"
+        for name in SHADOWS:
+            (self.root / f"{name}.py").write_text(payload)
+        tag = subprocess.run(["/usr/bin/python3", "-I", "-c", "import sys; print(sys.implementation.cache_tag)"],
+                             capture_output=True, text=True, check=True).stdout.strip()
+        planted = self.directory / "planted_source.py"
+        planted.write_text(payload)
+        self.pyc = self.root / f"scripts/__pycache__/php_linux_bootstrap.{tag}.pyc"
+        self.pyc.parent.mkdir()
+        subprocess.run(["/usr/bin/python3", "-I", "-c",
+                        "import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True, "
+                        "invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)", str(planted), str(self.pyc)],
+                       check=True)
+
+    def ran(self):
+        return self.marker.read_text().split() if self.marker.exists() else []
+
+    def test_plants_execute_under_a_naive_start_up(self):
+        for statement in ("import scripts.php_linux_bootstrap", "import hashlib"):
+            self.marker.unlink(missing_ok=True)
+            subprocess.run(["/usr/bin/python3", "-I", "-S", "-B", "-c",
+                            f"import sys; sys.path.insert(0, {str(self.root)!r}); {statement}"],
+                           capture_output=True, timeout=30, check=False)
+            with self.subTest(statement):
+                self.assertNotEqual([], self.ran())
+
+    def test_action_start_up_loads_only_covered_setup_code(self):
+        import sysconfig
+        import tempfile
+
+        probe = self.directory / "probe.py"
+        probe.write_text(STARTUP_PROBE)
+        report = self.directory / "report.json"
+        cache = Path(tempfile.mkdtemp(prefix="fresh-cache-", dir=self.directory))
+        cache.chmod(0o700)
+        entry = self.root / "scripts/setup_php_linux.py"
+        result = subprocess.run(["/usr/bin/python3", "-I", "-S", "-B", "-X", f"pycache_prefix={cache}",
+                                 str(probe), str(entry), str(report)],
+                                cwd=self.root, capture_output=True, text=True, timeout=60, check=False)
+        self.assertEqual(0, result.returncode, result.stderr)
+        observed = json.loads(report.read_text())
+        self.assertEqual(1, observed["code"])  # imports done; main refuses the missing entry arguments
+        self.assertEqual([], self.ran())
+        self.assertNotIn(str(self.root), observed["path"])
+        stdlib = {str(Path(sysconfig.get_paths(vars=None)[key]).resolve())
+                  for key in ("stdlib", "platstdlib")}
+        tree = self.root.resolve()
+        loaded = set()
+        for name, file in observed["modules"].items():
+            if file is None or Path(file).resolve() == probe.resolve():
+                continue
+            path = Path(file).resolve()
+            if any(path.is_relative_to(prefix) for prefix in stdlib) and not path.is_relative_to(tree):
+                continue
+            with self.subTest(module=name):
+                self.assertTrue(path.is_relative_to(tree), file)
+                relative = path.relative_to(tree).as_posix()
+                self.assertTrue(data.setup_code_path(relative), relative)
+                loaded.add(relative)
+        self.assertTrue({"scripts/__init__.py", "scripts/php_linux_bootstrap.py",
+                         "scripts/php_linux_normalize.py"} <= loaded, loaded)
+        archive_data = data.gated_paths(data.local_data().catalog) - {data.DATA_PATH, data.POLICY_PATH}
+        for file in observed["opened"]:
+            path = Path(file).resolve()
+            if not path.is_relative_to(tree):
+                continue
+            relative = path.relative_to(tree).as_posix()
+            with self.subTest(opened=relative):
+                self.assertNotIn("__pycache__", relative)
+                self.assertTrue(data.setup_code_path(relative) or relative in archive_data, relative)
+        refused = subprocess.run(["/usr/bin/python3", "-I", "-S", "-B", str(entry)], cwd=self.root,
+                                 capture_output=True, text=True, timeout=30, check=False)
+        self.assertEqual(1, refused.returncode)
+        self.assertIn("pycache_prefix", refused.stderr)
+        self.assertEqual([], self.ran())
+        opened = {Path(file).resolve() for file in observed["opened"]}
+        self.assertIn(entry.resolve(), opened)
+        self.assertNotIn(self.pyc.resolve(), opened)
+
+    def test_every_import_in_reviewed_setup_code_stays_inside_the_digest(self):
+        import ast
+
+        for module in data.SETUP_MODULES:
+            tree = ast.parse((ROOT / module).read_text(), module)
+            for node in ast.walk(tree):
+                names = []
+                if isinstance(node, ast.ImportFrom) and node.module == "scripts":
+                    names = [f"scripts/{alias.name}.py" for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and (node.module or "").startswith("scripts."):
+                    names = ["scripts/" + node.module.split(".")[1] + ".py"]
+                elif isinstance(node, ast.ImportFrom) and node.level:
+                    names = ["relative import"]
+                elif isinstance(node, ast.Import):
+                    names = ["scripts/" + alias.name.split(".")[1] + ".py" for alias in node.names
+                             if alias.name.startswith("scripts.")]
+                elif isinstance(node, ast.Name) and node.id in {"__import__", "exec", "eval", "runpy"}:
+                    names = ["dynamic " + node.id]
+                for name in names:
+                    with self.subTest(module=module, imports=name):
+                        self.assertIn(name, data.SETUP_MODULES)

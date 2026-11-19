@@ -48,14 +48,25 @@ UPSTREAM_REPOSITORY = "shivammathur/php-ubuntu"
 TARGETS = ("github-control-plane", "ai")
 REGISTRY = re.compile(r"[a-z0-9_]{1,80}")
 DIGEST = re.compile(r"[0-9a-f]{64}")
-COMMIT_TOKEN = re.compile(rb"[0-9a-f]{40}")
 MAX_ENTRIES = 512
 # Everything the bound setup action executes or reads, except the archive data
 # (catalog and profile records). A new setup pin must have exactly the code of
-# reviewed setup code: routine pins change data, never code.
-SETUP_CODE = (".github/actions/setup-php-linux/", "scripts/__init__.py", "scripts/setup_php_linux.py",
-              "scripts/php_linux_", "qualification/vendor/", "qualification/setup-php-source.json",
-              "qualification/php-linux-tools.json")
+# reviewed setup code: routine pins change data, never code. Setup runs
+# `python3 -I -S -B -X pycache_prefix=<fresh>` with no sys.path entry and loads
+# only these `scripts` modules (tests enumerate what setup actually loads).
+SETUP_MODULES = ("scripts/__init__.py", "scripts/setup_php_linux.py", "scripts/php_linux_alternatives.py",
+                 "scripts/php_linux_archive.py", "scripts/php_linux_bootstrap.py",
+                 "scripts/php_linux_configuration.py", "scripts/php_linux_normalize.py",
+                 "scripts/php_linux_recipe.py", "scripts/php_linux_tools.py")
+SETUP_TREES = (".github/actions/setup-php-linux/", "qualification/vendor/", "qualification/php-tools/")
+SETUP_INPUTS = ("qualification/setup-php-source.json", "qualification/php-linux-tools.json")
+SETUP_ACTION = b"durable-workflow/.github/.github/actions/setup-php-linux@"
+SETUP_USES = re.compile(rb"[ \t]*(?:- )?[ \t]*uses:[ \t]+durable-workflow/\.github/\.github/actions/setup-php-linux@"
+                        rb"([0-9a-f]{40})(?:[ \t]+#[^\n]*)?")
+
+
+def setup_code_path(path: str) -> bool:
+    return path in SETUP_MODULES or path in SETUP_INPUTS or path.startswith(SETUP_TREES)
 
 
 def profile_paths(name: str) -> tuple[str, ...]:
@@ -238,32 +249,57 @@ def effective_policy(frozen: dict, data: ApprovedData) -> dict:
 
 
 def setup_code_identity(entries: dict) -> str:
-    """Digest of the setup action's code closure: exact paths, modes and git blob IDs."""
+    """Digest of the setup action's code closure: exact paths, modes and git blob IDs.
+
+    Refuses a tree with any bytecode cache (a planted unchecked-hash `.pyc`
+    would otherwise stand in for reviewed source) or a repository-root Python
+    module, even though setup reads neither.
+    """
     rows = []
     for path, entry in sorted(entries.items()):
-        if not path.startswith(SETUP_CODE):
+        parts = PurePosixPath(path).parts
+        if ("__pycache__" in parts or path.endswith((".pyc", ".pyo"))
+                or (len(parts) == 1 and path.endswith(".py"))):
+            raise InputRefused("A setup pin's tree must not carry bytecode or root Python modules")
+        if not setup_code_path(path) or (entry.get("type") == "tree" and entry.get("mode") == "040000"):
             continue
         if (entry.get("type") != "blob" or entry.get("mode") not in {"100644", "100755"}
                 or not isinstance(entry.get("sha"), str)):
             raise InputRefused("Setup code must be regular files")
         rows.append([path, entry["mode"], checked_sha(entry["sha"])])
-    if not rows:
-        raise InputRefused("No setup code at the selected commit")
+    if not set(SETUP_MODULES) <= {row[0] for row in rows}:
+        raise InputRefused("The selected commit lacks the reviewed setup modules")
     return hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode()).hexdigest()
 
 
 def routine_substitution(old: bytes, new: bytes, old_pins: frozenset[str], new_pins: frozenset[str]) -> str:
-    """Return the one new pin if `new` is `old` with only approved pins replaced."""
-    old_parts, new_parts = COMMIT_TOKEN.split(old), COMMIT_TOKEN.split(new)
-    old_tokens, new_tokens = COMMIT_TOKEN.findall(old), COMMIT_TOKEN.findall(new)
-    if old_parts != new_parts or len(old_tokens) != len(new_tokens):
-        raise InputRefused("A data-approved workflow may change only commit pins of reviewed bytes")
-    replaced = {(before.decode(), after.decode()) for before, after in zip(old_tokens, new_tokens) if before != after}
+    """Return the one new pin if `new` is `old` with only setup-action pins replaced.
+
+    Only `uses: durable-workflow/.github/.github/actions/setup-php-linux@<sha>`
+    lines may change. A workflow that checks out the repository at a pin or
+    runs other code from it needs a runtime review, never a data approval.
+    """
+    old_lines, new_lines = old.split(b"\n"), new.split(b"\n")
+    if len(old_lines) != len(new_lines):
+        raise InputRefused("A data-approved workflow may change only setup action pins of reviewed bytes")
+    replaced = set()
+    for before, after in zip(old_lines, new_lines):
+        if before == after:
+            continue
+        old_use, new_use = SETUP_USES.fullmatch(before), SETUP_USES.fullmatch(after)
+        if (old_use is None or new_use is None
+                or before[:old_use.start(1)] + before[old_use.end(1):] != after[:new_use.start(1)] + after[new_use.end(1):]):
+            raise InputRefused("A data-approved workflow may change only setup action `uses:` pins")
+        replaced.add((old_use.group(1).decode(), new_use.group(1).decode()))
     targets = {after for _before, after in replaced}
     if (not replaced or len(targets) != 1 or any(before not in old_pins for before, _after in replaced)
             or not targets <= new_pins):
         raise InputRefused("A data-approved workflow may only replace approved bound setup pins with one new pin")
-    return targets.pop()
+    target = next(iter(targets))
+    uses = sum(1 for line in new_lines if (match := SETUP_USES.fullmatch(line)) and match.group(1) == target.encode())
+    if new.count(target.encode()) != uses:
+        raise InputRefused("A data-approved workflow may use the new pin only as the setup action")
+    return target
 
 
 def asset_matches(record: Any, identity: dict) -> bool:
@@ -341,6 +377,9 @@ def gate_data_change(read, head_repository: str, head_sha: str, base: ApprovedDa
         return {"data_change": False}
     head_files = read_commit_files(read, head_repository, head_sha, RUNTIME_DATA, entries=head_entries)
     head = approved_from_files(head_sha, head_files)
+    if {key: value for key, value in head.catalog.items() if key != "archives"} != \
+            {key: value for key, value in base.catalog.items() if key != "archives"}:
+        raise InputRefused("A data PR may change only catalog archive rows, not the installer or upstream sources")
     if head.setup_code - base.setup_code:
         raise InputRefused("Approving new setup code is a runtime review, not a data change")
     if changed == {POLICY_PATH} and head.bound_setups == base.bound_setups:

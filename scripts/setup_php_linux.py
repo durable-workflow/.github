@@ -19,7 +19,49 @@ import tempfile
 from urllib.error import HTTPError, URLError
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+CACHE_FLAG = "pycache_prefix="
+
+
+def require_closed_interpreter():
+    """The production entry runs isolated, without site or bytecode writes, and
+    reads bytecode only from a fresh empty private cache tree, never from a
+    `__pycache__` in the checkout."""
+    prefix = sys.pycache_prefix
+    if (not (sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode)
+            or not isinstance(prefix, str) or not os.path.isabs(prefix)):
+        raise ValueError("Setup requires python3 -I -S -B -X pycache_prefix=<fresh private directory>")
+    info = os.lstat(prefix)
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700
+            or os.listdir(prefix)):
+        raise ValueError("The bytecode cache prefix must be a fresh empty private directory")
+
+
+def register_setup_package():
+    """Load only this checkout's `scripts` package, with no sys.path entry.
+
+    Under -I neither the working directory nor the script directory is on
+    sys.path, so a repository-root `hashlib.py` (or any other module) can
+    never shadow the standard library. Only modules that reviewed setup code
+    explicitly imports from `scripts/` are loaded.
+    """
+    import importlib.util
+
+    package = ROOT / "scripts"
+    spec = importlib.util.spec_from_file_location("scripts", package / "__init__.py",
+                                                  submodule_search_locations=[str(package)])
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["scripts"] = module
+    spec.loader.exec_module(module)
+
+
+if __name__ == "__main__":
+    try:
+        require_closed_interpreter()
+    except (ValueError, OSError) as error:
+        print("Bound PHP setup refused: " + str(error), file=sys.stderr)
+        raise SystemExit(1)
+    if "scripts" not in sys.modules:
+        register_setup_package()
 
 from scripts import php_linux_archive as archive
 from scripts import php_linux_bootstrap as bootstrap
@@ -86,13 +128,14 @@ def reexec(parent: dict, execute=os.execve):
         raise ValueError("The existing runner action Node24 authority is required")
     os.umask(0o077)
     state = Path(tempfile.mkdtemp(prefix="dw-php-setup-", dir=runner_temp))
-    for name in ("home", "tmp"):
+    for name in ("home", "tmp", "pycache"):
         (state / name).mkdir(mode=0o700)
     request["host_tool"] = {"node": str(node), "node_version": parent["DW_SETUP_NODE_VERSION"],
                             "node_sha256": bootstrap.sha256(node.read_bytes())}
     (state / "request.json").write_text(json.dumps(request))
     environment = bootstrap.clean_environment(parent, str(state / "home"))
-    execute("/usr/bin/python3", ["/usr/bin/python3", "-I", "-S", "-B", str(Path(__file__).resolve()), "setup", str(state)],
+    execute("/usr/bin/python3", ["/usr/bin/python3", "-I", "-S", "-B", "-X", CACHE_FLAG + str(state / "pycache"),
+                                 str(Path(__file__).resolve()), "setup", str(state)],
             environment)
 
 
@@ -265,6 +308,7 @@ def main(arguments):
         request_path.unlink()
         shutil.rmtree(state / "home")
         shutil.rmtree(state / "tmp")
+        shutil.rmtree(state / "pycache", ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -2,8 +2,8 @@
   "schema": "durable-workflow.protected-policy-data/v1",
   "reviewed_setup_code": [
     {
-      "sha256": "5c58a2749416745ef7564e64bdc8940cbfa88f38fff8724873f7cc9c10c0b2cc",
-      "source": "setup-php-linux code reviewed with the data-driven catalog and mirror fetch (PR introducing protected-policy-data.json)"
+      "sha256": "954f312487fefa20abce0429ca6ba0dc15593566dcbd7c4b5932bfc3791676b9",
+      "source": "setup-php-linux code reviewed in #414: closed start-up, catalog-driven archives and mirror fetch"
     }
   ],
   "reviewed_workflows": {

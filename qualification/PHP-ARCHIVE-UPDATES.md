@@ -30,11 +30,45 @@ When a PR changes this data, the frozen runtime's data gate also requires:
    normalization records from those bytes and they must equal the committed
    records byte for byte, with matching catalog hashes, counts and alternatives
    inventory.
-4. A new `bound-linux-php` pin is a commit already on `main`, and every setup
-   row in that commit's catalog is an approved, mirrored row.
+4. A new `bound-linux-php` pin is a commit already on `main` whose setup code
+   has a digest listed in `reviewed_setup_code` (new digests are never data),
+   whose tree has no bytecode or root Python module, and whose catalog binds
+   only approved, mirrored rows.
 5. A new reviewed workflow identity names the reviewed bytes it derives from
-   (`derived_from` and both `fixture` files) and differs from them only by
+   (`derived_from` and both `fixture` files) and differs from them only in
+   `uses: durable-workflow/.github/.github/actions/setup-php-linux@<sha>` lines,
    replacing approved `bound-linux-php` pins with one new approved pin.
+6. The catalog's installer, upstream sources and source authority equal main's;
+   only archive rows change.
+
+### Trust trade-off: upstream is the binary authority
+
+Once a new archive is live on `shivammathur/php-ubuntu` with the cataloged ID,
+size and digest, a data PR can approve it **without human review of the
+binary**. The gate proves provenance (these are exactly the bytes upstream
+published), that the mirror holds the same bytes, and that the strict
+inspector accepts the archive's structure and reproduces the committed
+records. It does not prove the PHP binaries are benign. If upstream (its
+account, CI or release) were compromised, a data PR could approve a malicious
+build; the inspector limits only its structure (no links outside the plan,
+no special files, exact member inventory), not its behaviour. This is the same
+trust in upstream that every re-pin already placed in it, but now no human
+look is required. Reviewers of an archive data PR should still compare the
+member and link differences and the upstream release notes, and anyone can
+stop a routine update by not merging it.
+
+### Setup code is never data
+
+Setup runs `python3 -I -S -B -X pycache_prefix=<fresh empty directory>` with no
+`sys.path` entry: only the `scripts` modules listed in
+`SETUP_MODULES` load, a repository-root module cannot shadow the standard
+library, and no `__pycache__` in the checkout is read. A new pin must carry
+exactly a reviewed setup-code digest (those modules, the action directory, the
+installer snapshot and the tool inputs) and its whole tree must contain no
+bytecode and no root Python module. Only `uses:
+durable-workflow/.github/.github/actions/setup-php-linux@<sha>` lines may be
+swapped by data; a workflow that checks out the repository at a pin (the
+qualification workflows) or runs other code from it needs a runtime review.
 
 Anything else (a new workflow shape, a third-party action for this
 repository's own workflows, a new label) is not routine and still needs a
@@ -88,12 +122,13 @@ Nothing below changes the ruleset, `native-policy.yml` or `scripts/`.
 5. **Data PR 2 (approval).** In `policy.json`, add `P` as `bound-linux-php`
    (retire the old pin when no caller uses it). In
    `protected-policy-data.json`, add one entry per bound workflow
-   (`ci.yml`, `qualify-linux-php-initial.yml`, `qualify-linux-php-ubuntu24.yml`)
-   whose `fixture` is the reviewed fixture with the old pin replaced by `P`,
+   that uses the setup action (`ci.yml`; the qualification workflows check
+   out the repository at the pin and need a runtime review) whose `fixture`
+   is the reviewed fixture with the old `uses:` pin replaced by `P`,
    with `derived_from` set to the reviewed fixture's hash. The gate verifies
    that `P` is on `main` and binds only mirrored approved archives, and that
    each new identity is a pure pin substitution. Merge.
-6. **Adoption PR.** Replace the old pin with `P` in those workflows (and
+6. **Adoption PR.** Replace the old `uses:` pin with `P` in those workflows (and
    update consumer repositories' `setup-php-linux@` pins). The runtime
    accepts them because `main` now approves `P` and the exact bytes.
 7. Run the qualification workflows for the new archives as before.
