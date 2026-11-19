@@ -12,11 +12,12 @@ acquisition. The archive catalog pins only the setup-profile archives
 (Ubuntu 24.04 and 26.04, x86_64, PHP 8.3); a new profile adds its row with its
 own review.
 
-The candidate PHP archive is asset 739711545,
-`php_8.3-nts+ubuntu26.04.tar.zst`, 40,568,012 bytes, SHA-256
-`11c1a56755ec5d90567265719b21bc08e7c5ac4a539866a56f55c0fe5b6d196a`.
-Upstream replaced every catalog archive except four PHP 8.1/8.2 rows on
-2026-11-12, so the earlier asset IDs return 404. The catalog, archive records,
+The candidate PHP archive is asset 768113262,
+`php_8.3-nts+ubuntu26.04.tar.zst`, 42,104,271 bytes, SHA-256
+`07e4b1bf60b6ddf01db7801266dc1a59ac79c774abb65d976c37e0188da5c32a`
+(PHP 8.3.37). Upstream replaced the setup archives on 2026-11-12, 2026-11-14
+and again on 2026-11-19 for the PHP security releases, so the earlier asset IDs
+return 404. The catalog, archive records,
 normalization plans and alternatives inventories now bind the replacement
 bytes. Earlier installed qualifications covered the replaced bytes only.
 The original installer is asset 713206915, 3,406 bytes, SHA-256
