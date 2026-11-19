@@ -425,9 +425,33 @@ class ArchiveRepairQualificationWorkflowTest(unittest.TestCase):
             with self.subTest(profile=name):
                 self.assertEqual(6, previous.count(previous_source))
                 self.assertEqual(previous.replace(previous_source, source), raw)
-                self.assertEqual(raw, (ROOT / path).read_bytes())
                 context.validate_context({path: raw})
                 with patch.object(context, 'REVIEWED_PHP_ARCHIVE_REPAIR_PROFILE_SUCCESSORS', {}), \
+                        self.assertRaises(InputRefused):
+                    context.validate_context({path: raw})
+                self.document = yaml.load(raw, Loader=yaml.BaseLoader)
+                self.job = self.document['jobs']['qualify-initial-linux-php']
+                self.workflow_ref = f'durable-workflow/.github/{path}@refs/heads/main'
+                PhpLinuxQualificationWorkflowTest.test_actual_inline_gate_refuses_wrong_head_ref_event_repo_or_rerun_before_following_code(self)
+
+
+class ArchiveRepair20261119QualificationWorkflowTest(unittest.TestCase):
+    def test_both_original_profiles_change_only_six_immutable_source_literals_again(self):
+        from scripts import protected_policy_context as context
+        from scripts.protected_policy_inputs import InputRefused
+
+        previous_source = b'5c1ddbff59bcfad8a686a72a9b09804b359c382a'
+        source = b'cba1285ddd43696ac9f445d7d04e8aff8fcad545'
+        for name in ('initial', 'ubuntu24'):
+            path = f'.github/workflows/qualify-linux-php-{name}.yml'
+            previous = (ROOT / f'tests/fixtures/qualify-linux-php-{name}-archive-repair.yml').read_bytes()
+            raw = (ROOT / f'tests/fixtures/qualify-linux-php-{name}-archive-repair-20261119.yml').read_bytes()
+            with self.subTest(profile=name):
+                self.assertEqual(6, previous.count(previous_source))
+                self.assertEqual(previous.replace(previous_source, source), raw)
+                self.assertEqual(raw, (ROOT / path).read_bytes())
+                context.validate_context({path: raw})
+                with patch.object(context, 'REVIEWED_PHP_ARCHIVE_REPAIR_20261119_PROFILE_SUCCESSORS', {}), \
                         self.assertRaises(InputRefused):
                     context.validate_context({path: raw})
                 self.document = yaml.load(raw, Loader=yaml.BaseLoader)
