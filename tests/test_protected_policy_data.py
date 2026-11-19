@@ -27,10 +27,12 @@ ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = data.DATA_REPOSITORY
 REPOSITORY_ID = native.PILOT_ID
 MIRROR = bootstrap.MIRROR_REPOSITORY
+# The qualification workflows still check out cba1285d; ci.yml uses the mirrored setup pin.
 CURRENT_PIN = "cba1285ddd43696ac9f445d7d04e8aff8fcad545"
+CI_PIN = "636d0cda4ce1e9c94ac6bf649154ff57957558be"
 CI = ".github/workflows/ci.yml"
 QUALIFY = (".github/workflows/qualify-linux-php-initial.yml", ".github/workflows/qualify-linux-php-ubuntu24.yml")
-CI_FIXTURE = "tests/fixtures/ci-php-archive-repair-20261119-source.yml"
+CI_FIXTURE = "tests/fixtures/ci-php-archive-mirror-20261119-source.yml"
 QUALIFY_FIXTURES = ("tests/fixtures/qualify-linux-php-initial-archive-repair-20261119.yml",
                     "tests/fixtures/qualify-linux-php-ubuntu24-archive-repair-20261119.yml")
 # The registries hard-coded in runtime 90313f07 (the #411 head), as sorted
@@ -154,7 +156,7 @@ def archive_update(files: dict[str, bytes], release: str, compressed: bytes, ups
     return updated, row
 
 
-def approve_pin(files: dict[str, bytes], pin: str, old_pin: str = CURRENT_PIN) -> dict[str, bytes]:
+def approve_pin(files: dict[str, bytes], pin: str, old_pin: str = CI_PIN) -> dict[str, bytes]:
     """The routine approval: one bound setup pin and pin-substituted reviewed workflow bytes."""
     updated = dict(files)
     policy = json.loads(files[data.POLICY_PATH])
@@ -177,7 +179,7 @@ def approve_pin(files: dict[str, bytes], pin: str, old_pin: str = CURRENT_PIN) -
     return updated
 
 
-def adopt_workflows(files: dict[str, bytes], pin: str, old_pin: str = CURRENT_PIN) -> dict[str, bytes]:
+def adopt_workflows(files: dict[str, bytes], pin: str, old_pin: str = CI_PIN) -> dict[str, bytes]:
     updated = dict(files)
     updated[CI] = files[CI].replace(old_pin.encode(), pin.encode())
     return updated
@@ -375,11 +377,11 @@ class DataGateTest(Scenario):
 
     def test_derivation_admits_only_setup_action_pin_substitution(self):
         old = self.files[CI_FIXTURE]
-        self.assertEqual(1, old.count(CURRENT_PIN.encode()))
+        self.assertEqual(1, old.count(CI_PIN.encode()))
         pin, other = git_sha("pin"), git_sha("other")
-        new = old.replace(CURRENT_PIN.encode(), pin.encode())
-        self.assertEqual(pin, data.routine_substitution(old, new, frozenset({CURRENT_PIN}), frozenset({pin})))
-        unapproved = old.replace(CURRENT_PIN.encode(), git_sha("x").encode())
+        new = old.replace(CI_PIN.encode(), pin.encode())
+        self.assertEqual(pin, data.routine_substitution(old, new, frozenset({CI_PIN}), frozenset({pin})))
+        unapproved = old.replace(CI_PIN.encode(), git_sha("x").encode())
         for label, before, after, pins in (
                 ("extra edit", old, new.replace(b"python -m unittest", b"python -m unittest ; curl evil", 1), {pin}),
                 ("comment edit", old, new.replace(b"# bound-linux-php", b"# other"), {pin}),
@@ -389,7 +391,7 @@ class DataGateTest(Scenario):
                                                               b"ref: " + pin.encode(), 1), {pin}),
                 ("identical bytes", old, old, {pin})):
             with self.subTest(label), self.assertRaises(InputRefused):
-                data.routine_substitution(before, after, frozenset({CURRENT_PIN}), frozenset(pins))
+                data.routine_substitution(before, after, frozenset({CI_PIN}), frozenset(pins))
 
     def test_a_pin_swap_in_a_checkout_position_needs_a_runtime_review(self):
         old = self.files[QUALIFY_FIXTURES[0]]
