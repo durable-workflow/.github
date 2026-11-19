@@ -9,7 +9,7 @@ const path = require('node:path');
 if (process.platform !== 'linux' || typeof process.execve !== 'function') {
   throw new Error('Bound PHP setup requires Linux and the runner Node execve API');
 }
-const program = path.resolve(__dirname, '../../../scripts/setup_php_linux.py');
+const program = path.resolve(__dirname, '../../../scripts/php_setup/setup_php_linux.py');
 // Bytecode is read only from this fresh empty private tree, never from a
 // __pycache__ in the action checkout (-B alone still reads planted .pyc files).
 const runnerTemp = process.env.RUNNER_TEMP;

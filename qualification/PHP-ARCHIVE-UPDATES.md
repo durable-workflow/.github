@@ -60,12 +60,16 @@ stop a routine update by not merging it.
 ### Setup code is never data
 
 Setup runs `python3 -I -S -B -X pycache_prefix=<fresh empty directory>` with no
-`sys.path` entry: only the `scripts` modules listed in
-`SETUP_MODULES` load, a repository-root module cannot shadow the standard
-library, and no `__pycache__` in the checkout is read. A new pin must carry
-exactly a reviewed setup-code digest (those modules, the action directory, the
-installer snapshot and the tool inputs) and its whole tree must contain no
-bytecode and no root Python module. Only `uses:
+`sys.path` entry. Its only Python import root is `scripts/php_setup/`, which must
+hold exactly the reviewed modules (`SETUP_MODULES`) and nothing else: no package
+directory, extension module, link, bytecode or extra file. A repository-root
+module cannot shadow the standard library and no `__pycache__` is read. The
+setup-code digest covers every entry (path, type, mode and git object ID) under
+that root, the action directory, the installer snapshot and the tool inputs, so
+anything added beside a reviewed module changes the digest. A new pin must
+carry exactly a reviewed digest, and its whole tree must contain no bytecode and
+no root Python module. The `scripts/php_linux_*.py` and `scripts/setup_php_linux.py`
+files are aliases for other repository tools; setup never loads them. Only `uses:
 durable-workflow/.github/.github/actions/setup-php-linux@<sha>` lines may be
 swapped by data; a workflow that checks out the repository at a pin (the
 qualification workflows) or runs other code from it needs a runtime review.

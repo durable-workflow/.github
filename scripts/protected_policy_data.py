@@ -52,13 +52,16 @@ MAX_ENTRIES = 512
 # Everything the bound setup action executes or reads, except the archive data
 # (catalog and profile records). A new setup pin must have exactly the code of
 # reviewed setup code: routine pins change data, never code. Setup runs
-# `python3 -I -S -B -X pycache_prefix=<fresh>` with no sys.path entry and loads
-# only these `scripts` modules (tests enumerate what setup actually loads).
-SETUP_MODULES = ("scripts/__init__.py", "scripts/setup_php_linux.py", "scripts/php_linux_alternatives.py",
-                 "scripts/php_linux_archive.py", "scripts/php_linux_bootstrap.py",
-                 "scripts/php_linux_configuration.py", "scripts/php_linux_normalize.py",
-                 "scripts/php_linux_recipe.py", "scripts/php_linux_tools.py")
-SETUP_TREES = (".github/actions/setup-php-linux/", "qualification/vendor/", "qualification/php-tools/")
+# `python3 -I -S -B -X pycache_prefix=<fresh>` with no sys.path entry; its only
+# import root is SETUP_IMPORT_ROOT, which must hold exactly SETUP_MODULES and
+# nothing else (no package directories, extension modules, links or extras).
+SETUP_IMPORT_ROOT = "scripts/php_setup/"
+SETUP_MODULES = tuple(SETUP_IMPORT_ROOT + name for name in (
+    "__init__.py", "setup_php_linux.py", "php_linux_alternatives.py", "php_linux_archive.py",
+    "php_linux_bootstrap.py", "php_linux_configuration.py", "php_linux_normalize.py", "php_linux_recipe.py",
+    "php_linux_tools.py"))
+SETUP_TREES = (SETUP_IMPORT_ROOT, ".github/actions/setup-php-linux/", "qualification/vendor/",
+               "qualification/php-tools/")
 SETUP_INPUTS = ("qualification/setup-php-source.json", "qualification/php-linux-tools.json")
 SETUP_ACTION = b"durable-workflow/.github/.github/actions/setup-php-linux@"
 SETUP_USES = re.compile(rb"[ \t]*(?:- )?[ \t]*uses:[ \t]+durable-workflow/\.github/\.github/actions/setup-php-linux@"
@@ -66,7 +69,7 @@ SETUP_USES = re.compile(rb"[ \t]*(?:- )?[ \t]*uses:[ \t]+durable-workflow/\.gith
 
 
 def setup_code_path(path: str) -> bool:
-    return path in SETUP_MODULES or path in SETUP_INPUTS or path.startswith(SETUP_TREES)
+    return path in SETUP_INPUTS or path.startswith(SETUP_TREES) or path + "/" in SETUP_TREES
 
 
 def profile_paths(name: str) -> tuple[str, ...]:
@@ -249,26 +252,33 @@ def effective_policy(frozen: dict, data: ApprovedData) -> dict:
 
 
 def setup_code_identity(entries: dict) -> str:
-    """Digest of the setup action's code closure: exact paths, modes and git blob IDs.
+    """Digest of every entry the setup action can load or read.
 
-    Refuses a tree with any bytecode cache (a planted unchecked-hash `.pyc`
-    would otherwise stand in for reviewed source) or a repository-root Python
-    module, even though setup reads neither.
+    Rows are the exact path, type, mode and git object ID (a content hash, the
+    same identity the commit pin itself rests on) of every directory and file
+    under the setup trees, so any added, removed or changed entry changes the
+    digest. Links and submodules refuse. The import root must hold exactly the
+    reviewed modules and no directory. A tree with bytecode anywhere or a
+    repository-root Python module also refuses.
     """
-    rows = []
+    rows, imported = [], set()
     for path, entry in sorted(entries.items()):
         parts = PurePosixPath(path).parts
         if ("__pycache__" in parts or path.endswith((".pyc", ".pyo"))
                 or (len(parts) == 1 and path.endswith(".py"))):
             raise InputRefused("A setup pin's tree must not carry bytecode or root Python modules")
-        if not setup_code_path(path) or (entry.get("type") == "tree" and entry.get("mode") == "040000"):
+        if not setup_code_path(path):
             continue
-        if (entry.get("type") != "blob" or entry.get("mode") not in {"100644", "100755"}
-                or not isinstance(entry.get("sha"), str)):
-            raise InputRefused("Setup code must be regular files")
-        rows.append([path, entry["mode"], checked_sha(entry["sha"])])
-    if not set(SETUP_MODULES) <= {row[0] for row in rows}:
-        raise InputRefused("The selected commit lacks the reviewed setup modules")
+        kind, mode = entry.get("type"), entry.get("mode")
+        if not ((kind == "blob" and mode in {"100644", "100755"}) or (kind == "tree" and mode == "040000")):
+            raise InputRefused("Setup code must be regular files and directories, never links or submodules")
+        if path.startswith(SETUP_IMPORT_ROOT):
+            if kind != "blob":
+                raise InputRefused("The setup import root must not contain directories")
+            imported.add(path)
+        rows.append([path, kind, mode, checked_sha(entry.get("sha"))])
+    if imported != set(SETUP_MODULES):
+        raise InputRefused("The setup import root must hold exactly the reviewed modules")
     return hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode()).hexdigest()
 
 

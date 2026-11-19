@@ -8,8 +8,10 @@ from copy import deepcopy
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
+import sys
 import tarfile
 import unittest
 
@@ -66,14 +68,15 @@ class FakeGitHub:
             raise InputRefused("GitHub request refused: curl exit 22, HTTP 404")
         return deepcopy(self.records[path])
 
-    def commit(self, sha, files, repository=REPOSITORY):
+    def commit(self, sha, files, repository=REPOSITORY, modes=None):
         tree_sha = git_sha("tree" + sha)
         entries = []
         for path, raw in sorted(files.items()):
             blob = hashlib.sha1(b"blob %d\0" % len(raw) + raw).hexdigest()
             self.records[f"/repos/{repository}/git/blobs/{blob}"] = {
                 "sha": blob, "size": len(raw), "encoding": "base64", "content": base64.b64encode(raw).decode()}
-            entries.append({"path": path, "sha": blob, "mode": "100644", "type": "blob", "size": len(raw)})
+            entries.append({"path": path, "sha": blob, "mode": (modes or {}).get(path, "100644"), "type": "blob",
+                            "size": len(raw)})
         self.records[f"/repos/{repository}/git/commits/{sha}"] = {"sha": sha, "tree": {"sha": tree_sha}}
         self.records[f"/repos/{repository}/git/trees/{tree_sha}?recursive=1"] = {
             "sha": tree_sha, "truncated": False, "tree": entries}
@@ -429,13 +432,13 @@ class DataGateTest(Scenario):
         with self.assertRaisesRegex(InputRefused, "only approved mirrored archives"):
             self.gate(approve_pin(self.files, unmerged), "b4" * 20)
         for label, planted in (("root module", {"hashlib.py": b"raise SystemExit('shadowed')\n"}),
-                               ("planted bytecode", {"scripts/__pycache__/php_linux_bootstrap.cpython-312.pyc":
+                               ("planted bytecode", {"scripts/php_setup/__pycache__/php_linux_bootstrap.cpython-312.pyc":
                                                      b"\xcb\r\r\n\x03\x00\x00\x00planted"})):
             shadowed = self.github.commit(git_sha(label), mirrored({**self.files, **planted}, self.github))
             self.github.merged(shadowed, self.base)
             with self.subTest(label), self.assertRaisesRegex(InputRefused, "bytecode or root Python"):
                 self.gate(approve_pin(self.files, shadowed), git_sha("gate " + label))
-        changed_code = {**self.files, "scripts/php_linux_normalize.py": b"# substituted setup code\n"}
+        changed_code = {**self.files, "scripts/php_setup/php_linux_normalize.py": b"# substituted setup code\n"}
         substituted = self.github.commit(git_sha("changed code"), mirrored(changed_code, self.github))
         self.github.merged(substituted, self.base)
         with self.assertRaisesRegex(InputRefused, "exactly reviewed setup code"):
@@ -600,6 +603,9 @@ with open(report, "w") as output:
     json.dump({"code": code, "opened": opened, "path": sys.path, "modules": modules, "stdlib": stdlib}, output)
 '''
 SHADOWS = ("hashlib", "ssl", "tarfile", "base64", "json", "tempfile")
+# The interpreter the action starts (bootstrap.js execs /usr/bin/python3); images
+# without it (python:3.13-slim) use this test's own interpreter instead.
+PYTHON = "/usr/bin/python3" if os.access("/usr/bin/python3", os.X_OK) else sys.executable
 
 
 class SetupStartupClosureTest(unittest.TestCase):
@@ -625,13 +631,13 @@ class SetupStartupClosureTest(unittest.TestCase):
         payload = f"open({str(self.marker)!r}, 'a').write(__name__ + '\\n')\n"
         for name in SHADOWS:
             (self.root / f"{name}.py").write_text(payload)
-        tag = subprocess.run(["/usr/bin/python3", "-I", "-c", "import sys; print(sys.implementation.cache_tag)"],
+        tag = subprocess.run([PYTHON, "-I", "-c", "import sys; print(sys.implementation.cache_tag)"],
                              capture_output=True, text=True, check=True).stdout.strip()
         planted = self.directory / "planted_source.py"
         planted.write_text(payload)
-        self.pyc = self.root / f"scripts/__pycache__/php_linux_bootstrap.{tag}.pyc"
+        self.pyc = self.root / f"scripts/php_setup/__pycache__/php_linux_bootstrap.{tag}.pyc"
         self.pyc.parent.mkdir()
-        subprocess.run(["/usr/bin/python3", "-I", "-c",
+        subprocess.run([PYTHON, "-I", "-c",
                         "import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True, "
                         "invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)", str(planted), str(self.pyc)],
                        check=True)
@@ -640,9 +646,9 @@ class SetupStartupClosureTest(unittest.TestCase):
         return self.marker.read_text().split() if self.marker.exists() else []
 
     def test_plants_execute_under_a_naive_start_up(self):
-        for statement in ("import scripts.php_linux_bootstrap", "import hashlib"):
+        for statement in ("import scripts.php_setup.php_linux_bootstrap", "import hashlib"):
             self.marker.unlink(missing_ok=True)
-            subprocess.run(["/usr/bin/python3", "-I", "-S", "-B", "-c",
+            subprocess.run([PYTHON, "-I", "-S", "-B", "-c",
                             f"import sys; sys.path.insert(0, {str(self.root)!r}); {statement}"],
                            capture_output=True, timeout=30, check=False)
             with self.subTest(statement):
@@ -656,8 +662,8 @@ class SetupStartupClosureTest(unittest.TestCase):
         report = self.directory / "report.json"
         cache = Path(tempfile.mkdtemp(prefix="fresh-cache-", dir=self.directory))
         cache.chmod(0o700)
-        entry = self.root / "scripts/setup_php_linux.py"
-        result = subprocess.run(["/usr/bin/python3", "-I", "-S", "-B", "-X", f"pycache_prefix={cache}",
+        entry = self.root / "scripts/php_setup/setup_php_linux.py"
+        result = subprocess.run([PYTHON, "-I", "-S", "-B", "-X", f"pycache_prefix={cache}",
                                  str(probe), str(entry), str(report)],
                                 cwd=self.root, capture_output=True, text=True, timeout=60, check=False)
         self.assertEqual(0, result.returncode, result.stderr)
@@ -680,8 +686,9 @@ class SetupStartupClosureTest(unittest.TestCase):
                 relative = path.relative_to(tree).as_posix()
                 self.assertTrue(data.setup_code_path(relative), relative)
                 loaded.add(relative)
-        self.assertTrue({"scripts/__init__.py", "scripts/php_linux_bootstrap.py",
-                         "scripts/php_linux_normalize.py"} <= loaded, loaded)
+        self.assertTrue({"scripts/php_setup/__init__.py", "scripts/php_setup/php_linux_bootstrap.py",
+                         "scripts/php_setup/php_linux_normalize.py"} <= loaded, loaded)
+        self.assertTrue(loaded <= set(data.SETUP_MODULES), loaded)
         archive_data = data.gated_paths(data.local_data().catalog) - {data.DATA_PATH, data.POLICY_PATH}
         for file in observed["opened"]:
             path = Path(file).resolve()
@@ -691,7 +698,7 @@ class SetupStartupClosureTest(unittest.TestCase):
             with self.subTest(opened=relative):
                 self.assertNotIn("__pycache__", relative)
                 self.assertTrue(data.setup_code_path(relative) or relative in archive_data, relative)
-        refused = subprocess.run(["/usr/bin/python3", "-I", "-S", "-B", str(entry)], cwd=self.root,
+        refused = subprocess.run([PYTHON, "-I", "-S", "-B", str(entry)], cwd=self.root,
                                  capture_output=True, text=True, timeout=30, check=False)
         self.assertEqual(1, refused.returncode)
         self.assertIn("pycache_prefix", refused.stderr)
@@ -700,24 +707,71 @@ class SetupStartupClosureTest(unittest.TestCase):
         self.assertIn(entry.resolve(), opened)
         self.assertNotIn(self.pyc.resolve(), opened)
 
-    def test_every_import_in_reviewed_setup_code_stays_inside_the_digest(self):
+    def test_every_import_in_reviewed_setup_code_stays_inside_the_import_root(self):
         import ast
 
         for module in data.SETUP_MODULES:
             tree = ast.parse((ROOT / module).read_text(), module)
             for node in ast.walk(tree):
                 names = []
-                if isinstance(node, ast.ImportFrom) and node.module == "scripts":
-                    names = [f"scripts/{alias.name}.py" for alias in node.names]
-                elif isinstance(node, ast.ImportFrom) and (node.module or "").startswith("scripts."):
-                    names = ["scripts/" + node.module.split(".")[1] + ".py"]
-                elif isinstance(node, ast.ImportFrom) and node.level:
-                    names = ["relative import"]
+                if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module is None:
+                    names = [data.SETUP_IMPORT_ROOT + alias.name + ".py" for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and (node.level or node.module == "scripts"
+                                                           or (node.module or "").startswith(("scripts.", "php_setup"))):
+                    names = ["other package import " + str(node.module)]
                 elif isinstance(node, ast.Import):
-                    names = ["scripts/" + alias.name.split(".")[1] + ".py" for alias in node.names
-                             if alias.name.startswith("scripts.")]
+                    names = ["absolute " + alias.name for alias in node.names
+                             if alias.name.split(".")[0] in {"scripts", "php_setup"}]
                 elif isinstance(node, ast.Name) and node.id in {"__import__", "exec", "eval", "runpy"}:
                     names = ["dynamic " + node.id]
                 for name in names:
                     with self.subTest(module=module, imports=name):
                         self.assertIn(name, data.SETUP_MODULES)
+
+
+class SetupImportRootManifestTest(unittest.TestCase):
+    """Nothing can be added beside a reviewed module in the setup import root."""
+
+    def setUp(self):
+        self.github = FakeGitHub()
+        self.files = repository_files()
+
+    def identity(self, files, modes=None):
+        sha = git_sha(json.dumps(sorted(files)) + json.dumps(modes or {}))
+        self.github.commit(sha, files, modes=modes)
+        tree = self.github.records[f"/repos/{REPOSITORY}/git/trees/{git_sha('tree' + sha)}?recursive=1"]["tree"]
+        return data.setup_code_identity({entry["path"]: entry for entry in tree})
+
+    def test_the_reviewed_manifest_is_exactly_the_import_root(self):
+        on_disk = {path.relative_to(ROOT).as_posix() for path in (ROOT / data.SETUP_IMPORT_ROOT).iterdir()
+                   if path.name != "__pycache__"}
+        self.assertEqual(set(data.SETUP_MODULES), on_disk)
+        self.identity(self.files)  # this checkout's tree is an admissible exact manifest
+
+    def test_plants_beside_reviewed_modules_refuse(self):
+        root = data.SETUP_IMPORT_ROOT
+        plants = {
+            "package directory": {root + "php_linux_archive/__init__.py": b"raise SystemExit('planted')\n"},
+            "abi3 extension": {root + "php_linux_archive.abi3.so": b"\x7fELF planted"},
+            "versioned extension": {root + "php_linux_archive.cpython-312-x86_64-linux-gnu.so": b"\x7fELF"},
+            "plain extension": {root + "php_linux_recipe.so": b"\x7fELF planted"},
+            "extra file": {root + "notes.txt": b"anything\n"},
+            "bytecode": {root + "__pycache__/php_linux_bootstrap.cpython-312.pyc": b"planted"},
+        }
+        for label, planted in plants.items():
+            with self.subTest(label), self.assertRaises(InputRefused):
+                self.identity({**self.files, **planted})
+        link = root + "php_linux_recipe"
+        with self.assertRaisesRegex(InputRefused, "never links"):
+            self.identity({**self.files, link: b"php_linux_tools.py"}, modes={link: "120000"})
+        removed = {path: raw for path, raw in self.files.items() if path != root + "php_linux_tools.py"}
+        with self.assertRaisesRegex(InputRefused, "exactly the reviewed modules"):
+            self.identity(removed)
+
+    def test_any_other_change_under_the_setup_trees_changes_the_digest(self):
+        reviewed = self.identity(self.files)
+        for path in (".github/actions/setup-php-linux/vendor/node_modules/x/index.js",
+                     "qualification/vendor/extra.sh", "qualification/php-tools/extra.json"):
+            with self.subTest(path):
+                self.assertNotEqual(reviewed, self.identity({**self.files, path: b"planted\n"}))
+        self.assertEqual(reviewed, self.identity({**self.files, "scripts/unrelated_tool.py": b"pass\n"}))
