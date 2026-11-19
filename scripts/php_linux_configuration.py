@@ -19,11 +19,9 @@ from scripts import php_linux_normalize as normalization
 
 
 SCHEMA = "durable-workflow.php-linux-cli-configuration/v1"
-PROFILE = "ubuntu26.04-x64-php8.3-production-coverage-none"
-PROFILES = {
-    768113262: PROFILE,
-    768105765: "ubuntu24.04-x64-php8.3-production-coverage-none",
-}
+PROFILES = {row["asset"]["id"]: row["profile"]["configuration"]
+            for row in bootstrap.setup_rows(bootstrap.load_catalog()).values()}
+PROFILE = PROFILES[normalization.DEFAULT_ASSET_ID]
 TEMPLATE = "usr/lib/php/8.3/php.ini-production.cli"
 CLI = "etc/php/8.3/cli/php.ini"
 PECL = "etc/php/8.3/cli/conf.d/99-pecl.ini"

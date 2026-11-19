@@ -12,6 +12,9 @@ from unittest.mock import patch
 from scripts import protected_policy_check as gate
 from scripts.protected_policy_inputs import InputRefused
 from tests import test_protected_policy_inputs as fixtures
+from tests.test_protected_policy_data import (  # noqa: E402,F401 - CI runs these here
+    DataGateTest, OldBehaviourPreservedTest, RoutineUpdateSimulationTest,
+)
 
 
 class FakeCurl:

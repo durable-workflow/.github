@@ -33,7 +33,8 @@ from scripts import php_linux_bootstrap as bootstrap  # noqa: E402
 from scripts import php_linux_normalize as normalization  # noqa: E402
 
 QUALIFICATION = ROOT / "qualification"
-PROFILE_NAMES = {"26.04": "initial", "24.04": "ubuntu24"}
+PROFILE_NAMES = {release: row["profile"]["name"]
+                 for release, row in bootstrap.setup_rows(bootstrap.load_catalog()).items()}
 COLUMNS = ["name", "type", "linkname", "size", "offset", "offset_data"]
 ALLOWED_PAX = frozenset(("path", "mtime", "atime", "ctime", "uid", "gid", "uname", "gname"))
 

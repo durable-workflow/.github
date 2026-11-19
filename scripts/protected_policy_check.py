@@ -31,6 +31,9 @@ from scripts.protected_policy_inputs import (  # noqa: E402
     collect_inputs, read_identity, require_current, write_inputs,
 )
 from scripts.protected_policy_context import validate_context  # noqa: E402
+from scripts.protected_policy_data import (  # noqa: E402
+    ApprovedData, effective_policy, gate_data_change, main_data,
+)
 
 PILOT_REPOSITORY = CONTROL_TARGET.repository
 PILOT_REPOSITORY_ID = CONTROL_TARGET.repository_id
@@ -43,7 +46,8 @@ REQUEST_SECONDS = 15
 ENDPOINT = re.compile(
     r"/repos/[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}/(?:"
     r"pulls/[1-9][0-9]*|branches/main|git/commits/[0-9a-f]{40}|"
-    r"git/trees/[0-9a-f]{40}\?recursive=1|git/blobs/[0-9a-f]{40})"
+    r"git/trees/[0-9a-f]{40}\?recursive=1|git/blobs/[0-9a-f]{40}|"
+    r"compare/[0-9a-f]{40}\.\.\.[0-9a-f]{40}|releases/assets/[1-9][0-9]*)"
 )
 
 
@@ -189,16 +193,25 @@ def require_protected_base(read, base_sha: str, *, target: PolicyTarget = CONTRO
 
 def validate_files(
     files: dict[str, bytes], *, validator=None, target: PolicyTarget = CONTROL_TARGET,
+    data: ApprovedData | None = None,
 ) -> dict[str, Any]:
+    """Validate candidate data against approved data from protected main.
+
+    `data` is protected main's approved data. None selects this checkout's
+    copy, which only offline tools and source tests use.
+    """
     from scripts.qualification_policy import PolicyError, load_policy, validate_local_action_references
 
     target = checked_policy_target(target.repository, target.repository_id)
-    validate_context(files, policy_target=target.policy_name)
+    validate_context(files, policy_target=target.policy_name,
+                     reviewed=None if data is None else data.reviewed(target.policy_name))
     policy_path = ROOT / "qualification/policy.json"
     try:
         policy = load_policy(policy_path)
     except PolicyError as error:
         raise InputRefused("The reviewed central policy is invalid") from error
+    if data is not None:
+        policy = effective_policy(policy, data)
     check = validator or validate_local_action_references
     with tempfile.TemporaryDirectory(prefix="policy-candidate-") as temporary:
         candidate = Path(temporary) / "data"
@@ -208,21 +221,41 @@ def validate_files(
         except (PolicyError, RecursionError) as error:
             raise InputRefused(str(error)) from error
     digests = {name: hashlib.sha256(raw).hexdigest() for name, raw in sorted(files.items())}
-    return {
+    result = {
         "policy_sha256": hashlib.sha256(policy_path.read_bytes()).hexdigest(),
         "inputs_sha256": hashlib.sha256(json.dumps(digests, sort_keys=True).encode()).hexdigest(),
         "input_count": len(files), "approved_action_count": len(actions),
     }
+    if data is not None:
+        result["data_commit"] = data.commit
+        result["data_sha256"] = {path: hashlib.sha256(raw).hexdigest() for path, raw in sorted(data.raw.items())}
+    return result
+
+
+def approved_data(read, base_sha: str, target: PolicyTarget) -> ApprovedData:
+    """Protected main's approved data; for the control repository it is the base itself."""
+    return main_data(read, expected_sha=base_sha if target.repository == CONTROL_TARGET.repository else None)
+
+
+def gate_subject(read, head_repository: str, head_sha: str, data: ApprovedData, target: PolicyTarget,
+                 fetch_archive=None) -> dict[str, Any]:
+    if target.repository != CONTROL_TARGET.repository:
+        return {"data_change": False}
+    return gate_data_change(read, head_repository, head_sha, data, fetch_archive=fetch_archive)
 
 
 def validate_snapshot(
     read, number: int, base_sha: str, *, validator=None, target: PolicyTarget = CONTROL_TARGET,
+    fetch_archive=None,
 ) -> dict[str, Any]:
     target = checked_policy_target(target.repository, target.repository_id)
     require_protected_base(read, base_sha, target=target)
     identity = read_identity(read, target.repository, target.repository_id, number, base_sha)
     files = collect_inputs(read, identity)
-    statistics = validate_files(files, validator=validator, target=target)
+    data = approved_data(read, base_sha, target)
+    statistics = validate_files(files, validator=validator, target=target, data=data)
+    statistics["data_gate"] = gate_subject(read, identity.head_repository, identity.head_sha, data, target,
+                                           fetch_archive)
     require_protected_base(read, base_sha, target=target)
     require_current(read, identity)
     return {

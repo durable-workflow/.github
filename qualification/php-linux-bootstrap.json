@@ -27,7 +27,20 @@
         "name": "php_8.3-nts+ubuntu24.04.tar.zst",
         "size": 42620774,
         "digest": "sha256:115f855a722d95ce592032a58bf25d8d622d4b266ab476bf7e6f2f2f75b6aac4"
-      }
+      },
+      "profile": {
+        "name": "ubuntu24",
+        "configuration": "ubuntu24.04-x64-php8.3-production-coverage-none",
+        "metadata_sha256": "3b66abc2d7479c783b7763867aa3a171af104c51ec9b4609f1a8748af8e0501a",
+        "plan_sha256": "ce4287e3ae64109b7ea98b2ae5914af35f597e7f9018581e675b0e90a30ba4b0",
+        "inventory_sha256": "240fba4596736ec5a5736a7d7ded31b575a85f8fb061565649a09205d36eb3ed",
+        "counts": [
+          3564,
+          3194,
+          370
+        ]
+      },
+      "mirror": null
     },
     {
       "os": "ubuntu",
@@ -41,7 +54,20 @@
         "name": "php_8.3-nts+ubuntu26.04.tar.zst",
         "size": 42104271,
         "digest": "sha256:07e4b1bf60b6ddf01db7801266dc1a59ac79c774abb65d976c37e0188da5c32a"
-      }
+      },
+      "profile": {
+        "name": "initial",
+        "configuration": "ubuntu26.04-x64-php8.3-production-coverage-none",
+        "metadata_sha256": "929756ce06042afe9ae97737449b1f1a89eed92c5a30e5deaa0f2f26f75cfb5a",
+        "plan_sha256": "38600c07fc8ec2be10da770e1d6512b9dc91470354e68a0d78ed1aa678e0c1a8",
+        "inventory_sha256": "6dac97b30a2cbd1a2b9d340f44df8ed3dd80b7ad0bc439526d2f39fb78f3af8e",
+        "counts": [
+          3900,
+          3510,
+          390
+        ]
+      },
+      "mirror": null
     }
   ]
 }

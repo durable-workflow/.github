@@ -7,11 +7,11 @@ import stat
 from scripts import php_linux_archive as archive
 from scripts import php_linux_normalize as normalization
 
-INVENTORY_SHA256 = '6dac97b30a2cbd1a2b9d340f44df8ed3dd80b7ad0bc439526d2f39fb78f3af8e'
 INVENTORIES = {
-    768113262: ('initial', INVENTORY_SHA256),
-    768105765: ('ubuntu24', '240fba4596736ec5a5736a7d7ded31b575a85f8fb061565649a09205d36eb3ed'),
+    row['asset']['id']: (row['profile']['name'], row['profile']['inventory_sha256'])
+    for row in archive.bootstrap.setup_rows(archive.bootstrap.load_catalog()).values()
 }
+INVENTORY_SHA256 = INVENTORIES[normalization.DEFAULT_ASSET_ID][1]
 
 
 def inventory_source(original):

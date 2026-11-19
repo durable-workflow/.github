@@ -18,15 +18,15 @@ import time
 from scripts import php_linux_archive as archive
 from scripts import php_linux_bootstrap as bootstrap
 
-METADATA_SHA256 = '929756ce06042afe9ae97737449b1f1a89eed92c5a30e5deaa0f2f26f75cfb5a'
-PLAN_SHA256 = '38600c07fc8ec2be10da770e1d6512b9dc91470354e68a0d78ed1aa678e0c1a8'
+# The closed source registry is the reviewed catalog in this same commit. Each
+# setup row binds its archive identity to exact record hashes and counts.
 SOURCE_PROFILES = {
-    768113262: ('initial', METADATA_SHA256, PLAN_SHA256, (3900, 3510, 390)),
-    768105765: ('ubuntu24',
-        '3b66abc2d7479c783b7763867aa3a171af104c51ec9b4609f1a8748af8e0501a',
-        'ce4287e3ae64109b7ea98b2ae5914af35f597e7f9018581e675b0e90a30ba4b0',
-        (3564, 3194, 370)),
+    row['asset']['id']: (row['profile']['name'], row['profile']['metadata_sha256'],
+                         row['profile']['plan_sha256'], tuple(row['profile']['counts']))
+    for row in bootstrap.setup_rows(bootstrap.load_catalog()).values()
 }
+DEFAULT_ASSET_ID = bootstrap.setup_rows(bootstrap.load_catalog())['26.04']['asset']['id']
+METADATA_SHA256, PLAN_SHA256 = SOURCE_PROFILES[DEFAULT_ASSET_ID][1:3]
 SCHEMA = 'durable-workflow.php-linux-normalization/v1'
 DOCUMENT_SCHEMA = 'durable-workflow.php-linux-normalized-subjects/v1'
 MANIFEST_NAME = 'normalization.json'
@@ -84,7 +84,7 @@ def reviewed_profile(asset_id):
 def profile(original=None):
     """Select only a complete held identity from the closed source registry."""
     if original is None:
-        return reviewed_profile(768113262)
+        return reviewed_profile(DEFAULT_ASSET_ID)
     if not isinstance(original, dict) or type(original.get('id')) is not int or original['id'] not in SOURCE_PROFILES:
         raise ValueError('No exact reviewed normalization asset')
     selected = reviewed_profile(original['id'])

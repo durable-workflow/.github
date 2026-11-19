@@ -52,7 +52,7 @@ def _require_target(event_name, event, environment):
     return target
 
 
-def _pull_request(read, event, validator, target):
+def _pull_request(read, event, validator, target, fetch_archive):
     from scripts import protected_policy_check as checker
 
     if event.get("action") not in {"opened", "synchronize", "reopened"}:
@@ -63,13 +63,14 @@ def _pull_request(read, event, validator, target):
     identity = read_identity(read, target.repository, target.repository_id, number, base)
     if identity.head_sha != head:
         raise InputRefused("The event's pull-request head is stale")
-    report = checker.validate_snapshot(read, number, base, validator=validator, target=target)
+    report = checker.validate_snapshot(read, number, base, validator=validator, target=target,
+                                       fetch_archive=fetch_archive)
     if report["head_sha"] != head:
         raise InputRefused("The event's pull-request head changed")
     return {**report, "enforcement": "github-required-workflow", "subject": "pull_request"}
 
 
-def _merge_group(read, event, environment, validator, target):
+def _merge_group(read, event, environment, validator, target, fetch_archive):
     from scripts import protected_policy_check as checker
 
     if event.get("action") != "checks_requested":
@@ -83,7 +84,9 @@ def _merge_group(read, event, environment, validator, target):
         raise InputRefused("The native merge-group event identity differs")
     checker.require_protected_base(read, base, target=target)
     files = collect_commit_inputs(read, target.repository, head)
-    statistics = checker.validate_files(files, validator=validator, target=target)
+    data = checker.approved_data(read, base, target)
+    statistics = checker.validate_files(files, validator=validator, target=target, data=data)
+    statistics["data_gate"] = checker.gate_subject(read, target.repository, head, data, target, fetch_archive)
     checker.require_protected_base(read, base, target=target)
     return {"schema": "durable-workflow.native-policy-read/v1", "repository": target.repository,
             "repository_id": target.repository_id, "subject": "merge_group", "base_sha": base,
@@ -91,12 +94,12 @@ def _merge_group(read, event, environment, validator, target):
             **statistics}
 
 
-def validate_native(read, event_name, event, environment, *, validator=None):
+def validate_native(read, event_name, event, environment, *, validator=None, fetch_archive=None):
     target = _require_target(event_name, event, environment)
     if event_name == "pull_request":
-        return _pull_request(read, event, validator, target)
+        return _pull_request(read, event, validator, target, fetch_archive)
     if event_name == "merge_group":
-        return _merge_group(read, event, environment, validator, target)
+        return _merge_group(read, event, environment, validator, target, fetch_archive)
     raise InputRefused("Unsupported required-workflow event")
 
 
@@ -117,8 +120,13 @@ def main():
         event = decode_metadata(raw.decode("utf-8"))
         read = GitHubReadClient(Path(os.environ["CURL_CA_BUNDLE"]), Path(os.environ["SSL_CERT_DIR"]),
                                 os.environ["DW_CI_CA_SHA256"], os.environ.get("GITHUB_TOKEN", ""))
-        print(json.dumps(validate_native(read, os.environ["GITHUB_EVENT_NAME"], event, os.environ),
-                         sort_keys=True))
+        def fetch_archive(row, catalog):
+            # Only a PR that changes approved archives downloads its mirrored bytes.
+            from scripts.protected_policy_data import mirror_fetcher
+            return mirror_fetcher(Path(os.environ["CURL_CA_BUNDLE"]), os.environ["DW_CI_CA_SHA256"])(row, catalog)
+
+        print(json.dumps(validate_native(read, os.environ["GITHUB_EVENT_NAME"], event, os.environ,
+                                         fetch_archive=fetch_archive), sort_keys=True))
         return 0
     except (InputRefused, KeyError, TypeError, OSError, UnicodeError, subprocess.SubprocessError) as error:
         print(json.dumps({"policy_refused": str(error)[:1000]}), file=sys.stderr)

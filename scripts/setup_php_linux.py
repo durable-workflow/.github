@@ -34,7 +34,9 @@ RECEIPT_SCHEMA = "durable-workflow.php-linux-setup-receipt/v2"
 NORMALIZED_RECEIPT_SCHEMA = "durable-workflow.php-linux-setup-receipt/v3"
 CONFIGURED_RECEIPT_SCHEMA = "durable-workflow.php-linux-setup-receipt/v5"
 MAX_RECEIPT = 60 * 1024
-HOST_ARCHIVES = {'26.04': 768113262, '24.04': 768105765}
+# Derived from the reviewed catalog in this same commit; never from the host.
+HOST_ARCHIVES = {release: row['asset']['id'] for release, row in
+                 bootstrap.setup_rows(bootstrap.load_catalog()).items()}
 CA_SHA256 = "50f79f98dac192b20dbf73f35c56f0b0c557ab267ff5199d1117cc1180b70785"
 
 

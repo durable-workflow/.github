@@ -25,7 +25,22 @@ a reviewed runtime-pin update; do not assume the pin follows a moving branch.
 The rule selects the central workflow from protected main. Protect changes to
 that source and record the actual workflow/runtime commits in pilot evidence.
 
-An upstream input disappearing can prevent the policy repository's own required
+Approved inputs are data on protected main, not runtime code. The runtime reads
+reviewed workflow bytes (`protected-policy-data.json`) and `bound-linux-php`
+pins (`policy.json`) from the protected `main` commit, which for this repository
+must be the event's base; it never reads them from the candidate head. Every
+other release, label and target rule stays the frozen runtime's. A PR that
+changes that data, the PHP archive catalog or its records passes only the
+runtime's data gate (`scripts/protected_policy_data.py`): data-only PRs, strict
+schemas, live upstream provenance, a byte-identical immutable mirror, the strict
+inspector over the mirrored bytes, setup pins already on `main`, and workflow
+approvals that only substitute an approved setup pin. Routine PHP archive
+updates are therefore data PRs ([PHP-ARCHIVE-UPDATES.md](PHP-ARCHIVE-UPDATES.md))
+and leave the runtime pin and ruleset unchanged. The ruleset selects this
+workflow at an exact `sha` on `refs/heads/main`; only a change to the checking
+logic itself needs a new runtime pin and ruleset selection.
+
+Before data-driven approval, an upstream input disappearing could prevent the policy repository's own required
 CI from admitting its repair. The old runtime also cannot admit new workflow
 bytes or action pins. Do not disable the rule or add bypass actors to break
 that cycle. Prepare and independently review the complete source successor,

@@ -35,21 +35,12 @@ ID is no longer published with the same name, size and digest, or when
 is a setup-profile row, and the current same-name candidate ID, size and digest.
 
 `shivammathur/php-ubuntu` replaces its `builds` release assets in place, and a
-replaced asset ID returns 404. Setup never falls back to a newer asset. To
-re-pin, download the new asset by ID, check its size and SHA-256 against the
-release API `digest`, and update `php-linux-bootstrap.json`. The catalog pins
-only the archives setup uses (`HOST_ARCHIVES`), so every row needs re-pinning. Then rebuild each
-setup profile's records in place from that exact local file:
-
-```sh
-python3 -I -S -B scripts/php_linux_profile_records.py 24.04 < ARCHIVE
-```
-
-The command refuses bytes that differ from the catalog. It prints the record
-hashes and counts for `SOURCE_PROFILES`. Copy the new metadata hash into the
-matching alternatives inventory, then update `INVENTORIES`, `PROFILES` and
-`HOST_ARCHIVES` to the new asset ID. Before merging, review the member and
-link differences against the previous records.
+replaced asset ID returns 404. A catalog row with a `mirror` record is fetched
+only from its byte-identical immutable mirror, so an upstream replacement no
+longer breaks setup. Setup never falls back to a newer or upstream asset. The
+setup archive identities, profile hashes and counts are data in
+`php-linux-bootstrap.json`; adopting a new release is a data-only update with no
+runtime or ruleset change. Follow [PHP-ARCHIVE-UPDATES.md](PHP-ARCHIVE-UPDATES.md).
 
 Receipt v4 additionally binds the initial CLI configuration. It derives the
 production INI from the held archive's `php.ini-production.cli` and the exact

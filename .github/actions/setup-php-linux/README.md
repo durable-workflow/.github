@@ -12,14 +12,15 @@ acquisition. The archive catalog pins only the setup-profile archives
 (Ubuntu 24.04 and 26.04, x86_64, PHP 8.3); a new profile adds its row with its
 own review.
 
-The candidate PHP archive is asset 768113262,
-`php_8.3-nts+ubuntu26.04.tar.zst`, 42,104,271 bytes, SHA-256
-`07e4b1bf60b6ddf01db7801266dc1a59ac79c774abb65d976c37e0188da5c32a`
-(PHP 8.3.37). Upstream replaced the setup archives on 2026-11-12, 2026-11-14
-and again on 2026-11-19 for the PHP security releases, so the earlier asset IDs
-return 404. The catalog, archive records,
-normalization plans and alternatives inventories now bind the replacement
-bytes. Earlier installed qualifications covered the replaced bytes only.
+The exact PHP archives (upstream asset ID, name, size and SHA-256), their
+normalization profile hashes and their mirror location are data in
+`qualification/php-linux-bootstrap.json`; this README deliberately names no
+asset, so a routine archive update changes only that data. Upstream replaces
+its `builds` assets in place (2026-11-12, 2026-11-14 and 2026-11-19), so a
+cataloged row with a `mirror` record is fetched only from that byte-identical
+immutable mirror, never from upstream; a missing or different mirror asset
+fails closed. See `qualification/PHP-ARCHIVE-UPDATES.md`. Earlier installed
+qualifications covered only the bytes they recorded.
 The original installer is asset 713206915, 3,406 bytes, SHA-256
 `7bc5bfea71696b0927367eb887e2710d44c6f17216fbd47add5a4cb181543e99`.
 The reviewed snapshot of those exact bytes is committed under
