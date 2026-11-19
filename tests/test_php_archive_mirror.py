@@ -85,8 +85,21 @@ class MirrorFetchTest(unittest.TestCase):
     def test_unmirrored_rows_keep_the_exact_upstream_fetch(self):
         catalog = bootstrap.load_catalog()
         row = catalog["archives"][0]
-        self.assertIsNone(row["mirror"])
+        row["mirror"] = None
+        catalog = bootstrap.validate_catalog(catalog)
         self.assertEqual((bootstrap.REPOSITORY, row["asset"]), bootstrap.fetch_location(row["asset"], catalog))
+
+    def test_committed_setup_rows_fetch_only_their_immutable_mirror_release(self):
+        catalog = bootstrap.load_catalog()
+        for release, row in bootstrap.setup_rows(catalog).items():
+            mirrored = row["mirror"]
+            with self.subTest(release=release):
+                self.assertEqual(mirror.release_tag(row), mirrored["release_tag"])
+                self.assertEqual({key: row["asset"][key] for key in ("name", "size", "digest")},
+                                 {key: mirrored[key] for key in ("name", "size", "digest")})
+                self.assertNotEqual(row["asset"]["id"], mirrored["id"])
+                self.assertEqual((bootstrap.MIRROR_REPOSITORY, {key: mirrored[key] for key in ("id", "name", "size", "digest")}),
+                                 bootstrap.fetch_location(row["asset"], catalog))
 
     def test_catalog_refuses_a_mirror_that_differs_from_its_upstream_bytes(self):
         catalog, row = mirrored_catalog(b"bytes")
@@ -130,6 +143,8 @@ class MirrorToolTest(unittest.TestCase):
 
     def test_adopt_binds_only_a_published_immutable_release_with_identical_assets(self):
         catalog = bootstrap.load_catalog()
+        for unbound in catalog["archives"]:
+            unbound["mirror"] = None
         row = catalog["archives"][1]
         tag = mirror.release_tag(row)
         release = {"tag_name": tag, "draft": False, "immutable": True, "assets": [

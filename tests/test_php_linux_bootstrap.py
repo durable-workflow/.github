@@ -95,6 +95,7 @@ class PhpLinuxBootstrapTest(unittest.TestCase):
         row = next(value for value in catalog['archives'] if value == self.row)
         payload = b'inert archive, never extracted'
         row['asset'] = self.identity(row['asset']['name'], payload, row['asset']['id'])
+        row['mirror'] = None
         derived = bootstrap.no_apt_installer_source(self.original, catalog)
         script_id = self.identity('bound-install.sh', derived, catalog['installer']['id'])
         environment = bootstrap.clean_environment({}, '/tmp/inert-source-home')
@@ -358,6 +359,7 @@ sudo() {
         catalog = copy.deepcopy(self.catalog)
         row = next(row for row in catalog["archives"] if row == self.row)
         row["asset"] = self.identity(row["asset"]["name"], data, row["asset"]["id"])
+        row["mirror"] = None
         derived = bootstrap.installer_source(self.original, catalog)
         script_id = self.identity("bound-install.sh", derived, catalog["installer"]["id"])
         environment = bootstrap.clean_environment({}, "/tmp/private-home")
@@ -390,6 +392,7 @@ sudo() {
         catalog = copy.deepcopy(self.catalog)
         row = next(row for row in catalog['archives'] if row == self.row)
         row['asset'] = identity
+        row['mirror'] = None
         derived = bootstrap.no_apt_installer_source(self.original, catalog)
         script_id = self.identity('bound-install.sh', derived, catalog['installer']['id'])
         environment = bootstrap.clean_environment({}, '/tmp/inert-no-apt-home')
@@ -424,6 +427,7 @@ sudo() {
         catalog = copy.deepcopy(self.catalog)
         row = next(row for row in catalog['archives'] if row == self.row)
         row['asset'] = self.identity(row['asset']['name'], data, row['asset']['id'])
+        row['mirror'] = None
         derived = bootstrap.no_apt_installer_source(self.original, catalog)
         script_id = self.identity('bound-install.sh', derived, catalog['installer']['id'])
         environment = bootstrap.clean_environment({}, '/tmp/inert-no-apt-home')
@@ -494,7 +498,7 @@ class PhpLinuxUpstreamPinsTest(unittest.TestCase):
                           "digest": "sha256:" + "2" * 64, "updated_at": "2026-11-13T05:00:00Z"}, row["candidate"])
         self.assertTrue(all(row["setup_profile"] for row in report["affected"]))
         unprofiled = dict(self.catalog, archives=self.catalog["archives"] + [dict(
-            self.catalog["archives"][0], release="22.04",
+            self.catalog["archives"][0], release="22.04", mirror=None,
             asset=dict(self.catalog["archives"][0]["asset"], id=5, name="php_8.3-nts+ubuntu22.04.tar.zst"))])
         (row,) = self.pins.check(unprofiled, self.published())["affected"]
         self.assertFalse(row["setup_profile"])

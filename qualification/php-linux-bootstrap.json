@@ -40,7 +40,14 @@
           370
         ]
       },
-      "mirror": null
+      "mirror": {
+        "repository": "durable-workflow/php-archives",
+        "release_tag": "php-sha256-115f855a722d95ce",
+        "id": 768749741,
+        "name": "php_8.3-nts+ubuntu24.04.tar.zst",
+        "size": 42620774,
+        "digest": "sha256:115f855a722d95ce592032a58bf25d8d622d4b266ab476bf7e6f2f2f75b6aac4"
+      }
     },
     {
       "os": "ubuntu",
@@ -67,7 +74,14 @@
           390
         ]
       },
-      "mirror": null
+      "mirror": {
+        "repository": "durable-workflow/php-archives",
+        "release_tag": "php-sha256-07e4b1bf60b6ddf0",
+        "id": 768751028,
+        "name": "php_8.3-nts+ubuntu26.04.tar.zst",
+        "size": 42104271,
+        "digest": "sha256:07e4b1bf60b6ddf01db7801266dc1a59ac79c774abb65d976c37e0188da5c32a"
+      }
     }
   ]
 }

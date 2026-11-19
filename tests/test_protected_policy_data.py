@@ -193,6 +193,14 @@ def mirrored(files: dict[str, bytes], github: FakeGitHub) -> dict[str, bytes]:
     return {**files, data.CATALOG_PATH: (json.dumps(catalog, indent=2) + "\n").encode()}
 
 
+def unmirrored(files: dict[str, bytes]) -> dict[str, bytes]:
+    """A catalog whose setup rows have no mirror record (main before the mirror adoption)."""
+    catalog = json.loads(files[data.CATALOG_PATH])
+    for row in catalog["archives"]:
+        row["mirror"] = None
+    return {**files, data.CATALOG_PATH: (json.dumps(catalog, indent=2) + "\n").encode()}
+
+
 def with_reviewed_setup_code(files: dict[str, bytes], github: FakeGitHub) -> dict[str, bytes]:
     """Main whose data reviews this checkout's setup code (as the seed entry does after merge)."""
     probe = git_sha("setup code probe")
@@ -420,7 +428,7 @@ class DataGateTest(Scenario):
         self.files = {**self.files, data.DATA_PATH: (json.dumps(document, indent=2) + "\n").encode()}
         self.base = self.start(self.files, "b0" * 20)
         unmerged = git_sha("unmerged")
-        self.github.commit(unmerged, self.files)
+        self.github.commit(unmerged, unmirrored(self.files))
         with self.assertRaisesRegex(InputRefused, "already be a commit on protected main"):
             self.gate(approve_pin(self.files, unmerged), "b1" * 20)
         self.github.merged(unmerged, self.base)
