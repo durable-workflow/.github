@@ -7,10 +7,10 @@ import stat
 from scripts import php_linux_archive as archive
 from scripts import php_linux_normalize as normalization
 
-INVENTORY_SHA256 = '2e8eca4350014aadd8d326c747c15dd05b6a830a9827674df02262316ac11b55'
+INVENTORY_SHA256 = '6dac97b30a2cbd1a2b9d340f44df8ed3dd80b7ad0bc439526d2f39fb78f3af8e'
 INVENTORIES = {
-    747290740: ('initial', INVENTORY_SHA256),
-    747287433: ('ubuntu24', '4c5e438dc7eb415e0b02e55cd4d6b854a2ccb7951062e87b758e18e6ba66b4c8'),
+    768113262: ('initial', INVENTORY_SHA256),
+    768105765: ('ubuntu24', '240fba4596736ec5a5736a7d7ded31b575a85f8fb061565649a09205d36eb3ed'),
 }
 
 

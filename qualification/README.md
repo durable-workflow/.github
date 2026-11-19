@@ -16,9 +16,9 @@ and after both PHAR probes, then removes exact owned state before publishing PAS
 The separate Ubuntu 24.04/x64/PHP 8.3 normalization source is recorded in
 `php-linux-ubuntu24-archive.json` and `php-linux-ubuntu24-normalization.json`.
 Selection requires the complete pinned asset identity, not a caller-supplied
-map or path. Its 685 links have 637 contained regular targets and 48 explicit
-directory or unresolved omissions; the derived inventory has 3,215 files and
-373 directories. The source setup gate requires the exact Ubuntu 24.04 or
+map or path. Its 679 links have 631 contained regular targets and 48 explicit
+directory or unresolved omissions; the derived inventory has 3,194 files and
+370 directories. The source setup gate requires the exact Ubuntu 24.04 or
 26.04 x64 host and matching complete archive identity, PHP 8.3, both literal
 PHARs, coverage none and no extension override. Other catalog tuples refuse.
 The accepted installed runs recorded in

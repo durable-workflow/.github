@@ -1,12 +1,12 @@
 {
   "schema": "durable-workflow.php-linux-normalization-proposal/v1",
   "asset": {
-    "id": 747290740,
+    "id": 768113262,
     "name": "php_8.3-nts+ubuntu26.04.tar.zst",
-    "size": 40600860,
-    "sha256": "d4959f02ae28e3936ad2ae3bcaca25aff8c2eca38ae11ab53a72a76a3711a7ab"
+    "size": 42104271,
+    "sha256": "07e4b1bf60b6ddf01db7801266dc1a59ac79c774abb65d976c37e0188da5c32a"
   },
-  "metadata_sha256": "af6ff884ab6a626f5628457730dcb7e135fd76226eb945ada68697693ac2381f",
+  "metadata_sha256": "929756ce06042afe9ae97737449b1f1a89eed92c5a30e5deaa0f2f26f75cfb5a",
   "materialize_regular_aliases": [
     [
       "etc/alternatives/libphp8",
@@ -2205,30 +2205,6 @@
       "usr/lib/x86_64-linux-gnu/libavif.so.16.3.0"
     ],
     [
-      "usr/lib/x86_64-linux-gnu/libbrotlicommon.so",
-      "usr/lib/x86_64-linux-gnu/libbrotlicommon.so.1.2.1"
-    ],
-    [
-      "usr/lib/x86_64-linux-gnu/libbrotlicommon.so.1",
-      "usr/lib/x86_64-linux-gnu/libbrotlicommon.so.1.2.1"
-    ],
-    [
-      "usr/lib/x86_64-linux-gnu/libbrotlidec.so",
-      "usr/lib/x86_64-linux-gnu/libbrotlidec.so.1.2.1"
-    ],
-    [
-      "usr/lib/x86_64-linux-gnu/libbrotlidec.so.1",
-      "usr/lib/x86_64-linux-gnu/libbrotlidec.so.1.2.1"
-    ],
-    [
-      "usr/lib/x86_64-linux-gnu/libbrotlienc.so",
-      "usr/lib/x86_64-linux-gnu/libbrotlienc.so.1.2.1"
-    ],
-    [
-      "usr/lib/x86_64-linux-gnu/libbrotlienc.so.1",
-      "usr/lib/x86_64-linux-gnu/libbrotlienc.so.1.2.1"
-    ],
-    [
       "usr/lib/x86_64-linux-gnu/libcairo-gobject.so.2",
       "usr/lib/x86_64-linux-gnu/libcairo-gobject.so.2.11804.4"
     ],
@@ -3161,8 +3137,8 @@
       "usr/share/doc/libnettle8t64/changelog.Debian.gz"
     ]
   ],
-  "expected_regular_files": 3531,
-  "expected_directories": 393,
-  "expected_members": 3924,
+  "expected_regular_files": 3510,
+  "expected_directories": 390,
+  "expected_members": 3900,
   "expected_links": 0
 }
