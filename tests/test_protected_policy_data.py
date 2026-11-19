@@ -593,10 +593,11 @@ try:
     runpy.run_path(entry, run_name="__main__")
 except SystemExit as stop:
     code = stop.code
+modules = {name: getattr(module, "__file__", None) for name, module in list(sys.modules.items())}
+import sysconfig
+stdlib = [sysconfig.get_paths()[key] for key in ("stdlib", "platstdlib")]
 with open(report, "w") as output:
-    json.dump({"code": code, "opened": opened, "path": sys.path,
-               "modules": {name: getattr(module, "__file__", None) for name, module in list(sys.modules.items())}},
-              output)
+    json.dump({"code": code, "opened": opened, "path": sys.path, "modules": modules, "stdlib": stdlib}, output)
 '''
 SHADOWS = ("hashlib", "ssl", "tarfile", "base64", "json", "tempfile")
 
@@ -648,7 +649,6 @@ class SetupStartupClosureTest(unittest.TestCase):
                 self.assertNotEqual([], self.ran())
 
     def test_action_start_up_loads_only_covered_setup_code(self):
-        import sysconfig
         import tempfile
 
         probe = self.directory / "probe.py"
@@ -665,8 +665,8 @@ class SetupStartupClosureTest(unittest.TestCase):
         self.assertEqual(1, observed["code"])  # imports done; main refuses the missing entry arguments
         self.assertEqual([], self.ran())
         self.assertNotIn(str(self.root), observed["path"])
-        stdlib = {str(Path(sysconfig.get_paths(vars=None)[key]).resolve())
-                  for key in ("stdlib", "platstdlib")}
+        # The action interpreter's own standard library (it may differ from the test's).
+        stdlib = {Path(path).resolve() for path in observed["stdlib"]}
         tree = self.root.resolve()
         loaded = set()
         for name, file in observed["modules"].items():
