@@ -309,14 +309,14 @@ class SetupPhpLinuxTest(unittest.TestCase):
 
     def test_both_source_transitions_use_absolute_isolated_no_site_no_bytecode_python(self):
         root = bootstrap.ROOT
-        probe = "import sys; seen='site' in sys.modules; import json; print(json.dumps({'site':seen,'isolated':sys.flags.isolated,'no_site':sys.flags.no_site,'no_bytecode':sys.flags.dont_write_bytecode}))"
+        probe = "import sys; seen='site' in sys.modules; import json; print(json.dumps({'site':seen,'isolated':sys.flags.isolated,'no_site':sys.flags.no_site,'no_bytecode':sys.flags.dont_write_bytecode,'private_cache':sys.pycache_prefix is not None}))"
         # Execute the exact wrapper sources in a Node VM with execve replaced
         # by a native Python flag probe. No setup target is executed. The local
         # Node version is not claimed as a native Node24 qualification.
         javascript = '''
 const fs=require('node:fs'),vm=require('node:vm'),child=require('node:child_process');
-const [source,dir,probe]=process.argv.slice(1);
-const fake={platform:'linux',version:'v24.inert',execPath:process.execPath,env:{GITHUB_TOKEN:'inert'},
+const [source,dir,probe,temp]=process.argv.slice(1);
+const fake={platform:'linux',version:'v24.inert',execPath:process.execPath,env:{GITHUB_TOKEN:'inert',RUNNER_TEMP:temp},
  execve:(binary,args,env)=>{
   if(binary!=='/usr/bin/python3')throw Error('non-absolute interpreter');
   const flags=args.slice(1,args.findIndex(x=>x.endsWith('setup_php_linux.py')));
@@ -328,12 +328,17 @@ vm.runInNewContext(fs.readFileSync(source,'utf8'),{require,process:fake,__dirnam
         current = root/'.github/actions/setup-php-linux/bootstrap.js'
         old = root/'tests/fixtures/php_linux_bootstrap_65753c1.js'
         results = []
-        for source in (old,current):
-            result = subprocess.run(['node','-e',javascript,str(source),str(current.parent),probe],
-                env={'PATH':'/usr/bin:/usr/local/bin:/bin'},capture_output=True,text=True,timeout=5,check=True)
-            results.append(json.loads(result.stdout))
-        self.assertEqual({'site':True,'isolated':1,'no_site':0,'no_bytecode':0},results[0])
-        self.assertEqual({'site':False,'isolated':1,'no_site':1,'no_bytecode':1},results[1])
+        with tempfile.TemporaryDirectory(prefix='php-inert-runner-') as runner_temp:
+            for source in (old,current):
+                result = subprocess.run(['node','-e',javascript,str(source),str(current.parent),probe,runner_temp],
+                    env={'PATH':'/usr/bin:/usr/local/bin:/bin'},capture_output=True,text=True,timeout=5,check=True)
+                results.append(json.loads(result.stdout))
+            caches = list(Path(runner_temp).glob('dw-php-pycache-*'))
+            self.assertEqual(1, len(caches))
+            self.assertEqual([], list(caches[0].iterdir()))
+            self.assertEqual(0o700, caches[0].stat().st_mode & 0o777)
+        self.assertEqual({'site':True,'isolated':1,'no_site':0,'no_bytecode':0,'private_cache':False},results[0])
+        self.assertEqual({'site':False,'isolated':1,'no_site':1,'no_bytecode':1,'private_cache':True},results[1])
         with tempfile.TemporaryDirectory(prefix='php-inert-startup-') as directory:
             state=Path(directory)
             node=state/'inert-node';node.write_bytes(b'inert identity')
@@ -354,7 +359,10 @@ vm.runInNewContext(fs.readFileSync(source,'utf8'),{require,process:fake,__dirnam
             state.chmod(0o700)
             (state / "request.json").write_text("inert deliberately invalid JSON; must not be read")
             environment = dict(bootstrap.clean_environment({}, str(state / "home")), GITHUB_TOKEN="inert")
-            result = subprocess.run(["/usr/bin/python3", "-I", "-S", "-B", str(Path(setup.__file__)), "setup", str(state)],
+            cache = Path(tempfile.mkdtemp(prefix="php-inert-cache-"))
+            self.addCleanup(cache.rmdir)
+            result = subprocess.run(["/usr/bin/python3", "-I", "-S", "-B", "-X", f"pycache_prefix={cache}",
+                                     str(Path(setup.__file__)), "setup", str(state)],
                 env=environment, capture_output=True, text=True, timeout=5)
             self.assertEqual(1, result.returncode)
             self.assertIn("Inherited environment is not closed", result.stderr)

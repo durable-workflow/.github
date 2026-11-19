@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import tempfile
 import unittest
 from copy import deepcopy
@@ -24,6 +25,35 @@ TREE = "c" * 40
 REPOSITORY = "durable-workflow/.github"
 FORK = "contributor/policy-change"
 WORKFLOW = ".github/workflows/ci.yml"
+MAIN_TREE = "e" * 40
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def data_blob(contents):
+    sha = hashlib.sha1(b"blob %d\0" % len(contents) + contents).hexdigest()
+    return sha, {"sha": sha, "size": len(contents), "encoding": "base64",
+                 "content": base64.encodebytes(contents).decode("ascii")}
+
+
+def main_data_files(overrides=None):
+    from scripts.protected_policy_data import gated_paths, local_data
+
+    files = {path: (ROOT / path).read_bytes() for path in sorted(gated_paths(local_data().catalog))}
+    files.update(overrides or {})
+    return {path: raw for path, raw in files.items() if raw is not None}
+
+
+def register_commit(records, repository, sha, tree_sha, files):
+    """Register an exact commit/tree/blob set as GitHub API records."""
+    entries = []
+    for path, contents in sorted(files.items()):
+        blob_sha, blob = data_blob(contents)
+        records[f"/repos/{repository}/git/blobs/{blob_sha}"] = blob
+        entries.append({"path": path, "sha": blob_sha, "mode": "100644", "type": "blob", "size": len(contents)})
+    records[f"/repos/{repository}/git/commits/{sha}"] = {"sha": sha, "tree": {"sha": tree_sha}}
+    records[f"/repos/{repository}/git/trees/{tree_sha}?recursive=1"] = {
+        "sha": tree_sha, "truncated": False, "tree": entries}
+    return entries
 
 
 class ProtectedPolicyInputTest(unittest.TestCase):
@@ -46,11 +76,22 @@ class ProtectedPolicyInputTest(unittest.TestCase):
         }
         self.requests = []
         self.add_file(WORKFLOW, b"on: push\njobs: {}\n")
+        # Protected main's approved data at the base commit. Candidate trees
+        # carry the same unchanged data unless a test changes it explicitly.
+        self.main_entries = register_commit(self.records, REPOSITORY, BASE, MAIN_TREE, main_data_files())
+        for entry in self.main_entries:
+            blob = self.records[f"/repos/{REPOSITORY}/git/blobs/{entry['sha']}"]
+            self.records[f"/repos/{FORK}/git/blobs/{entry['sha']}"] = blob
         self.identity = read_identity(self.read, REPOSITORY, 100, 7, BASE)
 
     def read(self, path):
         self.requests.append(path)
-        return deepcopy(self.records[path])
+        value = deepcopy(self.records[path])
+        if path.endswith("?recursive=1") and path != f"/repos/{REPOSITORY}/git/trees/{MAIN_TREE}?recursive=1" \
+                and isinstance(value.get("tree"), list):
+            present = {entry.get("path") for entry in value["tree"]}
+            value["tree"] += [deepcopy(entry) for entry in self.main_entries if entry["path"] not in present]
+        return value
 
     def add_file(self, path, contents, mode="100644"):
         sha = f"{len(self.entries) + 1:040x}"

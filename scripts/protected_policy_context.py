@@ -7,7 +7,8 @@ extending the shared validator into a shell interpreter.
 from __future__ import annotations
 
 import hashlib
-from pathlib import PurePosixPath
+import json
+from pathlib import Path, PurePosixPath
 import re
 import shlex
 from typing import Any
@@ -34,132 +35,30 @@ PYTHON_MODULES = {"unittest", "pip", "venv", "http.server"}
 CI_WORKFLOW = ".github/workflows/ci.yml"
 SONAR_WORKFLOW = ".github/workflows/sonar.yml"
 INITIAL_PHP_WORKFLOW = ".github/workflows/qualify-linux-php-initial.yml"
-# Filled with explicit reviewed workflow-byte identities, never derived from
-# candidate text. A changed complex workflow needs a separate source review.
-REVIEWED_COMPLEX_WORKFLOWS = {
-    INITIAL_PHP_WORKFLOW: "c94aa78f856940b71ce21476caf1f9f826375f11499d54759c81a79467acd1eb",
-    CI_WORKFLOW: "d5b32d7b2868638e09b7deea1d3cab4bcbd3b4601fd9120da0be55319540eff7",
-    SONAR_WORKFLOW: "0dd432a52b1dcb6ef10b6e25404163b285deaa651a92219456eabec18514067b",
-    ".github/workflows/protected-policy.yml": "642d204ea939ca5eba7ef51be9e4ae56a35177413caabe849315086d3d9d2d31",
-    ".github/workflows/rust-docs-visual.yml": "69bc0b89cdeacbabd35c345770de86fe9e20bb3f2a53fc1c7a157973c3db31a6",
-    ".github/workflows/cancellation-competitors.yml": "9ce25bd480c899e52a7e805fd6e5e6d45fcaa687c8c25b092d1f2163baf0b0b5",
-}
-# Exact source-CI successors keep the approved immutable trust bootstrap while
-# the new private-pip implementation is qualified separately. These are inert
-# future workflow identities; candidate text never supplies an expected digest.
-REVIEWED_SOURCE_CI_SUCCESSORS = {
-    CI_WORKFLOW: "f0546eeeeec386042088cb5eb2ff36caedf9517726c06d030a0b1e275b94fb55",
-    SONAR_WORKFLOW: "10af0ec0dcec58368a8261188e9e2fb1c3c91736d39502863e7aa57914e99fbe",
-}
-# These exact inert successors add the PHP configuration control modules to
-# existing CI/coverage steps. The live workflows and runtime pin are separate.
-REVIEWED_PHP_CONFIGURATION_SOURCE_CI_SUCCESSORS = {
-    CI_WORKFLOW: "44953364dc6aceff2c2f16e04980805418f7601cecfecbf519244132e9980e3e",
-    SONAR_WORKFLOW: "829ac16a197305d64701a8f423f14544d17658b062fc0c6dca5c1e838d51be0d",
-}
-# The live CI/Sonar workflows above, plus one step before setup-php that writes
-# APT's Acquire::Retries "0" (CVE-2026-109518, issue 295). Exact reviewed bytes.
-REVIEWED_APT_NO_RETRIES_SOURCE_CI_SUCCESSORS = {
-    CI_WORKFLOW: "760de748e04a5c652d0174b8bb68b689aed98c17aed10a06b628af6b931719fc",
-    SONAR_WORKFLOW: "f7fad8367df4a4e9565d97e13aa120d55038ed9c749fdfcd86e1312bfca3cced",
-}
-# Inert successor for the existing contracts job's qualified Ubuntu24 PHP8.3
-# setup. Live workflow adoption and the protected runtime pin follow review.
-REVIEWED_BOUND_PHP_SOURCE_CI_SUCCESSORS = {
-    CI_WORKFLOW: "363540f9e81e4842099f0cad394ce3fc2a83835ce1355ffef5b16722547699b4",
-}
-# Exact reviewed successors add the response-loss socket controls to CI and
-# their actual source to coverage. Existing workflow identities remain valid.
-REVIEWED_RESPONSE_LOSS_SOURCE_CI_SUCCESSORS = {
-    CI_WORKFLOW: "ee4ddc9ad665490681b3f1a2676cdd4ce791d90677e2a931bdb4fea7cc9deb15",
-    SONAR_WORKFLOW: "4eed5d82d6e5decf47d4aab1d1d203eb1060f8892216360b9308c3e710bbcd77",
-}
-# The archive-repair CI calls one independently reviewed immutable setup
-# predecessor. A PR cannot replace that action with its checked-out source.
-REVIEWED_PHP_ARCHIVE_REPAIR_SOURCE_CI_SUCCESSORS = {
-    CI_WORKFLOW: "d43a91ff2d7e004e213d4cb27fef34b8b83fcf3142bebb9310d5d7183d46f279",
-}
-# The 2026-11-19 PHP 8.3.37 archive replacement changes only that immutable
-# setup pin, to the reviewed re-pin cba1285d.
-REVIEWED_PHP_ARCHIVE_REPAIR_20261119_SOURCE_CI_SUCCESSORS = {
-    CI_WORKFLOW: "49f079af77a19ffee50e36d8c276309eced2f2e660550a06e6b5619ea630bd7e",
-}
-# The successor remains inert until its separate runtime pin and manual-only
-# workflow integration. Keep the consumed predecessor's identity unchanged.
-REVIEWED_INITIAL_PROFILE_SUCCESSORS = {
-    INITIAL_PHP_WORKFLOW: "d3eefa3cce62b0c92ae07d6e6a1617342b843e9b5fb0ddad6ad6be4c1c4a2f9f",
-}
-REVIEWED_NORMALIZED_PROFILE_SUCCESSORS = {
-    INITIAL_PHP_WORKFLOW: "52fa0e223464e06bd7e10f0b57076557f350353dcfedb1235b0829e0121134ac",
-}
+# Reviewed workflow-byte identities are data, never derived from candidate
+# text. The native runtime reads them from protected main (see
+# scripts/protected_policy_data.py) and passes them to validate_context. These
+# module registries are this checkout's copy of the same data, kept under their
+# historical names for offline tools and source tests.
+_LOCAL_DATA = json.loads((Path(__file__).resolve().parents[1] /
+                          "qualification/protected-policy-data.json").read_text(encoding="utf-8"))
 
-REVIEWED_ALTERNATIVES_PROFILE_SUCCESSORS = {
-    INITIAL_PHP_WORKFLOW: "7c88cfa13dcb75de5a05902e2b95e10592790c3fe0582f1521b556e6634695cd",
-}
 
-REVIEWED_SELECTED_ALTERNATIVES_PROFILE_SUCCESSORS = {
-    INITIAL_PHP_WORKFLOW: "5aff02167297f88d20700ea270adb7ee68ce20d7aa7c884a6a3bcb789b0cc7cc",
-}
+def _registry(target: str, name: str) -> dict[str, str]:
+    return {entry["path"]: entry["sha256"] for entry in _LOCAL_DATA["reviewed_workflows"][target]
+            if entry["registry"] == name}
 
-REVIEWED_CONFIGURED_CLI_PROFILE_SUCCESSORS = {
-    INITIAL_PHP_WORKFLOW: "d0e0816d8b0a41900a7b522dfda5120bdade3496eadfa122a14b8cd058b262f2",
-}
 
-REVIEWED_SUBJECT_REFERENCE_PROFILE_SUCCESSORS = {
-    INITIAL_PHP_WORKFLOW: "0a428ffd00c78a2eba29ada8db0b71f39efad0496e0d61616ab4d001eb0d77cd",
-}
-
-# The Ubuntu 24 manual profile, a separate host profile that leaves the
-# accepted initial workflow intact, re-pointed to the re-pinned setup source
-# 411a14ac (#359). Its retired 8ba5caae predecessor (46157bee...) is no longer
-# reviewed for the live path; tests/fixtures keeps those bytes as history.
-REVIEWED_UBUNTU24_REPINNED_PROFILE_SUCCESSORS = {
-    ".github/workflows/qualify-linux-php-ubuntu24.yml":
-        "1f9df7560ff3ebb4a85b43dd176ca6591e0d285442245f674081fbe05fc0d64f",
-}
-
-# The two original manual profiles retain their full gates and bounds; only
-# six immutable setup/control source literals change in each workflow.
-REVIEWED_PHP_ARCHIVE_REPAIR_PROFILE_SUCCESSORS = {
-    ".github/workflows/qualify-linux-php-initial.yml":
-        "afebd85cd43762140e099bda98879339f16675ead05b9a75be22a69469d6706f",
-    ".github/workflows/qualify-linux-php-ubuntu24.yml":
-        "71db64b8396635dc45b310ee582bae30d6a24875268a6971baa149e31230da44",
-}
-
-# The 2026-11-19 replacement changes the same six source literals again.
-REVIEWED_PHP_ARCHIVE_REPAIR_20261119_PROFILE_SUCCESSORS = {
-    ".github/workflows/qualify-linux-php-initial.yml":
-        "35e09eccf6e9fc8c76d7cff37b1f9b5cf7c811fd289c9631ff0709c8e3d30390",
-    ".github/workflows/qualify-linux-php-ubuntu24.yml":
-        "67abe531136b6bd051e3a4deae47fa4e8257ef6b7beff51efab43f49ea42b87c",
-}
-
-# AI's existing matrix commands are reviewed only for that repository. They do
-# not enlarge the control repository's complex-workflow exceptions.
-REVIEWED_AI_WORKFLOWS = {
-    CI_WORKFLOW: "bb67cff8534c78269aa4a0025c3d28056b0ce6f81d8ec8e8b146e13fb9216aa3",
-    SONAR_WORKFLOW: "350ab6c80ad7e83702d4afb4215652affa226bed2e33401ad6fab594ec37d9b6",
-}
+_CONTROL_REGISTRIES = tuple(dict.fromkeys(
+    entry["registry"] for entry in _LOCAL_DATA["reviewed_workflows"]["github-control-plane"]))
+for _name in _CONTROL_REGISTRIES:
+    globals()["REVIEWED_" + _name.upper()] = _registry("github-control-plane", _name)
+REVIEWED_AI_WORKFLOWS = _registry("ai", "ai_workflows")
 
 
 def reviewed_context_hashes(policy_target: str) -> dict[str, set[str]]:
     if policy_target == "github-control-plane":
-        registries = (REVIEWED_COMPLEX_WORKFLOWS, REVIEWED_SOURCE_CI_SUCCESSORS,
-                      REVIEWED_PHP_CONFIGURATION_SOURCE_CI_SUCCESSORS,
-                      REVIEWED_APT_NO_RETRIES_SOURCE_CI_SUCCESSORS,
-                      REVIEWED_BOUND_PHP_SOURCE_CI_SUCCESSORS,
-                      REVIEWED_RESPONSE_LOSS_SOURCE_CI_SUCCESSORS,
-                      REVIEWED_PHP_ARCHIVE_REPAIR_SOURCE_CI_SUCCESSORS,
-                      REVIEWED_PHP_ARCHIVE_REPAIR_20261119_SOURCE_CI_SUCCESSORS,
-                      REVIEWED_INITIAL_PROFILE_SUCCESSORS, REVIEWED_NORMALIZED_PROFILE_SUCCESSORS,
-                      REVIEWED_ALTERNATIVES_PROFILE_SUCCESSORS,
-                      REVIEWED_SELECTED_ALTERNATIVES_PROFILE_SUCCESSORS,
-                      REVIEWED_CONFIGURED_CLI_PROFILE_SUCCESSORS,
-                      REVIEWED_SUBJECT_REFERENCE_PROFILE_SUCCESSORS,
-                      REVIEWED_UBUNTU24_REPINNED_PROFILE_SUCCESSORS,
-                      REVIEWED_PHP_ARCHIVE_REPAIR_PROFILE_SUCCESSORS,
-                      REVIEWED_PHP_ARCHIVE_REPAIR_20261119_PROFILE_SUCCESSORS)
+        registries = tuple(globals()["REVIEWED_" + name.upper()] for name in _CONTROL_REGISTRIES)
     elif policy_target == "ai":
         registries = (REVIEWED_AI_WORKFLOWS,)
     else:
@@ -306,8 +205,10 @@ def validate_helper_step(document, job, step, files, reviewed_complex=False):
     check_helpers(source, files, set())
 
 
-def validate_context(files: dict[str, bytes], *, policy_target: str = "github-control-plane") -> None:
-    reviewed_hashes = reviewed_context_hashes(policy_target)
+def validate_context(files: dict[str, bytes], *, policy_target: str = "github-control-plane",
+                     reviewed: dict[str, set[str]] | None = None) -> None:
+    """`reviewed` is protected main's data; None selects this checkout's copy."""
+    reviewed_hashes = reviewed_context_hashes(policy_target) if reviewed is None else reviewed
     for name, raw in sorted(files.items()):
         if PurePosixPath(name).parent.as_posix() != ".github/workflows" or not name.endswith((".yml", ".yaml")):
             continue

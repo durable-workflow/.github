@@ -1,0 +1,189 @@
+{
+  "schema": "durable-workflow.protected-policy-data/v1",
+  "reviewed_setup_code": [
+    {
+      "sha256": "61ff4063faab6a37610b7af79635c7bf249a341f77bb0a07423419c42d7f0205",
+      "source": "setup-php-linux reviewed in #414: scripts/php_setup import root, closed start-up, catalog-driven archives and mirror fetch"
+    }
+  ],
+  "reviewed_workflows": {
+    "github-control-plane": [
+      {
+        "registry": "complex_workflows",
+        "path": ".github/workflows/qualify-linux-php-initial.yml",
+        "sha256": "c94aa78f856940b71ce21476caf1f9f826375f11499d54759c81a79467acd1eb",
+        "fixture": "tests/fixtures/qualify-linux-php-initial.yml"
+      },
+      {
+        "registry": "complex_workflows",
+        "path": ".github/workflows/ci.yml",
+        "sha256": "d5b32d7b2868638e09b7deea1d3cab4bcbd3b4601fd9120da0be55319540eff7"
+      },
+      {
+        "registry": "complex_workflows",
+        "path": ".github/workflows/sonar.yml",
+        "sha256": "0dd432a52b1dcb6ef10b6e25404163b285deaa651a92219456eabec18514067b"
+      },
+      {
+        "registry": "complex_workflows",
+        "path": ".github/workflows/protected-policy.yml",
+        "sha256": "642d204ea939ca5eba7ef51be9e4ae56a35177413caabe849315086d3d9d2d31",
+        "fixture": "tests/fixtures/retired-protected-policy.yml"
+      },
+      {
+        "registry": "complex_workflows",
+        "path": ".github/workflows/rust-docs-visual.yml",
+        "sha256": "69bc0b89cdeacbabd35c345770de86fe9e20bb3f2a53fc1c7a157973c3db31a6"
+      },
+      {
+        "registry": "complex_workflows",
+        "path": ".github/workflows/cancellation-competitors.yml",
+        "sha256": "9ce25bd480c899e52a7e805fd6e5e6d45fcaa687c8c25b092d1f2163baf0b0b5"
+      },
+      {
+        "registry": "source_ci_successors",
+        "path": ".github/workflows/ci.yml",
+        "sha256": "f0546eeeeec386042088cb5eb2ff36caedf9517726c06d030a0b1e275b94fb55",
+        "fixture": "tests/fixtures/ci-private-pip-source.yml"
+      },
+      {
+        "registry": "source_ci_successors",
+        "path": ".github/workflows/sonar.yml",
+        "sha256": "10af0ec0dcec58368a8261188e9e2fb1c3c91736d39502863e7aa57914e99fbe",
+        "fixture": "tests/fixtures/sonar-private-pip-source.yml"
+      },
+      {
+        "registry": "php_configuration_source_ci_successors",
+        "path": ".github/workflows/ci.yml",
+        "sha256": "44953364dc6aceff2c2f16e04980805418f7601cecfecbf519244132e9980e3e",
+        "fixture": "tests/fixtures/ci-php-configuration-source.yml"
+      },
+      {
+        "registry": "php_configuration_source_ci_successors",
+        "path": ".github/workflows/sonar.yml",
+        "sha256": "829ac16a197305d64701a8f423f14544d17658b062fc0c6dca5c1e838d51be0d",
+        "fixture": "tests/fixtures/sonar-php-configuration-source.yml"
+      },
+      {
+        "registry": "apt_no_retries_source_ci_successors",
+        "path": ".github/workflows/ci.yml",
+        "sha256": "760de748e04a5c652d0174b8bb68b689aed98c17aed10a06b628af6b931719fc"
+      },
+      {
+        "registry": "apt_no_retries_source_ci_successors",
+        "path": ".github/workflows/sonar.yml",
+        "sha256": "f7fad8367df4a4e9565d97e13aa120d55038ed9c749fdfcd86e1312bfca3cced"
+      },
+      {
+        "registry": "bound_php_source_ci_successors",
+        "path": ".github/workflows/ci.yml",
+        "sha256": "363540f9e81e4842099f0cad394ce3fc2a83835ce1355ffef5b16722547699b4",
+        "fixture": "tests/fixtures/ci-bound-php-source.yml"
+      },
+      {
+        "registry": "response_loss_source_ci_successors",
+        "path": ".github/workflows/ci.yml",
+        "sha256": "ee4ddc9ad665490681b3f1a2676cdd4ce791d90677e2a931bdb4fea7cc9deb15",
+        "fixture": "tests/fixtures/ci-response-loss-source.yml"
+      },
+      {
+        "registry": "response_loss_source_ci_successors",
+        "path": ".github/workflows/sonar.yml",
+        "sha256": "4eed5d82d6e5decf47d4aab1d1d203eb1060f8892216360b9308c3e710bbcd77",
+        "fixture": "tests/fixtures/sonar-response-loss-source.yml"
+      },
+      {
+        "registry": "php_archive_repair_source_ci_successors",
+        "path": ".github/workflows/ci.yml",
+        "sha256": "d43a91ff2d7e004e213d4cb27fef34b8b83fcf3142bebb9310d5d7183d46f279",
+        "fixture": "tests/fixtures/ci-php-archive-repair-source.yml"
+      },
+      {
+        "registry": "php_archive_repair_20261119_source_ci_successors",
+        "path": ".github/workflows/ci.yml",
+        "sha256": "49f079af77a19ffee50e36d8c276309eced2f2e660550a06e6b5619ea630bd7e",
+        "fixture": "tests/fixtures/ci-php-archive-repair-20261119-source.yml"
+      },
+      {
+        "registry": "initial_profile_successors",
+        "path": ".github/workflows/qualify-linux-php-initial.yml",
+        "sha256": "d3eefa3cce62b0c92ae07d6e6a1617342b843e9b5fb0ddad6ad6be4c1c4a2f9f",
+        "fixture": "tests/fixtures/qualify-linux-php-private-pip.yml"
+      },
+      {
+        "registry": "normalized_profile_successors",
+        "path": ".github/workflows/qualify-linux-php-initial.yml",
+        "sha256": "52fa0e223464e06bd7e10f0b57076557f350353dcfedb1235b0829e0121134ac",
+        "fixture": "tests/fixtures/qualify-linux-php-normalized.yml"
+      },
+      {
+        "registry": "alternatives_profile_successors",
+        "path": ".github/workflows/qualify-linux-php-initial.yml",
+        "sha256": "7c88cfa13dcb75de5a05902e2b95e10592790c3fe0582f1521b556e6634695cd",
+        "fixture": "tests/fixtures/qualify-linux-php-alternatives.yml"
+      },
+      {
+        "registry": "selected_alternatives_profile_successors",
+        "path": ".github/workflows/qualify-linux-php-initial.yml",
+        "sha256": "5aff02167297f88d20700ea270adb7ee68ce20d7aa7c884a6a3bcb789b0cc7cc",
+        "fixture": "tests/fixtures/qualify-linux-php-selected-alternatives.yml"
+      },
+      {
+        "registry": "configured_cli_profile_successors",
+        "path": ".github/workflows/qualify-linux-php-initial.yml",
+        "sha256": "d0e0816d8b0a41900a7b522dfda5120bdade3496eadfa122a14b8cd058b262f2",
+        "fixture": "tests/fixtures/qualify-linux-php-configured-cli.yml"
+      },
+      {
+        "registry": "subject_reference_profile_successors",
+        "path": ".github/workflows/qualify-linux-php-initial.yml",
+        "sha256": "0a428ffd00c78a2eba29ada8db0b71f39efad0496e0d61616ab4d001eb0d77cd",
+        "fixture": "tests/fixtures/qualify-linux-php-subject-references.yml"
+      },
+      {
+        "registry": "ubuntu24_repinned_profile_successors",
+        "path": ".github/workflows/qualify-linux-php-ubuntu24.yml",
+        "sha256": "1f9df7560ff3ebb4a85b43dd176ca6591e0d285442245f674081fbe05fc0d64f",
+        "fixture": "tests/fixtures/qualify-linux-php-ubuntu24-repinned.yml"
+      },
+      {
+        "registry": "php_archive_repair_profile_successors",
+        "path": ".github/workflows/qualify-linux-php-initial.yml",
+        "sha256": "afebd85cd43762140e099bda98879339f16675ead05b9a75be22a69469d6706f",
+        "fixture": "tests/fixtures/qualify-linux-php-initial-archive-repair.yml"
+      },
+      {
+        "registry": "php_archive_repair_profile_successors",
+        "path": ".github/workflows/qualify-linux-php-ubuntu24.yml",
+        "sha256": "71db64b8396635dc45b310ee582bae30d6a24875268a6971baa149e31230da44",
+        "fixture": "tests/fixtures/qualify-linux-php-ubuntu24-archive-repair.yml"
+      },
+      {
+        "registry": "php_archive_repair_20261119_profile_successors",
+        "path": ".github/workflows/qualify-linux-php-initial.yml",
+        "sha256": "35e09eccf6e9fc8c76d7cff37b1f9b5cf7c811fd289c9631ff0709c8e3d30390",
+        "fixture": "tests/fixtures/qualify-linux-php-initial-archive-repair-20261119.yml"
+      },
+      {
+        "registry": "php_archive_repair_20261119_profile_successors",
+        "path": ".github/workflows/qualify-linux-php-ubuntu24.yml",
+        "sha256": "67abe531136b6bd051e3a4deae47fa4e8257ef6b7beff51efab43f49ea42b87c",
+        "fixture": "tests/fixtures/qualify-linux-php-ubuntu24-archive-repair-20261119.yml"
+      }
+    ],
+    "ai": [
+      {
+        "registry": "ai_workflows",
+        "path": ".github/workflows/ci.yml",
+        "sha256": "bb67cff8534c78269aa4a0025c3d28056b0ce6f81d8ec8e8b146e13fb9216aa3",
+        "fixture": "tests/fixtures/native-policy-ai/ci.yml"
+      },
+      {
+        "registry": "ai_workflows",
+        "path": ".github/workflows/sonar.yml",
+        "sha256": "350ab6c80ad7e83702d4afb4215652affa226bed2e33401ad6fab594ec37d9b6",
+        "fixture": "tests/fixtures/native-policy-ai/sonar.yml"
+      }
+    ]
+  }
+}
