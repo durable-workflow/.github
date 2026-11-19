@@ -105,6 +105,13 @@
         "fixture": "tests/fixtures/ci-php-archive-repair-20261119-source.yml"
       },
       {
+        "registry": "php_archive_mirror_20261119_source_ci_successors",
+        "path": ".github/workflows/ci.yml",
+        "sha256": "b38688348993bd18fd74895a8652a0b0c3a4b32ee2a6a7c2f4fc50d49d7d8d94",
+        "fixture": "tests/fixtures/ci-php-archive-mirror-20261119-source.yml",
+        "derived_from": "49f079af77a19ffee50e36d8c276309eced2f2e660550a06e6b5619ea630bd7e"
+      },
+      {
         "registry": "initial_profile_successors",
         "path": ".github/workflows/qualify-linux-php-initial.yml",
         "sha256": "d3eefa3cce62b0c92ae07d6e6a1617342b843e9b5fb0ddad6ad6be4c1c4a2f9f",
