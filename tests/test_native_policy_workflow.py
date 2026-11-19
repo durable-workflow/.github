@@ -24,13 +24,13 @@ class NativePolicyWorkflowTest(unittest.TestCase):
         self.assertEqual(1, len(checkouts))
         settings = checkouts[0]["with"]
         self.assertEqual("durable-workflow/.github", settings["repository"])
-        self.assertEqual("7138bd4adb6e0a6bfca295773870538b8a787479", settings["ref"])
+        self.assertEqual("1423a0917d8025e85c200c30eeb8b71f546ec00a", settings["ref"])
         self.assertIs(False, settings["persist-credentials"])
         self.assertEqual(".native-policy-control", settings["path"])
 
     def test_current_ci_and_sonar_bind_exact_reviewed_workflow_fixtures(self):
         checkout = self.workflow["jobs"]["policy"]["steps"][0]
-        self.assertEqual("7138bd4adb6e0a6bfca295773870538b8a787479", checkout["with"]["ref"])
+        self.assertEqual("1423a0917d8025e85c200c30eeb8b71f546ec00a", checkout["with"]["ref"])
         for name, fixture in (("ci", "ci-php-archive-repair-20261119-source.yml"),
                               ("sonar", "sonar-response-loss-source.yml")):
             self.assertEqual((ROOT / "tests/fixtures" / fixture).read_bytes(),
