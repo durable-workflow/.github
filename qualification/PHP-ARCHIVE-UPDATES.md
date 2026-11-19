@@ -10,7 +10,7 @@ the native policy runtime or organization ruleset 26628397.
 | `qualification/php-linux-bootstrap.json`: each setup archive's upstream identity (asset ID, name, size, SHA-256), normalization profile hashes and counts, and `mirror` record | `setup-php-linux` at the commit a workflow pins |
 | `qualification/php-linux-<profile>-{archive,normalization,alternatives}.json` | `setup-php-linux`, via the catalog's profile hashes |
 | `qualification/policy.json` `bound-linux-php` pins | consumer preflights (as before) and the native policy runtime |
-| `qualification/protected-policy-data.json`: reviewed exact workflow bytes | the native policy runtime |
+| `qualification/protected-policy-data.json`: reviewed exact workflow bytes and reviewed setup-code digests (`reviewed_setup_code`) | the native policy runtime |
 
 The native policy runtime is frozen at the commit the ruleset selects. It reads
 this data from the protected `main` commit: for this repository that is the
