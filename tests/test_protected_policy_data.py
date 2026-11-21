@@ -785,3 +785,8 @@ class SetupImportRootManifestTest(unittest.TestCase):
             with self.subTest(path):
                 self.assertNotEqual(reviewed, self.identity({**self.files, path: b"planted\n"}))
         self.assertEqual(reviewed, self.identity({**self.files, "scripts/unrelated_tool.py": b"pass\n"}))
+
+    def test_archive_attributes_are_refused_at_root_and_nested_paths(self):
+        for path in (".gitattributes", ".github/actions/.gitattributes", "docs/.gitattributes"):
+            with self.subTest(path), self.assertRaisesRegex(InputRefused, r"\.gitattributes"):
+                self.identity({**self.files, path: b"# test metadata\n"})
