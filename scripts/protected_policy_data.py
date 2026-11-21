@@ -258,12 +258,14 @@ def setup_code_identity(entries: dict) -> str:
     same identity the commit pin itself rests on) of every directory and file
     under the setup trees, so any added, removed or changed entry changes the
     digest. Links and submodules refuse. The import root must hold exactly the
-    reviewed modules and no directory. A tree with bytecode anywhere or a
-    repository-root Python module also refuses.
+    reviewed modules and no directory. Trees with archive attributes, bytecode
+    or a repository-root Python module also refuse.
     """
     rows, imported = [], set()
     for path, entry in sorted(entries.items()):
         parts = PurePosixPath(path).parts
+        if parts and parts[-1] == ".gitattributes":
+            raise InputRefused("A setup pin's tree must not carry .gitattributes")
         if ("__pycache__" in parts or path.endswith((".pyc", ".pyo"))
                 or (len(parts) == 1 and path.endswith(".py"))):
             raise InputRefused("A setup pin's tree must not carry bytecode or root Python modules")
