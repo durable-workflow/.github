@@ -71,7 +71,7 @@ Their SDK installation lists do not widen that scope.
 | Combined SDK and application timer upgrades: Sample App `scripts/sdk-timers.sh --sdk-application-upgrades` | Twelve separate originals across PHP, Python and Rust. Six old-package single/concurrent runs record helper version one with bounds 1..1. Their timers fire while workers are absent, then cold current-package workers use helper revision two to finish the same originals with the original decision, marker bounds, full prefix, timers, barriers, command sequences and deadlines. Six fresh controls use the new branch and bounds 1..2. Actual installed packages, original/replacement worker identities, typed results, one completion and Python's recorded definition binding are checked. | Both helpers ship under unchanged registered wrappers and are selected before startup. This covers the selected package pairs and helper changes, not arbitrary source or class adoption. Other durable operations, build routing and incompatible class adoption require separate cases. Report these twelve outcomes separately from the other timer commands. |
 | Pending activity SDK/application upgrades: Sample App `scripts/sdk-activity-upgrades.sh` | Eighteen separate originals across every PHP/Python/Rust workflow/activity direction. Nine previous-package workflows record version 1/range 1..1 and leave their activity unstarted. Cold current-package workers use revision-two helpers, execute the same original activity once and complete the same workflow with its full original prefix, marker, policy, command sequence, identities and typed results. Nine fresh controls select version 2/range 1..2 and the changed policy. Both image generations and installed/registered package identities are verified before admission; Python's recorded definition remains bound to the unchanged wrapper. | This covers the selected package pairs and versioned helper changes around one pending remote activity. It does not qualify incompatible class adoption, build routing, other durable operations, an activity callback interrupted by the upgrade or external side-effect recovery. Report all eighteen actual outcomes separately from timer and recovery experiments; source verifier tests alone establish no package replay. |
 | Sagas: Server `sagas-published-artifacts.sh`; Sample App `polyglot/sagas/` | Server combines the PHP Workflow package through a fixture protocol adapter with the Python SDK. Its cases include reverse compensation, typed failure and restart after the first compensation marker. Sample App executes the five Rust-involving service-SDK directions, typed compensation failure and restart before compensation. | The PHP service SDK's PHP/Python directions need their own cases; the Workflow package fixture does not fill them. Process loss during an external compensation side effect, duplicate delivery and external-effect recovery require explicit side-effect fixtures. A recorded restart boundary does not establish them. |
-| Schedules: Server `schedules-published-artifacts.sh`; Sample App `polyglot/schedules/` | Server includes PHP/Python schedule creators and worker-protocol client cells. Sample App runs PHP- and Python-created schedules on an authored Rust workflow worker. | Direct worker-protocol completion does not establish authored PHP/Python workflow execution after a scheduled fire. The Rust examples check one automatic interval fire. Run cadence, restart, overlap/backfill and failure recovery for those directions. Calendar folds/gaps are temporal cases, not extra creator languages. |
+| Schedules: Server `schedules-published-artifacts.sh`; Sample App `polyglot/schedules/` | Server includes PHP/Python schedule creators and worker-protocol client cells. Sample App executes the first automatic fire in each of the six PHP/Python creator and PHP/Python/Rust authored worker directions. | Run cadence, restart, overlap/backfill, and failure recovery for the authored-worker directions. Exercise calendar folds and gaps independently of creator language. |
 | Signals and queries: Server `signals-queries-published-artifacts.sh` | PHP/Python/Rust clients and workers, including cross-language calls, Rust query immutability and cold-restarted instance state. | Read the direction-specific scenarios and histories. The crate pin alone proves none of them. |
 | Workflow updates: Server `workflow-updates-published-artifacts.sh`; Sample App `scripts/sdk-updates.sh` | Server's embedded probe, directly driven worker-protocol validation controls, PHP SDK client/worker process boundary, Python installed-package surface fixtures, CLI and Waterline diagnostics. The Python fixture uses simulated HTTP responses. Sample App separately executes all nine PHP/Python/Rust client-to-handler directions and completed duplicate directions against a live published Server. It checks accumulated state, read-only queries, all-worker SIGKILL/replacement and queued updates in each worker runtime. Handler failure and validator refusal target Rust. Rust also checks original workflow input, three signal argument shapes and completion immediately after an acknowledged update. | Other command-ordering races and process loss during a handler's external effect require additional fixtures. Keep Server's protocol controls and simulated Python client fixtures distinct from authored SDK validator-worker evidence. PHP SDK validator authoring is absent and Rust refuses validator contracts. Their implementation and embedded PHP support remain in [#234](https://github.com/durable-workflow/.github/issues/234). |
 | Deterministic replay: Server `replay-published-artifacts.sh` | Separate installed PHP, Python and Rust shards. Python reconstructs fixture history, including simulated restart controls. Rust uses actual Server calls and gracefully replaces Worker instances within one process. Inspect each selected package’s actual shard and outcome. | These surfaces do not establish OS process loss or registry-package upgrades. Pair affected histories with their runtime restart and upgrade cases. [Evidence boundaries](#interpret-replay-skew-and-migration-evidence). |
@@ -306,10 +306,12 @@ refresh, heartbeat retry or shutdown behavior for that package.
 The Python fixture [starts `Worker.run()`](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/heartbeats-published-artifacts.mjs#L789).
 The Rust fixture [uses `Worker::run_until()` and its heartbeat observation
 callback](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/heartbeats-published-artifacts.mjs#L914).
-Keep these execution surfaces and each retained artifact tuple distinct.
-Neither a shared wave nor another language's managed loop fills the PHP
-qualification gap. This distinction does not establish a product defect or
-promote an unexecuted tuple into passing coverage.
+The separate [PHP managed worker presence experiment](https://github.com/durable-workflow/sdk-php/blob/main/CONTRIBUTING.md#managed-worker-presence-against-published-artifacts)
+runs `Worker::run()` for automatic acknowledgements, a transient connection
+failure, SIGTERM deregistration, and staleness and replacement after SIGKILL.
+The [installed receipt](https://github.com/durable-workflow/.github/issues/122)
+records PHP SDK 3.27.0 with native Server 3.25.0. Report managed-loop and
+explicit-client results with their own artifact tuples.
 
 ## Interpret scheduled workflow evidence
 
@@ -319,16 +321,14 @@ Its helpers use actual SDK clients to create schedules, register and heartbeat
 workers, poll tasks and submit completion commands. The
 [Python helper](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/schedules-published-artifacts.mjs#L9344)
 and [PHP helper](https://github.com/durable-workflow/server/blob/c36710e860a44c5d51f016eadabd49f5b85c451e/scripts/conformance/schedules-published-artifacts.mjs#L9488)
-construct the `complete_workflow` result directly. Those cells test schedule
-dispatch and the worker protocol, rather than executing authored workflows
-through the PHP or Python SDK worker runtime.
+construct the `complete_workflow` result directly. Those cells verify
+schedule dispatch and the worker protocol.
 
-The separate [Sample App schedule examples](https://github.com/durable-workflow/sample-app/blob/40be451c020c6a0e8c9561585bcd96d38a352a75/polyglot/schedules/README.md)
-use PHP and Python SDK creators with an authored Rust workflow worker. Each
-waits for its first automatic interval fire, checks the result and linked
-schedule/run history, then deletes the schedule. Neither client manually
-triggers the fire. These two cases do not qualify other worker runtimes or
-schedule cadence, restart, overlap/backfill and failure recovery.
+The [Sample App schedule walkthrough](https://github.com/durable-workflow/sample-app/blob/main/polyglot/schedules/README.md)
+runs both SDK creators against each authored PHP, Python, and Rust worker.
+Each waits for an automatic interval fire, checks the result and linked
+schedule/run history, then deletes the schedule. Record scheduling cadence,
+restart, overlap/backfill, and failure recovery in separate scenarios.
 
 Keep protocol-client results, authored worker execution and each recorded
 artifact tuple distinct. A result field naming a runtime or an SDK package pin

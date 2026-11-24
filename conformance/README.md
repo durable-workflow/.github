@@ -94,7 +94,7 @@ each public experiment.
 | Principal attribution | `durable-workflow/server`: `scripts/conformance/principal-attribution-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-namespaces.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/namespaces/README.md) (Rust named and anonymous actors, runtime credential rotation, start/signal/completion/query/failure/terminal-cancellation attribution, forged metadata refusal, cold recovery, CLI JSON/human history and Waterline remote selected-run API); [`scripts/sdk-children.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/child-workflows/README.md) (legacy, runtime-token and anonymous cooperative requests through actual PHP/Python/Rust clients, duplicate identity and actor preservation, access refusals and cold cleanup replay under forged metadata) |
 | Replay | `durable-workflow/server`: `scripts/conformance/replay-published-artifacts.sh`; [distinguish fixture replay from worker replacement](sdk-coverage.md#interpret-replay-skew-and-migration-evidence) |
 | Sagas | `durable-workflow/server`: `scripts/conformance/sagas-published-artifacts.sh` (PHP/Python matrix); `durable-workflow/sample-app`: [`polyglot/sagas/`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/sagas/README.md) (five Rust-involving workflow/compensation directions) |
-| Schedules | `durable-workflow/server`: `scripts/conformance/schedules-published-artifacts.sh` (PHP/Python matrix); `durable-workflow/sample-app`: [`polyglot/schedules/`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/schedules/README.md) (PHP- and Python-created schedules, Rust worker) |
+| Schedules | `durable-workflow/server`: `scripts/conformance/schedules-published-artifacts.sh` (includes PHP/Python protocol-client matrix); `durable-workflow/sample-app`: [`polyglot/schedules/`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/schedules/README.md) (PHP and Python creators with authored workers in all three SDKs) |
 | SDK matrix | `durable-workflow/server`: `scripts/conformance/php-sdk-published-artifacts.sh` and `scripts/conformance/python-published-artifacts.sh` ([prerequisites and result contracts](sdk-coverage.md#run-the-sdk-parity-entry-points)); `durable-workflow/sample-app`: `scripts/playground rust` (one caller-owned workflow/activity journey) |
 | Search attributes | `durable-workflow/server`: `scripts/conformance/search-attributes-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-search-attributes.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/search-attributes/README.md) (Rust typed authoring, PHP/Python visibility observers and cold worker replay) |
 | Signals and queries | `durable-workflow/server`: `scripts/conformance/signals-queries-published-artifacts.sh`; [read its full and focused result records](sdk-coverage.md#read-signals-and-queries-outcomes) before claiming a passing matrix |
@@ -214,18 +214,16 @@ examples do not add Rust scenarios to the Server runner or cover duplicate
 delivery, external side-effect recovery, or process loss during compensation.
 Installing the Rust crate or passing a Rust playground is not saga evidence.
 
-The current
+The Server's
 [schedule scenario manifest](https://github.com/durable-workflow/server/blob/main/static/platform-conformance/schedules-runtime-scenarios.json)
-and published-artifact runner require PHP/Python schedule creators and workflow
-runtimes, plus the official CLI. They do not execute a schedule that dispatches
-to a Rust worker. The Rust SDK currently has no schedule client API, so a Rust
-schedule-creator cell is not a supported permutation. The separate
+includes PHP and Python schedule creators and worker-protocol clients in its
+cross-language cases. The separate
 [Sample App schedule experiments](https://github.com/durable-workflow/sample-app/blob/main/polyglot/schedules/README.md)
 create automatic interval schedules with the published PHP and Python SDKs,
-then check the published Rust worker's result, linked schedule audit event,
-and workflow history. Report each direction's outcome and exact tuple
-separately; these examples do not add a Rust shard to the Server runner or
-prove cadence, restart, or failure recovery behavior.
+then check the authored PHP, Python, and Rust worker results, linked schedule
+audit events, and workflow histories. Report all six directions against the
+exact installed tuple. The Rust SDK participates as a worker in this matrix.
+Cadence, restart, overlap, backfill, and failure recovery need separate results.
 
 The current
 [timer scenario manifest](https://github.com/durable-workflow/server/blob/main/static/platform-conformance/timer-runtime-scenarios.json)
