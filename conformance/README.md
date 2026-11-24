@@ -91,9 +91,9 @@ each public experiment.
 | Namespaces | `durable-workflow/server`: `scripts/conformance/namespaces-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-namespaces.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/namespaces/README.md) (Rust namespace-bound clients/workers, denied cross-namespace operations and cold recovery) |
 | Nexus | `durable-workflow/server`: `scripts/conformance/nexus-published-artifacts.sh`; [published caller workflow](sdk-coverage.md#run-the-published-nexus-caller-cases) (PHP/Python terminal results, handled and uncaught typed failure, target/caller cancellation, cold/backend recovery, external payloads and authored authorization refusals); [Rust SDK profiles and installed-release evidence](sdk-coverage.md#run-and-interpret-rust-nexus-cases) with a separate tuple; separate embedded and API/browser/CLI consumers |
 | Polyglot | `durable-workflow/sample-app`: `scripts/polyglot.sh` |
-| Principal attribution | `durable-workflow/server`: `scripts/conformance/principal-attribution-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-namespaces.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/namespaces/README.md) (Rust named and anonymous actors, runtime credential rotation, start/signal/completion/query/failure/terminal-cancellation attribution, forged metadata refusal, cold recovery, CLI JSON/human history and Waterline remote selected-run API); [`scripts/sdk-children.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/child-workflows/README.md) (legacy, runtime-token and anonymous cooperative requests through actual PHP/Python/Rust clients, duplicate identity and actor preservation, access refusals and cold cleanup replay under forged metadata) |
+| Principal attribution | `durable-workflow/server`: `scripts/conformance/principal-attribution-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-namespaces.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/namespaces/README.md) (Rust namespace-bound actors, runtime credential rotation, start/signal/completion/query/failure/terminal-cancellation attribution, unauthenticated refusal, cold recovery, CLI JSON/human history and Waterline remote selected-run API); [`scripts/sdk-children.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/child-workflows/README.md) (legacy- and runtime-token cooperative requests through PHP/Python/Rust clients, duplicate identity and actor preservation, access refusals and cold cleanup replay) |
 | Replay | `durable-workflow/server`: `scripts/conformance/replay-published-artifacts.sh`; [distinguish fixture replay from worker replacement](sdk-coverage.md#interpret-replay-skew-and-migration-evidence) |
-| Sagas | `durable-workflow/server`: `scripts/conformance/sagas-published-artifacts.sh` (PHP/Python matrix); `durable-workflow/sample-app`: [`polyglot/sagas/`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/sagas/README.md) (five Rust-involving workflow/compensation directions) |
+| Sagas | `durable-workflow/server`: `scripts/conformance/sagas-published-artifacts.sh` (PHP/Python matrix); `durable-workflow/sample-app`: [`polyglot/sagas/`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/sagas/README.md) (nine workflow/compensation directions with failure and cold replay) |
 | Schedules | `durable-workflow/server`: `scripts/conformance/schedules-published-artifacts.sh` (includes PHP/Python protocol-client matrix); `durable-workflow/sample-app`: [`polyglot/schedules/`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/schedules/README.md) (PHP and Python creators with authored workers in all three SDKs) |
 | SDK matrix | `durable-workflow/server`: `scripts/conformance/php-sdk-published-artifacts.sh` and `scripts/conformance/python-published-artifacts.sh` ([prerequisites and result contracts](sdk-coverage.md#run-the-sdk-parity-entry-points)); `durable-workflow/sample-app`: `scripts/playground rust` (one caller-owned workflow/activity journey) |
 | Search attributes | `durable-workflow/server`: `scripts/conformance/search-attributes-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-search-attributes.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/search-attributes/README.md) (Rust typed authoring, PHP/Python visibility observers and cold worker replay) |
@@ -175,44 +175,39 @@ child propagation and wait for child cleanup. Workers are killed during a
 recorded child cleanup timer. Replacement must retain the original delivery,
 timer, lineage and duplicate request identity, finish both runs as Cancelled
 within the original 30-second budget, and produce matching complete API/CLI
-cascade views. Report the executed scenarios and exact tuple separately;
-these results do not add Rust cells to the Server runner.
-The child command also runs five runtime-token and five anonymous cascades
-through actual PHP, Python and Rust cancellation clients. Runtime operator
-requests retain their original actor when an administrator repeats the request.
+cascade views. Record these scenarios with their exact tuple.
+The child command runs each of those five cancellation directions in the
+legacy-token and runtime-token modes using PHP, Python and Rust clients.
+Runtime operator requests retain their original actor when an administrator
+repeats the request.
 Worker-role cancellation is refused with HTTP 403. Missing authentication is
 refused with HTTP 401, including Python's discovery wrapper around that response.
-The separate auth-disabled phase checks the configured anonymous actor.
-Both families preserve their original request identity, deadline and cleanup
+Both modes preserve the original request identity, deadline and cleanup
 history through SIGKILL and cold replacement. They require both original runs
 to reach Cancelled within the initial shared 30-second budget. The same command
 checks CLI and selected-run API inspection, then opens the published Waterline
-image in Chromium after each cancellation batch converges. Its 45 connected
+image in Chromium after each cancellation batch converges. Its 30 connected
 views cover parent desktop/mobile and child desktop for all five directions
-through legacy-token, runtime-token and anonymous access. The actual HTTP
+through legacy-token and runtime-token access. The actual HTTP
 responses and rendered request, requester, deadline, delivery, recovery and
 completed cleanup must match the original SDK/Server evidence. Browser checks
 reject unhandled errors and horizontal overflow. Browser time is outside the
-original cleanup budget.
-The ordinary Rust authored-workflow playground does not prove
-cross-language child-workflow behavior by itself.
+original cleanup budget. The auth-disabled batch belongs to the historical
+PHP Server fixture.
 
 The current
 [saga scenario manifest](https://github.com/durable-workflow/server/blob/main/static/platform-conformance/saga-runtime-scenarios.json)
 and published-artifact runner exercise PHP and Python workflow/compensation
-directions. They do not execute Rust saga or compensation handlers. The separate
-[Sample App Rust saga experiment](https://github.com/durable-workflow/sample-app/blob/main/polyglot/sagas/README.md)
-executes five Rust-involving directions: Rust workflows with Rust, PHP, or
-Python compensation, and PHP or Python workflows with Rust compensation. It
-checks reverse-order compensation and persisted scheduled, failed, and
-completed activities against a published local Server. Its opt-in failure mode
-checks that a failed `undo-second` produces typed `SagaCompensationFailed`,
-preserves both activity failures, and never schedules `undo-first`.
-Report each outcome and exact tuple separately. Its stop/signal/restart check
-covers the five Rust-involving directions after the first reserve. These
-examples do not add Rust scenarios to the Server runner or cover duplicate
-delivery, external side-effect recovery, or process loss during compensation.
-Installing the Rust crate or passing a Rust playground is not saga evidence.
+directions. The
+[Sample App saga experiment](https://github.com/durable-workflow/sample-app/blob/main/polyglot/sagas/README.md)
+executes all nine PHP, Python, and Rust workflow/compensation pairs. Each pair
+checks reverse-order compensation, persisted activity order, and compensation
+outputs. Its failure mode checks that a failed `undo-second` produces typed
+`SagaCompensationFailed`, preserves both activity failures, and schedules no
+`undo-first` activity. The stop/signal/restart check interrupts the workflow
+after the first reservation and verifies the original run after replacement.
+Report each outcome with its exact tuple. Duplicate delivery, external-effect
+recovery, and process loss during compensation require separate scenarios.
 
 The Server's
 [schedule scenario manifest](https://github.com/durable-workflow/server/blob/main/static/platform-conformance/schedules-runtime-scenarios.json)
