@@ -84,7 +84,7 @@ each public experiment.
 | --- | --- |
 | Activities | `durable-workflow/server`: `scripts/conformance/activities-published-artifacts.sh`; `durable-workflow/sample-app`: [`scripts/sdk-activity-recovery.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/activities/README.md) (all nine PHP/Python/Rust SDK directions with retry, worker loss, total deadline expiry, retry exhaustion, application progress heartbeat expiry and stale claim refusal); its separate `--external-effects` mode checks idempotent downstream recovery after activity-worker SIGKILL in all nine directions |
 | Agent operability | `durable-workflow/server`: `scripts/conformance/agent-operability-published-artifacts.sh` ([recorded metadata or isolated MCP loop](sdk-coverage.md#run-the-mcp-operator-loop)) |
-| Child workflows | `durable-workflow/server`: image-bundled `scripts/conformance/child-workflows-published-artifacts.sh` ([execution context](#run-the-server-child-workflow-probe)); `durable-workflow/sample-app`: [`scripts/sdk-children.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/child-workflows/README.md) (nine SDK completion directions, five Rust-involving failure/recovery/cancellation directions) |
+| Child workflows | `durable-workflow/server`: image-bundled `scripts/conformance/child-workflows-published-artifacts.sh` ([execution context](#run-the-server-child-workflow-probe)); `durable-workflow/sample-app`: [`scripts/sdk-children.sh`](https://github.com/durable-workflow/sample-app/blob/main/polyglot/child-workflows/README.md) (nine SDK directions for completion, typed failure and cold recovery, plus five Rust-involving cancellation directions) |
 | Cloud | Private `durable-workflow/cloud`: `scripts/conformance/run-managed-runtime.sh` using an isolated conformance namespace |
 | Heartbeats | `durable-workflow/server`: the PHP, Python, and Rust `heartbeats-*-published-artifacts.sh` runners |
 | Migration | `durable-workflow/server`: `scripts/conformance/migration-published-artifacts.sh` composes host-run evidence or executes a supplied foundation command plan; [interpret its required evidence](sdk-coverage.md#interpret-replay-skew-and-migration-evidence) |
@@ -164,14 +164,13 @@ service SDK Worker. Its Rust crate pin verifies artifact resolution, not Rust
 child execution. Do not report that runner as a three-service-SDK matrix. The separate
 [Sample App child-workflow matrix](https://github.com/durable-workflow/sample-app/blob/main/polyglot/child-workflows/README.md)
 starts all nine PHP/Python/Rust parent-child directions against a published
-local Server and checks their results and persisted lifecycle events. Its
-`scripts/sdk-children.sh` command also checks the five Rust-involving directions
-for typed child failure and cold recovery: all three workers are SIGKILLed,
-completion signals are acknowledged during their absence, and replacement
-processes must complete the original parent/child runs once. The command checks
-original child and relationship identities and matches SDK results to durable
-history. Five additional Rust-involving cancellation cases use cooperative
-child propagation and wait for child cleanup. Workers are killed during a
+local Server and checks completion, typed child failure, and cold recovery for
+each pair. After all three workers exit from SIGKILL, the command records the
+accepted completion signal for each child. Three replacement containers must
+resolve those exact signals against the original waits and complete the
+original parent and child runs once. SDK results must match the durable
+histories and original relationship identities. Five Rust-involving cancellation
+cases use cooperative child propagation and wait for child cleanup. Workers are killed during a
 recorded child cleanup timer. Replacement must retain the original delivery,
 timer, lineage and duplicate request identity, finish both runs as Cancelled
 within the original 30-second budget, and produce matching complete API/CLI
@@ -478,8 +477,8 @@ Choose an unused project name and a disposable result directory. The command
 refuses a project with existing containers. It records the runner revision,
 published tuple, image identities, original histories, request receipts,
 worker-loss evidence and browser responses, screenshots and rendered text.
-Require 15 browser views per access mode and report their outcomes separately
-from the nine successful parent/child directions and the failure/recovery cases.
+Require 15 browser views per access mode. Report them separately from the nine
+parent/child directions for each of completion, typed failure, and cold recovery.
 The exit trap removes the task stack, volumes, fixture images and temporary
 proof directory on success or failure. The selected result directory remains
 for review. Record sanitized findings in the owning issue, then remove those
