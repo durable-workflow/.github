@@ -629,7 +629,11 @@ class RegressionCorpusTest(unittest.TestCase):
         carried = copy.deepcopy(fixture)
         carried["workflow_tasks"][0]["replay_clock"] = clock
         self.assertNotEqual(plain_semantic, corpus._replay_fixture(carried, path, None)[0])
-        self.assertEqual(plain_semantic, corpus._replay_fixture(copy.deepcopy(fixture), path, None)[0])
+        # The digest main produced for this carrier-free fixture before replay_clock existed.
+        self.assertEqual(
+            "9713747928b08408257d2d8fc3039200326306ee4c0c0819f177c5ebee53d9a9",
+            plain_semantic.semantic_digest,
+        )
 
         invalid_clocks = {
             "empty": {},
@@ -639,6 +643,8 @@ class RegressionCorpusTest(unittest.TestCase):
             "precision": {**clock, "started_at": "2026-11-01T00:00:00Z"},
             "source": {**clock, "source": "recorded_at"},
             "run": {**clock, "workflow_run_id": ""},
+            "missing source": {key: value for key, value in clock.items() if key != "source"},
+            "calendar": {**clock, "started_at": "2026-13-45T25:61:61.000000Z"},
         }
         for name, invalid_clock in invalid_clocks.items():
             with self.subTest(name=name):

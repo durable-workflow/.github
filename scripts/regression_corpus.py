@@ -15,6 +15,7 @@ import sys
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -451,7 +452,12 @@ _WORKER_REPLAY_CLOCK_INSTANT = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:
 
 
 def _worker_replay_clock(value: Any, context: str) -> dict[str, Any]:
-    """Require the exact WorkerReplayClock v1 shape a workflow task can carry."""
+    """Require the exact WorkerReplayClock v1 shape a workflow task can carry.
+
+    The run is not compared with the task's run_id: a fixture may pin an SDK
+    refusing a carrier for another run, as it may pin one whose source
+    disagrees with its history.
+    """
     clock = _object(value, context)
     if set(clock) != {"schema", "workflow_run_id", "started_at", "source"}:
         raise CorpusError(f"{context} must contain exactly schema, workflow_run_id, started_at and source")
@@ -461,6 +467,10 @@ def _worker_replay_clock(value: Any, context: str) -> dict[str, Any]:
     started_at = clock["started_at"]
     if not isinstance(started_at, str) or _WORKER_REPLAY_CLOCK_INSTANT.fullmatch(started_at) is None:
         raise CorpusError(f"{context}.started_at must be UTC with six fractional digits and Z")
+    try:
+        datetime.strptime(started_at, "%Y-%m-%dT%H:%M:%S.%fZ")
+    except ValueError as error:
+        raise CorpusError(f"{context}.started_at is not a real instant") from error
     if clock["source"] not in ("run_started_at", "redrive_replayed_started_at"):
         raise CorpusError(f"{context}.source is not a WorkerReplayClock v1 source")
     return clock
