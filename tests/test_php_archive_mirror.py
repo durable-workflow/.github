@@ -211,6 +211,42 @@ class MirrorRetryTest(unittest.TestCase):
         self.assertEqual(1, len(opener.urls))
         self.assertEqual([], self.sleeps)
 
+    def test_retry_after_accepts_only_short_delay_seconds(self):
+        for value, expected in (("7", 7), ("0", 2), ("0030", 30), ("9999", bootstrap.MAX_RETRY_AFTER)):
+            with self.subTest(value=value):
+                self.assertEqual(expected, bootstrap.retry_delay(1, http_error(429, value)))
+        for value in ("12345", " 7", "7 ", "+7", "-1", "7.5", "0x10", "\u00b2", "\u0667",
+                      "Wed, 25 Nov 2026 07:28:00 GMT", ""):
+            with self.subTest(value=value):
+                self.assertEqual(bootstrap.RETRY_DELAYS[0], bootstrap.retry_delay(1, http_error(429, value)))
+
+    def test_redirect_and_final_paths_must_be_canonical(self):
+        storage = f"/github-production-release-asset/{bootstrap.MIRROR_REPOSITORY_ID}"
+        accepted = f"https://release-assets.githubusercontent.com{storage}/0cff91d6-82a2-4d51-ba6a-4480091bb280?sig=x"
+        self.assertEqual("release-assets.githubusercontent.com",
+                         bootstrap.effective_url(accepted, bootstrap.MIRROR_REPOSITORY)["host"])
+        self.assertEqual("github.com", bootstrap.effective_url(MIRROR_DOWNLOAD, bootstrap.MIRROR_REPOSITORY)["host"])
+        mirror_path = f"/{bootstrap.MIRROR_REPOSITORY}/releases/download"
+        for target in (
+                f"https://release-assets.githubusercontent.com{storage}/../39619287/upstream",
+                f"https://release-assets.githubusercontent.com{storage}/./held",
+                f"https://release-assets.githubusercontent.com{storage}/%2e%2e/39619287/upstream",
+                f"https://release-assets.githubusercontent.com{storage}/held/extra",
+                f"https://release-assets.githubusercontent.com{storage}/",
+                f"https://release-assets.githubusercontent.com{storage}//held",
+                f"https://release-assets.githubusercontent.com{storage}/held\\..\\x",
+                f"https://github.com{mirror_path}/../../../../shivammathur/php-ubuntu/releases/download/builds/x",
+                f"https://github.com{mirror_path}/%2e%2e/x",
+                f"https://github.com{mirror_path}/./tag/name",
+                f"https://api.github.com/repos/{bootstrap.MIRROR_REPOSITORY}/releases/assets/1/..",
+        ):
+            with self.subTest(target=target), self.assertRaises(ValueError):
+                bootstrap.effective_url(target, bootstrap.MIRROR_REPOSITORY)
+            with self.subTest(handler=target), self.assertRaises(ValueError):
+                handler = bootstrap.ClosedRedirects()
+                handler.repository = bootstrap.MIRROR_REPOSITORY
+                handler.redirect_request(bootstrap.Request(MIRROR_DOWNLOAD), None, 302, "Found", {}, target)
+
     def test_mirror_url_is_built_only_from_a_reviewed_mirror_record(self):
         self.assertEqual(MIRROR_DOWNLOAD, bootstrap.mirror_url(self.row["mirror"]))
         for field, value in (("repository", "shivammathur/php-ubuntu"), ("release_tag", "latest"),

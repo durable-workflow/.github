@@ -74,6 +74,7 @@ SETUP_USES = re.compile(rb"[ \t]*(?:- )?[ \t]*uses:[ \t]+durable-workflow/\.gith
 # ruleset 26628397, and only then may a data PR add it to `reviewed_setup_code`.
 RUNTIME_REVIEWED_SETUP_CODE = frozenset((
     "f3c45fc2e418e140f8bf30e41df07129d388c2b90d5c3f87e498302dc2397614",  # #420: CommonJS start-up, mirror download, retry
+    "8a283c46b4329b517897a5424f5e1b9e32e421cef768bbe10073ee42067d7721",  # canonical redirect paths, strict Retry-After
 ))
 
 

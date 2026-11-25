@@ -62,13 +62,15 @@ A mirrored archive is read from its immutable mirror release download
 (`github.com/durable-workflow/php-archives/releases/download/<tag>/<name>`, both
 literal catalog values), not the anonymous REST asset endpoint, which shares a
 60-request-per-hour limit per runner address and answers 403 when exhausted.
-Redirects stay closed and the final URL must be under the mirror repository's
-release storage. An unmirrored row keeps its literal upstream asset ID. PHAR
+Redirects stay closed. Every redirect and final path must be canonical (no
+`.`/`..`/empty segments, percent-encoding or backslashes), and the mirror's
+final URL must be exactly one object under the mirror repository's release
+storage. An unmirrored row keeps its literal upstream asset ID. PHAR
 reads use literal URLs with no redirects. No tag discovery or fallback exists.
 Transient failures (HTTP 403, 408, 429, 500, 502, 503, 504, timeouts, resets,
 unreachable networks and truncated streams) repeat the same request at most four times in all, waiting
-2, 5 and 10 seconds (or a `Retry-After` of at most 30 seconds; 60 seconds in
-total). Each attempt is a new private descriptor that must match the pinned size
+2, 5 and 10 seconds (or a `Retry-After` of one to four ASCII digits, capped at
+30 seconds; 60 seconds in total). Each attempt is a new private descriptor that must match the pinned size
 and SHA-256 before it is sealed. A 404, trust or redirect refusal, or a
 different byte stream is never retried. Retries are logged with status and type
 only, never a URL.

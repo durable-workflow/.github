@@ -245,6 +245,13 @@ def effective_url(url: str, repository: str | None = None) -> dict:
     if (parsed.scheme != "https" or parsed.hostname not in REDIRECT_HOSTS or parsed.username
             or parsed.password or parsed.port not in (None, 443) or parsed.fragment):
         raise ValueError("Bootstrap redirect/fallback authority refused")
+    # Prefix checks below hold only for a canonical path: no dot segments,
+    # empty segments, percent-encoding or backslashes that a server or proxy
+    # could resolve to another location.
+    segments = parsed.path.split("/")
+    if (segments[0] != "" or len(segments) < 2 or any(part in ("", ".", "..") for part in segments[1:])
+            or "%" in parsed.path or "\\" in parsed.path):
+        raise ValueError("Bootstrap URL path is not canonical")
     allowed = FETCH_REPOSITORIES if repository is None else {repository} & FETCH_REPOSITORIES
     if parsed.hostname == "api.github.com" and not any(re.fullmatch(
         "/repos/" + re.escape(name) + r"/releases/assets/[1-9]\d*", parsed.path) for name in allowed
@@ -253,7 +260,8 @@ def effective_url(url: str, repository: str | None = None) -> dict:
     if parsed.hostname == "github.com" and not any(parsed.path.startswith(f"/{name}/") for name in allowed):
         raise ValueError("Foreign bootstrap repository redirect")
     if (repository == MIRROR_REPOSITORY and parsed.hostname == "release-assets.githubusercontent.com"
-            and not parsed.path.startswith(f"/github-production-release-asset/{MIRROR_REPOSITORY_ID}/")):
+            and not re.fullmatch(f"/github-production-release-asset/{MIRROR_REPOSITORY_ID}/[A-Za-z0-9-]{{1,128}}",
+                                 parsed.path)):
         raise ValueError("Mirror download left the mirror repository's release storage")
     # Preserve exact URL binding without disclosing a signed query string.
     return {"scheme": parsed.scheme, "host": parsed.hostname, "path": parsed.path,
@@ -313,8 +321,9 @@ def transient(error: BaseException) -> bool:
 def retry_delay(attempt: int, error: BaseException) -> int:
     delay = RETRY_DELAYS[attempt - 1]
     after = error.headers.get("Retry-After") if isinstance(error, HTTPError) and error.headers else None
-    if isinstance(after, str) and after.strip().isdigit():
-        delay = max(delay, min(int(after.strip()), MAX_RETRY_AFTER))
+    # Only delay-seconds; an HTTP-date or any other form keeps the fixed wait.
+    if isinstance(after, str) and re.fullmatch(r"[0-9]{1,4}", after):
+        delay = max(delay, min(int(after), MAX_RETRY_AFTER))
     return delay
 
 
