@@ -4,6 +4,10 @@
     {
       "sha256": "61ff4063faab6a37610b7af79635c7bf249a341f77bb0a07423419c42d7f0205",
       "source": "setup-php-linux reviewed in #414: scripts/php_setup import root, closed start-up, catalog-driven archives and mirror fetch"
+    },
+    {
+      "sha256": "f3c45fc2e418e140f8bf30e41df07129d388c2b90d5c3f87e498302dc2397614",
+      "source": "setup-php-linux reviewed in #433: CommonJS start-up, immutable mirror release download and bounded transient retry"
     }
   ],
   "reviewed_workflows": {
@@ -110,6 +114,13 @@
         "sha256": "b38688348993bd18fd74895a8652a0b0c3a4b32ee2a6a7c2f4fc50d49d7d8d94",
         "fixture": "tests/fixtures/ci-php-archive-mirror-20261119-source.yml",
         "derived_from": "49f079af77a19ffee50e36d8c276309eced2f2e660550a06e6b5619ea630bd7e"
+      },
+      {
+        "registry": "php_setup_retry_20261125_source_ci_successors",
+        "path": ".github/workflows/ci.yml",
+        "sha256": "2693980e001986852a80c716692db6a48aa345d913f69e7dac8d20dc9ca872ae",
+        "fixture": "tests/fixtures/ci-php-setup-retry-20261125-source.yml",
+        "derived_from": "b38688348993bd18fd74895a8652a0b0c3a4b32ee2a6a7c2f4fc50d49d7d8d94"
       },
       {
         "registry": "initial_profile_successors",

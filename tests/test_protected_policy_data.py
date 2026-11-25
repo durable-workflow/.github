@@ -38,7 +38,7 @@ QUALIFY_FIXTURES = ("tests/fixtures/qualify-linux-php-initial-archive-repair-202
 # The registries hard-coded in runtime 90313f07 (the #411 head), as sorted
 # "path sha256" lines. Moving them to data must not add or drop an identity.
 PREVIOUS_REGISTRIES = {
-    "github-control-plane": (29, "ad2027febf07a3250ec1a8a254a4187d489beb2d2e3ba3e6d9fc678420e4c41b"),
+    "github-control-plane": (30, "e1e0e64a9e1593f4d57183ae0b0053ac30d61d0de9d869eff3c55cdcbfd92aac"),
     "ai": (2, "4ac997256eef428482ccbc0274df755f8cf5687e6e7a04039ac51ea741b29cbd"),
 }
 
