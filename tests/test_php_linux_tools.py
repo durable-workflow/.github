@@ -132,6 +132,34 @@ class PhpLinuxToolsTest(unittest.TestCase):
             stack.enter_context(operation)
         self.assertEqual(3, len(calls))
 
+    def test_transient_publisher_failures_repeat_the_same_literal_request_only(self):
+        from urllib.error import HTTPError, URLError
+        row, payload = self.fixture()
+        context = SimpleNamespace(verify_mode=ssl.CERT_REQUIRED, check_hostname=True)
+        calls, sleeps = [], []
+        failures = [HTTPError(row["url"], 429, "limited", {}, None), URLError(TimeoutError("timed out"))]
+        success = self.opener(row, payload, calls)
+        def factory(*handlers):
+            client = success(*handlers)
+            def open_request(request, **options):
+                if failures:
+                    calls.append((request, options))
+                    raise failures.pop(0)
+                return client.open(request, **options)
+            return SimpleNamespace(open=open_request)
+        with tools.download_held(row, context, factory, sleep=sleeps.append) as held:
+            self.assertEqual(payload, os.pread(held.descriptor, len(payload), 0))
+        self.assertEqual([row["url"]] * 3, [request.full_url for request, _options in calls])
+        self.assertEqual(list(bootstrap.RETRY_DELAYS[:2]), sleeps)
+        for terminal in (HTTPError(row["url"], 404, "absent", {}, None), ValueError("redirect refused")):
+            failures[:] = [terminal]
+            calls.clear()
+            sleeps.clear()
+            with self.subTest(terminal=terminal), ExitStack() as stack, self.assertRaises(type(terminal)):
+                stack.enter_context(tools.download_held(row, context, factory, sleep=sleeps.append))
+            self.assertEqual(1, len(calls))
+            self.assertEqual([], sleeps)
+
     def test_fixed_install_command_reads_held_fd_and_checks_actual_target_before_returning(self):
         row, payload = self.fixture()
         environment = bootstrap.clean_environment({}, "/tmp/inert-private-home")

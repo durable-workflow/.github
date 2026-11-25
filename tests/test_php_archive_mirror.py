@@ -1,4 +1,4 @@
-"""Mirrored PHP archives: exact-ID mirror fetch, fail-closed absence and mirror tooling.
+"""Mirrored PHP archives: immutable mirror download, bounded retry, fail-closed absence and mirror tooling.
 
 CI runs these through tests.test_php_linux_bootstrap, which imports them.
 """
@@ -13,7 +13,7 @@ import ssl
 import tempfile
 from types import SimpleNamespace
 import unittest
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 from scripts import php_archive_mirror as mirror
 from scripts import php_linux_bootstrap as bootstrap
@@ -21,6 +21,9 @@ from scripts import protected_policy_data as data
 from tests import test_protected_policy_data as scenario
 
 CONTEXT = SimpleNamespace(verify_mode=ssl.CERT_REQUIRED, check_hostname=True)
+STORAGE = f"https://release-assets.githubusercontent.com/github-production-release-asset/{bootstrap.MIRROR_REPOSITORY_ID}"
+MIRROR_DOWNLOAD = (f"https://github.com/{bootstrap.MIRROR_REPOSITORY}/releases/download/"
+                   "php-sha256-0123456789abcdef/php_8.3-nts+ubuntu26.04.tar.zst")
 
 
 def mirrored_catalog(payload: bytes, *, mirror_id=900000101):
@@ -34,8 +37,11 @@ def mirrored_catalog(payload: bytes, *, mirror_id=900000101):
 
 
 class Opener:
-    def __init__(self, payload=None, final="https://release-assets.githubusercontent.com/closed?sig=x", status=None):
+    """Inert transport. `outcomes` scripts earlier attempts: an exception to raise or bytes to serve."""
+
+    def __init__(self, payload=None, final=STORAGE + "/closed?sig=x", status=None, outcomes=()):
         self.payload, self.final, self.status, self.urls = payload, final, status, []
+        self.outcomes = list(outcomes)
 
     def __call__(self, *handlers):
         self.handlers = handlers
@@ -44,9 +50,12 @@ class Opener:
             self.urls.append(request.full_url)
             if self.status is not None:
                 raise HTTPError(request.full_url, self.status, "absent", None, None)
+            outcome = self.outcomes.pop(0) if self.outcomes else self.payload
+            if isinstance(outcome, BaseException):
+                raise outcome
             redirects = handlers[-1]
             redirects.redirect_request(request, None, 302, "Found", {}, self.final)
-            response = io.BytesIO(self.payload)
+            response = io.BytesIO(outcome)
             response.status, response.geturl = 200, lambda: self.final
             return response
         return SimpleNamespace(open=open_request)
@@ -61,8 +70,8 @@ class MirrorFetchTest(unittest.TestCase):
             held.assert_sealed()
             self.assertEqual(payload, os.pread(held.descriptor, len(payload), 0))
             self.assertEqual(row["asset"], held.identity)
-        self.assertEqual([f"https://api.github.com/repos/{bootstrap.MIRROR_REPOSITORY}/releases/assets/900000101"],
-                         opener.urls)
+        # The immutable release download path, never the rate-limited anonymous REST endpoint.
+        self.assertEqual([MIRROR_DOWNLOAD], opener.urls)
 
     def test_missing_mirror_asset_fails_closed_without_upstream_fallback(self):
         payload = b"mirrored archive bytes"
@@ -78,9 +87,14 @@ class MirrorFetchTest(unittest.TestCase):
         catalog, row = mirrored_catalog(payload)
         for opener in (Opener(b"substituted bytes!!!!!"),
                        Opener(payload, final="https://github.com/shivammathur/php-ubuntu/releases/download/x"),
-                       Opener(payload, final="https://example.com/archive")):
+                       Opener(payload, final="https://example.com/archive"),
+                       Opener(payload, final="https://release-assets.githubusercontent.com/closed?sig=x"),
+                       Opener(payload, final="https://release-assets.githubusercontent.com/"
+                                             "github-production-release-asset/39619287/upstream?sig=x")):
             with self.subTest(final=opener.final), ExitStack() as stack, self.assertRaises(ValueError):
-                stack.enter_context(bootstrap.download_held(row["asset"], CONTEXT, opener, catalog=catalog))
+                stack.enter_context(bootstrap.download_held(row["asset"], CONTEXT, opener, catalog=catalog,
+                                                            sleep=self.fail))
+            self.assertEqual(1, len(opener.urls))
 
     def test_unmirrored_rows_keep_the_exact_upstream_fetch(self):
         catalog = bootstrap.load_catalog()
@@ -113,6 +127,106 @@ class MirrorFetchTest(unittest.TestCase):
         broken["archives"][1]["mirror"]["id"] = broken["archives"][0]["asset"]["id"]
         with self.assertRaises(ValueError):
             bootstrap.validate_catalog(broken)
+
+
+def http_error(status, retry_after=None):
+    headers = {} if retry_after is None else {"Retry-After": retry_after}
+    return HTTPError(MIRROR_DOWNLOAD, status, "transient", headers, None)
+
+
+class MirrorRetryTest(unittest.TestCase):
+    """Transient failures repeat the same mirror request; nothing unverified is ever held."""
+
+    def setUp(self):
+        self.payload = b"mirrored archive bytes"
+        self.catalog, self.row = mirrored_catalog(self.payload)
+        self.sleeps, self.notices = [], []
+
+    def fetch(self, opener):
+        notice = self.notices.append
+        original = bootstrap.retry_notice
+        bootstrap.retry_notice = notice
+        try:
+            stack = ExitStack()
+            with stack:
+                held = stack.enter_context(bootstrap.download_held(
+                    self.row["asset"], CONTEXT, opener, catalog=self.catalog, sleep=self.sleeps.append))
+                held.assert_sealed()
+                return os.pread(held.descriptor, len(self.payload), 0)
+        finally:
+            bootstrap.retry_notice = original
+
+    def test_rate_limit_and_server_errors_are_retried_against_the_same_mirror_url(self):
+        opener = Opener(self.payload, outcomes=[http_error(403), http_error(429, "7"), http_error(503)])
+        self.assertEqual(self.payload, self.fetch(opener))
+        self.assertEqual([MIRROR_DOWNLOAD] * 4, opener.urls)
+        self.assertEqual([2, 7, 10], self.sleeps)
+        self.assertEqual([403, 429, 503], [item["http_status"] for item in self.notices])
+        self.assertNotIn("http", json.dumps(self.notices).replace("http_status", ""))
+
+    def test_transport_failures_and_truncated_streams_are_retried(self):
+        for outcome in (URLError(TimeoutError("timed out")), URLError(ConnectionResetError()),
+                        URLError(OSError(101, "Network is unreachable")), ConnectionResetError(),
+                        self.payload[:5]):
+            with self.subTest(outcome=outcome):
+                self.sleeps.clear()
+                opener = Opener(self.payload, outcomes=[outcome])
+                self.assertEqual(self.payload, self.fetch(opener))
+                self.assertEqual(2, len(opener.urls))
+                self.assertEqual([2], self.sleeps)
+
+    def test_attempts_are_bounded_and_the_last_failure_is_kept(self):
+        opener = Opener(self.payload, outcomes=[http_error(503)] * 5)
+        with self.assertRaises(HTTPError) as caught:
+            self.fetch(opener)
+        self.assertEqual(503, caught.exception.code)
+        self.assertEqual(bootstrap.FETCH_ATTEMPTS, len(opener.urls))
+        self.assertEqual(list(bootstrap.RETRY_DELAYS), self.sleeps)
+
+    def test_retry_after_is_capped_and_the_total_wait_is_bounded(self):
+        opener = Opener(self.payload, outcomes=[http_error(429, "3600")] * 5)
+        with self.assertRaises(HTTPError):
+            self.fetch(opener)
+        self.assertEqual([bootstrap.MAX_RETRY_AFTER] * 2, self.sleeps)
+        self.assertLessEqual(sum(self.sleeps), bootstrap.MAX_RETRY_WAIT)
+        self.assertEqual(3, len(opener.urls))
+
+    def test_absence_trust_redirect_and_byte_differences_are_never_retried(self):
+        for outcome in (http_error(404), http_error(401), URLError(ssl.SSLCertVerificationError("untrusted")),
+                        b"substituted bytes!!!!!", self.payload + b"x", URLError("unknown url type"),
+                        URLError(OSError(13, "Permission denied")),
+                        ValueError("Bootstrap redirect/fallback authority refused")):
+            with self.subTest(outcome=outcome):
+                opener = Opener(self.payload, outcomes=[outcome])
+                with self.assertRaises((HTTPError, URLError, ValueError)):
+                    self.fetch(opener)
+                self.assertEqual(1, len(opener.urls))
+                self.assertEqual([], self.sleeps)
+
+    def test_failures_inside_the_held_scope_are_not_retried(self):
+        opener = Opener(self.payload)
+        with self.assertRaisesRegex(RuntimeError, "caller"), bootstrap.download_held(
+                self.row["asset"], CONTEXT, opener, catalog=self.catalog, sleep=self.sleeps.append):
+            raise RuntimeError("caller")
+        self.assertEqual(1, len(opener.urls))
+        self.assertEqual([], self.sleeps)
+
+    def test_mirror_url_is_built_only_from_a_reviewed_mirror_record(self):
+        self.assertEqual(MIRROR_DOWNLOAD, bootstrap.mirror_url(self.row["mirror"]))
+        for field, value in (("repository", "shivammathur/php-ubuntu"), ("release_tag", "latest"),
+                             ("release_tag", "php-x/../../other"), ("name", "install.sh"),
+                             ("name", "php_8.3-nts+ubuntu26.04.tar.zst?x=1")):
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                bootstrap.mirror_url(dict(self.row["mirror"], **{field: value}))
+
+    def test_committed_setup_rows_download_from_their_immutable_release(self):
+        catalog = bootstrap.load_catalog()
+        for release, row in bootstrap.setup_rows(catalog).items():
+            with self.subTest(release=release):
+                self.assertEqual(
+                    (bootstrap.MIRROR_REPOSITORY, f"https://github.com/{bootstrap.MIRROR_REPOSITORY}/releases/download/"
+                                                  f"{row['mirror']['release_tag']}/{row['asset']['name']}"),
+                    bootstrap.fetch_url(row["asset"], catalog))
 
 
 class MirrorToolTest(unittest.TestCase):

@@ -460,6 +460,49 @@ class DataGateTest(Scenario):
         with self.assertRaisesRegex(InputRefused, "runtime review"):
             self.gate({**self.files, data.DATA_PATH: json.dumps(document).encode()}, "b6" * 20)
 
+    def test_runtime_reviewed_setup_code_is_the_only_code_data_may_add_and_pin(self):
+        from unittest import mock
+
+        changed_code = {**self.files, "scripts/php_setup/php_linux_normalize.py": b"# runtime-reviewed setup code\n"}
+        reviewed = self.github.commit(git_sha("runtime reviewed code"), changed_code)
+        self.github.merged(reviewed, self.base)
+        entries = {entry["path"]: entry for entry in self.github.records[
+            f"/repos/{REPOSITORY}/git/trees/{git_sha('tree' + reviewed)}?recursive=1"]["tree"]}
+        digest = data.setup_code_identity(entries)
+        document = json.loads(self.files[data.DATA_PATH])
+        document["reviewed_setup_code"].append({"sha256": digest, "source": "runtime reviewed"})
+        admitted = {**self.files, data.DATA_PATH: (json.dumps(document, indent=2) + "\n").encode()}
+        approval = approve_pin(admitted, reviewed)
+        with self.assertRaisesRegex(InputRefused, "runtime review"):
+            self.gate(approval, "b7" * 20)
+        with mock.patch.object(data, "RUNTIME_REVIEWED_SETUP_CODE", frozenset((digest,))):
+            self.assertEqual([reviewed], self.gate(approval, "b8" * 20)["pins"])
+            # A pin whose code is not runtime-reviewed still refuses beside an admitted digest.
+            other = self.github.commit(git_sha("other code"),
+                                       {**self.files, "scripts/php_setup/php_linux_normalize.py": b"# other code\n"})
+            self.github.merged(other, self.base)
+            with self.assertRaisesRegex(InputRefused, "exactly reviewed setup code"):
+                self.gate(approve_pin(admitted, other), "b9" * 20)
+
+    def test_checkout_setup_code_is_admitted_by_this_runtime(self):
+        """A setup-code change must list its new identity for runtime review in the same change."""
+        try:
+            listing = subprocess.run(["git", "-C", str(ROOT), "ls-tree", "-r", "-t", "-z", "HEAD"],
+                                     capture_output=True, check=True).stdout.decode()
+            dirty = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain", "--", *data.SETUP_TREES,
+                                    *data.SETUP_INPUTS], capture_output=True, check=True).stdout
+        except (OSError, subprocess.CalledProcessError):
+            self.skipTest("No git checkout")
+        if dirty:
+            self.skipTest("Uncommitted setup code has no tree identity yet")
+        entries = {}
+        for record in filter(None, listing.split("\0")):
+            metadata, path = record.split("\t", 1)
+            mode, kind, sha = metadata.split()
+            entries[path] = {"type": kind, "mode": mode, "sha": sha}
+        self.assertIn(data.setup_code_identity(entries),
+                      data.RUNTIME_REVIEWED_SETUP_CODE | data.local_data().setup_code)
+
     def test_new_archive_needs_upstream_provenance_mirror_and_strict_inspection(self):
         compressed = fake_archive("8.3.99")
         files, row = archive_update(self.files, "26.04", compressed, 900000001, 900000101)
@@ -785,3 +828,8 @@ class SetupImportRootManifestTest(unittest.TestCase):
             with self.subTest(path):
                 self.assertNotEqual(reviewed, self.identity({**self.files, path: b"planted\n"}))
         self.assertEqual(reviewed, self.identity({**self.files, "scripts/unrelated_tool.py": b"pass\n"}))
+
+    def test_archive_attributes_are_refused_at_root_and_nested_paths(self):
+        for path in (".gitattributes", ".github/actions/.gitattributes", "docs/.gitattributes"):
+            with self.subTest(path), self.assertRaisesRegex(InputRefused, r"\.gitattributes"):
+                self.identity({**self.files, path: b"# test metadata\n"})

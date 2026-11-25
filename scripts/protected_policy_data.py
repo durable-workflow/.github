@@ -68,6 +68,15 @@ SETUP_USES = re.compile(rb"[ \t]*(?:- )?[ \t]*uses:[ \t]+durable-workflow/\.gith
                         rb"([0-9a-f]{40})(?:[ \t]+#[^\n]*)?")
 
 
+# Setup code identities that this runtime commit itself admits. Main's data can
+# never approve code on its own: a new identity is listed here in a reviewed
+# source change, an organization admin selects a runtime containing it in
+# ruleset 26628397, and only then may a data PR add it to `reviewed_setup_code`.
+RUNTIME_REVIEWED_SETUP_CODE = frozenset((
+    "f3c45fc2e418e140f8bf30e41df07129d388c2b90d5c3f87e498302dc2397614",  # #420: CommonJS start-up, mirror download, retry
+))
+
+
 def setup_code_path(path: str) -> bool:
     return path in SETUP_INPUTS or path.startswith(SETUP_TREES) or path + "/" in SETUP_TREES
 
@@ -258,12 +267,14 @@ def setup_code_identity(entries: dict) -> str:
     same identity the commit pin itself rests on) of every directory and file
     under the setup trees, so any added, removed or changed entry changes the
     digest. Links and submodules refuse. The import root must hold exactly the
-    reviewed modules and no directory. A tree with bytecode anywhere or a
-    repository-root Python module also refuses.
+    reviewed modules and no directory. Trees with archive attributes, bytecode
+    or a repository-root Python module also refuse.
     """
     rows, imported = [], set()
     for path, entry in sorted(entries.items()):
         parts = PurePosixPath(path).parts
+        if parts and parts[-1] == ".gitattributes":
+            raise InputRefused("A setup pin's tree must not carry .gitattributes")
         if ("__pycache__" in parts or path.endswith((".pyc", ".pyo"))
                 or (len(parts) == 1 and path.endswith(".py"))):
             raise InputRefused("A setup pin's tree must not carry bytecode or root Python modules")
@@ -390,8 +401,9 @@ def gate_data_change(read, head_repository: str, head_sha: str, base: ApprovedDa
     if {key: value for key, value in head.catalog.items() if key != "archives"} != \
             {key: value for key, value in base.catalog.items() if key != "archives"}:
         raise InputRefused("A data PR may change only catalog archive rows, not the installer or upstream sources")
-    if head.setup_code - base.setup_code:
+    if head.setup_code - base.setup_code - RUNTIME_REVIEWED_SETUP_CODE:
         raise InputRefused("Approving new setup code is a runtime review, not a data change")
+    approved_code = base.setup_code | (head.setup_code & RUNTIME_REVIEWED_SETUP_CODE)
     if changed == {POLICY_PATH} and head.bound_setups == base.bound_setups:
         # Consumer action policy outside the bound setup role is not runtime data.
         return {"data_change": False}
@@ -451,7 +463,7 @@ def gate_data_change(read, head_repository: str, head_sha: str, base: ApprovedDa
         if not isinstance(comparison, dict) or comparison.get("status") not in {"ahead", "identical"}:
             raise InputRefused("A new bound setup pin must already be a commit on protected main")
         pinned_entries = _tree_entries(read, CommitIdentity(DATA_REPOSITORY, pin))
-        if setup_code_identity(pinned_entries) not in base.setup_code:
+        if setup_code_identity(pinned_entries) not in approved_code:
             raise InputRefused("A new bound setup pin must carry exactly reviewed setup code")
         pinned = read_commit_files(read, DATA_REPOSITORY, pin, [CATALOG_PATH],
                                    entries=pinned_entries).get(CATALOG_PATH)
