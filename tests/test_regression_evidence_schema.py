@@ -183,6 +183,27 @@ class ReplayEvidenceSchemaTest(unittest.TestCase):
                 invalid["workflow_tasks"][0][field] = ""
                 self.assertInvalid(invalid)
 
+        clock = {
+            "schema": "durable-workflow.worker-replay-clock/v1",
+            "workflow_run_id": "run-a",
+            "started_at": "2026-11-01T00:00:00.000000Z",
+            "source": "run_started_at",
+        }
+        carried = copy.deepcopy(fixture)
+        carried["workflow_tasks"][0]["replay_clock"] = clock
+        self.assertValid(carried)
+        for name, invalid_clock in {
+            "extra key": {**clock, "extra": True},
+            "missing source": {key: value for key, value in clock.items() if key != "source"},
+            "schema": {**clock, "schema": "durable-workflow.worker-replay-clock/v2"},
+            "precision": {**clock, "started_at": "2026-11-01T00:00:00Z"},
+            "source": {**clock, "source": "recorded_at"},
+        }.items():
+            with self.subTest(clock=name):
+                invalid = copy.deepcopy(fixture)
+                invalid["workflow_tasks"][0]["replay_clock"] = invalid_clock
+                self.assertInvalid(invalid)
+
         command_driven = copy.deepcopy(fixture)
         command_driven["command_sequence"] = [{"type": "complete_workflow"}]
         self.assertInvalid(command_driven)

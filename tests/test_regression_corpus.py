@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import subprocess
 import tempfile
@@ -610,6 +611,46 @@ class RegressionCorpusTest(unittest.TestCase):
             "expected.workflow_tasks must match workflow_tasks length",
         ):
             validate(self.root, Path("regression-corpus-policy.json"), self.base)
+
+    def test_workflow_tasks_may_carry_a_v1_entry_clock_without_changing_old_digests(self) -> None:
+        fixture = attributed_replay_fixture("attributed-entry-clock")
+        path = "tests/fixtures/replay/attributed-entry-clock.json"
+        write_json(self.root, path, fixture)
+        plain = validate(self.root, Path("regression-corpus-policy.json"), self.base)
+        self.assertEqual(2, plain["counts"]["replay"]["current"])
+        plain_semantic = corpus._replay_fixture(fixture, path, None)[0]
+
+        clock = {
+            "schema": "durable-workflow.worker-replay-clock/v1",
+            "workflow_run_id": "run-a",
+            "started_at": "2026-11-01T00:00:00.000000Z",
+            "source": "run_started_at",
+        }
+        carried = copy.deepcopy(fixture)
+        carried["workflow_tasks"][0]["replay_clock"] = clock
+        self.assertNotEqual(plain_semantic, corpus._replay_fixture(carried, path, None)[0])
+        self.assertEqual(plain_semantic, corpus._replay_fixture(copy.deepcopy(fixture), path, None)[0])
+
+        invalid_clocks = {
+            "empty": {},
+            "list": [clock],
+            "extra key": {**clock, "extra": True},
+            "schema": {**clock, "schema": "durable-workflow.worker-replay-clock/v2"},
+            "precision": {**clock, "started_at": "2026-11-01T00:00:00Z"},
+            "source": {**clock, "source": "recorded_at"},
+            "run": {**clock, "workflow_run_id": ""},
+        }
+        for name, invalid_clock in invalid_clocks.items():
+            with self.subTest(name=name):
+                invalid = copy.deepcopy(fixture)
+                invalid["workflow_tasks"][0]["replay_clock"] = invalid_clock
+                with self.assertRaises(CorpusError):
+                    corpus._replay_fixture(invalid, path, None)
+
+        unknown = copy.deepcopy(fixture)
+        unknown["workflow_tasks"][0]["lease_owner"] = "worker"
+        with self.assertRaisesRegex(CorpusError, "optional replay_clock"):
+            corpus._replay_fixture(unknown, path, None)
 
     def test_replay_rejects_both_outcomes_with_command_input_only(self) -> None:
         fixture = replay_fixture("ambiguous-outcome")

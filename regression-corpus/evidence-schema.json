@@ -35,6 +35,36 @@
         ]
       }
     },
+    "worker_replay_clock": {
+      "description": "A workflow task's optional WorkerReplayClock v1 entry carrier (server#1156, .github#215).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "workflow_run_id",
+        "started_at",
+        "source"
+      ],
+      "properties": {
+        "schema": {
+          "const": "durable-workflow.worker-replay-clock/v1"
+        },
+        "workflow_run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "started_at": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$"
+        },
+        "source": {
+          "enum": [
+            "run_started_at",
+            "redrive_replayed_started_at"
+          ]
+        }
+      }
+    },
     "supersedes": {
       "type": "array",
       "uniqueItems": true,
@@ -232,6 +262,9 @@
               "run_id": {
                 "type": "string",
                 "minLength": 1
+              },
+              "replay_clock": {
+                "$ref": "#/$defs/worker_replay_clock"
               }
             }
           }
