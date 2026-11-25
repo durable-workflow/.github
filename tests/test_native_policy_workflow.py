@@ -31,7 +31,7 @@ class NativePolicyWorkflowTest(unittest.TestCase):
     def test_current_ci_and_sonar_bind_exact_reviewed_workflow_fixtures(self):
         checkout = self.workflow["jobs"]["policy"]["steps"][0]
         self.assertEqual("89589bfd3e32d976ae30d7bd00025fc1678d9e07", checkout["with"]["ref"])
-        for name, fixture in (("ci", "ci-php-archive-mirror-20261119-source.yml"),
+        for name, fixture in (("ci", "ci-php-setup-retry-20261125-source.yml"),
                               ("sonar", "sonar-response-loss-source.yml")):
             self.assertEqual((ROOT / "tests/fixtures" / fixture).read_bytes(),
                              (ROOT / f".github/workflows/{name}.yml").read_bytes())

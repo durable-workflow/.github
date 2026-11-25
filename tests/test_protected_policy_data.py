@@ -27,12 +27,12 @@ ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = data.DATA_REPOSITORY
 REPOSITORY_ID = native.PILOT_ID
 MIRROR = bootstrap.MIRROR_REPOSITORY
-# The qualification workflows still check out cba1285d; ci.yml uses the mirrored setup pin.
+# The qualification workflows still check out cba1285d; ci.yml uses the reviewed retrying setup pin.
 CURRENT_PIN = "cba1285ddd43696ac9f445d7d04e8aff8fcad545"
-CI_PIN = "636d0cda4ce1e9c94ac6bf649154ff57957558be"
+CI_PIN = "89589bfd3e32d976ae30d7bd00025fc1678d9e07"
 CI = ".github/workflows/ci.yml"
 QUALIFY = (".github/workflows/qualify-linux-php-initial.yml", ".github/workflows/qualify-linux-php-ubuntu24.yml")
-CI_FIXTURE = "tests/fixtures/ci-php-archive-mirror-20261119-source.yml"
+CI_FIXTURE = "tests/fixtures/ci-php-setup-retry-20261125-source.yml"
 QUALIFY_FIXTURES = ("tests/fixtures/qualify-linux-php-initial-archive-repair-20261119.yml",
                     "tests/fixtures/qualify-linux-php-ubuntu24-archive-repair-20261119.yml")
 # The registries hard-coded in runtime 90313f07 (the #411 head), as sorted
