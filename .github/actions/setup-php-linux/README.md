@@ -41,7 +41,9 @@ publisher digest authority; its detached signature remains unverified.
 Composer's signature verification is recorded separately. The original
 stronger data controller's refusal remains its terminal result.
 
-The trusted Node24 action replaces itself with trusted Python. Python captures
+The action directory's `package.json` declares CommonJS, so no ancestor
+`package.json` can change how Node loads `bootstrap.js`. The trusted Node24
+action replaces itself with trusted Python. Python captures
 only known inputs, then replaces itself with a closed-environment process and
 private HOME/TMP before reading those inputs or running upstream code. The
 two absolute Python transitions both use `-I -S -B`, suppressing ambient Python
@@ -56,8 +58,20 @@ The recipe requires the existing authenticated shared CA output, exact digest
 and an empty additional-root directory. The existing `bootstrap-patched-pip`
 action's `clients: python` export can supply that predecessor without an APT
 route. Network reads use an exclusive Python TLS context and no proxy/auth.
-Archive reads use literal GitHub asset IDs and closed redirects; PHAR reads use
-literal URLs with no redirects. No tag discovery, retry or fallback exists.
+A mirrored archive is read from its immutable mirror release download
+(`github.com/durable-workflow/php-archives/releases/download/<tag>/<name>`, both
+literal catalog values), not the anonymous REST asset endpoint, which shares a
+60-request-per-hour limit per runner address and answers 403 when exhausted.
+Redirects stay closed and the final URL must be under the mirror repository's
+release storage. An unmirrored row keeps its literal upstream asset ID. PHAR
+reads use literal URLs with no redirects. No tag discovery or fallback exists.
+Transient failures (HTTP 403, 408, 429, 500, 502, 503, 504, timeouts, resets,
+unreachable networks and truncated streams) repeat the same request at most four times in all, waiting
+2, 5 and 10 seconds (or a `Retry-After` of at most 30 seconds; 60 seconds in
+total). Each attempt is a new private descriptor that must match the pinned size
+and SHA-256 before it is sealed. A 404, trust or redirect refusal, or a
+different byte stream is never retried. Retries are logged with status and type
+only, never a URL.
 
 Every installer/archive/tool stream must match its independent size and digest
 before it is sealed. All four streams are held before the first installation.

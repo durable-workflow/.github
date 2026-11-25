@@ -8,20 +8,24 @@ remain separate review gates on central issue 297.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+import errno
 import fcntl
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
 import re
+import socket
 import ssl
 import stat
 import subprocess
+import sys
 import time
 from typing import BinaryIO
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener
 
@@ -35,6 +39,9 @@ REPOSITORY = "shivammathur/php-ubuntu"
 # The upstream row stays the provenance and profile identity; the mirror is
 # only the fetch location and must carry the same name, size and SHA-256.
 MIRROR_REPOSITORY = "durable-workflow/php-archives"
+# GitHub serves release downloads from storage paths keyed by the numeric
+# repository ID. The mirror's final URL must stay under this repository.
+MIRROR_REPOSITORY_ID = 1464504913
 FETCH_REPOSITORIES = frozenset((REPOSITORY, MIRROR_REPOSITORY))
 PROFILE_NAMES = frozenset(("initial", "ubuntu24"))
 SHA256_PREFIX = "sha256:"
@@ -42,6 +49,16 @@ MAX_ARCHIVE = 64 * 1024 * 1024
 MAX_INSTALLER = 16 * 1024
 SEALS = fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
 REDIRECT_HOSTS = frozenset(("api.github.com", "github.com", "release-assets.githubusercontent.com"))
+# Bounded retry for transient transport failures only. Every attempt starts a
+# new request into a new private descriptor and must pass the same exact
+# size/SHA-256 check before anything is sealed or used. 404, a refused
+# redirect, a trust failure and a size/digest difference are never retried.
+RETRY_STATUSES = frozenset((403, 408, 429, 500, 502, 503, 504))
+FETCH_ATTEMPTS = 4
+RETRY_DELAYS = (2, 5, 10)
+MAX_RETRY_AFTER = 30
+MAX_RETRY_WAIT = 60
+RETRY_ERRNOS = frozenset((errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN, errno.ETIMEDOUT))
 
 
 def sha256(contents: bytes) -> str:
@@ -180,6 +197,22 @@ def asset_url(asset: dict, repository: str = REPOSITORY) -> str:
     return f"https://api.github.com/repos/{repository}/releases/assets/{asset['id']}"
 
 
+def mirror_url(mirror: dict) -> str:
+    """The mirror's release download path, not the anonymous REST asset endpoint.
+
+    Anonymous REST requests share a 60-per-hour limit per runner IP address,
+    and an exhausted limit answers 403. The release download path has no REST
+    limit. The release is immutable, so its tag and asset name cannot be moved
+    or replaced. The size and SHA-256 are checked before the bytes are sealed
+    either way, so the tag and name select the bytes but never establish trust.
+    """
+    if (mirror.get("repository") != MIRROR_REPOSITORY
+            or not re.fullmatch(r"php-[0-9a-z.+-]{1,96}", mirror.get("release_tag", ""))
+            or not re.fullmatch(r"php_8\.[1-5]-nts\+ubuntu[0-9.]+(?:_arm64)?\.tar\.zst", mirror.get("name", ""))):
+        raise ValueError("Unreviewed archive mirror location")
+    return f"https://github.com/{MIRROR_REPOSITORY}/releases/download/{mirror['release_tag']}/{mirror['name']}"
+
+
 def fetch_location(identity: dict, catalog: dict | None = None) -> tuple[str, dict]:
     """Select the reviewed mirror when cataloged; never fall back to upstream.
 
@@ -199,6 +232,14 @@ def fetch_location(identity: dict, catalog: dict | None = None) -> tuple[str, di
     return MIRROR_REPOSITORY, {key: mirror[key] for key in ("id", "name", "size", "digest")}
 
 
+def fetch_url(identity: dict, catalog: dict | None = None) -> tuple[str, str]:
+    """The one request URL: the immutable mirror download, or the exact upstream asset ID."""
+    repository, location = fetch_location(identity, catalog)
+    if repository == REPOSITORY:
+        return repository, asset_url(location, repository)
+    return repository, mirror_url(catalog_row(identity, catalog)["mirror"])
+
+
 def effective_url(url: str, repository: str | None = None) -> dict:
     parsed = urlsplit(url)
     if (parsed.scheme != "https" or parsed.hostname not in REDIRECT_HOSTS or parsed.username
@@ -211,6 +252,9 @@ def effective_url(url: str, repository: str | None = None) -> dict:
         raise ValueError("Foreign bootstrap asset endpoint")
     if parsed.hostname == "github.com" and not any(parsed.path.startswith(f"/{name}/") for name in allowed):
         raise ValueError("Foreign bootstrap repository redirect")
+    if (repository == MIRROR_REPOSITORY and parsed.hostname == "release-assets.githubusercontent.com"
+            and not parsed.path.startswith(f"/github-production-release-asset/{MIRROR_REPOSITORY_ID}/")):
+        raise ValueError("Mirror download left the mirror repository's release storage")
     # Preserve exact URL binding without disclosing a signed query string.
     return {"scheme": parsed.scheme, "host": parsed.hostname, "path": parsed.path,
             "url_sha256": sha256(url.encode("utf-8"))}
@@ -245,6 +289,71 @@ def explicit_trust(bundle: Path, expected_sha256: str, context_factory=ssl.SSLCo
     return context
 
 
+class TruncatedInput(ValueError):
+    """The stream ended before the pinned size; the bytes are never used."""
+
+
+def transient(error: BaseException) -> bool:
+    """Whether a failed attempt may be repeated; anything unrecognized is terminal."""
+    if isinstance(error, HTTPError):
+        return error.code in RETRY_STATUSES
+    if isinstance(error, TruncatedInput):
+        return True
+    if isinstance(error, URLError):
+        error = error.reason
+    if isinstance(error, ssl.SSLCertVerificationError | ValueError):
+        return False
+    if isinstance(error, socket.gaierror):
+        return error.errno == socket.EAI_AGAIN
+    if isinstance(error, TimeoutError | ConnectionError | http.client.IncompleteRead | ssl.SSLEOFError):
+        return True
+    return type(error) is OSError and error.errno in RETRY_ERRNOS
+
+
+def retry_delay(attempt: int, error: BaseException) -> int:
+    delay = RETRY_DELAYS[attempt - 1]
+    after = error.headers.get("Retry-After") if isinstance(error, HTTPError) and error.headers else None
+    if isinstance(after, str) and after.strip().isdigit():
+        delay = max(delay, min(int(after.strip()), MAX_RETRY_AFTER))
+    return delay
+
+
+def retry_notice(record: dict) -> None:
+    # Status and type only: request URLs can carry signed query strings.
+    print("Bound PHP setup transient fetch failure; retrying: " + json.dumps(record, sort_keys=True),
+          file=sys.stderr, flush=True)
+
+
+@contextmanager
+def fetch_with_retry(attempt, *, sleep=time.sleep, notice=None):
+    """Enter attempt() until one yields verified held bytes, at most FETCH_ATTEMPTS times.
+
+    attempt() returns a context manager that makes one request and yields
+    only after the exact size/SHA-256 check. A failed attempt releases its
+    response and descriptor before the next one starts. Waits are bounded per
+    attempt and in total; the caller's own failures are never retried.
+    """
+    waited = 0
+    for number in range(1, FETCH_ATTEMPTS + 1):
+        stack = ExitStack()
+        try:
+            held = stack.enter_context(attempt())
+        except Exception as error:
+            stack.close()
+            delay = retry_delay(number, error) if number < FETCH_ATTEMPTS and transient(error) else None
+            if delay is None or waited + delay > MAX_RETRY_WAIT:
+                raise
+            (notice or retry_notice)({"attempt": number, "attempts": FETCH_ATTEMPTS, "delay_seconds": delay,
+                    "failure_type": type(error).__name__,
+                    **({"http_status": error.code} if isinstance(error, HTTPError) else {})})
+            sleep(delay)
+            waited += delay
+            continue
+        with stack:
+            yield held
+        return
+
+
 class DeadlineInput:
     def __init__(self, response, deadline, clock=time.monotonic):
         self.response = response
@@ -259,30 +368,38 @@ class DeadlineInput:
 
 @contextmanager
 def download_held(identity: dict, context, opener_factory=build_opener, clock=time.monotonic, *,
-                  catalog: dict | None = None):
-    """Anonymous exact-ID fetch; no live metadata or retry/fallback.
+                  catalog: dict | None = None, sleep=time.sleep):
+    """Anonymous fetch of one fixed location; no live metadata or fallback.
 
     The held identity is always the reviewed upstream identity. When the
     catalog row has a mirror, the same exact bytes are fetched only from the
-    mirror asset ID; size and SHA-256 are verified before the stream is sealed.
+    mirror's immutable release download; an unmirrored row uses its exact
+    upstream asset ID. Transient failures repeat the same request a bounded
+    number of times. Size and SHA-256 are verified before the stream is sealed.
     """
     asset_identity(identity, identity["name"], MAX_ARCHIVE)
     if context.verify_mode != ssl.CERT_REQUIRED or not context.check_hostname:
         raise ValueError("Verified explicit HTTPS trust is required")
-    repository, location = fetch_location(identity, catalog)
-    redirects = ClosedRedirects()
-    redirects.repository = repository
-    client = opener_factory(ProxyHandler({}), HTTPSHandler(context=context), redirects)
-    request = Request(asset_url(location, repository), headers={"Accept": "application/octet-stream",
-                                                             "User-Agent": "durable-workflow-php-bootstrap"})
-    deadline = clock() + 60
-    with client.open(request, timeout=15) as response:
-        if response.status != 200:
-            raise HTTPError(request.full_url, response.status, "Bootstrap asset response refused", None, None)
-        final = response.geturl()
-        effective_url(final, repository)
-        with hold_verified(DeadlineInput(response, deadline, clock), identity, final) as held:
-            yield held
+    repository, url = fetch_url(identity, catalog)
+
+    @contextmanager
+    def attempt():
+        redirects = ClosedRedirects()
+        redirects.repository = repository
+        client = opener_factory(ProxyHandler({}), HTTPSHandler(context=context), redirects)
+        request = Request(url, headers={"Accept": "application/octet-stream",
+                                        "User-Agent": "durable-workflow-php-bootstrap"})
+        deadline = clock() + 60
+        with client.open(request, timeout=15) as response:
+            if response.status != 200:
+                raise ValueError("Bootstrap asset response status refused")
+            final = response.geturl()
+            effective_url(final, repository)
+            with hold_verified(DeadlineInput(response, deadline, clock), identity, final) as held:
+                yield held
+
+    with fetch_with_retry(attempt, sleep=sleep) as held:
+        yield held
 
 
 @dataclass
@@ -325,7 +442,9 @@ def hold_bytes(source: BinaryIO, identity: dict, final: dict):
             view = memoryview(chunk)
             while view:
                 view = view[os.write(descriptor, view):]
-        if size != identity["size"] or SHA256_PREFIX + digest.hexdigest() != identity["digest"]:
+        if size < identity["size"]:
+            raise TruncatedInput("Bootstrap input ended before the independently pinned size")
+        if SHA256_PREFIX + digest.hexdigest() != identity["digest"]:
             raise ValueError("Bootstrap input differs from the independently pinned bytes")
         fcntl.fcntl(descriptor, fcntl.F_ADD_SEALS, SEALS)
         os.lseek(descriptor, 0, os.SEEK_SET)

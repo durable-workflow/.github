@@ -59,6 +59,12 @@ stop a routine update by not merging it.
 
 ### Setup code is never data
 
+A new setup-code digest is admitted only by the runtime itself: the source
+change lists it in `RUNTIME_REVIEWED_SETUP_CODE` (`scripts/protected_policy_data.py`;
+a source test requires the checkout's own digest to be listed), an organization
+admin selects a runtime containing it, and only then may a data PR add it to
+`reviewed_setup_code` and approve a pin carrying it.
+
 Setup runs `python3 -I -S -B -X pycache_prefix=<fresh empty directory>` with no
 `sys.path` entry. Its only Python import root is `scripts/php_setup/`, which must
 hold exactly the reviewed modules (`SETUP_MODULES`) and nothing else: no package
@@ -82,11 +88,14 @@ reviewed runtime change.
 
 Each reviewed archive is mirrored byte for byte to its own release in
 `durable-workflow/php-archives`, tagged `php-sha256-<first 16 hex of the
-SHA-256>`, with GitHub immutable releases enabled. Setup fetches only the
-mirror asset ID when a row has a `mirror` record, verifies the exact size and
-SHA-256 before sealing the bytes, and never falls back to upstream: a deleted
-or different mirror asset fails closed. Asset IDs are never reused, so even a
-replaced asset cannot satisfy an existing pin.
+SHA-256>`, with GitHub immutable releases enabled. When a row has a `mirror`
+record, setup fetches only that immutable release's download
+(`releases/download/<release_tag>/<name>`), verifies the exact size and SHA-256
+before sealing the bytes, and never falls back to upstream: a deleted or
+different mirror asset fails closed. The download path avoids the anonymous
+REST limit (60 requests per hour per runner address, answered with 403) that
+the asset-ID endpoint shares. Transient failures repeat the same request with
+a bounded wait (see the action README); every attempt is verified in full.
 
 ## Routine update: a new PHP security release
 

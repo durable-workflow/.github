@@ -176,21 +176,28 @@ class NoRedirects(HTTPRedirectHandler):
 
 
 @contextmanager
-def download_held(row: dict, context, opener_factory=build_opener, clock=time.monotonic):
+def download_held(row: dict, context, opener_factory=build_opener, clock=time.monotonic, *, sleep=time.sleep):
+    """One literal URL, no redirects; transient failures repeat that same request (bounded)."""
     expected = identity(row)
     if (row["publisher_authority"]["state"] not in PUBLISHER_STATES
             or context.verify_mode != ssl.CERT_REQUIRED or not context.check_hostname):
         raise ValueError("Qualified publisher and exclusive verified HTTPS trust are required")
-    client = opener_factory(ProxyHandler({}), HTTPSHandler(context=context), NoRedirects())
-    request = Request(row["url"], headers={"Accept-Encoding": "identity",
-                                          "User-Agent": "durable-workflow-php-bootstrap"})
-    deadline = clock() + 60
-    with client.open(request, timeout=15) as response:
-        if response.status != 200 or response.geturl() != row["url"]:
-            raise ValueError("Exact tool URL/status differs; no discovery or fallback")
-        with bootstrap.hold_bytes(bootstrap.DeadlineInput(response, deadline, clock), expected,
-                                  {"url": row["url"]}) as held:
-            yield held
+
+    @contextmanager
+    def attempt():
+        client = opener_factory(ProxyHandler({}), HTTPSHandler(context=context), NoRedirects())
+        request = Request(row["url"], headers={"Accept-Encoding": "identity",
+                                              "User-Agent": "durable-workflow-php-bootstrap"})
+        deadline = clock() + 60
+        with client.open(request, timeout=15) as response:
+            if response.status != 200 or response.geturl() != row["url"]:
+                raise ValueError("Exact tool URL/status differs; no discovery or fallback")
+            with bootstrap.hold_bytes(bootstrap.DeadlineInput(response, deadline, clock), expected,
+                                      {"url": row["url"]}) as held:
+                yield held
+
+    with bootstrap.fetch_with_retry(attempt, sleep=sleep) as held:
+        yield held
 
 
 def install_held(held: bootstrap.HeldAsset, row: dict, environment: dict,
