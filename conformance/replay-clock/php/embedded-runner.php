@@ -7,7 +7,7 @@ declare(strict_types=1);
 // workers). The embedded executor itself reads the run row's started_at, the
 // column the carrier is built from; this runner receives it as replayClock.
 
-require __DIR__.'/vendor/autoload.php';
+require_once __DIR__.'/vendor/autoload.php';
 
 use Composer\InstalledVersions;
 use Workflow\V2\Support\WorkflowFiberRunner;

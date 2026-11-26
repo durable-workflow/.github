@@ -78,9 +78,20 @@ def compare(vectors: dict[str, Any], binding: str, observations: dict[str, Any])
     return mismatches
 
 
+# Each container gets a private tmpfs owned by the invoking user. The venv, the
+# source copy, HOME and the package caches live there, never in a shared,
+# world-writable directory.
+SCRATCH = "/scratch"
+PROJECT = "/project"
+CASE_VECTORS = "/case/vectors-v1.json"
+
+
 def _docker(name: str, image: str, mounts: list[tuple[Path, str, str]], script: str, env: dict[str, str]) -> str:
+    uid, gid = os.getuid(), os.getgid()
     command = ["docker", "run", "--rm", "--init", "--cpus", "2", "--memory", "4g", "--name", name,
-               "-u", f"{os.getuid()}:{os.getgid()}", "-e", "HOME=/tmp"]
+               "-u", f"{uid}:{gid}",
+               "--tmpfs", f"{SCRATCH}:rw,exec,nosuid,nodev,size=2g,mode=0700,uid={uid},gid={gid}",
+               "-e", f"HOME={SCRATCH}"]
     for key, value in env.items():
         command += ["-e", f"{key}={value}"]
     for source, target, mode in mounts:
@@ -88,34 +99,40 @@ def _docker(name: str, image: str, mounts: list[tuple[Path, str, str]], script: 
     command += [image, "sh", "-ec", script]
     result = subprocess.run(command, check=False, capture_output=True, text=True)
     if result.returncode != 0:
-        raise RuntimeError(f"{name} failed ({result.returncode}):\n{result.stderr[-4000:]}")
+        # PHP CLI reports fatal errors on stdout, so keep the tail of both streams.
+        raise RuntimeError(f"{name} failed ({result.returncode}):\n{result.stdout[-2000:]}\n{result.stderr[-4000:]}")
     lines = result.stdout.strip().splitlines()
     return lines[-1] if lines else ""
 
 
-def _run_binding(binding: str, version: str | None, source: Path | None, work: Path) -> dict[str, Any]:
-    name = f"dw-replay-clock-{binding}-{os.getpid()}"
+def _run_python(name: str, version: str | None, source: Path | None) -> str:
     case = (HERE, "/case", "ro")
-    if binding == "python":
-        install = "/tmp/sdk" if source else f"durable-workflow=={version}"
-        mounts = [case] + ([(source, "/sdk", "ro")] if source else [])
-        # A source build writes metadata, so it builds from a private copy.
-        copy = ("mkdir /tmp/sdk && tar -C /sdk --exclude=./.venv --exclude=./.git -cf - . | tar -C /tmp/sdk -xf - && "
-                if source else "")
-        script = (f"{copy}python -m venv /tmp/venv && /tmp/venv/bin/pip -q install --disable-pip-version-check "
-                  f"--no-deps --upgrade '{_PIP}' && /tmp/venv/bin/pip -q install --no-cache-dir '{install}' && "
-                  "/tmp/venv/bin/python -I /case/python/runner.py /case/vectors-v1.json")
-        return json.loads(_docker(name, "python:3.12-slim", mounts, script, {}))
-    if binding == "rust":
-        project = work / "rust"
-        shutil.copytree(HERE / "rust", project)
-        dependency = '{ path = "/sdk" }' if source else f'"={version}"'
-        (project / "Cargo.toml").write_text(
-            (project / "Cargo.toml.in").read_text(encoding="utf-8").replace("@DURABLE_WORKFLOW@", dependency),
-            encoding="utf-8")
-        mounts = [case, (project, "/project", "rw")] + ([(source, "/sdk", "ro")] if source else [])
-        script = "cd /project && CARGO_HOME=/tmp/cargo cargo run -q --release -- /case/vectors-v1.json"
-        return json.loads(_docker(name, "rust:1.86.0", mounts, script, {"DW_RUST_SDK_VERSION": version or "source"}))
+    install = f"{SCRATCH}/sdk" if source else f"durable-workflow=={version}"
+    mounts = [case] + ([(source, "/sdk", "ro")] if source else [])
+    # A source build writes metadata, so it builds from a private copy.
+    copy = (f"mkdir {SCRATCH}/sdk && tar -C /sdk --exclude=./.venv --exclude=./.git -cf - . | "
+            f"tar -C {SCRATCH}/sdk -xf - && " if source else "")
+    venv = f"{SCRATCH}/venv"
+    script = (f"{copy}python -m venv {venv} && {venv}/bin/pip -q install --disable-pip-version-check "
+              f"--no-deps --upgrade '{_PIP}' && {venv}/bin/pip -q install --no-cache-dir '{install}' && "
+              f"{venv}/bin/python -I /case/python/runner.py {CASE_VECTORS}")
+    return _docker(name, "python:3.12-slim", mounts, script, {})
+
+
+def _run_rust(name: str, version: str | None, source: Path | None, work: Path) -> str:
+    project = work / "rust"
+    shutil.copytree(HERE / "rust", project)
+    dependency = '{ path = "/sdk" }' if source else f'"={version}"'
+    (project / "Cargo.toml").write_text(
+        (project / "Cargo.toml.in").read_text(encoding="utf-8").replace("@DURABLE_WORKFLOW@", dependency),
+        encoding="utf-8")
+    mounts = [(HERE, "/case", "ro"), (project, PROJECT, "rw")] + ([(source, "/sdk", "ro")] if source else [])
+    script = f"cd {PROJECT} && cargo run -q --release -- {CASE_VECTORS}"
+    return _docker(name, "rust:1.86.0", mounts, script,
+                   {"CARGO_HOME": f"{SCRATCH}/cargo", "DW_RUST_SDK_VERSION": version or "source"})
+
+
+def _run_php(name: str, binding: str, version: str | None, source: Path | None, work: Path) -> str:
     package = "durable-workflow/sdk" if binding == "php" else "durable-workflow/workflow"
     project = work / binding
     shutil.copytree(HERE / "php", project)
@@ -124,13 +141,63 @@ def _run_binding(binding: str, version: str | None, source: Path | None, work: P
         (project / "composer.json.in").read_text(encoding="utf-8")
         .replace("@REQUIRE@", json.dumps({package: "*@dev" if source else version}))
         .replace("@REPOSITORIES@", json.dumps(repositories)), encoding="utf-8")
-    mounts = [(project, "/project", "rw")] + ([(source, "/sdk", "ro")] if source else [])
+    mounts = [(project, PROJECT, "rw")] + ([(source, "/sdk", "ro")] if source else [])
     _docker(f"{name}-install", "composer:2.10.3", mounts,
-            "cd /project && COMPOSER_HOME=/tmp/composer composer install -q --no-interaction --no-dev "
-            "--ignore-platform-req=ext-*", {})
+            f"cd {PROJECT} && composer install -q --no-interaction --no-dev --ignore-platform-req=ext-*",
+            {"COMPOSER_HOME": f"{SCRATCH}/composer"})
     runner = "sdk-runner.php" if binding == "php" else "embedded-runner.php"
-    return json.loads(_docker(name, "php:8.4-cli", [case, (project, "/project", "ro")],
-                              f"cd /project && php {runner} /case/vectors-v1.json", {}))
+    return _docker(name, "php:8.4-cli", [(HERE, "/case", "ro"), (project, PROJECT, "ro")],
+                   f"cd {PROJECT} && php {runner} {CASE_VECTORS}", {})
+
+
+def _run_binding(binding: str, version: str | None, source: Path | None, work: Path,
+                 prefix: str = "dw-replay-clock") -> dict[str, Any]:
+    name = f"{prefix}-{binding}-{os.getpid()}"
+    if binding == "python":
+        output = _run_python(name, version, source)
+    elif binding == "rust":
+        output = _run_rust(name, version, source, work)
+    else:
+        output = _run_php(name, binding, version, source, work)
+    report = json.loads(output)
+    if not isinstance(report, dict) or not isinstance(report.get("observations"), dict):
+        raise ValueError(f"{binding}: runner printed no observations")
+    return report
+
+
+def evaluate(vectors: dict[str, Any], binding: str, version: str | None, source: Path | None, work: Path,
+             prefix: str = "dw-replay-clock") -> dict[str, Any]:
+    """Run one binding and record its outcome; a crashed binding is an error, not an abort."""
+    label = "source" if source else version
+    if source is None and not released(vectors, binding, version or ""):
+        return {"status": "not_yet_released", "version": version,
+                "requires_newer_than": vectors["requires_newer_than"][binding]}
+    try:
+        report = _run_binding(binding, version, source, work, prefix)
+    except (OSError, RuntimeError, ValueError) as error:
+        return {"status": "error", "version": label, "error": str(error)}
+    mismatches = compare(vectors, binding, report["observations"])
+    return {"status": "fail" if mismatches else "pass", "version": label,
+            "reported_version": report.get("sdk_version"), "mismatches": mismatches,
+            "observations": report["observations"]}
+
+
+def _selected(only: str, sources: dict[str, str]) -> list[tuple[str, str | None, Path | None]]:
+    selected = []
+    for binding in [item for item in only.split(",") if item]:
+        if binding not in BINDINGS:
+            raise SystemExit(f"unknown binding {binding!r}")
+        source = Path(sources[binding]).resolve() if binding in sources else None
+        version = os.environ.get(VERSION_ENV[binding])
+        if source is None and not version:
+            raise SystemExit(f"set {VERSION_ENV[binding]} to the exact published release, or omit {binding}")
+        if source is None:
+            try:
+                version_tuple(version)
+            except ValueError as error:
+                raise SystemExit(f"{VERSION_ENV[binding]}: {error}") from None
+        selected.append((binding, version, source))
+    return selected
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -139,36 +206,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source", action="append", default=[], metavar="BINDING=PATH",
                         help="development only: replay an unreleased checkout instead of a release")
     parser.add_argument("--result-dir", type=Path, help="write result.json here")
+    parser.add_argument("--container-prefix", default="dw-replay-clock", help="name prefix for the containers")
     args = parser.parse_args(argv)
     vectors = load_vectors()
-    sources = dict(item.split("=", 1) for item in args.source)
-    results: dict[str, Any] = {}
-    failed = False
+    sources = {binding: path for binding, path in (item.split("=", 1) for item in args.source)}
+    selected = _selected(args.only, sources)
     with tempfile.TemporaryDirectory(prefix="dw-replay-clock-") as temporary:
-        for binding in [item for item in args.only.split(",") if item]:
-            if binding not in BINDINGS:
-                raise SystemExit(f"unknown binding {binding!r}")
-            source = Path(sources[binding]).resolve() if binding in sources else None
-            version = os.environ.get(VERSION_ENV[binding])
-            if source is None and not version:
-                raise SystemExit(f"set {VERSION_ENV[binding]} to the exact published release, or omit {binding}")
-            if source is None and not released(vectors, binding, version):
-                results[binding] = {"status": "not_yet_released", "version": version,
-                                    "requires_newer_than": vectors["requires_newer_than"][binding]}
-                continue
-            report = _run_binding(binding, version, source, Path(temporary))
-            mismatches = compare(vectors, binding, report["observations"])
-            failed = failed or bool(mismatches)
-            results[binding] = {"status": "fail" if mismatches else "pass",
-                                "version": "source" if source else version,
-                                "reported_version": report.get("sdk_version"), "mismatches": mismatches,
-                                "observations": report["observations"]}
+        results = {binding: evaluate(vectors, binding, version, source, Path(temporary), args.container_prefix)
+                   for binding, version, source in selected}
     document = json.dumps({"schema": vectors["schema"], "bindings": results}, indent=2, sort_keys=True)
     if args.result_dir:
         args.result_dir.mkdir(parents=True, exist_ok=True)
         (args.result_dir / "result.json").write_text(document + "\n", encoding="utf-8")
     print(document)
-    return 1 if failed else 0
+    return 1 if any(result["status"] in {"fail", "error"} for result in results.values()) else 0
 
 
 if __name__ == "__main__":

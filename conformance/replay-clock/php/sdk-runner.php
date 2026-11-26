@@ -7,7 +7,7 @@ declare(strict_types=1);
 // id to its observations. Times are UTC RFC 3339 with six fractional digits
 // and Z; an unavailable read is null.
 
-require __DIR__.'/vendor/autoload.php';
+require_once __DIR__.'/vendor/autoload.php';
 
 use Composer\InstalledVersions;
 use DurableWorkflow\Client;

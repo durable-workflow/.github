@@ -7,13 +7,22 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use durable_workflow::testing::{WorkflowEnvironment, WorkflowHistory};
-use durable_workflow::{Client, Worker, WorkflowContext};
+use durable_workflow::{Client, Error, Worker, WorkflowContext};
 use serde_json::{json, Map, Value};
 
-fn read(ctx: &WorkflowContext) -> Value {
-    ctx.replay_now().map_or(Value::Null, |time| {
-        json!(time.to_rfc3339_opts(chrono::SecondsFormat::Micros, true))
-    })
+/// Carriers the offline history builder refuses up front: another run's
+/// carrier and a low-precision `started_at`. Every other carrier is accepted
+/// by the builder; an unproved one (the redrive source on ordinary history)
+/// is then left absent during replay.
+const BUILDER_REFUSES: [&str; 2] = ["carrier-for-another-run", "carrier-low-precision"];
+
+/// Only an unavailable clock is reported as null; any other error fails the run.
+fn read(ctx: &WorkflowContext) -> Result<Value, Error> {
+    match ctx.replay_now() {
+        Ok(time) => Ok(json!(time.to_rfc3339_opts(chrono::SecondsFormat::Micros, true))),
+        Err(Error::ReplayClockUnavailable) => Ok(Value::Null),
+        Err(error) => Err(error),
+    }
 }
 
 fn micros(text: &Value) -> Option<i64> {
@@ -33,12 +42,12 @@ fn main() {
     worker.register_workflow(spec["type"].as_str().unwrap(), move |ctx: WorkflowContext, _args: Value| {
         let (activity, sink) = (activity.clone(), sink.clone());
         async move {
-            let entry = read(&ctx);
-            let repeated = read(&ctx) == entry;
+            let entry = read(&ctx)?;
+            let repeated = read(&ctx)? == entry;
             ctx.activity(activity, json!([])).await?;
-            let after_activity = read(&ctx);
+            let after_activity = read(&ctx)?;
             ctx.sleep(Duration::from_secs(seconds)).await?;
-            let after_timer = read(&ctx);
+            let after_timer = read(&ctx)?;
             let observed = json!({"entry":entry,"repeated_reads_equal":repeated,
                 "after_activity":after_activity,"after_timer":after_timer});
             *sink.lock().unwrap() = Some(observed.clone());
@@ -56,10 +65,17 @@ fn main() {
             json!({"workflow_id":spec["workflow_id"],"run_id":spec["run_id"],"events":vectors["history"]}),
         )
         .expect("history");
-        // The offline builder refuses an unproved carrier up front; replay then
-        // runs without one, which is the same absence a worker would apply.
+        // The builder refuses only the other-run and low-precision carriers;
+        // replay then runs without one, the same absence a worker applies.
         let history = match case.get("replay_clock") {
-            Some(carrier) => history.clone().replay_clock(carrier.clone()).unwrap_or(history),
+            Some(carrier) if BUILDER_REFUSES.contains(&id) => {
+                let refused = history.clone().replay_clock(carrier.clone());
+                assert!(refused.is_err(), "{id}: the builder accepted a carrier it must refuse");
+                history
+            }
+            Some(carrier) => history
+                .replay_clock(carrier.clone())
+                .unwrap_or_else(|error| panic!("{id}: carrier refused: {error}")),
             None => history,
         };
         *seen.lock().unwrap() = None;

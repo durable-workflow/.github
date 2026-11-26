@@ -1,8 +1,9 @@
 """Replay the shared replay-clock vectors through the installed Python SDK.
 
-Reads vectors-v1.json from the path in argv[1] and prints one JSON object
-mapping each case id to its observations. Times are UTC RFC 3339 with six
-fractional digits and Z; an unavailable read is null.
+Reads the case's vectors-v1.json (argv[1] may name it; it must resolve to
+that file beside this runner's directory) and prints one JSON object mapping
+each case id to its observations. Times are UTC RFC 3339 with six fractional
+digits and Z; an unavailable read is null.
 """
 
 from __future__ import annotations
@@ -17,7 +18,19 @@ from typing import Any
 from durable_workflow import ReplayClockUnavailable, workflow
 from durable_workflow.testing import replay_history
 
-VECTORS = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+CASE_VECTORS = Path(__file__).resolve().parent.parent / "vectors-v1.json"
+
+
+def _vectors_path(argv: list[str]) -> Path:
+    """Only the case's own vectors file is read; any other path is refused."""
+    if len(argv) > 1 and Path(argv[1]).resolve() != CASE_VECTORS:
+        raise SystemExit(f"vectors must be {CASE_VECTORS}, got {argv[1]!r}")
+    if not CASE_VECTORS.is_file():
+        raise SystemExit(f"{CASE_VECTORS} is not a regular file")
+    return CASE_VECTORS
+
+
+VECTORS = json.loads(_vectors_path(sys.argv).read_text(encoding="utf-8"))
 SPEC = VECTORS["workflow"]
 
 
