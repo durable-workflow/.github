@@ -1,0 +1,12 @@
+# run.py writes Cargo.toml from this template with the exact SDK dependency.
+[package]
+name = "replay-clock-conformance"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+durable-workflow = @DURABLE_WORKFLOW@
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "macros"] }
