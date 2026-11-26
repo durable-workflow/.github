@@ -105,13 +105,46 @@ not wait for open siblings or issue sibling cancellation. Successful groups
 still return values in member order after every member succeeds. A later
 sibling result cannot become an outcome for a successor authored call.
 
-`cancel_remaining` uses the same first-failure boundary and requests cancellation
-for unfinished siblings in member order before raising the initiating failure.
-It preserves existing operation cancellation policies, ownership and deadlines.
-Cancellation is recorded and replayed; replay never sends another request for
-the same recorded cancellation. This policy needs a producer-reviewed mapping
-to existing operation cancellation commands before it can be advertised. The
-fixture specifies required targets, not a new unreviewed command kind.
+`cancel_remaining` uses the same first-failure boundary. The producer records
+the sibling cancellations itself, in the same transaction that records the
+initiating failure (.github#232 decision (a)). That transaction holds, in order:
+
+1. the failing member's terminal event;
+2. a cancellation for each unfinished sibling, in member order;
+3. one wake of the workflow, after the last cancellation.
+
+A sibling that already has an outcome (completed, failed, cancelled, timed out,
+fired, satisfied or closed) is never cancelled. A retrying activity has no
+outcome yet, so its pending retry is cancelled. Each kind maps to an existing
+history event:
+
+| Unfinished member | Recorded cancellation |
+| --- | --- |
+| activity (default or `try_cancel` policy) | `ActivityCancelled`, closing the execution and its live attempt |
+| activity with `abandon` policy | none: it keeps running to its own deadline |
+| timer | `TimerCancelled` |
+| condition wait | `ConditionWaitCancelled`, then `TimerCancelled` for its timeout timer, if it has one |
+| child workflow | `ChildCancellationRequested` on the parent, with a cooperative cancellation request on the child run |
+
+Each recorded cancellation carries the member's group fields, including the
+policy, and `parallel_group_cancellation`:
+
+```json
+{"schema": "durable-workflow.parallel-group-cancellation/v1", "policy": "cancel_remaining",
+ "failure_event_sequence": 4, "failed_member_index": 1}
+```
+
+`failure_event_sequence` is the history sequence of the initiating failure.
+Cancellation is cooperative and does not undo a side effect. A cancelled
+activity's worker learns of it from its heartbeat or completion answer. A
+child's own close, and an abandoned activity's result, come later as late
+sibling results. They wake nothing and never become an outcome or a clock for a
+successor authored call. Consumers replay the recorded cancellations and never
+issue another cancellation command for them.
+
+A member whose cancellation policy is `wait_cancellation_completed` is refused at
+`cancel_remaining` admission until waiting composition is qualified. The policy
+preserves operation ownership and deadlines. It adds no command kind.
 
 `settle` waits for every member and returns an ordered outcome per member. Each
 outcome distinguishes success (including a null value) from failure; a member
@@ -145,8 +178,16 @@ Registration/claim vectors separately cover the exact manifest placement,
 legacy eligibility, malformed or incomplete declarations, retained-policy
 requirements and a capability change during a held poll.
 
+Server-recorded `cancel_remaining` vectors pin the failure transaction:
+`producer_cancellations` names each recorded cancellation event,
+`transaction_event_sequences` the events the failure's transaction writes,
+`parent_wakes` the single wake and `consumer_cancellation_commands` the commands
+a consumer sends on replay (none). `uncancelled_member_indexes` and
+`late_sibling_event_sequences` mark members the transaction leaves alone and
+results that arrive after it.
+
 The propagate wire discriminator and proposed per-policy capability can be
 reviewed independently of the producer mappings for `cancel_remaining` and
-`settle`. Those two policies stay unadvertised until their cancellation command
-mapping and ordered outcome envelope are agreed and implemented. No runtime
-change or release is authorized by a passing fixture-only check.
+`settle`. A policy stays unadvertised until its producer and consumer paths are
+implemented and qualified. No runtime change or release is authorized by a
+passing fixture-only check.
