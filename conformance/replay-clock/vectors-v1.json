@@ -1,0 +1,168 @@
+{
+  "schema": "durable-workflow.replay-clock-conformance/v1",
+  "requires_newer_than": {
+    "python": "2.23.1",
+    "rust": "4.24.0",
+    "php": "3.31.0",
+    "embedded-worker-protocol": "2.41.0"
+  },
+  "workflow": {
+    "type": "conformance.replay-clock",
+    "workflow_id": "conformance-replay-clock",
+    "run_id": "conformance-replay-clock-run",
+    "input": [],
+    "payload_codec": "avro",
+    "activity_type": "conformance.step",
+    "timer_seconds": 2
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-01T00:00:00.123456Z",
+      "payload": {
+        "workflow_type": "conformance.replay-clock",
+        "workflow_instance_id": "conformance-replay-clock",
+        "workflow_run_id": "conformance-replay-clock-run",
+        "workflow_command_id": "conformance-replay-clock-start"
+      }
+    },
+    {
+      "sequence": 2,
+      "event_type": "ActivityScheduled",
+      "recorded_at": "2026-11-01T00:00:00.200000Z",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "conformance-activity-1",
+        "activity_type": "conformance.step"
+      }
+    },
+    {
+      "sequence": 3,
+      "event_type": "ActivityCompleted",
+      "recorded_at": "2026-11-01T00:00:03.123456Z",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "conformance-activity-1",
+        "activity_type": "conformance.step",
+        "result": "wwHioz3/VYAiNwoKZmlyc3Q=",
+        "payload_codec": "avro"
+      }
+    },
+    {
+      "sequence": 4,
+      "event_type": "TimerScheduled",
+      "recorded_at": "2026-11-01T00:00:03.200000Z",
+      "payload": {
+        "sequence": 2,
+        "timer_id": "conformance-timer-2",
+        "timer_kind": "durable_timer",
+        "delay_seconds": 2
+      }
+    },
+    {
+      "sequence": 5,
+      "event_type": "TimerFired",
+      "recorded_at": "2026-11-01T00:00:05.654321Z",
+      "payload": {
+        "sequence": 2,
+        "timer_id": "conformance-timer-2",
+        "timer_kind": "durable_timer",
+        "delay_seconds": 2
+      }
+    }
+  ],
+  "cases": [
+    {
+      "id": "carrier",
+      "replay_clock": {
+        "schema": "durable-workflow.worker-replay-clock/v1",
+        "workflow_run_id": "conformance-replay-clock-run",
+        "started_at": "2026-11-01T00:00:00.000000Z",
+        "source": "run_started_at"
+      },
+      "expected": {
+        "entry": "2026-11-01T00:00:00.000000Z",
+        "repeated_reads_equal": true,
+        "after_activity": "2026-11-01T00:00:03.123456Z",
+        "after_timer": "2026-11-01T00:00:05.654321Z",
+        "elapsed_microseconds": 2530865
+      }
+    },
+    {
+      "id": "no-carrier",
+      "expected": {
+        "entry": null,
+        "repeated_reads_equal": true,
+        "after_activity": "2026-11-01T00:00:03.123456Z",
+        "after_timer": "2026-11-01T00:00:05.654321Z",
+        "elapsed_microseconds": 2530865
+      }
+    },
+    {
+      "id": "carrier-for-another-run",
+      "replay_clock": {
+        "schema": "durable-workflow.worker-replay-clock/v1",
+        "workflow_run_id": "another-run",
+        "started_at": "2026-11-01T00:00:00.000000Z",
+        "source": "run_started_at"
+      },
+      "expected": {
+        "entry": null,
+        "repeated_reads_equal": true,
+        "after_activity": "2026-11-01T00:00:03.123456Z",
+        "after_timer": "2026-11-01T00:00:05.654321Z",
+        "elapsed_microseconds": 2530865
+      }
+    },
+    {
+      "id": "carrier-low-precision",
+      "replay_clock": {
+        "schema": "durable-workflow.worker-replay-clock/v1",
+        "workflow_run_id": "conformance-replay-clock-run",
+        "started_at": "2026-11-01T00:00:00Z",
+        "source": "run_started_at"
+      },
+      "expected": {
+        "entry": null,
+        "repeated_reads_equal": true,
+        "after_activity": "2026-11-01T00:00:03.123456Z",
+        "after_timer": "2026-11-01T00:00:05.654321Z",
+        "elapsed_microseconds": 2530865
+      }
+    },
+    {
+      "id": "redrive-source-on-ordinary-history",
+      "replay_clock": {
+        "schema": "durable-workflow.worker-replay-clock/v1",
+        "workflow_run_id": "conformance-replay-clock-run",
+        "started_at": "2026-11-01T00:00:00.000000Z",
+        "source": "redrive_replayed_started_at"
+      },
+      "expected": {
+        "entry": null,
+        "repeated_reads_equal": true,
+        "after_activity": "2026-11-01T00:00:03.123456Z",
+        "after_timer": "2026-11-01T00:00:05.654321Z",
+        "elapsed_microseconds": 2530865
+      }
+    }
+  ],
+  "binding_overrides": {
+    "embedded-worker-protocol": {
+      "_note": "WorkflowFiberRunner keeps the WorkflowStarted time when no proved carrier is passed, so runs in flight replay unchanged.",
+      "no-carrier": {
+        "entry": "2026-11-01T00:00:00.123456Z"
+      },
+      "carrier-for-another-run": {
+        "entry": "2026-11-01T00:00:00.123456Z"
+      },
+      "carrier-low-precision": {
+        "entry": "2026-11-01T00:00:00.123456Z"
+      },
+      "redrive-source-on-ordinary-history": {
+        "entry": "2026-11-01T00:00:00.123456Z"
+      }
+    }
+  }
+}

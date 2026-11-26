@@ -1,0 +1,12 @@
+{
+    "name": "durable-workflow/replay-clock-conformance",
+    "description": "run.py writes composer.json from this template with the exact package constraints.",
+    "type": "project",
+    "license": "MIT",
+    "require": @REQUIRE@,
+    "repositories": @REPOSITORIES@,
+    "config": {
+        "allow-plugins": false,
+        "sort-packages": true
+    }
+}
