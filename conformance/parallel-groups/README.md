@@ -109,22 +109,33 @@ sibling result cannot become an outcome for a successor authored call.
 the sibling cancellations itself, in the same transaction that records the
 initiating failure (.github#232 decision (a)). That transaction holds, in order:
 
-1. the failing member's terminal event;
-2. a cancellation for each unfinished sibling, in member order;
+1. the failing member's terminal event,
+2. a cancellation for each unfinished sibling, in member order,
 3. one wake of the workflow, after the last cancellation.
 
 A sibling that already has an outcome (completed, failed, cancelled, timed out,
 fired, satisfied or closed) is never cancelled. A retrying activity has no
-outcome yet, so its pending retry is cancelled. Each kind maps to an existing
-history event:
+outcome yet, so its pending retry is cancelled. Activities and children keep
+their recorded cancellation policy, with each kind's existing default
+(`try_cancel` for an activity, `abandon` for a child). Each case maps to an
+existing history event:
 
 | Unfinished member | Recorded cancellation |
 | --- | --- |
-| activity (default or `try_cancel` policy) | `ActivityCancelled`, closing the execution and its live attempt |
-| activity with `abandon` policy | none: it keeps running to its own deadline |
+| activity, `try_cancel` | `ActivityCancelled`, closing the execution and its live attempt |
+| activity, `abandon` | none: it keeps running to its own deadline |
 | timer | `TimerCancelled` |
 | condition wait | `ConditionWaitCancelled`, then `TimerCancelled` for its timeout timer, if it has one |
-| child workflow | `ChildCancellationRequested` on the parent, with a cooperative cancellation request on the child run |
+| child, `try_cancel` | `ChildCancellationRequested` on the parent, with a cooperative cancellation request on the child run |
+| child, `abandon` | none: the child keeps running |
+
+A child request can be rejected, for example when the child already holds a
+cancellation request under another root, or has already closed. The
+transaction still records `ChildCancellationRequested`, with `request_outcome:
+rejected` and its `rejection_reason`. The child run keeps only the rejected
+command record and gains no cancellation request or history event.
+The child is not cancelled by the group either way. An accepted request asks
+the child to cancel. It does not close it.
 
 Each recorded cancellation carries the member's group fields, including the
 policy, and `parallel_group_cancellation`:
@@ -137,13 +148,14 @@ policy, and `parallel_group_cancellation`:
 `failure_event_sequence` is the history sequence of the initiating failure.
 Cancellation is cooperative and does not undo a side effect. A cancelled
 activity's worker learns of it from its heartbeat or completion answer. A
-child's own close, and an abandoned activity's result, come later as late
-sibling results. They wake nothing and never become an outcome or a clock for a
+child's own close, and an abandoned activity's or child's result, come later as
+late sibling results. They wake nothing and never become an outcome or a clock for a
 successor authored call. Consumers replay the recorded cancellations and never
 issue another cancellation command for them.
 
-A member whose cancellation policy is `wait_cancellation_completed` is refused at
-`cancel_remaining` admission until waiting composition is qualified. The policy
+An activity or child member whose cancellation policy is
+`wait_cancellation_completed` is refused at `cancel_remaining` admission until
+waiting composition is qualified. The policy
 preserves operation ownership and deadlines. It adds no command kind.
 
 `settle` waits for every member and returns an ordered outcome per member. Each
@@ -184,7 +196,11 @@ Server-recorded `cancel_remaining` vectors pin the failure transaction:
 `parent_wakes` the single wake and `consumer_cancellation_commands` the commands
 a consumer sends on replay (none). `uncancelled_member_indexes` and
 `late_sibling_event_sequences` mark members the transaction leaves alone and
-results that arrive after it.
+results that arrive after it. In every case, `open_member_indexes` lists the
+members with no terminal outcome event at the failure boundary, after that
+boundary's transaction. A recorded cancellation event closes its member. A
+`ChildCancellationRequested` does not, so a child that was only asked to cancel
+stays open until its own close.
 
 The propagate wire discriminator and proposed per-policy capability can be
 reviewed independently of the producer mappings for `cancel_remaining` and
