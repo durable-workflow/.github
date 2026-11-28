@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 import unittest
@@ -31,10 +32,11 @@ class NativePolicyWorkflowTest(unittest.TestCase):
     def test_current_ci_and_sonar_bind_exact_reviewed_workflow_fixtures(self):
         checkout = self.workflow["jobs"]["policy"]["steps"][0]
         self.assertEqual("89589bfd3e32d976ae30d7bd00025fc1678d9e07", checkout["with"]["ref"])
-        for name, fixture in (("ci", "ci-php-archive-mirror-20261119-source.yml"),
-                              ("sonar", "sonar-response-loss-source.yml")):
-            self.assertEqual((ROOT / "tests/fixtures" / fixture).read_bytes(),
-                             (ROOT / f".github/workflows/{name}.yml").read_bytes())
+        ci = (ROOT / ".github/workflows/ci.yml").read_bytes()
+        self.assertEqual("760de748e04a5c652d0174b8bb68b689aed98c17aed10a06b628af6b931719fc",
+                         hashlib.sha256(ci).hexdigest())
+        self.assertEqual((ROOT / "tests/fixtures/sonar-response-loss-source.yml").read_bytes(),
+                         (ROOT / ".github/workflows/sonar.yml").read_bytes())
 
     def test_no_issuer_key_or_write_permission_is_introduced(self):
         self.assertEqual({"contents": "read", "pull-requests": "read"}, self.workflow["permissions"])
