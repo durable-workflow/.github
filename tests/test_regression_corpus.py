@@ -12,7 +12,7 @@ from jsonschema import Draft202012Validator
 
 from scripts import regression_corpus as corpus
 from scripts.regression_corpus import CorpusError, validate
-from tests import test_payload_protection_contract
+from tests import test_command_response_loss, test_payload_protection_contract
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -791,5 +791,8 @@ def load_tests(
 ) -> unittest.TestSuite:
     standard_tests.addTests(
         loader.loadTestsFromModule(test_payload_protection_contract, pattern=pattern)
+    )
+    standard_tests.addTests(
+        loader.loadTestsFromModule(test_command_response_loss, pattern=pattern)
     )
     return standard_tests

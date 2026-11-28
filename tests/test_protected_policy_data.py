@@ -181,7 +181,10 @@ def approve_pin(files: dict[str, bytes], pin: str, old_pin: str = CI_PIN) -> dic
 
 def adopt_workflows(files: dict[str, bytes], pin: str, old_pin: str = CI_PIN) -> dict[str, bytes]:
     updated = dict(files)
-    updated[CI] = files[CI].replace(old_pin.encode(), pin.encode())
+    old = files[CI]
+    if old.count(old_pin.encode()) != 1:
+        raise AssertionError("Archive adoption requires a workflow using the old setup pin")
+    updated[CI] = old.replace(old_pin.encode(), pin.encode())
     return updated
 
 
@@ -341,10 +344,12 @@ class DataGateTest(Scenario):
 
     def test_a_pr_cannot_approve_its_own_workflow_bytes(self):
         new_pin = git_sha("unmerged setup")
-        files = adopt_workflows(approve_pin(self.files, new_pin), new_pin)
+        start = {**self.files, CI: self.files[CI_FIXTURE]}
+        main = self.start(start)
+        files = adopt_workflows(approve_pin(start, new_pin), new_pin)
         # Validation uses main's data, which lacks the PR's new hash and pin.
         with self.assertRaisesRegex(InputRefused, "closed literal"):
-            self.propose(self.base, files, "6" * 40, validator=lambda *_: [])
+            self.propose(main, files, "6" * 40, validator=lambda *_: [])
         # The data gate also refuses mixing data with the workflows it would approve.
         with self.assertRaisesRegex(InputRefused, "data-only"):
             self.gate(files, "7" * 40)
@@ -590,7 +595,9 @@ class RoutineUpdateSimulationTest(Scenario):
     """
 
     def test_next_routine_update_is_data_prs_without_runtime_or_ruleset_change(self):
-        start = with_reviewed_setup_code(mirrored(repository_files(), self.github), self.github)
+        files = repository_files()
+        files[CI] = files[CI_FIXTURE]
+        start = with_reviewed_setup_code(mirrored(files, self.github), self.github)
         main = self.start(start)
         runtime = {path: raw for path, raw in start.items()
                    if path.startswith(("scripts/", ".github/workflows/native-policy.yml"))}
