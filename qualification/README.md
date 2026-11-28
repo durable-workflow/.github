@@ -26,21 +26,11 @@ The accepted installed runs recorded in
 earlier Ubuntu 26.04 and Ubuntu 24.04 assets, which upstream has since replaced.
 Each consumer still needs its own source binding and actual caller qualification.
 
-### Upstream asset replacement
+### Retired archive workflow
 
-The scheduled *Check PHP setup pins upstream* workflow
-(`php-linux-upstream-pins.yml`, daily and manual) fails when any pinned archive
-ID is no longer published with the same name, size and digest, or when
-`install.sh` bytes change. Its step summary lists each affected row, whether it
-is a setup-profile row, and the current same-name candidate ID, size and digest.
-
-`shivammathur/php-ubuntu` replaces its `builds` release assets in place, and a
-replaced asset ID returns 404. A catalog row with a `mirror` record is fetched
-only from its byte-identical immutable mirror, so an upstream replacement no
-longer breaks setup. Setup never falls back to a newer or upstream asset. The
-setup archive identities, profile hashes and counts are data in
-`php-linux-bootstrap.json`; adopting a new release is a data-only update with no
-runtime or ruleset change. Follow [PHP-ARCHIVE-UPDATES.md](PHP-ARCHIVE-UPDATES.md).
+The archive recipe and its pin monitoring are historical. Use the approved
+hosted PHP or repository container setup for current jobs. See the
+[archive retirement record](PHP-ARCHIVE-UPDATES.md).
 
 Receipt v4 additionally binds the initial CLI configuration. It derives the
 production INI from the held archive's `php.ini-production.cli` and the exact

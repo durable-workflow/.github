@@ -39,9 +39,8 @@ data: a new pin must carry a reviewed setup-code digest, and only setup-action
 `uses:` pins may be swapped. Trade-off: once an archive is live upstream with
 the cataloged identity, a data PR approves its binary without human review;
 the strict inspector limits only its structure, so a compromised upstream
-build could be approved (see PHP-ARCHIVE-UPDATES.md). Routine PHP archive
-updates are therefore data PRs ([PHP-ARCHIVE-UPDATES.md](PHP-ARCHIVE-UPDATES.md))
-and leave the runtime pin and ruleset unchanged. The ruleset selects this
+build could be approved. The PHP archive workflow is now retired. The
+[retirement record](PHP-ARCHIVE-UPDATES.md) describes the supported CI path. The ruleset selects this
 workflow at an exact `sha` on `refs/heads/main`; only a change to the checking
 logic itself needs a new runtime pin and ruleset selection.
 

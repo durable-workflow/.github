@@ -20,7 +20,7 @@ from scripts import php_linux_bootstrap as bootstrap
 from scripts import php_linux_normalize as normalization
 from scripts import php_linux_alternatives as alternatives
 from tests import test_php_linux_normalize as normalize_tests
-from tests.test_php_archive_mirror import MirrorFetchTest, MirrorRetryTest, MirrorToolTest  # noqa: E402,F401 - CI runs these here
+from tests.test_php_archive_mirror import MirrorFetchTest, MirrorRetryTest  # noqa: E402,F401 - CI runs these here
 
 
 class PhpLinuxBootstrapTest(unittest.TestCase):
