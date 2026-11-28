@@ -2722,6 +2722,18 @@ def _composer_scope_candidate(scope: dict[str, Any], documents: dict[str, Any]) 
     return None
 
 
+def _scoped_hosted_php_setup(previous: dict[str, Any], step: dict[str, Any], runner: Any) -> bool:
+    fixed_apt = TRUST_ACTION_PREFIX + "require-fixed-apt@18783be6bef737cc778e4c7282a8797e39daa61a"
+    upstream = "shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962"
+    inputs = {"php-version": "8.3", "ini-file": "production", "coverage": "none",
+              "tools": "composer:2.10.3,phpunit:11.5.57"}
+    return (runner == "ubuntu-24.04" and previous.get("uses") == fixed_apt and step.get("uses") == upstream
+            and step.get("with") == inputs and not previous.get("with")
+            and not any(item.get("if") or item.get("env")
+                        or str(item.get("continue-on-error", "false")) != "false"
+                        for item in (previous, step)))
+
+
 def _composer_scoped_jobs(scopes: list[dict[str, Any]], documents: dict[str, Any], bound_setups: set[str], local: bool) -> set[tuple[str, str]]:
     selected = set()
     for scope in scopes:
@@ -2729,12 +2741,15 @@ def _composer_scoped_jobs(scopes: list[dict[str, Any]], documents: dict[str, Any
         if candidate is None:
             continue
         filename, job = candidate
+        steps = job.get("steps", [])
         bound = any(_reviewed_composer_action(step.get("uses", ""), "setup-php-linux", bound_setups, local)
-                    for step in job.get("steps", []))
-        if bound:
+                    for step in steps)
+        hosted = any(_scoped_hosted_php_setup(previous, step, job.get("runs-on"))
+                     for previous, step in zip(steps, steps[1:]))
+        if bound or hosted:
             selected.add((filename, scope["job"]))
         elif scope["required"]:
-            raise PolicyError("A required scoped Composer job lacks its reviewed bound PHP setup")
+            raise PolicyError("A required scoped Composer job lacks a reviewed PHP setup")
     return selected
 
 

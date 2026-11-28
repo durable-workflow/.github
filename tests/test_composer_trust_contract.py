@@ -954,6 +954,23 @@ class ScopedComposerMigrationTest(unittest.TestCase):
         with self.assertRaises(PolicyError):
             self.check(sources)
 
+    def test_scope_accepts_hosted_php_only_with_its_fixed_apt_check(self):
+        self.scope["required"] = True
+        steps = deepcopy(self.steps)
+        steps[1:2] = [
+            {"uses": PREFIX + "require-fixed-apt@18783be6bef737cc778e4c7282a8797e39daa61a"},
+            {"uses": "shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962",
+             "with": {"php-version": "8.3", "ini-file": "production", "coverage": "none",
+                      "tools": "composer:2.10.3,phpunit:11.5.57"}},
+        ]
+        self.assertEqual([".github/workflows/release.yml:published:step-5"], self.check(self.sources(steps)))
+        for change in (steps[:1] + steps[2:],
+                       steps[:1] + [{**steps[1], "if": "false"}] + steps[2:],
+                       steps[:2] + [{**steps[2], "env": {"update": "false"}}] + steps[3:],
+                       steps[:2] + [{**steps[2], "with": {**steps[2]["with"], "php-version": "8.4"}}] + steps[3:]):
+            with self.subTest(change=change), self.assertRaisesRegex(PolicyError, "reviewed PHP setup"):
+                self.check(self.sources(change))
+
     def test_duplicate_workflow_identities_cannot_select_a_different_source(self):
         sources = self.sources()
         sources["release.yml"] = sources[".github/workflows/release.yml"]
