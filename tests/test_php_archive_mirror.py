@@ -1,4 +1,4 @@
-"""Mirrored PHP archives: immutable mirror download, bounded retry, fail-closed absence and mirror tooling.
+"""Mirrored PHP archives: immutable mirror download, bounded retry, fail-closed absence.
 
 CI runs these through tests.test_php_linux_bootstrap, which imports them.
 """
@@ -8,17 +8,12 @@ import hashlib
 import io
 import json
 import os
-from pathlib import Path
 import ssl
-import tempfile
 from types import SimpleNamespace
 import unittest
 from urllib.error import HTTPError, URLError
 
-from scripts import php_archive_mirror as mirror
 from scripts import php_linux_bootstrap as bootstrap
-from scripts import protected_policy_data as data
-from tests import test_protected_policy_data as scenario
 
 CONTEXT = SimpleNamespace(verify_mode=ssl.CERT_REQUIRED, check_hostname=True)
 STORAGE = f"https://release-assets.githubusercontent.com/github-production-release-asset/{bootstrap.MIRROR_REPOSITORY_ID}"
@@ -108,7 +103,7 @@ class MirrorFetchTest(unittest.TestCase):
         for release, row in bootstrap.setup_rows(catalog).items():
             mirrored = row["mirror"]
             with self.subTest(release=release):
-                self.assertEqual(mirror.release_tag(row), mirrored["release_tag"])
+                self.assertEqual("php-sha256-" + row["asset"]["digest"][7:23], mirrored["release_tag"])
                 self.assertEqual({key: row["asset"][key] for key in ("name", "size", "digest")},
                                  {key: mirrored[key] for key in ("name", "size", "digest")})
                 self.assertNotEqual(row["asset"]["id"], mirrored["id"])
@@ -227,53 +222,6 @@ class MirrorRetryTest(unittest.TestCase):
                     (bootstrap.MIRROR_REPOSITORY, f"https://github.com/{bootstrap.MIRROR_REPOSITORY}/releases/download/"
                                                   f"{row['mirror']['release_tag']}/{row['asset']['name']}"),
                     bootstrap.fetch_url(row["asset"], catalog))
-
-
-class MirrorToolTest(unittest.TestCase):
-    def test_plan_is_a_dry_run_that_inspects_exact_local_bytes(self):
-        compressed = scenario.fake_archive("8.3.99")
-        files, row = scenario.archive_update(scenario.repository_files(), "26.04", compressed, 900000001, 900000101)
-        catalog = json.loads(files[data.CATALOG_PATH])
-        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as downloads:
-            for path, raw in files.items():
-                if path.startswith("qualification/php-linux-"):
-                    (Path(root) / path).parent.mkdir(parents=True, exist_ok=True)
-                    (Path(root) / path).write_bytes(raw)
-            archive = Path(downloads) / row["asset"]["name"]
-            archive.write_bytes(compressed)
-            result = mirror.plan(Path(downloads), catalog, Path(root), releases=["26.04"])
-            archive.write_bytes(compressed + b"x")
-            with self.assertRaisesRegex(ValueError, "cataloged size"):
-                mirror.plan(Path(downloads), catalog, Path(root), releases=["26.04"])
-            archive.write_bytes(scenario.fake_archive("8.3.98")[:len(compressed)].ljust(len(compressed), b"\0"))
-            with self.assertRaisesRegex(ValueError, "SHA-256"):
-                mirror.plan(Path(downloads), catalog, Path(root), releases=["26.04"])
-        self.assertTrue(result["dry_run"])
-        (planned,) = result["archives"]
-        self.assertEqual(900000001, planned["inspected"]["asset_id"])
-        self.assertIsNone(planned["planned_mirror"]["id"])
-        self.assertEqual(row["asset"]["digest"], planned["planned_mirror"]["digest"])
-        self.assertTrue(planned["upload_command"].startswith("gh release create php-sha256-"))
-
-    def test_adopt_binds_only_a_published_immutable_release_with_identical_assets(self):
-        catalog = bootstrap.load_catalog()
-        for unbound in catalog["archives"]:
-            unbound["mirror"] = None
-        row = catalog["archives"][1]
-        tag = mirror.release_tag(row)
-        release = {"tag_name": tag, "draft": False, "immutable": True, "assets": [
-            {"id": 812345678, "name": row["asset"]["name"], "size": row["asset"]["size"],
-             "digest": row["asset"]["digest"], "state": "uploaded"}]}
-        adopted = mirror.adopt(catalog, release)
-        self.assertEqual({"repository": bootstrap.MIRROR_REPOSITORY, "release_tag": tag, "id": 812345678,
-                          **{key: row["asset"][key] for key in ("name", "size", "digest")}},
-                         adopted["archives"][1]["mirror"])
-        self.assertIsNone(adopted["archives"][0]["mirror"])
-        for change in ({"immutable": False}, {"draft": True},
-                       {"assets": [dict(release["assets"][0], digest="sha256:" + "0" * 64)]},
-                       {"assets": [dict(release["assets"][0], size=1)]}, {"tag_name": "php-sha256-ffffffffffffffff"}):
-            with self.subTest(change=change), self.assertRaises(ValueError):
-                mirror.adopt(catalog, {**release, **change})
 
 
 if __name__ == "__main__":
